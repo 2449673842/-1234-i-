@@ -49,7 +49,51 @@ async function startServer() {
       cb(null, `${Date.now()}_${safeBase}${ext}`);
     }
   });
-  const upload = multer({ storage });
+  const upload = multer({
+    storage,
+    limits: {
+      fileSize: 50 * 1024 * 1024,
+      files: 20,
+    },
+    fileFilter: (_req, file, cb) => {
+      const allowed = ['.csv', '.tsv', '.txt', '.xlsx', '.xls'];
+      const ext = path.extname(file.originalname).toLowerCase();
+      if (allowed.includes(ext)) {
+        cb(null, true);
+      } else {
+        cb(new Error(`不支持的文件格式: ${ext}，仅允许 CSV/TSV/XLSX`));
+      }
+    },
+  });
+
+  function assertSafeProjectId(projectId: string): void {
+    if (!projectId || !/^[a-zA-Z0-9_-]{8,80}$/.test(projectId)) {
+      throw new Error('无效的项目 ID');
+    }
+    // 二次校验：确保最终路径在 data/projects 下
+    const root = path.resolve(process.cwd(), 'data', 'projects');
+    const projectDir = path.resolve(root, projectId);
+    if (!projectDir.startsWith(root + path.sep)) {
+      throw new Error('项目路径逃逸');
+    }
+  }
+
+  function escapeRegExp(s: string): string {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  async function validateAst(script: string): Promise<{ ok: boolean; message?: string; errors?: string[] }> {
+    try {
+      const resultStr = await spawnPythonWithPayload('ast_validator.py', { script });
+      const result = JSON.parse(resultStr);
+      if (result.status !== 'success') {
+        return { ok: false, message: result.message, errors: result.errors };
+      }
+      return { ok: true };
+    } catch {
+      return { ok: false, message: 'AST 校验执行失败' };
+    }
+  }
 
   app.use(express.json({ limit: '50mb' }));
   app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -134,9 +178,14 @@ async function startServer() {
 
   function applyCodePatch(script: string, patch: any): string {
     const lines = script.split('\n');
-    const regexConstant = new RegExp(`^(${patch.target_id})\\s*=\\s*["\'](#[0-9A-Fa-f]{6})["\']`);
+    if (!/^#[0-9A-Fa-f]{6}$/.test(patch.new_value)) {
+      throw new Error(`无效的颜色值: ${patch.new_value}`);
+    }
+    const safeTarget = escapeRegExp(patch.target_id);
+    const regexConstant = new RegExp(`^(${safeTarget})\\s*=\\s*["\'](#[0-9A-Fa-f]{6})["\']`);
     const cleanKey = patch.target_id.replace(/^dict_/, '');
-    const regexDict = new RegExp(`(["\']${cleanKey}["\']\\s*:\\s*)["\'](#[0-9A-Fa-f]{6})["\']`);
+    const safeKey = escapeRegExp(cleanKey);
+    const regexDict = new RegExp(`(["\']${safeKey}["\']\\s*:\\s*)["\'](#[0-9A-Fa-f]{6})["\']`);
 
     const updatedLines = lines.map(line => {
       const trimmed = line.trim();
@@ -160,6 +209,12 @@ async function startServer() {
         return res.status(400).json({ status: 'error', message: 'script is required' });
       }
       script = cleanScript(script);
+
+      // AST gate
+      const astCheck = await validateAst(script);
+      if (!astCheck.ok) {
+        return res.status(400).json({ status: 'error', message: '脚本安全校验失败', details: astCheck.message, errors: astCheck.errors });
+      }
       const existingSession = req.body.sessionId ? loadSession(req.body.sessionId) : null;
       const effectiveDataPayload = dataPayload !== undefined
         ? dataPayload
@@ -568,6 +623,10 @@ async function startServer() {
   app.delete('/api/projects/:id', (req, res) => {
     try {
       const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      if (!getProject(projectId)) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
       deleteProjectFigures(projectId);
       deleteProject(projectId);
 
@@ -585,7 +644,13 @@ async function startServer() {
   // --- Project Dataset Files API ---
   app.get('/api/projects/:id/files', (req, res) => {
     try {
-      const datasets = listProjectFiles(req.params.id);
+      const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      const project = getProject(projectId);
+      if (!project) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
+      const datasets = listProjectFiles(projectId);
       res.json({ status: 'success', datasets });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
@@ -595,6 +660,11 @@ async function startServer() {
   app.post('/api/projects/:id/files', upload.single('file'), (req, res) => {
     try {
       const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      const project = getProject(projectId);
+      if (!project) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
       const file = req.file;
       if (!file) {
         return res.status(400).json({ status: 'error', message: 'No file uploaded' });
@@ -647,6 +717,11 @@ async function startServer() {
   app.delete('/api/projects/:id/files/:fileId', (req, res) => {
     try {
       const { id: projectId, fileId } = req.params;
+      assertSafeProjectId(projectId);
+      const project = getProject(projectId);
+      if (!project) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
       const fileRecord = getProjectFile(fileId);
       if (fileRecord && fileRecord.project_id === projectId) {
         const absPath = path.resolve(process.cwd(), fileRecord.stored_path);
@@ -665,11 +740,18 @@ async function startServer() {
   app.post('/api/projects/:id/figures/render', async (req, res) => {
     try {
       const projectId = req.params.id;
+      assertSafeProjectId(projectId);
       let { script, editLogs } = req.body;
       if (!script) {
         return res.status(400).json({ status: 'error', message: 'script is required' });
       }
       script = cleanScript(script);
+
+      // AST gate
+      const astCheck = await validateAst(script);
+      if (!astCheck.ok) {
+        return res.status(400).json({ status: 'error', message: '脚本安全校验失败', details: astCheck.message, errors: astCheck.errors });
+      }
 
       // Update script in projects table
       const projectRow = getProject(projectId);
@@ -731,6 +813,11 @@ async function startServer() {
   app.get('/api/projects/:id/figures', (req, res) => {
     try {
       const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      const project = getProject(projectId);
+      if (!project) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
       const figures = listProjectFigures(projectId);
       const resultFigures = [];
       for (const fig of figures) {
@@ -754,6 +841,11 @@ async function startServer() {
   app.post('/api/projects/:id/export', async (req, res) => {
     try {
       const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      const project = getProject(projectId);
+      if (!project) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
       const { figureId, format, dpi } = req.body;
       const reqFormat = (format || 'svg').toLowerCase();
 
@@ -765,6 +857,14 @@ async function startServer() {
       const results = [];
       const projectData = getProject(projectId);
       const script = projectData?.script || '';
+
+      // AST gate
+      if (script) {
+        const astCheck = await validateAst(script);
+        if (!astCheck.ok) {
+          return res.status(400).json({ status: 'error', message: '脚本安全校验失败', details: astCheck.message, errors: astCheck.errors });
+        }
+      }
       const datasets = listProjectFiles(projectId);
 
       const uploaded_file_paths: Record<string, string> = {};

@@ -117,14 +117,17 @@ def _guard_user_script_io(cwd: Optional[str] = None, uploaded_file_paths: Option
     def _blocked_savefig(*args, **kwargs):
         raise RuntimeError("请不要在自定义脚本中调用 savefig；平台会自动接管导出。")
 
+    def _is_path_inside(child: str, parent: str) -> bool:
+        child = os.path.realpath(child)
+        parent = os.path.realpath(parent)
+        return os.path.commonpath([child, parent]) == parent
+
     def _sandboxed_read_csv(filepath_or_buffer, *args, **kwargs):
         if not cwd:
             raise RuntimeError("请不要在自定义脚本中直接读取本地文件；请通过上传数据并使用 _uploaded_data。")
         resolved_path = _resolve_mapped_path(filepath_or_buffer)
         if isinstance(resolved_path, str):
-            abs_path = os.path.realpath(resolved_path)
-            abs_cwd = os.path.realpath(cwd)
-            if not abs_path.startswith(abs_cwd):
+            if not _is_path_inside(resolved_path, cwd):
                 raise PermissionError(f"Security Sandbox: Access denied to path '{filepath_or_buffer}'. Only files within the project are allowed.")
         return original_read_csv(resolved_path, *args, **kwargs)
 
@@ -133,9 +136,7 @@ def _guard_user_script_io(cwd: Optional[str] = None, uploaded_file_paths: Option
             raise RuntimeError("请不要在自定义脚本中直接读取本地文件；请通过上传数据并使用 _uploaded_data。")
         resolved_path = _resolve_mapped_path(io_path)
         if isinstance(resolved_path, str):
-            abs_path = os.path.realpath(resolved_path)
-            abs_cwd = os.path.realpath(cwd)
-            if not abs_path.startswith(abs_cwd):
+            if not _is_path_inside(resolved_path, cwd):
                 raise PermissionError(f"Security Sandbox: Access denied to path '{io_path}'. Only files within the project are allowed.")
         return original_read_excel(resolved_path, *args, **kwargs)
 
