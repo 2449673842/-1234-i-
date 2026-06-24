@@ -865,6 +865,45 @@ async function startServer() {
             newCount
           });
         }
+
+        // Figure fingerprint comparison — detect content/structure changes
+        const oldFingerprints: Record<string, number> = {};
+        for (const row of oldFigRows) {
+          const key = `fig_${row.figure_index + 1}`;
+          const sess = loadSession(row.session_id);
+          if (sess && (sess as any)._fingerprint) {
+            oldFingerprints[key] = (sess as any)._fingerprint;
+          }
+        }
+        if (Object.keys(oldFingerprints).length > 0) {
+          const mismatchedFigs: string[] = [];
+          for (let i = 0; i < newFigures.length; i++) {
+            const figKey = `fig_${i + 1}`;
+            const newFp = newFigures[i].fingerprint;
+            if (oldFingerprints[figKey] !== undefined && oldFingerprints[figKey] !== newFp) {
+              mismatchedFigs.push(figKey);
+            }
+          }
+          if (mismatchedFigs.length > 0) {
+            parsed._warnings = parsed._warnings || [];
+            parsed._warnings.push({
+              type: 'figure_fingerprint_mismatch',
+              message: `以下 Figure 内容结构变化，编辑可能不完全匹配: ${mismatchedFigs.join(', ')}`,
+              mismatchedFigs
+            });
+          }
+        }
+
+        // Persist fingerprints for next comparison
+        for (const fig of newFigures) {
+          const figKey = fig.figureId;
+          const figSessionId = `${projectId}_${figKey}`;
+          const sess = loadSession(figSessionId);
+          if (sess) {
+            (sess as any)._fingerprint = fig.fingerprint;
+            persistSession(sess);
+          }
+        }
       }
 
       res.json(parsed);

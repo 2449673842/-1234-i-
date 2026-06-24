@@ -1100,6 +1100,22 @@ def replay_render(
 
         # Introspect
         result = introspect_figure(fig, semantic_manifest=semantic_manifest)
+
+        # Compute figure fingerprint for identity tracking
+        manifest = result.get("manifest", {})
+        objects = manifest.get("objects", [])
+        axes_count = len(manifest.get("axes", []))
+        kind_counts = {}
+        for obj in objects:
+            k = obj.get("kind", "unknown")
+            kind_counts[k] = kind_counts.get(k, 0) + 1
+        title_text = ""
+        if hasattr(fig, "_suptitle") and fig._suptitle:
+            title_text = fig._suptitle.get_text() if hasattr(fig._suptitle, "get_text") else str(fig._suptitle)
+        fingerprint_parts = [f"axes:{axes_count}", f"title:{title_text}"]
+        for kind in sorted(kind_counts.keys()):
+            fingerprint_parts.append(f"{kind}:{kind_counts[kind]}")
+        fingerprint = hash("|".join(fingerprint_parts))
         
         # Render and export to binary format if requested
         binary_b64 = None
@@ -1121,6 +1137,10 @@ def replay_render(
             "figureId": fig_id,
             "svg": result["svg"],
             "manifest": result["manifest"],
+            "fingerprint": fingerprint,
+            "axesCount": axes_count,
+            "objectCount": len(objects),
+            "kindCounts": kind_counts,
         }
         if binary_b64:
             fig_entry["binary_b64"] = binary_b64
