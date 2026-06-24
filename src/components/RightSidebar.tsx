@@ -6,6 +6,8 @@ interface RightSidebarProps {
   figSession: FigureSession | null;
   selectedObject?: string;
   onSelectObject: (obj: string) => void;
+  selectedGids?: string[];
+  onSelectGids?: (gids: string[]) => void;
   onPatch: (patches: PatchEntry[]) => void;
   lockedObjects?: Set<string>;
 }
@@ -42,6 +44,8 @@ export function RightSidebar({
   figSession,
   selectedObject,
   onSelectObject,
+  selectedGids = [],
+  onSelectGids,
   onPatch,
   lockedObjects,
 }: RightSidebarProps) {
@@ -946,6 +950,89 @@ export function RightSidebar({
     );
   };
 
+  const renderBatchPanel = () => {
+    const batchObjects = objects.filter(o => selectedGids.includes(o.id));
+    const commonColor = (() => {
+      const colors = batchObjects.map(o => o.currentProps.color || o.currentProps.facecolor).filter(Boolean);
+      return colors.length > 0 && colors.every(c => c === colors[0]) ? resolvePickerColor(colors[0]) : '#000000';
+    })();
+    const commonAlpha = (() => {
+      const alphas = batchObjects.map(o => o.currentProps.alpha).filter(a => a !== undefined);
+      return alphas.length > 0 && alphas.every(a => a === alphas[0]) ? alphas[0] : undefined;
+    })();
+    const allVisible = batchObjects.every(o => o.currentProps.visible !== false);
+
+    const handleBatchPatch = (prop: string, value: unknown) => {
+      const patches: PatchEntry[] = selectedGids.map(gid => {
+        const obj = objects.find(o => o.id === gid);
+        let actualProp = prop;
+        if (prop === 'color' && obj && (obj.kind === 'patch' || obj.kind === 'collection')) {
+          actualProp = 'facecolor';
+        }
+        return {
+          op: 'set' as const,
+          mode: LOCAL_PROPS.has(actualProp) ? 'local_patch' as const : 'backend_patch' as const,
+          gid,
+          prop: actualProp,
+          value
+        };
+      });
+      void onPatch(patches);
+    };
+
+    return (
+      <div className="mb-6 p-4 border border-indigo-200 rounded-lg bg-indigo-50/30 space-y-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-indigo-900 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+            批量编辑已选图元 ({selectedGids.length} 个)
+          </h3>
+          <button
+            type="button"
+            onClick={() => onSelectGids?.([])}
+            className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+          >
+            取消选择
+          </button>
+        </div>
+        <div className="space-y-3 pt-2 border-t border-indigo-100">
+          {renderColorInput('颜色', commonColor, (v) => handleBatchPatch('color', v))}
+          <div className="grid grid-cols-[80px_1fr] items-center gap-3 text-xs">
+            <span className="text-slate-600 font-medium">不透明度</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.1"
+              defaultValue={commonAlpha ?? 1}
+              className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer"
+              onChange={(e) => handleBatchPatch('alpha', Number(e.target.value))}
+            />
+          </div>
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-slate-600 font-medium">显示</span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => handleBatchPatch('visible', true)}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 text-[11px] font-medium"
+              >
+                全部显示
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBatchPatch('visible', false)}
+                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 text-[11px] font-medium"
+              >
+                全部隐藏
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderPalettePanel = () => {
     const palettes = manifest.palettes || [];
     const bindings = manifest.bindings || [];
@@ -1129,6 +1216,7 @@ export function RightSidebar({
         <div className={isLocked && activeTab === 'properties' ? 'opacity-55 pointer-events-none' : ''}>
           {activeTab === 'properties' && (
             <>
+              {selectedGids.length > 1 && renderBatchPanel()}
               {selectedObj ? renderObjectPanel(selectedObj) : (
                 <div className="text-sm text-slate-500">未选择任何对象。</div>
               )}

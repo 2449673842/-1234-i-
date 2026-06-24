@@ -7,7 +7,7 @@ import { Home, ChevronRight, PenLine, Maximize, Settings, UploadCloud, Minus, Ba
 import { ViewState } from '../App';
 import { buildReproduciblePython } from '../utils/reproduciblePython';
 import { sanitizeSvg } from '../utils/svgEditor';
-import { FigureSession, RenderResponse, PatchEntry, PatchResponse } from '../schemas/manifest';
+import { FigureSession, RenderResponse, PatchEntry, PatchResponse, EditEntry } from '../schemas/manifest';
 
 interface MainWorkspaceProps {
   spec: FigureSpec;
@@ -15,6 +15,8 @@ interface MainWorkspaceProps {
   onNavigate: (view: ViewState) => void;
   selectedObject: string;
   onSelectObject: (obj: string) => void;
+  selectedGids?: string[];
+  onSelectGids?: (gids: string[]) => void;
   projectId: string | null;
   projectName: string;
   onProjectChange: (id: string | null, name: string) => void;
@@ -39,6 +41,11 @@ interface MainWorkspaceProps {
   activeFigureId?: string;
   onSelectFigure?: (figureId: string) => void;
   onProjectRender?: (script?: string) => Promise<void>;
+
+  // V3.2B Selection & Undo
+  projectHistory?: Record<string, { past: EditEntry[][]; future: EditEntry[][] }>;
+  onProjectUndo?: (figureId: string) => Promise<void>;
+  onProjectRedo?: (figureId: string) => Promise<void>;
 }
 
 export function MainWorkspace({
@@ -47,6 +54,8 @@ export function MainWorkspace({
   onNavigate,
   selectedObject,
   onSelectObject,
+  selectedGids = [],
+  onSelectGids = () => {},
   projectId,
   projectName,
   onProjectChange,
@@ -69,6 +78,9 @@ export function MainWorkspace({
   activeFigureId = 'fig_1',
   onSelectFigure,
   onProjectRender,
+  projectHistory,
+  onProjectUndo,
+  onProjectRedo,
 }: MainWorkspaceProps) {
   const [activeTab, setActiveTab] = useState<'preview' | 'code' | 'data' | 'spec'>('preview');
   const [bottomTab, setBottomTab] = useState<'python' | 'spec' | 'log'>('python');
@@ -438,6 +450,8 @@ export function MainWorkspace({
                 onSpecChange={onSpecChange}
                 selectedObject={selectedObject}
                 onSelectObject={onSelectObject}
+                selectedGids={selectedGids}
+                onSelectGids={onSelectGids}
                 renderedSVG={figSession?.svg ?? null}
                 onPatch={onPatch}
                 figSession={figSession}

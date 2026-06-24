@@ -32,6 +32,8 @@ interface PersistedAppState {
   projectFigures?: Record<string, FigureEntry>;
   activeFigureId?: string;
   datasets?: DatasetEntry[];
+  selectedGids?: string[];
+  projectHistory?: Record<string, { past: EditEntry[][]; future: EditEntry[][] }>;
 }
 
 function cloneSpec(spec: FigureSpec): FigureSpec {
@@ -74,6 +76,8 @@ function loadInitialState(): PersistedAppState {
       projectFigures: parsed.projectFigures ?? {},
       activeFigureId: parsed.activeFigureId ?? 'fig_1',
       datasets: parsed.datasets ?? [],
+      selectedGids: parsed.selectedGids ?? [],
+      projectHistory: parsed.projectHistory ?? {},
     };
   } catch {
     return {
@@ -87,6 +91,8 @@ function loadInitialState(): PersistedAppState {
       projectFigures: {},
       activeFigureId: 'fig_1',
       datasets: [],
+      selectedGids: [],
+      projectHistory: {},
     };
   }
 }
@@ -102,6 +108,18 @@ export default function App() {
   const [specHistory, setSpecHistory] = useState<FigureSpec[]>(initialState.history);
   const [historyIndex, setHistoryIndex] = useState<number>(initialState.historyIndex);
   const [lockedObjects, setLockedObjects] = useState<Set<string>>(new Set());
+  const [selectedGids, setSelectedGids] = useState<string[]>(initialState.selectedGids ?? []);
+  const [projectHistory, setProjectHistory] = useState<Record<string, { past: EditEntry[][]; future: EditEntry[][] }>>(initialState.projectHistory ?? {});
+
+  const handleSelectGids = (gids: string[]) => {
+    setSelectedGids(gids);
+    setSelectedObject(gids.length === 0 ? 'Figure' : gids[0]);
+  };
+
+  const handleSelectObject = (obj: string) => {
+    setSelectedObject(obj);
+    setSelectedGids(obj === 'Figure' ? [] : [obj]);
+  };
 
   // V3.2A Project Layer States
   const [projectFigures, setProjectFigures] = useState<Record<string, FigureEntry>>(initialState.projectFigures ?? {});
@@ -166,9 +184,11 @@ export default function App() {
       projectFigures,
       activeFigureId,
       datasets,
+      selectedGids,
+      projectHistory,
     };
     window.sessionStorage.setItem(SPEC_STORAGE_KEY, JSON.stringify(nextState));
-  }, [spec, specHistory, historyIndex, projectId, projectName, hookSession, renderLog, projectFigures, activeFigureId, datasets]);
+  }, [spec, specHistory, historyIndex, projectId, projectName, hookSession, renderLog, projectFigures, activeFigureId, datasets, selectedGids, projectHistory]);
 
   const applySpecChange = (nextSpec: FigureSpec, options?: { recordHistory?: boolean }) => {
     const recordHistory = options?.recordHistory !== false;
@@ -187,7 +207,9 @@ export default function App() {
 
   const handlePatch = async (patches: PatchEntry[]) => {
     if (projectId) {
-      // Direct patch post to leverage transparent project-session mapping on backend
+      // Record previous editLog for undo before applying patch
+      const prevEditLog = projectFigures[activeFigureId]?.editLog || [];
+
       try {
         const res = await fetch('/api/figure/patch', {
           method: 'POST',
@@ -213,6 +235,9 @@ export default function App() {
             }
             return next;
           });
+
+          // Record history snapshot
+          pushProjectHistory(activeFigureId, prevEditLog);
 
           // Handle color mapping update inside spec for AST sync
           const codePatches = patches.filter((p: any) => p.type === 'code_patch');
@@ -329,6 +354,74 @@ export default function App() {
       }
       return res;
     }
+  };
+
+  const handleProjectUndo = async (figureId: string) => {
+    const history = projectHistory[figureId];
+    if (!history || history.past.length === 0) return;
+    const currentEditLog = projectFigures[figureId]?.editLog || [];
+    history.future.unshift(currentEditLog);
+    const prevEditLog = history.past.pop()!;
+    setProjectHistory(prev => ({ ...prev, [figureId]: { past: [...history.past], future: [...history.future] } }));
+    setProjectFigures(prev => {
+      const fig = prev[figureId];
+      if (!fig) return prev;
+      return { ...prev, [figureId]: { ...fig, editLog: prevEditLog } };
+    });
+    if (projectId) {
+      try {
+        const editLogs: Record<string, any[]> = {};
+        Object.keys(projectFigures).forEach(fid => {
+          editLogs[fid] = fid === figureId ? prevEditLog : projectFigures[fid].editLog;
+        });
+        await fetch(`/api/projects/${projectId}/figures/render`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ script: spec.custom_script || '', editLogs })
+        });
+      } catch { /* best-effort re-render on undo */ }
+    }
+  };
+
+  const handleProjectRedo = async (figureId: string) => {
+    const history = projectHistory[figureId];
+    if (!history || history.future.length === 0) return;
+    const currentEditLog = projectFigures[figureId]?.editLog || [];
+    history.past.push(currentEditLog);
+    const nextEditLog = history.future.shift()!;
+    setProjectHistory(prev => ({ ...prev, [figureId]: { past: [...history.past], future: [...history.future] } }));
+    setProjectFigures(prev => {
+      const fig = prev[figureId];
+      if (!fig) return prev;
+      return { ...prev, [figureId]: { ...fig, editLog: nextEditLog } };
+    });
+    if (projectId) {
+      try {
+        const editLogs: Record<string, any[]> = {};
+        Object.keys(projectFigures).forEach(fid => {
+          editLogs[fid] = fid === figureId ? nextEditLog : projectFigures[fid].editLog;
+        });
+        await fetch(`/api/projects/${projectId}/figures/render`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ script: spec.custom_script || '', editLogs })
+        });
+      } catch { /* best-effort re-render on redo */ }
+    }
+  };
+
+  // Call after each successful patch in project mode to record history
+  const pushProjectHistory = (figureId: string, prevEditLog: EditEntry[]) => {
+    setProjectHistory(prev => {
+      const entry = prev[figureId] || { past: [], future: [] };
+      return {
+        ...prev,
+        [figureId]: {
+          past: [...entry.past, prevEditLog],
+          future: []
+        }
+      };
+    });
   };
 
   const handleUndo = async () => {
@@ -558,7 +651,9 @@ export default function App() {
              <LeftSidebar
               spec={spec}
               selectedObject={selectedObject}
-              onSelectObject={setSelectedObject}
+              onSelectObject={handleSelectObject}
+              selectedGids={selectedGids}
+              onSelectGids={handleSelectGids}
               figSession={figSession}
               lockedObjects={lockedObjects}
               onToggleLock={handleToggleLock}
@@ -575,7 +670,9 @@ export default function App() {
               onSpecChange={applySpecChange}
               onNavigate={(v) => handleNavigate(v)}
               selectedObject={selectedObject}
-              onSelectObject={setSelectedObject}
+              onSelectObject={handleSelectObject}
+              selectedGids={selectedGids}
+              onSelectGids={handleSelectGids}
               projectId={projectId}
               projectName={projectName}
               onProjectChange={(id, name) => { setProjectId(id); setProjectName(name); }}
@@ -598,11 +695,16 @@ export default function App() {
               activeFigureId={activeFigureId}
               onSelectFigure={(figId) => setActiveFigureId(figId)}
               onProjectRender={handleProjectRender}
+              projectHistory={projectHistory}
+              onProjectUndo={handleProjectUndo}
+              onProjectRedo={handleProjectRedo}
             />
             <RightSidebar
               figSession={figSession}
               selectedObject={selectedObject}
-              onSelectObject={setSelectedObject}
+              onSelectObject={handleSelectObject}
+              selectedGids={selectedGids}
+              onSelectGids={handleSelectGids}
               onPatch={handlePatch}
               lockedObjects={lockedObjects}
             />
@@ -658,7 +760,7 @@ export default function App() {
             <LeftSidebar
               spec={spec}
               selectedObject={selectedObject}
-              onSelectObject={setSelectedObject}
+              onSelectObject={handleSelectObject}
               figSession={figSession}
             />
             <ExportSettingsPage spec={spec} onNavigate={(v) => handleNavigate(v)} onSpecChange={applySpecChange} figSession={figSession} />

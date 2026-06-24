@@ -7,6 +7,8 @@ interface LeftSidebarProps {
   spec: FigureSpec;
   selectedObject?: string;
   onSelectObject?: (object: string) => void;
+  selectedGids?: string[];
+  onSelectGids?: (gids: string[]) => void;
   figSession?: FigureSession | null;
   lockedObjects?: Set<string>;
   onToggleLock?: (gid: string) => void;
@@ -35,6 +37,9 @@ interface TreeItemProps {
   visibleMap: Record<string, boolean>;
   selectedObject: string;
   onSelectObject: (id: string) => void;
+  selectedGids: string[];
+  onSelectGids: (gids: string[]) => void;
+  allFlatNodes: TreeNode[];
   onToggleExpand: (id: string) => void;
   onToggleVisibility: (id: string) => void;
   lockedObjects?: Set<string>;
@@ -51,6 +56,9 @@ function TreeItem({
   visibleMap,
   selectedObject,
   onSelectObject,
+  selectedGids,
+  onSelectGids,
+  allFlatNodes,
   onToggleExpand,
   onToggleVisibility,
   lockedObjects,
@@ -63,6 +71,7 @@ function TreeItem({
   const isExpanded = expanded[node.id] ?? true;
   const isVisible = visibleMap[node.id] !== false;
   const isSelected = selectedObject === node.id;
+  const isMultiSelected = selectedGids.includes(node.id);
   const isLocked = lockedObjects?.has(node.id);
   const isVirtualNode = node.id.endsWith('_Section') || node.id === 'Figure';
 
@@ -76,6 +85,9 @@ function TreeItem({
           visibleMap={visibleMap}
           selectedObject={selectedObject}
           onSelectObject={onSelectObject}
+          selectedGids={selectedGids}
+          onSelectGids={onSelectGids}
+          allFlatNodes={allFlatNodes}
           onToggleExpand={onToggleExpand}
           onToggleVisibility={onToggleVisibility}
           lockedObjects={lockedObjects}
@@ -111,9 +123,30 @@ function TreeItem({
       }}
     >
       <div
-        className={`flex items-center justify-between group py-1.5 pr-2 rounded cursor-pointer transition-colors ${isSelected ? 'bg-blue-50 text-blue-700 font-medium' : 'hover:bg-slate-100 text-slate-700'}`}
+        className={`flex items-center justify-between group py-1.5 pr-2 rounded cursor-pointer transition-colors ${isSelected ? 'bg-blue-50 text-blue-700 font-medium' : isMultiSelected ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-100 text-slate-700'}`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
-        onClick={() => onSelectObject(node.id)}
+        onClick={(event) => {
+          if (event.ctrlKey || event.metaKey) {
+            const next = selectedGids.includes(node.id)
+              ? selectedGids.filter(g => g !== node.id)
+              : [...selectedGids, node.id];
+            onSelectGids(next);
+          } else if (event.shiftKey && selectedGids.length > 0) {
+            const lastId = selectedGids[selectedGids.length - 1];
+            const idx1 = allFlatNodes.findIndex(n => n.id === lastId);
+            const idx2 = allFlatNodes.findIndex(n => n.id === node.id);
+            if (idx1 !== -1 && idx2 !== -1) {
+              const start = Math.min(idx1, idx2);
+              const end = Math.max(idx1, idx2);
+              const range = allFlatNodes.slice(start, end + 1).map(n => n.id);
+              const next = Array.from(new Set([...selectedGids, ...range]));
+              onSelectGids(next);
+            }
+          } else {
+            onSelectGids([node.id]);
+            onSelectObject(node.id);
+          }
+        }}
       >
         <div className={`flex items-center gap-1.5 min-w-0 ${!isVisible ? 'opacity-40' : ''}`}>
           {hasChildren ? (
@@ -161,10 +194,21 @@ function TreeItem({
   );
 }
 
+function flattenTree(nodes: TreeNode[]): TreeNode[] {
+  const result: TreeNode[] = [];
+  for (const n of nodes) {
+    result.push(n);
+    if (n.children) result.push(...flattenTree(n.children));
+  }
+  return result;
+}
+
 export function LeftSidebar({
   spec,
   selectedObject = 'Figure',
   onSelectObject = () => {},
+  selectedGids = [],
+  onSelectGids = () => {},
   figSession,
   lockedObjects,
   onToggleLock,
@@ -586,6 +630,9 @@ export function LeftSidebar({
                 visibleMap={visibleMap}
                 selectedObject={selectedObject}
                 onSelectObject={onSelectObject}
+                selectedGids={selectedGids}
+                onSelectGids={onSelectGids}
+                allFlatNodes={flattenTree(filteredTree)}
                 onToggleExpand={id => setExpanded(prev => ({ ...prev, [id]: !prev[id] }))}
                 onToggleVisibility={handleToggleVisibility}
                 lockedObjects={lockedObjects}
