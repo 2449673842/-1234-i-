@@ -21,7 +21,7 @@ export function HomeDashboard({ onNavigate }: { onNavigate: (view: ViewState, su
             </div>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-0">
+          <div className="grid md:grid-cols-3 gap-0">
             <button
               onClick={() => onNavigate('data_import')}
               className="text-left p-8 border-b md:border-b-0 md:border-r border-slate-100 hover:bg-slate-50 transition-colors"
@@ -34,6 +34,24 @@ export function HomeDashboard({ onNavigate }: { onNavigate: (view: ViewState, su
                   <h2 className="text-lg font-semibold text-slate-900 mb-2">新建项目</h2>
                   <p className="text-sm text-slate-600 leading-6">
                     导入 CSV / Excel，完成字段映射，然后进入编辑器继续调整和导出。
+                  </p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-slate-400 shrink-0" />
+              </div>
+            </button>
+
+            <button
+              onClick={() => onNavigate('editor')}
+              className="text-left p-8 border-b md:border-b-0 md:border-r border-slate-100 hover:bg-slate-50 transition-colors"
+            >
+              <div className="w-12 h-12 rounded-xl bg-emerald-600 text-white flex items-center justify-center mb-5 shadow-sm">
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M11 4H4v14h14v-7M18.5 4.5 11 12l-2-2" /></svg>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900 mb-2">快速编辑器</h2>
+                  <p className="text-sm text-slate-600 leading-6">
+                    直接进入编辑器，使用内置演示数据测试框选、拖拽等新功能。
                   </p>
                 </div>
                 <ArrowRight className="w-5 h-5 text-slate-400 shrink-0" />
