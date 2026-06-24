@@ -46,6 +46,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const panStartRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null);
   const didPanRef = useRef(false);
   const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const marqueeRectRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [zoomMode, setZoomMode] = useState<'fit' | 'manual'>('fit');
   const [manualScale, setManualScale] = useState(1);
@@ -106,6 +107,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       panStartRef.current = null;
       if (marqueeStartRef.current) {
         marqueeStartRef.current = null;
+        marqueeRectRef.current = null;
         setMarqueeRect(null);
       }
       setTimeout(() => { didPanRef.current = false; }, 0);
@@ -234,32 +236,43 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       const y0 = Math.min(marqueeStartRef.current.y, event.clientY) - svgRect.top;
       const x1 = Math.max(marqueeStartRef.current.x, event.clientX) - svgRect.left;
       const y1 = Math.max(marqueeStartRef.current.y, event.clientY) - svgRect.top;
-      setMarqueeRect({ x: x0 / scale, y: y0 / scale, w: (x1 - x0) / scale, h: (y1 - y0) / scale });
+      const rect = { x: x0 / scale, y: y0 / scale, w: (x1 - x0) / scale, h: (y1 - y0) / scale };
+      marqueeRectRef.current = rect;
+      setMarqueeRect(rect);
     }
   }, [scale]);
 
-  const handleSvgMouseUp = useCallback(() => {
-    if (marqueeStartRef.current && marqueeRect) {
+  const handleSvgMouseUp = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (marqueeStartRef.current && marqueeRectRef.current) {
       const svgEl = svgContainerRef.current?.querySelector('svg');
       if (svgEl) {
+        const mr = marqueeRectRef.current;
         const hitGids: string[] = [];
-        selectedGids.forEach(gid => {
+        validGids.forEach(gid => {
           const el = svgEl.querySelector(`[id="${gid}"]`);
           if (!el) return;
           try {
             const bbox = el.getBBox();
-            if (bbox.x < marqueeRect.x + marqueeRect.w && bbox.x + bbox.width > marqueeRect.x &&
-                bbox.y < marqueeRect.y + marqueeRect.h && bbox.y + bbox.height > marqueeRect.y) {
+            if (bbox.x < mr.x + mr.w && bbox.x + bbox.width > mr.x &&
+                bbox.y < mr.y + mr.h && bbox.y + bbox.height > mr.y) {
               hitGids.push(gid);
             }
           } catch { /* skip */ }
         });
-        if (hitGids.length > 0) onSelectGids?.(hitGids);
+        if (hitGids.length > 0) {
+          if (event.ctrlKey || event.metaKey) {
+            const merged = Array.from(new Set([...selectedGids, ...hitGids]));
+            onSelectGids?.(merged);
+          } else {
+            onSelectGids?.(hitGids);
+          }
+        }
       }
     }
     marqueeStartRef.current = null;
+    marqueeRectRef.current = null;
     setMarqueeRect(null);
-  }, [marqueeRect, selectedGids, onSelectGids]);
+  }, [validGids, selectedGids, onSelectGids]);
 
   if (!renderedSVG) {
     return (

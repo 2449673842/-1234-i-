@@ -356,6 +356,33 @@ export default function App() {
     }
   };
 
+  const rerenderProjectWithEditLogs = async (editLogs: Record<string, any[]>): Promise<void> => {
+    if (!projectId) return;
+    try {
+      const res = await fetch(`/api/projects/${projectId}/figures/render`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ script: spec.custom_script || '', editLogs })
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        setProjectFigures(prev => {
+          const next = { ...prev };
+          for (const f of data.figures || []) {
+            next[f.figureId] = {
+              ...next[f.figureId],
+              svg: f.svg,
+              manifest: f.manifest,
+              editLog: editLogs[f.figureId] || next[f.figureId]?.editLog || [],
+              revision: (next[f.figureId]?.revision || 1) + 1
+            };
+          }
+          return next;
+        });
+      }
+    } catch { /* best-effort re-render */ }
+  };
+
   const handleProjectUndo = async (figureId: string) => {
     const history = projectHistory[figureId];
     if (!history || history.past.length === 0) return;
@@ -368,19 +395,11 @@ export default function App() {
       if (!fig) return prev;
       return { ...prev, [figureId]: { ...fig, editLog: prevEditLog } };
     });
-    if (projectId) {
-      try {
-        const editLogs: Record<string, any[]> = {};
-        Object.keys(projectFigures).forEach(fid => {
-          editLogs[fid] = fid === figureId ? prevEditLog : projectFigures[fid].editLog;
-        });
-        await fetch(`/api/projects/${projectId}/figures/render`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ script: spec.custom_script || '', editLogs })
-        });
-      } catch { /* best-effort re-render on undo */ }
-    }
+    const editLogs: Record<string, any[]> = {};
+    Object.keys(projectFigures).forEach(fid => {
+      editLogs[fid] = fid === figureId ? prevEditLog : projectFigures[fid].editLog;
+    });
+    await rerenderProjectWithEditLogs(editLogs);
   };
 
   const handleProjectRedo = async (figureId: string) => {
@@ -395,29 +414,22 @@ export default function App() {
       if (!fig) return prev;
       return { ...prev, [figureId]: { ...fig, editLog: nextEditLog } };
     });
-    if (projectId) {
-      try {
-        const editLogs: Record<string, any[]> = {};
-        Object.keys(projectFigures).forEach(fid => {
-          editLogs[fid] = fid === figureId ? nextEditLog : projectFigures[fid].editLog;
-        });
-        await fetch(`/api/projects/${projectId}/figures/render`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ script: spec.custom_script || '', editLogs })
-        });
-      } catch { /* best-effort re-render on redo */ }
-    }
+    const editLogs: Record<string, any[]> = {};
+    Object.keys(projectFigures).forEach(fid => {
+      editLogs[fid] = fid === figureId ? nextEditLog : projectFigures[fid].editLog;
+    });
+    await rerenderProjectWithEditLogs(editLogs);
   };
 
   // Call after each successful patch in project mode to record history
+  const MAX_HISTORY = 50;
   const pushProjectHistory = (figureId: string, prevEditLog: EditEntry[]) => {
     setProjectHistory(prev => {
       const entry = prev[figureId] || { past: [], future: [] };
       return {
         ...prev,
         [figureId]: {
-          past: [...entry.past, prevEditLog],
+          past: [...entry.past, prevEditLog].slice(-MAX_HISTORY),
           future: []
         }
       };

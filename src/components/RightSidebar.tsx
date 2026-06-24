@@ -950,6 +950,15 @@ export function RightSidebar({
     );
   };
 
+  const supportsBatchProp = (obj: ManifestObject | undefined, prop: string): boolean => {
+    if (!obj) return false;
+    if (prop === 'visible') return true;
+    if (prop === 'alpha') return ['line', 'patch', 'collection', 'legend', 'grid', 'text', 'figure'].includes(obj.kind);
+    if (prop === 'color') return ['line', 'patch', 'collection', 'text', 'spine', 'grid'].includes(obj.kind);
+    if (prop === 'linewidth') return ['line', 'patch', 'collection', 'spine', 'grid'].includes(obj.kind);
+    return false;
+  };
+
   const renderBatchPanel = () => {
     const batchObjects = objects.filter(o => selectedGids.includes(o.id));
     const commonColor = (() => {
@@ -960,11 +969,11 @@ export function RightSidebar({
       const alphas = batchObjects.map(o => o.currentProps.alpha).filter(a => a !== undefined);
       return alphas.length > 0 && alphas.every(a => a === alphas[0]) ? alphas[0] : undefined;
     })();
-    const allVisible = batchObjects.every(o => o.currentProps.visible !== false);
 
     const handleBatchPatch = (prop: string, value: unknown) => {
       const patches: PatchEntry[] = selectedGids.map(gid => {
         const obj = objects.find(o => o.id === gid);
+        if (!supportsBatchProp(obj, prop)) return null;
         let actualProp = prop;
         if (prop === 'color' && obj && (obj.kind === 'patch' || obj.kind === 'collection')) {
           actualProp = 'facecolor';
@@ -976,8 +985,8 @@ export function RightSidebar({
           prop: actualProp,
           value
         };
-      });
-      void onPatch(patches);
+      }).filter(Boolean) as PatchEntry[];
+      if (patches.length > 0) void onPatch(patches);
     };
 
     return (
@@ -1007,6 +1016,20 @@ export function RightSidebar({
               defaultValue={commonAlpha ?? 1}
               className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer"
               onChange={(e) => handleBatchPatch('alpha', Number(e.target.value))}
+            />
+          </div>
+          <div className="grid grid-cols-[80px_1fr] items-center gap-3 text-xs">
+            <span className="text-slate-600 font-medium">线宽</span>
+            <input
+              type="number"
+              step="0.5"
+              min="0"
+              className="border border-slate-200 rounded p-1 w-full bg-white text-slate-700"
+              placeholder="批量设置线宽..."
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (!isNaN(v)) handleBatchPatch('linewidth', v);
+              }}
             />
           </div>
           <div className="flex items-center justify-between text-xs">
