@@ -1,8 +1,20 @@
-import React, { useEffect, useMemo, useRef, useState, useCallback, type MouseEvent as ReactMouseEvent } from 'react';
-import { Minus, Plus, ScanSearch, Move } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { Minus, Plus, ScanSearch, Move, Type } from 'lucide-react';
 import { FigureSpec } from '../types';
 import { sanitizeSvg } from '../utils/svgEditor';
 import { PatchEntry, FigureSession } from '../schemas/manifest';
+
+const TEXT_GID_RE = /^(text|title|xlabel|ylabel|legend_text|legend_title|fig_text)\./;
+
+function isTextGid(gid: string): boolean {
+  return TEXT_GID_RE.test(gid);
+}
+
+function extractAxIdx(gid: string): string | null {
+  if (gid.startsWith('fig_text.')) return null;
+  const m = gid.match(/\.(\d+)(\.|$)/);
+  return m ? m[1] : null;
+}
 
 interface ChartPreviewProps {
   spec: FigureSpec;
@@ -47,6 +59,12 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const didPanRef = useRef(false);
   const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
   const marqueeRectRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  // Text drag state
+  const dragTextGidRef = useRef<string | null>(null);
+  const dragTextElRef = useRef<Element | null>(null);
+  const dragStartSvgRef = useRef<{ x: number; y: number } | null>(null);
+  const [isDraggingText, setIsDraggingText] = useState(false);
+
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [zoomMode, setZoomMode] = useState<'fit' | 'manual'>('fit');
   const [manualScale, setManualScale] = useState(1);
@@ -65,6 +83,13 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const scale = zoomMode === 'fit' ? fitScale : manualScale;
   const zoomPercent = Math.round(scale * 100);
   const validGids = useMemo(() => new Set((figSession?.manifest?.objects || []).map(o => o.id)), [figSession?.manifest?.objects]);
+
+  const getSvgPoint = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
+    const svgEl = svgContainerRef.current?.querySelector('svg');
+    if (!svgEl) return null;
+    const rect = svgEl.getBoundingClientRect();
+    return { x: (clientX - rect.left) / scale, y: (clientY - rect.top) / scale };
+  }, [scale]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -110,6 +135,12 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         marqueeRectRef.current = null;
         setMarqueeRect(null);
       }
+      if (dragTextGidRef.current) {
+        dragTextGidRef.current = null;
+        dragTextElRef.current = null;
+        dragStartSvgRef.current = null;
+        setIsDraggingText(false);
+      }
       setTimeout(() => { didPanRef.current = false; }, 0);
     };
     window.addEventListener('mouseup', handleMouseUp);
@@ -133,7 +164,6 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     return () => container.removeEventListener('wheel', handleWheel);
   }, [renderedSVG, scale]);
 
-  // Compute overlay bboxes after render
   useEffect(() => {
     if (!svgContainerRef.current || selectedGids.length === 0) {
       setOverlayBoxes([]);
@@ -148,15 +178,14 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       try {
         const bbox = el.getBBox();
         boxes.push({ gid, x: bbox.x, y: bbox.y, w: bbox.width, h: bbox.height });
-      } catch { /* cross-origin or detached */ }
+      } catch { /* skip */ }
     });
     setOverlayBoxes(boxes);
   }, [selectedGids, renderedSVG]);
 
   const handleSvgClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (didPanRef.current || marqueeStartRef.current) return;
+    if (didPanRef.current || marqueeStartRef.current || dragTextGidRef.current) return;
     const target = event.target as HTMLElement;
-    const objects = figSession?.manifest?.objects || [];
     
     let current: HTMLElement | null = target;
     let foundGid: string | null = null;
@@ -196,7 +225,51 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         onSelectObject('Figure');
       }
     }
-  }, [figSession?.manifest?.objects, validGids, selectedGids, onSelectGids, onSelectObject]);
+  }, [validGids, selectedGids, onSelectGids, onSelectObject]);
+
+  // Resolve a completed text drag: calculate new axes position and dispatch patch
+  const resolveTextDrag = useCallback((gid: string, svgDeltaX: number, svgDeltaY: number) => {
+    const svgEl = svgContainerRef.current?.querySelector('svg');
+    if (!svgEl || !onPatch) return;
+    const axIdx = extractAxIdx(gid);
+    const obj = figSession?.manifest?.objects.find(o => o.id === gid);
+    if (!obj) return;
+
+    const origX = obj.currentProps.x as number;
+    const origY = obj.currentProps.y as number;
+    const coordSystem = obj.currentProps.coord_system as string || 'axes';
+
+    if (axIdx && (coordSystem === 'axes' || coordSystem === 'data')) {
+      const leftSpine = svgEl.querySelector(`[id="spine.left.${axIdx}"]`);
+      const rightSpine = svgEl.querySelector(`[id="spine.right.${axIdx}"]`);
+      const bottomSpine = svgEl.querySelector(`[id="spine.bottom.${axIdx}"]`);
+      const topSpine = svgEl.querySelector(`[id="spine.top.${axIdx}"]`);
+      if (leftSpine && rightSpine && bottomSpine && topSpine) {
+        try {
+          const axesW = rightSpine.getBBox().x - leftSpine.getBBox().x;
+          const axesH = bottomSpine.getBBox().y - topSpine.getBBox().y;
+          const axesDx = svgDeltaX / axesW;
+          const axesDy = -(svgDeltaY / axesH);
+          onPatch([{
+            op: 'set',
+            mode: 'backend_patch',
+            gid,
+            prop: 'position',
+            value: { x: origX + axesDx, y: origY + axesDy, coord_system: coordSystem }
+          }]);
+          return;
+        } catch { /* bbox error */ }
+      }
+    }
+    // Fallback: figure coordinates
+    onPatch([{
+      op: 'set',
+      mode: 'backend_patch',
+      gid,
+      prop: 'position',
+      value: { x: origX + svgDeltaX / svgSize.width, y: origY + svgDeltaY / svgSize.height, coord_system: coordSystem }
+    }]);
+  }, [figSession?.manifest?.objects, onPatch, svgSize]);
 
   const handleSvgMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (spacePressed || event.button === 1) {
@@ -207,10 +280,31 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       return;
     }
 
-    // Start marquee on background click (not on an element with valid gid)
     const target = event.target as HTMLElement;
     let current: HTMLElement | null = target;
+    let foundGid: string | null = null;
+    while (current) {
+      if (current.id && validGids.has(current.id)) { foundGid = current.id; break; }
+      current = current.parentElement;
+    }
+
+    // Check if it's a text object → start text drag
+    if (foundGid && isTextGid(foundGid) && target.closest('svg')) {
+      const pt = getSvgPoint(event.clientX, event.clientY);
+      if (pt) {
+        dragTextGidRef.current = foundGid;
+        const el = svgContainerRef.current?.querySelector(`[id="${foundGid}"]`);
+        dragTextElRef.current = el || null;
+        if (el) (el as HTMLElement).style.cursor = 'grabbing';
+        dragStartSvgRef.current = pt;
+        setIsDraggingText(true);
+        return;
+      }
+    }
+
+    // Start marquee on background (not on a valid element)
     let hitElement = false;
+    current = target;
     while (current) {
       if (current.id && (validGids.has(current.id) || current.id === 'Figure')) { hitElement = true; break; }
       current = current.parentElement;
@@ -218,7 +312,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     if (!hitElement && target.closest('svg')) {
       marqueeStartRef.current = { x: event.clientX, y: event.clientY };
     }
-  }, [spacePressed, pan.x, pan.y, validGids]);
+  }, [spacePressed, pan.x, pan.y, validGids, getSvgPoint]);
 
   const handleSvgMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (panStartRef.current) {
@@ -228,6 +322,22 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       setPan({ x: panStartRef.current.originX + dx, y: panStartRef.current.originY + dy });
       return;
     }
+
+    // Text dragging: apply CSS transform preview
+    if (dragTextGidRef.current && dragStartSvgRef.current) {
+      const pt = getSvgPoint(event.clientX, event.clientY);
+      if (pt) {
+        const dx = pt.x - dragStartSvgRef.current.x;
+        const dy = pt.y - dragStartSvgRef.current.y;
+        const el = dragTextElRef.current;
+        if (el) {
+          (el as HTMLElement).style.transform = `translate(${dx}px, ${dy}px)`;
+          (el as HTMLElement).style.transition = 'none';
+        }
+      }
+      return;
+    }
+
     if (marqueeStartRef.current && svgContainerRef.current) {
       const svgEl = svgContainerRef.current.querySelector('svg');
       if (!svgEl) return;
@@ -240,9 +350,34 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       marqueeRectRef.current = rect;
       setMarqueeRect(rect);
     }
-  }, [scale]);
+  }, [scale, getSvgPoint]);
 
   const handleSvgMouseUp = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    // Resolve text drag
+    if (dragTextGidRef.current && dragStartSvgRef.current) {
+      const pt = getSvgPoint(event.clientX, event.clientY);
+      if (pt) {
+        const dx = pt.x - dragStartSvgRef.current.x;
+        const dy = pt.y - dragStartSvgRef.current.y;
+        // Clean up CSS transform
+        const el = dragTextElRef.current;
+        if (el) {
+          (el as HTMLElement).style.transform = '';
+          (el as HTMLElement).style.transition = '';
+          (el as HTMLElement).style.cursor = '';
+        }
+        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
+          resolveTextDrag(dragTextGidRef.current, dx, dy);
+        }
+      }
+      dragTextGidRef.current = null;
+      dragTextElRef.current = null;
+      dragStartSvgRef.current = null;
+      setIsDraggingText(false);
+      return;
+    }
+
+    // Resolve marquee
     if (marqueeStartRef.current && marqueeRectRef.current) {
       const svgEl = svgContainerRef.current?.querySelector('svg');
       if (svgEl) {
@@ -261,8 +396,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         });
         if (hitGids.length > 0) {
           if (event.ctrlKey || event.metaKey) {
-            const merged = Array.from(new Set([...selectedGids, ...hitGids]));
-            onSelectGids?.(merged);
+            onSelectGids?.(Array.from(new Set([...selectedGids, ...hitGids])));
           } else {
             onSelectGids?.(hitGids);
           }
@@ -272,7 +406,21 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     marqueeStartRef.current = null;
     marqueeRectRef.current = null;
     setMarqueeRect(null);
-  }, [validGids, selectedGids, onSelectGids]);
+  }, [validGids, selectedGids, onSelectGids, getSvgPoint, resolveTextDrag]);
+
+  // Hover effect: show grab cursor on text elements
+  const handleSvgMouseOver = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (dragTextGidRef.current) return;
+    const target = event.target as HTMLElement;
+    let current: HTMLElement | null = target;
+    while (current) {
+      if (current.id && isTextGid(current.id) && validGids.has(current.id)) {
+        current.style.cursor = 'grab';
+        break;
+      }
+      current = current.parentElement;
+    }
+  }, [validGids]);
 
   if (!renderedSVG) {
     return (
@@ -305,11 +453,18 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
           <ScanSearch className="w-3.5 h-3.5" /><span>滚轮缩放</span>
           <span className="text-slate-300">|</span>
           <span>拖动框选</span>
+          <span className="text-slate-300">|</span>
+          <Type className="w-3 h-3" /><span>拖动文本</span>
         </div>
 
         <div
           ref={containerRef}
-          className={`w-full h-full overflow-hidden flex items-center justify-center ${spacePressed ? (isPanning ? 'cursor-grabbing' : 'cursor-grab') : marqueeStartRef.current ? 'crosshair' : 'cursor-default'}`}
+          className={`w-full h-full overflow-hidden flex items-center justify-center ${
+            spacePressed ? (isPanning ? 'cursor-grabbing' : 'cursor-grab')
+            : isDraggingText ? 'cursor-grabbing'
+            : marqueeStartRef.current ? 'crosshair'
+            : 'cursor-default'
+          }`}
           onMouseDown={handleSvgMouseDown}
           onMouseMove={handleSvgMouseMove}
           onMouseUp={handleSvgMouseUp}
@@ -321,6 +476,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
             <div
               ref={svgContainerRef}
               onClick={handleSvgClick}
+              onMouseOver={handleSvgMouseOver}
               onDoubleClick={(event) => {
                 const target = event.target as HTMLElement;
                 let current: HTMLElement | null = target;
@@ -330,8 +486,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
                   current = current.parentElement;
                 }
                 if (foundGid && onPatch) {
-                  const isTextObject = foundGid.startsWith('text.') || foundGid.startsWith('title.') || foundGid.startsWith('xlabel.') || foundGid.startsWith('ylabel.') || foundGid.startsWith('legend_text.') || foundGid.startsWith('legend_title.') || foundGid.startsWith('fig_text.');
-                  if (isTextObject) {
+                  if (isTextGid(foundGid)) {
                     onSelectObject(foundGid);
                     const currentText = target.textContent?.trim() || "";
                     const newText = window.prompt("修改文本内容:", currentText);
@@ -344,7 +499,6 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
               className="shadow-sm bg-white flex items-center justify-center [&>svg]:block [&>svg]:w-auto [&>svg]:h-auto [&>svg]:max-w-none [&>svg]:max-h-none"
               dangerouslySetInnerHTML={{ __html: sanitizeSvg(renderedSVG) }}
             />
-            {/* Selection overlay SVG */}
             {(overlayBoxes.length > 0 || marqueeRect) && (
               <svg
                 className="absolute inset-0 pointer-events-none"

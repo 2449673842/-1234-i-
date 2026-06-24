@@ -565,7 +565,7 @@ def _safe_artist_label(artist, fallback: str) -> str:
 # ---------------------------------------------------------------------------
 
 _EDITABLE = {
-    "text": ["text", "fontsize", "fontfamily", "color", "zorder"],
+    "text": ["text", "fontsize", "fontfamily", "color", "ha", "va", "rotation", "position", "zorder"],
     "spine": ["visible", "color", "linewidth", "zorder"],
     "spine_group": ["visible", "color", "linewidth", "zorder"],
     "legend": ["visible", "fontsize", "frameon", "facecolor", "edgecolor", "linewidth", "alpha", "loc", "ncol", "markerscale", "title", "fontfamily", "zorder"],
@@ -778,6 +778,9 @@ _PROP_TO_SETTER = {
     "facecolor": "set_facecolor",
     "edgecolor": "set_edgecolor",
     "zorder": "set_zorder",
+    "ha": "set_horizontalalignment",
+    "va": "set_verticalalignment",
+    "rotation": "set_rotation",
 }
 
 
@@ -929,6 +932,21 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             title = artist.get_title()
             if title is not None:
                 title.set_fontname(str(value))
+        return
+
+    if prop == "position":
+        x = float(value["x"])
+        y = float(value["y"])
+        coord_system = value.get("coord_system", "axes")
+        ax = artist.axes
+        fig = artist.figure
+        if coord_system == "axes" and ax is not None:
+            artist.set_transform(ax.transAxes)
+        elif coord_system == "data" and ax is not None:
+            artist.set_transform(ax.transData)
+        elif coord_system == "figure" and fig is not None:
+            artist.set_transform(fig.transFigure)
+        artist.set_position((x, y))
         return
 
     setter_name = _PROP_TO_SETTER.get(prop)
