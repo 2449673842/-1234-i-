@@ -15,6 +15,7 @@ Usage:
 import io
 import json
 import re
+import hashlib
 import traceback
 from typing import Any, Optional
 from contextlib import contextmanager
@@ -1104,18 +1105,30 @@ def replay_render(
         # Compute figure fingerprint for identity tracking
         manifest = result.get("manifest", {})
         objects = manifest.get("objects", [])
-        axes_count = len(manifest.get("axes", []))
+        axes_count = len(getattr(fig, "axes", []) or [])
         kind_counts = {}
         for obj in objects:
             k = obj.get("kind", "unknown")
             kind_counts[k] = kind_counts.get(k, 0) + 1
-        title_text = ""
+        suptitle_text = ""
         if hasattr(fig, "_suptitle") and fig._suptitle:
-            title_text = fig._suptitle.get_text() if hasattr(fig._suptitle, "get_text") else str(fig._suptitle)
-        fingerprint_parts = [f"axes:{axes_count}", f"title:{title_text}"]
+            suptitle_text = fig._suptitle.get_text() if hasattr(fig._suptitle, "get_text") else str(fig._suptitle)
+        axes_titles = []
+        for ax in (getattr(fig, "axes", []) or []):
+            try:
+                axes_titles.append(ax.get_title() or "")
+            except Exception:
+                pass
+        fingerprint_parts = [
+            f"axes:{axes_count}",
+            f"suptitle:{suptitle_text}",
+            "axes_titles:" + "||".join(axes_titles),
+            f"objects:{len(objects)}",
+        ]
         for kind in sorted(kind_counts.keys()):
             fingerprint_parts.append(f"{kind}:{kind_counts[kind]}")
-        fingerprint = hash("|".join(fingerprint_parts))
+        fingerprint_src = "|".join(fingerprint_parts)
+        fingerprint = hashlib.sha256(fingerprint_src.encode("utf-8")).hexdigest()[:16]
         
         # Render and export to binary format if requested
         binary_b64 = None
