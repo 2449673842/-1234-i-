@@ -426,6 +426,13 @@ async function startServer() {
         if (matchedFig) {
           parsed.svg = matchedFig.svg;
           parsed.manifest = matchedFig.manifest;
+        } else {
+          return res.json({
+            status: 'drift_warning',
+            message: '目标 Figure 在重渲染后不存在',
+            figureId: targetFigId,
+            availableFigures: (parsed.figures || []).map((f: any) => f.figureId)
+          });
         }
       }
 
@@ -781,25 +788,61 @@ async function startServer() {
       const parsed = JSON.parse(resultStr);
 
       if (parsed.status === 'success') {
-        // Clear existing figure bindings
+        // Read existing figure bindings to preserve editLogs
+        const oldFigRows = listProjectFigures(projectId);
+        const oldEditLogMap: Record<string, any[]> = {};
+        const oldSessionMap: Record<string, any> = {};
+        for (const row of oldFigRows) {
+          const key = `fig_${row.figure_index + 1}`;
+          const sess = loadSession(row.session_id);
+          if (sess) {
+            oldEditLogMap[key] = sess.editLog;
+            oldSessionMap[key] = sess;
+          }
+        }
+
+        // Detect figure count drift
+        const newFigures = parsed.figures || [];
+        const oldCount = oldFigRows.length;
+        const newCount = newFigures.length;
+        const figureCountChanged = oldCount > 0 && oldCount !== newCount;
+
+        // Clear old bindings, re-create with preserved editLogs
         deleteProjectFigures(projectId);
 
-        const figures = parsed.figures || [];
-        for (let i = 0; i < figures.length; i++) {
-          const fig = figures[i];
-          const figSessionId = `${projectId}_fig_${i + 1}`;
-          
+        for (let i = 0; i < newFigures.length; i++) {
+          const fig = newFigures[i];
+          const figKey = `fig_${i + 1}`;
+          const figSessionId = `${projectId}_${figKey}`;
+
+          // Preserve old editLog if frontend didn't pass new ones
+          const incomingEditLog = editLogs?.[fig.figureId];
+          const preservedEditLog = incomingEditLog !== undefined
+            ? incomingEditLog
+            : (oldEditLogMap[figKey] || []);
+
           persistSession({
             sessionId: figSessionId,
             script,
             dataPayload: { datasets } as any,
-            editLog: editLogs?.[fig.figureId] || [],
-            revision: 1,
-            createdAt: Date.now(),
+            editLog: preservedEditLog,
+            revision: oldSessionMap[figKey]?.revision || 1,
+            createdAt: oldSessionMap[figKey]?.createdAt || Date.now(),
             updatedAt: Date.now()
           });
 
           addProjectFigure(figSessionId, projectId, i, figSessionId);
+        }
+
+        // Attach figure count drift warning
+        if (figureCountChanged) {
+          parsed._warnings = parsed._warnings || [];
+          parsed._warnings.push({
+            type: 'figure_count_changed',
+            message: `Figure 数量从 ${oldCount} 变为 ${newCount}，部分编辑可能无法完全重放`,
+            oldCount,
+            newCount
+          });
         }
       }
 
@@ -853,6 +896,14 @@ async function startServer() {
       const targetFigs = figureId
         ? figRows.filter(f => `fig_${f.figure_index + 1}` === figureId)
         : figRows;
+
+      if (figureId && targetFigs.length === 0) {
+        return res.status(404).json({
+          status: 'error',
+          message: `目标 Figure "${figureId}" 不存在`,
+          availableFigures: figRows.map(f => `fig_${f.figure_index + 1}`)
+        });
+      }
 
       const results = [];
       const projectData = getProject(projectId);
