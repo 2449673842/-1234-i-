@@ -1,0 +1,379 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: S
+        - generic [ref=e9]: SciFigure Studio
+      - generic [ref=e10]:
+        - button "项目与资源" [ref=e11]
+        - button "当前项目数据" [ref=e13]
+        - button "帮助" [ref=e14]:
+          - text: 帮助
+          - img [ref=e15]
+    - generic [ref=e17]:
+      - button "重新配置" [ref=e106]:
+        - img [ref=e19]
+        - text: 重新配置
+      - button "保存项目" [ref=e107]:
+        - img [ref=e108]
+        - text: 保存项目
+      - generic [ref=e112]:
+        - button "导出图形" [ref=e113]:
+          - img [ref=e114]
+          - text: 导出图形
+        - button [ref=e117]:
+          - img [ref=e118]
+      - generic [ref=e24] [cursor=pointer]:
+        - img "Avatar"
+  - generic [ref=e25]:
+    - generic [ref=e120]:
+      - generic [ref=e121]:
+        - button [ref=e122]:
+          - img [ref=e124]
+        - button [ref=e127]:
+          - img [ref=e128]
+        - button [ref=e129]:
+          - img [ref=e130]
+        - button [ref=e134]:
+          - img [ref=e135]
+        - button [ref=e137]:
+          - img [ref=e138]
+      - button [ref=e140]:
+        - img [ref=e141]
+      - img [ref=e145] [cursor=pointer]
+    - generic [ref=e148]:
+      - generic [ref=e149]:
+        - heading "项目资源" [level=2] [ref=e151]
+        - list [ref=e152]:
+          - listitem [ref=e153] [cursor=pointer]:
+            - img [ref=e154]
+            - text: data.csv
+          - listitem [ref=e157] [cursor=pointer]:
+            - img [ref=e158]
+            - text: figure_spec.json
+          - listitem [ref=e163] [cursor=pointer]:
+            - img [ref=e164]
+            - text: render.py
+      - generic [ref=e169]:
+        - heading "图层结构" [level=2] [ref=e171]:
+          - img [ref=e172]
+          - text: 图层结构
+        - generic [ref=e176]:
+          - generic [ref=e177] [cursor=pointer]:
+            - generic [ref=e178]:
+              - button [ref=e179]:
+                - img [ref=e180]
+              - generic [ref=e182]: 全局图像
+            - button [ref=e183]:
+              - img [ref=e184]
+          - generic [ref=e189] [cursor=pointer]:
+            - generic [ref=e190]:
+              - img [ref=e193]
+              - generic [ref=e195]: 图表标题
+            - button [ref=e196]:
+              - img [ref=e197]
+          - generic [ref=e202] [cursor=pointer]:
+            - generic [ref=e203]:
+              - img [ref=e206]
+              - generic [ref=e208]: X轴标题
+            - button [ref=e209]:
+              - img [ref=e210]
+          - generic [ref=e215] [cursor=pointer]:
+            - generic [ref=e216]:
+              - img [ref=e219]
+              - generic [ref=e221]: Y轴标题
+            - button [ref=e222]:
+              - img [ref=e223]
+          - generic [ref=e227]:
+            - generic [ref=e228] [cursor=pointer]:
+              - generic [ref=e229]:
+                - button [ref=e230]:
+                  - img [ref=e231]
+                - generic [ref=e233]: 坐标系
+              - button [ref=e234]:
+                - img [ref=e235]
+            - generic [ref=e240] [cursor=pointer]:
+              - generic [ref=e243]: 坐标系框线
+              - button [ref=e244]:
+                - img [ref=e245]
+            - generic [ref=e250] [cursor=pointer]:
+              - generic [ref=e253]: 左边框
+              - button [ref=e254]:
+                - img [ref=e255]
+            - generic [ref=e260] [cursor=pointer]:
+              - generic [ref=e263]: 右边框
+              - button [ref=e264]:
+                - img [ref=e265]
+            - generic [ref=e270] [cursor=pointer]:
+              - generic [ref=e273]: 上边框
+              - button [ref=e274]:
+                - img [ref=e275]
+            - generic [ref=e280] [cursor=pointer]:
+              - generic [ref=e283]: 下边框
+              - button [ref=e284]:
+                - img [ref=e285]
+            - generic [ref=e290] [cursor=pointer]:
+              - generic [ref=e293]: X轴刻度
+              - button [ref=e294]:
+                - img [ref=e295]
+            - generic [ref=e300] [cursor=pointer]:
+              - generic [ref=e303]: Y轴刻度
+              - button [ref=e304]:
+                - img [ref=e305]
+            - generic [ref=e310] [cursor=pointer]:
+              - generic [ref=e313]: X轴标签
+              - button [ref=e314]:
+                - img [ref=e315]
+            - generic [ref=e320] [cursor=pointer]:
+              - generic [ref=e323]: Y轴标签
+              - button [ref=e324]:
+                - img [ref=e325]
+          - generic [ref=e330] [cursor=pointer]:
+            - generic [ref=e333]: 图例
+            - button [ref=e334]:
+              - img [ref=e335]
+          - generic [ref=e340] [cursor=pointer]:
+            - generic [ref=e341]:
+              - img [ref=e344]
+              - generic [ref=e349]: 脚本渲染结果
+            - button [ref=e350]:
+              - img [ref=e351]
+      - generic [ref=e355]:
+        - generic [ref=e356]:
+          - img [ref=e358]
+          - generic [ref=e360]:
+            - generic [ref=e361]: Matplotlib
+            - generic [ref=e362]: Parsed Successfully
+        - generic [ref=e363]:
+          - img [ref=e364]
+          - text: Publication Ready
+    - generic [ref=e366]:
+      - generic [ref=e367]:
+        - generic [ref=e368]:
+          - img [ref=e369] [cursor=pointer]
+          - img [ref=e372]
+          - generic [ref=e374] [cursor=pointer]: 项目
+          - img [ref=e375]
+          - generic [ref=e377]:
+            - text: Custom Test
+            - img [ref=e378] [cursor=pointer]
+        - generic [ref=e380]:
+          - button "撤销" [ref=e381]
+          - button "重做" [disabled] [ref=e382]
+          - button "保存" [ref=e384]:
+            - img [ref=e385]
+            - text: 保存
+          - button "同步至引擎并预览 SVG" [ref=e389]
+          - generic [ref=e390]: 自定义脚本修改需重新渲染后生效
+          - button "未保存" [ref=e392]: 未保存
+      - generic [ref=e394]:
+        - generic [ref=e395]:
+          - generic [ref=e396]:
+            - button "预览" [ref=e397]
+            - button "代码" [ref=e398]
+            - button "数据" [ref=e399]
+            - button "Spec" [ref=e400]
+          - generic [ref=e401]:
+            - generic [ref=e402]:
+              - text: 实时渲染
+              - generic [ref=e404]: "?"
+            - generic [ref=e405]: 右侧改的是 Python 覆写参数，不是前端假图层
+            - generic [ref=e1167]: 最近渲染 17:29:02
+        - generic [ref=e407]:
+          - generic [ref=e409]:
+            - img [ref=e1168]
+            - generic [ref=e791]: 自定义脚本图像基于 Python 真渲染。请从左侧选择对象，在右侧改参数后重新渲染。
+          - generic [ref=e414]: 在左侧选中标题、坐标、图例或边框后，到右侧修改参数，再点击「同步至引擎并预览 SVG」查看真实 Matplotlib 结果。
+          - generic [ref=e969]:
+            - generic "Title" [ref=e970]
+            - button "快速设置样式" [ref=e972]:
+              - img [ref=e973]
+            - button "文字/字体" [ref=e976]:
+              - img [ref=e977]
+            - button "隐藏" [ref=e979]:
+              - img [ref=e980]
+        - generic [ref=e415]:
+          - generic [ref=e416]:
+            - generic [ref=e417]:
+              - button "Python Code" [ref=e418]
+              - button "Figure Spec" [ref=e419]
+              - button "日志" [ref=e420]
+            - generic [ref=e421]:
+              - button [ref=e422]:
+                - img [ref=e423]
+              - button [ref=e425]:
+                - img [ref=e426]
+              - button "Copy" [ref=e431]
+              - button [ref=e432]:
+                - img [ref=e433]
+          - generic [ref=e436]:
+            - generic [ref=e437]:
+              - generic [ref=e438]:
+                - generic [ref=e439]: "1"
+                - generic [ref=e440]: "2"
+                - generic [ref=e441]: "3"
+                - generic [ref=e442]: "4"
+                - generic [ref=e443]: "5"
+                - generic [ref=e444]: "6"
+                - generic [ref=e445]: "7"
+                - generic [ref=e446]: "8"
+                - generic [ref=e447]: "9"
+                - generic [ref=e448]: "10"
+                - generic [ref=e449]: "11"
+                - generic [ref=e450]: "12"
+                - generic [ref=e451]: "13"
+                - generic [ref=e452]: "14"
+                - generic [ref=e453]: "15"
+                - generic [ref=e454]: "16"
+                - generic [ref=e455]: "17"
+                - generic [ref=e456]: "18"
+                - generic [ref=e457]: "19"
+                - generic [ref=e458]: "20"
+                - generic [ref=e459]: "21"
+                - generic [ref=e460]: "22"
+                - generic [ref=e461]: "23"
+                - generic [ref=e462]: "24"
+                - generic [ref=e463]: "25"
+                - generic [ref=e464]: "26"
+                - generic [ref=e465]: "27"
+                - generic [ref=e466]: "28"
+                - generic [ref=e467]: "29"
+                - generic [ref=e468]: "30"
+                - generic [ref=e469]: "31"
+                - generic [ref=e470]: "32"
+                - generic [ref=e471]: "33"
+                - generic [ref=e472]: "34"
+                - generic [ref=e473]: "35"
+                - generic [ref=e474]: "36"
+                - generic [ref=e475]: "37"
+                - generic [ref=e476]: "38"
+                - generic [ref=e477]: "39"
+                - generic [ref=e478]: "40"
+                - generic [ref=e479]: "41"
+                - generic [ref=e480]: "42"
+                - generic [ref=e481]: "43"
+                - generic [ref=e482]: "44"
+                - generic [ref=e483]: "45"
+                - generic [ref=e484]: "46"
+                - generic [ref=e485]: "47"
+                - generic [ref=e486]: "48"
+                - generic [ref=e487]: "49"
+                - generic [ref=e488]: "50"
+                - generic [ref=e489]: "51"
+                - generic [ref=e490]: "52"
+                - generic [ref=e491]: "53"
+                - generic [ref=e492]: "54"
+                - generic [ref=e493]: "55"
+                - generic [ref=e494]: "56"
+                - generic [ref=e495]: "57"
+                - generic [ref=e496]: "58"
+                - generic [ref=e497]: "59"
+                - generic [ref=e498]: "60"
+                - generic [ref=e499]: "61"
+                - generic [ref=e500]: "62"
+                - generic [ref=e501]: "63"
+                - generic [ref=e502]: "64"
+                - generic [ref=e503]: "65"
+                - generic [ref=e504]: "66"
+                - generic [ref=e505]: "67"
+                - generic [ref=e506]: "68"
+                - generic [ref=e507]: "69"
+                - generic [ref=e508]: "70"
+                - generic [ref=e509]: "71"
+                - generic [ref=e510]: "72"
+                - generic [ref=e511]: "73"
+                - generic [ref=e512]: "74"
+                - generic [ref=e513]: "75"
+                - generic [ref=e514]: "76"
+                - generic [ref=e515]: "77"
+                - generic [ref=e516]: "78"
+                - generic [ref=e517]: "79"
+              - generic [ref=e518]: "import matplotlib.pyplot as plt import numpy as np import pandas as pd # Reproduced from SciFigure spec export _uploaded_data = [ { \"Site\": \"S1\", \"LNRR\": -0.7 }, { \"Site\": \"S2\", \"LNRR\": -0.2 }, { \"Site\": \"S3\", \"LNRR\": 0.4 }, { \"Site\": \"S4\", \"LNRR\": 1.1 } ] from __future__ import annotations import matplotlib matplotlib.use(\"Agg\") import matplotlib.pyplot as plt import numpy as np import pandas as pd BLUE = \"#1F78B4\" RED = \"#D62728\" ZERO = \"#333333\" def draw_ranked_response(df: pd.DataFrame) -> None: df = df.sort_values(\"LNRR\", ascending=True).reset_index(drop=True) df[\"y\"] = np.arange(len(df)) fig = plt.figure(figsize=(8.2, 7.2), dpi=600) ax = fig.add_axes([0.14, 0.11, 0.815, 0.805]) for _, row in df.iterrows(): x = float(row[\"LNRR\"]) y = float(row[\"y\"]) color = BLUE if x > 0 else RED ax.hlines(y, 0, x, color=color, linewidth=1.9, zorder=2) ax.scatter(x, y, s=34, color=color, edgecolor=\"white\", linewidth=0.6, zorder=3) ax.axvline(0, color=ZERO, linestyle=(0, (4, 3)), linewidth=1.0, zorder=1) ax.set_yticks(df[\"y\"]) ax.set_yticklabels(df[\"Site\"], fontsize=8.4, fontweight=\"bold\") ax.invert_yaxis() ax.set_xlabel(\"LnRR = ln(DTR / DCK)\", fontsize=12, fontweight=\"bold\", labelpad=7) ax.set_ylabel(\"Site code\", fontsize=12, fontweight=\"bold\", labelpad=20) ax.set_title(\"Ferrihydrite-induced N$_2$O response ranked by site code\", fontsize=15, fontweight=\"bold\", pad=11) plt.show() if __name__ == \"__main__\": df = pd.DataFrame(_uploaded_data) draw_ranked_response(df) # Spec-level overrides applied in SciFigure fig = plt.gcf() fig.set_size_inches(4.7244, 3.9370, forward=True) fig.set_dpi(600) for ax in fig.axes: ax.set_title(\"Edited Custom Title\", fontsize=16, fontweight=\"bold\") ax.set_xlabel(\"LnRR = ln(DTR / DCK)\", fontsize=16) ax.set_ylabel(\"Site code\", fontsize=16) ax.tick_params(labelsize=10, width=1) visibility = { \"top\": true, \"bottom\": true, \"left\": true, \"right\": true, } for side, spine in ax.spines.items(): spine.set_linewidth(1) spine.set_visible(visibility.get(side, True)) ax.legend(loc=\"upper right\", frameon=False, fontsize=10) plt.tight_layout() plt.savefig(\"figure.svg\", format=\"svg\", bbox_inches=\"tight\") plt.show()"
+            - generic [ref=e519]:
+              - generic [ref=e520]:
+                - generic [ref=e521]: "1"
+                - generic [ref=e522]: "2"
+                - generic [ref=e523]: "3"
+                - generic [ref=e524]: "4"
+                - generic [ref=e525]: "5"
+                - generic [ref=e526]: "6"
+                - generic [ref=e527]: "7"
+                - generic [ref=e528]: "8"
+                - generic [ref=e529]: "9"
+                - generic [ref=e530]: "10"
+                - generic [ref=e531]: "11"
+                - generic [ref=e532]: "12"
+                - generic [ref=e533]: "13"
+                - generic [ref=e534]: "14"
+                - generic [ref=e535]: "15"
+                - generic [ref=e536]: "16"
+                - generic [ref=e537]: "17"
+                - generic [ref=e538]: "18"
+                - generic [ref=e539]: "19"
+                - generic [ref=e540]: "20"
+              - generic [ref=e541]: "{ \"plot_type\": \"custom\", \"figure\": { \"width\": 120, \"height\": 100, \"unit\": \"mm\", \"dpi\": 600 }, \"data\": { \"x\": \"Site\", \"y\": \"LNRR\", \"group\": \"\" }, \"font\": { \"family\": \"'Times New Roman', serif\", \"title_size\": 16, \"tick_size\": 10, \"legend_size\": 10 }, \"axes\": { \"title\": \"Edited Custom Title\", \"xlabel\": \"LnRR = ln(DTR / DCK)\", \"ylabel\": \"Site code\", \"x_tick_rotation\": 0, \"tick_direction\": \"out\", \"show_ticks\": true, \"spine_width\": 1, \"spine_top\": true, \"spine_bottom\": true, \"spine_left\": true, \"spine_right\": true, \"linestyle\": \"实线 (Solid)\" }, \"colors\": { \"Promoted\": \"#1F78B4\", \"Suppressed\": \"#D62728\" }, \"legend\": { \"show\": true, \"location\": \"upper right\", \"frameon\": false }, \"raw_data\": { \"custom_data\": [ { \"Site\": \"S1\", \"LNRR\": -0.7 }, { \"Site\": \"S2\", \"LNRR\": -0.2 }, { \"Site\": \"S3\", \"LNRR\": 0.4 }, { \"Site\": \"S4\", \"LNRR\": 1.1 } ] }, \"export\": { \"format\": \"PDF\", \"dpi\": 600 }, \"custom_script\": \"from __future__ import annotations\\n\\nimport matplotlib\\nmatplotlib.use(\\\"Agg\\\")\\nimport matplotlib.pyplot as plt\\nimport numpy as np\\nimport pandas as pd\\n\\nBLUE = \\\"#1F78B4\\\"\\nRED = \\\"#D62728\\\"\\nZERO = \\\"#333333\\\"\\n\\ndef draw_ranked_response(df: pd.DataFrame) -> None:\\n df = df.sort_values(\\\"LNRR\\\", ascending=True).reset_index(drop=True)\\n df[\\\"y\\\"] = np.arange(len(df))\\n fig = plt.figure(figsize=(8.2, 7.2), dpi=600)\\n ax = fig.add_axes([0.14, 0.11, 0.815, 0.805])\\n for _, row in df.iterrows():\\n x = float(row[\\\"LNRR\\\"])\\n y = float(row[\\\"y\\\"])\\n color = BLUE if x > 0 else RED\\n ax.hlines(y, 0, x, color=color, linewidth=1.9, zorder=2)\\n ax.scatter(x, y, s=34, color=color, edgecolor=\\\"white\\\", linewidth=0.6, zorder=3)\\n ax.axvline(0, color=ZERO, linestyle=(0, (4, 3)), linewidth=1.0, zorder=1)\\n ax.set_yticks(df[\\\"y\\\"])\\n ax.set_yticklabels(df[\\\"Site\\\"], fontsize=8.4, fontweight=\\\"bold\\\")\\n ax.invert_yaxis()\\n ax.set_xlabel(\\\"LnRR = ln(DTR / DCK)\\\", fontsize=12, fontweight=\\\"bold\\\", labelpad=7)\\n ax.set_ylabel(\\\"Site code\\\", fontsize=12, fontweight=\\\"bold\\\", labelpad=20)\\n ax.set_title(\\\"Ferrihydrite-induced N$_2$O response ranked by site code\\\", fontsize=15, fontweight=\\\"bold\\\", pad=11)\\n plt.show()\\n\\nif __name__ == \\\"__main__\\\":\\n df = pd.DataFrame(_uploaded_data)\\n draw_ranked_response(df)\" }"
+      - generic [ref=e542]:
+        - generic [ref=e545]: 已连接
+        - generic [ref=e546]:
+          - generic [ref=e547]: 尚未保存
+          - generic [ref=e548]:
+            - img [ref=e549]
+            - text: 自动保存已开启 (5s)
+      - generic [ref=e1346]:
+        - generic [ref=e1347]:
+          - heading "</> 引擎渲染结果 (Python)" [level=2] [ref=e1348]:
+            - generic [ref=e1349]: </>
+            - text: 引擎渲染结果 (Python)
+          - button "关闭" [ref=e1350]
+        - img [ref=e1353]
+        - generic [ref=e1530]:
+          - button "返回编辑" [ref=e1531]
+          - button "保存发行级 SVG" [ref=e1532]:
+            - img [ref=e1533]
+            - text: 保存发行级 SVG
+    - generic [ref=e552]:
+      - generic [ref=e553]:
+        - generic [ref=e554]:
+          - generic [ref=e555]: 图表类型
+          - combobox [ref=e556]:
+            - option "分组柱状图 (Bar)"
+            - option "分层散点拟合图 (Scatter Fit)"
+            - option "自定义脚本 (Custom)" [selected]
+        - generic [ref=e557]: 对象检查器
+        - generic [ref=e558]: Title
+      - generic [ref=e561]:
+        - heading "图表标题" [level=3] [ref=e981]
+        - generic [ref=e564]:
+          - generic [ref=e982]: 内容
+          - textbox [ref=e983]: Edited Custom Title
+        - generic [ref=e985]:
+          - generic [ref=e986]: 标题字号
+          - generic [ref=e987]:
+            - spinbutton [ref=e988]: "16"
+            - generic [ref=e989]: pt
+      - generic [ref=e592]:
+        - heading "全局字体" [level=3] [ref=e594]
+        - generic [ref=e595]:
+          - generic [ref=e596]:
+            - generic [ref=e597]: 字体
+            - combobox [ref=e598]:
+              - option "Arial"
+              - option "Times New Roman" [selected]
+              - option "Courier New"
+              - option "Helvetica"
+              - option "Microsoft YaHei"
+          - generic [ref=e599]:
+            - generic [ref=e600]: 标题字号
+            - generic [ref=e601]:
+              - spinbutton [ref=e602]: "16"
+              - slider [ref=e603]: "16"
+          - generic [ref=e604]:
+            - generic [ref=e605]: 刻度字号
+            - generic [ref=e606]:
+              - spinbutton [ref=e607]: "10"
+              - slider [ref=e608]: "10"
+          - generic [ref=e609]:
+            - generic [ref=e610]: 图例字号
+            - generic [ref=e611]:
+              - spinbutton [ref=e612]: "10"
+              - slider [ref=e613]: "10"

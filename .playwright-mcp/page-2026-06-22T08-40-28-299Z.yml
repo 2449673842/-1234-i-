@@ -1,0 +1,251 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: S
+        - generic [ref=e9]: SciFigure Studio
+      - generic [ref=e10]:
+        - button "项目与资源" [ref=e11]: 项目与资源
+        - button "模板库" [ref=e13]
+        - button "数据分析" [ref=e14]
+        - button "帮助" [ref=e15]:
+          - text: 帮助
+          - img [ref=e16]
+    - generic [ref=e18]:
+      - button "导入数据" [ref=e19]:
+        - img [ref=e20]
+        - text: 导入数据
+      - button "新建图形项目" [ref=e23]:
+        - img [ref=e24]
+        - text: 新建图形项目
+      - generic [ref=e25] [cursor=pointer]:
+        - img "Avatar"
+  - generic [ref=e26]:
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - generic [ref=e29]: 项目
+        - button "首页" [ref=e30]:
+          - img [ref=e31]
+          - text: 首页
+        - button "我的项目" [ref=e34]:
+          - img [ref=e35]
+          - text: 我的项目
+        - button "模板库" [ref=e37]:
+          - img [ref=e38]
+          - text: 模板库
+        - button "数据文件" [ref=e43]:
+          - img [ref=e44]
+          - text: 数据文件
+        - button "与我共享" [ref=e48]:
+          - img [ref=e49]
+          - text: 与我共享
+        - button "回收站" [ref=e54]:
+          - img [ref=e55]
+          - text: 回收站
+      - generic [ref=e58]:
+        - button "设置" [ref=e59]:
+          - img [ref=e60]
+          - text: 设置
+        - button "集成" [ref=e63]:
+          - img [ref=e64]
+          - text: 集成
+      - generic [ref=e68]:
+        - generic [ref=e69]:
+          - generic [ref=e70]: 当前计划
+          - generic [ref=e71]: 专业版
+        - generic [ref=e72]: 有效期：永久有效
+        - generic [ref=e74]:
+          - generic [ref=e75]: 68.4 GB / 200 GB
+          - generic [ref=e76]: 34%
+        - button "管理存储 ›" [ref=e79]:
+          - text: 管理存储
+          - generic [ref=e80]: ›
+    - generic [ref=e82]:
+      - generic [ref=e83]:
+        - heading "欢迎回来, Rui 👋" [level=1] [ref=e84]:
+          - text: 欢迎回来, Rui
+          - generic [ref=e85]: 👋
+        - paragraph [ref=e86]: 使用 SciFigure Studio 更快地创建高质量、可发表的科学图形。
+      - generic [ref=e87]:
+        - generic [ref=e88]:
+          - generic [ref=e89]:
+            - img [ref=e91]
+            - generic [ref=e93]: 总项目数
+          - generic [ref=e94]:
+            - generic [ref=e95]: "128"
+            - generic [ref=e97]: 较上月 ↑ 18%
+        - generic [ref=e98]:
+          - generic [ref=e99]:
+            - img [ref=e101]
+            - generic [ref=e106]: 使用模板数
+          - generic [ref=e107]:
+            - generic [ref=e108]: "46"
+            - generic [ref=e110]: 较上月 ↑ 12%
+        - generic [ref=e111]:
+          - generic [ref=e112]:
+            - img [ref=e114]
+            - generic [ref=e117]: 已导出图形
+          - generic [ref=e118]:
+            - generic [ref=e119]: "536"
+            - generic [ref=e121]: 较上月 ↑ 23%
+        - generic [ref=e122]:
+          - generic [ref=e123]:
+            - img [ref=e125]
+            - generic [ref=e130]: 协作者
+          - generic [ref=e131]:
+            - generic [ref=e132]: "24"
+            - generic [ref=e134]: 较上月 ↑ 9%
+        - generic [ref=e135]:
+          - generic [ref=e136]:
+            - img [ref=e138]
+            - generic [ref=e142]: 存储使用量
+          - generic [ref=e143]:
+            - generic [ref=e144]: 68.4 GB/ 200 GB
+            - generic [ref=e146]: 34% 已使用
+      - generic [ref=e147]:
+        - generic [ref=e148]:
+          - generic [ref=e149]:
+            - generic [ref=e150]:
+              - heading "最近项目" [level=2] [ref=e151]
+              - button "查看全部" [ref=e152]:
+                - text: 查看全部
+                - img [ref=e153]
+            - generic [ref=e155]:
+              - generic [ref=e156] [cursor=pointer]:
+                - generic [ref=e159]: bar CHART
+                - generic [ref=e160]:
+                  - generic [ref=e161]: 基因表达分析 - Fig. 2
+                  - generic [ref=e162]:
+                    - generic [ref=e163]: 2 小时前
+                    - generic [ref=e164]: ...
+              - generic [ref=e165] [cursor=pointer]:
+                - generic [ref=e168]: scatter CHART
+                - generic [ref=e169]:
+                  - generic [ref=e170]: 差异表达火山图
+                  - generic [ref=e171]:
+                    - generic [ref=e172]: 昨天 14:32
+                    - generic [ref=e173]: ...
+              - generic [ref=e174] [cursor=pointer]:
+                - generic [ref=e177]: heatmap CHART
+                - generic [ref=e178]:
+                  - generic [ref=e179]: 蛋白质热图聚类分析
+                  - generic [ref=e180]:
+                    - generic [ref=e181]: 昨天 09:15
+                    - generic [ref=e182]: ...
+              - generic [ref=e183] [cursor=pointer]:
+                - generic [ref=e186]: line CHART
+                - generic [ref=e187]:
+                  - generic [ref=e188]: 酶动力学拟合曲线
+                  - generic [ref=e189]:
+                    - generic [ref=e190]: 5月25日
+                    - generic [ref=e191]: ...
+          - generic [ref=e192]:
+            - heading "继续编辑" [level=2] [ref=e193]
+            - generic [ref=e194]:
+              - generic [ref=e195] [cursor=pointer]:
+                - img [ref=e197]
+                - generic:
+                  - generic:
+                    - generic: 单细胞 UMAP 分析
+                    - generic [ref=e202]: 72%
+                  - generic: 你修改于 1 小时前
+              - generic [ref=e203] [cursor=pointer]:
+                - img [ref=e205]
+                - generic:
+                  - generic:
+                    - generic: 生长曲线比较
+                    - generic [ref=e210]: 45%
+                  - generic: 你修改于 昨天
+              - generic [ref=e211] [cursor=pointer]:
+                - img [ref=e213]
+                - generic:
+                  - generic:
+                    - generic: Western blot 定量分析
+                    - generic [ref=e218]: 30%
+                  - generic: 你修改于 5月23日
+          - generic [ref=e219]:
+            - generic [ref=e220]:
+              - heading "已保存期刊模板" [level=2] [ref=e221]
+              - button "管理模板" [ref=e222]:
+                - text: 管理模板
+                - img [ref=e223]
+            - generic [ref=e225]:
+              - generic [ref=e226]:
+                - generic [ref=e227]:
+                  - generic [ref=e228]: nature
+                  - generic [ref=e229]: Nature
+                  - generic [ref=e230]: 多面板图模板 (2024 版)
+                - generic [ref=e231]:
+                  - button "使用模板" [ref=e232]
+                  - button [ref=e233]:
+                    - img [ref=e234]
+              - generic [ref=e236]:
+                - generic [ref=e237]:
+                  - generic [ref=e238]: Cell
+                  - generic [ref=e239]: Cell
+                  - generic [ref=e240]: 文章图形模板 (2024 版)
+                - generic [ref=e241]:
+                  - button "使用模板" [ref=e242]
+                  - button [ref=e243]:
+                    - img [ref=e244]
+              - generic [ref=e246]:
+                - generic [ref=e247]:
+                  - generic [ref=e248]: Science
+                  - generic [ref=e249]: Science
+                  - generic [ref=e250]: 图形模板 (2024 版)
+                - generic [ref=e251]:
+                  - button "使用模板" [ref=e252]
+                  - button [ref=e253]:
+                    - img [ref=e254]
+              - generic [ref=e256]:
+                - generic [ref=e257]:
+                  - generic [ref=e258]: PNAS
+                  - generic [ref=e259]: PNAS
+                  - generic [ref=e260]: 图形模板 (2024 版)
+                - generic [ref=e261]:
+                  - button "使用模板" [ref=e262]
+                  - button [ref=e263]:
+                    - img [ref=e264]
+        - generic [ref=e267]:
+          - generic [ref=e268]:
+            - heading "最近活动" [level=2] [ref=e269]
+            - button "查看全部" [ref=e270]:
+              - text: 查看全部
+              - img [ref=e271]
+          - generic [ref=e273]:
+            - generic [ref=e275]:
+              - img [ref=e277]
+              - generic [ref=e280]:
+                - generic [ref=e281]:
+                  - generic [ref=e282]: 你导入了数据文件
+                  - generic [ref=e283]: 2 小时前
+                - generic [ref=e284]: RNA-seq_counts.csv
+            - generic [ref=e285]:
+              - generic [ref=e287]: 张
+              - generic [ref=e288]:
+                - generic [ref=e289]:
+                  - generic [ref=e290]: 张晓琳与你共享了项目
+                  - generic [ref=e291]: 昨天 16:48
+                - generic [ref=e292]: 免疫细胞浸润分析
+            - generic [ref=e293]:
+              - img [ref=e295]
+              - generic [ref=e298]:
+                - generic [ref=e299]:
+                  - generic [ref=e300]: 你导出了图形
+                  - generic [ref=e301]: 昨天 15:22
+                - generic [ref=e302]: Fig2_expression.pdf
+            - generic [ref=e303]:
+              - generic [ref=e305]: 李
+              - generic [ref=e306]:
+                - generic [ref=e307]:
+                  - generic [ref=e308]: 李明评论了你的项目
+                  - generic [ref=e309]: 5月25日 11:07
+                - generic [ref=e310]: 差异表达火山图
+            - generic [ref=e311]:
+              - img [ref=e313]
+              - generic [ref=e318]:
+                - generic [ref=e319]:
+                  - generic [ref=e320]: 你使用模板创建了项目
+                  - generic [ref=e321]: 5月24日 18:33
+                - generic [ref=e322]: Nature - 多面板图
+          - button "查看全部活动 ›" [ref=e323]

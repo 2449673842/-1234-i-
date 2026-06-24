@@ -1,0 +1,134 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: S
+        - generic [ref=e9]: SciFigure Studio
+      - generic [ref=e10]:
+        - button "项目与资源" [ref=e11]
+        - button "当前项目数据" [ref=e13]
+        - button "帮助" [ref=e14]:
+          - text: 帮助
+          - img [ref=e15]
+    - generic [ref=e17]:
+      - button "导入数据" [ref=e18]:
+        - img [ref=e19]
+        - text: 导入数据
+      - button "新建图形项目" [ref=e22]:
+        - img [ref=e23]
+        - text: 新建图形项目
+      - generic [ref=e24] [cursor=pointer]:
+        - img "Avatar"
+  - generic [ref=e106]:
+    - generic [ref=e108]:
+      - generic [ref=e109]:
+        - img [ref=e148]
+        - generic [ref=e111]: 上传数据
+      - generic [ref=e113]:
+        - img [ref=e196]
+        - generic [ref=e115]: 字段映射
+      - generic [ref=e117]:
+        - img [ref=e239]
+        - generic [ref=e119]: 配置图形
+      - generic [ref=e121]:
+        - generic [ref=e122]: "4"
+        - generic [ref=e123]: AI 生成
+    - generic [ref=e124]:
+      - generic [ref=e125]:
+        - generic [ref=e126]:
+          - heading "数据源上传" [level=2] [ref=e127]:
+            - img [ref=e128]
+            - text: 数据源上传
+          - generic [ref=e131] [cursor=pointer]:
+            - img [ref=e133]
+            - generic [ref=e136]: 拖拽或点击上传数据文件
+            - generic [ref=e137]: 支持 CSV, TSV, TXT, XLSX。最大 50MB
+            - generic [ref=e146]: tmp_sample.csv (已上传)
+        - generic [ref=e151]:
+          - heading "字段映射" [level=2] [ref=e152]:
+            - img [ref=e153]
+            - text: 字段映射
+          - generic [ref=e158]:
+            - generic [ref=e159]:
+              - generic [ref=e160]:
+                - generic [ref=e161]: X 轴 (分类)
+                - combobox [ref=e162]:
+                  - option "Site" [selected]
+                  - option "Value"
+              - generic [ref=e163]:
+                - generic [ref=e164]: Y 轴 (数值)
+                - combobox [ref=e165]:
+                  - option "Site"
+                  - option "Value" [selected]
+            - generic [ref=e166]:
+              - generic [ref=e167]:
+                - generic [ref=e168]: 分组 (Group)
+                - combobox [ref=e169]:
+                  - option "无分组" [selected]
+                  - option "Site"
+                  - option "Value"
+              - generic [ref=e170]:
+                - generic [ref=e171]: 误差棒 (Err)
+                - combobox [ref=e172]:
+                  - option "无" [selected]
+                  - option "Site"
+                  - option "Value"
+          - generic [ref=e173]:
+            - generic [ref=e174]:
+              - generic [ref=e175]: 数据预览 (前 5 行)
+              - generic [ref=e176]: 已加载
+            - table [ref=e178]:
+              - rowgroup [ref=e179]:
+                - row "Site Value" [ref=e180]:
+                  - columnheader "Site" [ref=e181]
+                  - columnheader "Value" [ref=e182]
+              - rowgroup [ref=e183]:
+                - row "A 1" [ref=e184]:
+                  - cell "A" [ref=e185]
+                  - cell "1" [ref=e186]
+                - row "B 2" [ref=e187]:
+                  - cell "B" [ref=e188]
+                  - cell "2" [ref=e189]
+                - row "... ..." [ref=e190]:
+                  - cell "..." [ref=e191]
+                  - cell "..." [ref=e192]
+            - generic [ref=e193]: 共 2 行数据，2 列字段
+        - generic [ref=e199]:
+          - heading "AI 绘图参数生成" [level=2] [ref=e200]:
+            - img [ref=e201]
+            - text: AI 绘图参数生成
+          - generic [ref=e204]:
+            - generic [ref=e205]: 图形类型
+            - generic [ref=e206]:
+              - generic [ref=e207] [cursor=pointer]:
+                - img [ref=e208]
+                - text: 分组柱状图
+              - generic [ref=e213] [cursor=pointer]:
+                - img [ref=e214]
+                - text: 散点拟合图
+              - generic [ref=e219] [cursor=pointer]:
+                - img [ref=e220]
+                - text: 排序响应图
+              - generic [ref=e225] [cursor=pointer]:
+                - img [ref=e226]
+                - text: 自定义脚本
+              - generic [ref=e231]:
+                - generic [ref=e232]: 更多类型
+                - generic [ref=e233]: 开发中
+      - generic [ref=e141]:
+        - heading "图形草稿 生成成功" [level=2] [ref=e242]:
+          - text: 图形草稿
+          - generic [ref=e243]: 生成成功
+        - generic [ref=e244]:
+          - img [ref=e245]
+          - generic [ref=e250]: figure_spec.json
+          - generic [ref=e251]: 已捕获所有图形参数映射
+        - generic [ref=e252]:
+          - generic [ref=e253]:
+            - paragraph [ref=e254]:
+              - img [ref=e255]
+              - text: AI 分析报告
+            - paragraph [ref=e258]: 已成功将你的数据和提示词转换为标准化科研绘图属性。建议在下一步中手动微调配色和标签位置。
+          - button "在编辑器中打开并渲染" [ref=e260]:
+            - img [ref=e261]
+            - text: 在编辑器中打开并渲染

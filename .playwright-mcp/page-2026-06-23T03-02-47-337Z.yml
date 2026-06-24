@@ -1,0 +1,384 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: S
+        - generic [ref=e9]: SciFigure Studio
+      - generic [ref=e10]:
+        - button "项目与资源" [ref=e11]
+        - button "当前项目数据" [ref=e13]
+        - button "帮助" [ref=e14]:
+          - text: 帮助
+          - img [ref=e15]
+    - generic [ref=e17]:
+      - button "重新配置" [ref=e1081]:
+        - img [ref=e19]
+        - text: 重新配置
+      - button "保存项目" [ref=e1082]:
+        - img [ref=e1083]
+        - text: 保存项目
+      - generic [ref=e1087]:
+        - button "导出图形" [ref=e1088]:
+          - img [ref=e1089]
+          - text: 导出图形
+        - button [ref=e1092]:
+          - img [ref=e1093]
+      - generic [ref=e24] [cursor=pointer]:
+        - img "Avatar"
+  - generic [ref=e25]:
+    - generic [ref=e1095]:
+      - generic [ref=e1096]:
+        - button [ref=e1097]:
+          - img [ref=e1099]
+        - button [ref=e1102]:
+          - img [ref=e1103]
+        - button [ref=e1104]:
+          - img [ref=e1105]
+        - button [ref=e1109]:
+          - img [ref=e1110]
+        - button [ref=e1112]:
+          - img [ref=e1113]
+      - button [ref=e1115]:
+        - img [ref=e1116]
+      - img [ref=e1120] [cursor=pointer]
+    - generic [ref=e1123]:
+      - generic [ref=e1124]:
+        - heading "项目资源" [level=2] [ref=e1126]
+        - list [ref=e1127]:
+          - listitem [ref=e1128] [cursor=pointer]:
+            - img [ref=e1129]
+            - text: data.csv
+          - listitem [ref=e1132] [cursor=pointer]:
+            - img [ref=e1133]
+            - text: figure_spec.json
+          - listitem [ref=e1138] [cursor=pointer]:
+            - img [ref=e1139]
+            - text: render.py
+      - generic [ref=e1144]:
+        - heading "图层结构" [level=2] [ref=e1146]:
+          - img [ref=e1147]
+          - text: 图层结构
+        - generic [ref=e1151]:
+          - generic [ref=e1152] [cursor=pointer]:
+            - generic [ref=e1153]:
+              - button [ref=e1154]:
+                - img [ref=e1155]
+              - generic [ref=e1157]: 全局图像
+            - button [ref=e1158]:
+              - img [ref=e1159]
+          - generic [ref=e1163]:
+            - generic [ref=e1164] [cursor=pointer]:
+              - generic [ref=e1165]:
+                - button [ref=e1166]:
+                  - img [ref=e1167]
+                - generic [ref=e1169]: SVG 文本对象
+              - button [ref=e1170]:
+                - img [ref=e1171]
+            - generic [ref=e1383] [cursor=pointer]:
+              - generic [ref=e1384]:
+                - img [ref=e1387]
+                - generic [ref=e1389]: title.0
+              - button [ref=e1390]:
+                - img [ref=e1391]
+            - generic [ref=e1396] [cursor=pointer]:
+              - generic [ref=e1397]:
+                - img [ref=e1400]
+                - generic [ref=e1402]: xlabel.0
+              - button [ref=e1403]:
+                - img [ref=e1404]
+            - generic [ref=e1409] [cursor=pointer]:
+              - generic [ref=e1410]:
+                - img [ref=e1413]
+                - generic [ref=e1415]: ylabel.0
+              - button [ref=e1416]:
+                - img [ref=e1417]
+            - generic [ref=e1422] [cursor=pointer]:
+              - generic [ref=e1423]:
+                - img [ref=e1426]
+                - generic [ref=e1428]: xtick.0.0
+              - button [ref=e1429]:
+                - img [ref=e1430]
+            - generic [ref=e1435] [cursor=pointer]:
+              - generic [ref=e1436]:
+                - img [ref=e1439]
+                - generic [ref=e1441]: xtick.0.1
+              - button [ref=e1442]:
+                - img [ref=e1443]
+            - generic [ref=e1448] [cursor=pointer]:
+              - generic [ref=e1449]:
+                - img [ref=e1452]
+                - generic [ref=e1454]: ytick.0.0
+              - button [ref=e1455]:
+                - img [ref=e1456]
+            - generic [ref=e1461] [cursor=pointer]:
+              - generic [ref=e1462]:
+                - img [ref=e1465]
+                - generic [ref=e1467]: ytick.0.1
+              - button [ref=e1468]:
+                - img [ref=e1469]
+            - generic [ref=e1474] [cursor=pointer]:
+              - generic [ref=e1475]:
+                - img [ref=e1478]
+                - generic [ref=e1480]: ytick.0.2
+              - button [ref=e1481]:
+                - img [ref=e1482]
+            - generic [ref=e1487] [cursor=pointer]:
+              - generic [ref=e1488]:
+                - img [ref=e1491]
+                - generic [ref=e1493]: ytick.0.3
+              - button [ref=e1494]:
+                - img [ref=e1495]
+            - generic [ref=e1500] [cursor=pointer]:
+              - generic [ref=e1501]:
+                - img [ref=e1504]
+                - generic [ref=e1506]: ytick.0.4
+              - button [ref=e1507]:
+                - img [ref=e1508]
+            - generic [ref=e1513] [cursor=pointer]:
+              - generic [ref=e1514]:
+                - img [ref=e1517]
+                - generic [ref=e1519]: ytick.0.5
+              - button [ref=e1520]:
+                - img [ref=e1521]
+            - generic [ref=e1526] [cursor=pointer]:
+              - generic [ref=e1527]:
+                - img [ref=e1530]
+                - generic [ref=e1532]: ytick.0.6
+              - button [ref=e1533]:
+                - img [ref=e1534]
+            - generic [ref=e1539] [cursor=pointer]:
+              - generic [ref=e1540]:
+                - img [ref=e1543]
+                - generic [ref=e1545]: ytick.0.7
+              - button [ref=e1546]:
+                - img [ref=e1547]
+          - generic [ref=e1191]:
+            - generic [ref=e1192] [cursor=pointer]:
+              - generic [ref=e1193]:
+                - button [ref=e1194]:
+                  - img [ref=e1195]
+                - generic [ref=e1197]: SVG 图形对象
+              - button [ref=e1198]:
+                - img [ref=e1199]
+            - generic [ref=e1552] [cursor=pointer]:
+              - generic [ref=e1553]:
+                - img [ref=e1556]
+                - generic [ref=e1559]: spine.left.0
+              - button [ref=e1560]:
+                - img [ref=e1561]
+            - generic [ref=e1566] [cursor=pointer]:
+              - generic [ref=e1567]:
+                - img [ref=e1570]
+                - generic [ref=e1573]: spine.right.0
+              - button [ref=e1574]:
+                - img [ref=e1575]
+            - generic [ref=e1580] [cursor=pointer]:
+              - generic [ref=e1581]:
+                - img [ref=e1584]
+                - generic [ref=e1587]: spine.top.0
+              - button [ref=e1588]:
+                - img [ref=e1589]
+            - generic [ref=e1594] [cursor=pointer]:
+              - generic [ref=e1595]:
+                - img [ref=e1598]
+                - generic [ref=e1601]: spine.bottom.0
+              - button [ref=e1602]:
+                - img [ref=e1603]
+            - generic [ref=e1608] [cursor=pointer]:
+              - generic [ref=e1609]:
+                - img [ref=e1612]
+                - generic [ref=e1615]: _child0
+              - button [ref=e1616]:
+                - img [ref=e1617]
+      - generic [ref=e1219]:
+        - generic [ref=e1220]:
+          - img [ref=e1222]
+          - generic [ref=e1224]:
+            - generic [ref=e1225]: Matplotlib
+            - generic [ref=e1226]: Parsed Successfully
+        - generic [ref=e1227]:
+          - img [ref=e1228]
+          - text: Publication Ready
+    - generic [ref=e1230]:
+      - generic [ref=e1231]:
+        - generic [ref=e1232]:
+          - img [ref=e1233] [cursor=pointer]
+          - img [ref=e1236]
+          - generic [ref=e1238] [cursor=pointer]: 项目
+          - img [ref=e1239]
+          - generic [ref=e1241]:
+            - text: 未命名项目
+            - img [ref=e1242] [cursor=pointer]
+        - generic [ref=e1244]:
+          - button "撤销" [disabled] [ref=e1245]
+          - button "重做" [disabled] [ref=e1246]
+          - button "保存" [ref=e1248]:
+            - img [ref=e1249]
+            - text: 保存
+          - button "同步至引擎并预览 SVG" [ref=e1253]
+          - generic [ref=e1254]: 自定义脚本修改需重新渲染后生效
+          - button "未保存" [ref=e1256]: 未保存
+      - generic [ref=e1258]:
+        - generic [ref=e1259]:
+          - generic [ref=e1260]:
+            - button "预览" [ref=e1261]
+            - button "代码" [ref=e1262]
+            - button "数据" [ref=e1263]
+            - button "Spec" [ref=e1264]
+          - generic [ref=e1265]:
+            - generic [ref=e1266]:
+              - text: 实时渲染
+              - generic [ref=e1268]: "?"
+            - generic [ref=e1269]: 真实 SVG 对象可直接编辑；全局参数改完后再重新渲染
+            - generic [ref=e1620]: 最近渲染 11:02:46
+        - generic [ref=e1271]:
+          - generic [ref=e1273]:
+            - generic [ref=e1274]:
+              - button "缩小" [ref=e1621]:
+                - img [ref=e1622]
+              - button "放大" [ref=e1623]:
+                - img [ref=e1624]
+              - button "适配" [ref=e1625]
+              - button "100%" [ref=e1626]
+              - generic [ref=e1627]: 100%
+            - generic [ref=e1628]:
+              - img [ref=e1629]
+              - generic [ref=e1634]: 空格 + 拖动平移
+              - generic [ref=e1635]: "|"
+              - img [ref=e1636]
+              - generic [ref=e1643]: 滚轮缩放
+            - img [ref=e1647]:
+              - generic [ref=e1651]:
+                - generic [ref=e1654]:
+                  - generic [ref=e1657]: A
+                  - generic [ref=e1660]: B
+                  - generic [ref=e1662]: Site
+                - generic [ref=e1663]:
+                  - generic [ref=e1666]: "0.8"
+                  - generic [ref=e1669]: "1.0"
+                  - generic [ref=e1672]: "1.2"
+                  - generic [ref=e1675]: "1.4"
+                  - generic [ref=e1678]: "1.6"
+                  - generic [ref=e1681]: "1.8"
+                  - generic [ref=e1684]: "2.0"
+                  - generic [ref=e1687]: "2.2"
+                  - generic [ref=e1689]: Value
+                - generic [ref=e1696]: Test Figure
+          - generic [ref=e1277]: 选中真实 SVG 文本、线条或图形后，可在右侧直接修改。图尺寸、全局字体等参数改完后，再点击「同步至引擎并预览 SVG」重渲染。
+        - generic [ref=e1278]:
+          - generic [ref=e1279]:
+            - generic [ref=e1280]:
+              - button "Python Code" [ref=e1281]
+              - button "Figure Spec" [ref=e1282]
+              - button "日志" [ref=e1283]
+              - button "Manifest (v2)" [ref=e1284]
+            - generic [ref=e1285]:
+              - button [ref=e1286]:
+                - img [ref=e1287]
+              - button [ref=e1289]:
+                - img [ref=e1290]
+              - button "Copy" [ref=e1295]
+              - button [ref=e1296]:
+                - img [ref=e1297]
+          - generic [ref=e1300]:
+            - generic [ref=e1301]:
+              - generic [ref=e1302]:
+                - generic [ref=e1303]: "1"
+                - generic [ref=e1304]: "2"
+                - generic [ref=e1305]: "3"
+                - generic [ref=e1306]: "4"
+                - generic [ref=e1307]: "5"
+                - generic [ref=e1308]: "6"
+                - generic [ref=e1309]: "7"
+                - generic [ref=e1310]: "8"
+                - generic [ref=e1311]: "9"
+                - generic [ref=e1312]: "10"
+              - generic [ref=e1346]: import matplotlib.pyplot as plt import pandas as pd df = pd.DataFrame(_uploaded_data) fig, ax = plt.subplots(figsize=(6, 4), dpi=150) ax.plot(df['Site'], df['Value'], color='#1F78B4', marker='o') ax.set_title('Test Figure', fontsize=14) ax.set_xlabel('Site', fontsize=12) ax.set_ylabel('Value', fontsize=12)
+            - generic [ref=e1347]:
+              - generic [ref=e1348]:
+                - generic [ref=e1349]: "1"
+                - generic [ref=e1350]: "2"
+                - generic [ref=e1351]: "3"
+                - generic [ref=e1352]: "4"
+                - generic [ref=e1353]: "5"
+                - generic [ref=e1354]: "6"
+                - generic [ref=e1355]: "7"
+                - generic [ref=e1356]: "8"
+                - generic [ref=e1357]: "9"
+                - generic [ref=e1358]: "10"
+                - generic [ref=e1359]: "11"
+                - generic [ref=e1360]: "12"
+                - generic [ref=e1361]: "13"
+                - generic [ref=e1362]: "14"
+                - generic [ref=e1363]: "15"
+                - generic [ref=e1364]: "16"
+                - generic [ref=e1365]: "17"
+                - generic [ref=e1366]: "18"
+                - generic [ref=e1367]: "19"
+                - generic [ref=e1368]: "20"
+              - generic [ref=e1369]: "{ \"plot_type\": \"custom\", \"figure\": { \"width\": 85, \"height\": 70, \"unit\": \"mm\", \"dpi\": 600 }, \"data\": { \"x\": \"site\", \"y\": \"abundance\", \"group\": \"period\" }, \"font\": { \"family\": \"Arial, sans-serif\", \"title_size\": 16, \"tick_size\": 11, \"legend_size\": 10 }, \"axes\": { \"title\": \"Relative abundance of ARGs\", \"xlabel\": \"Sample\", \"ylabel\": \"Relative abundance (%)\", \"x_tick_rotation\": 0, \"tick_direction\": \"out\", \"show_ticks\": true, \"spine_width\": 1, \"spine_top\": true, \"spine_bottom\": true, \"spine_left\": true, \"spine_right\": true, \"linestyle\": \"实线 (Solid)\" }, \"colors\": { \"EWR\": \"#1f77b4\", \"NEWR\": \"#17becf\", \"Default\": \"#1f77b4\" }, \"legend\": { \"show\": true, \"location\": \"upper right\", \"frameon\": false }, \"raw_data\": { \"custom_data\": [ { \"Site\": \"A\", \"Value\": 1 }, { \"Site\": \"B\", \"Value\": 2 } ] }, \"export\": { \"format\": \"PDF\", \"dpi\": 600 }, \"custom_script\": \"import matplotlib.pyplot as plt\\nimport pandas as pd\\n\\ndf = pd.DataFrame(_uploaded_data)\\nfig, ax = plt.subplots(figsize=(6, 4), dpi=150)\\nax.plot(df['Site'], df['Value'], color='#1F78B4', marker='o')\\nax.set_title('Test Figure', fontsize=14)\\nax.set_xlabel('Site', fontsize=12)\\nax.set_ylabel('Value', fontsize=12)\\n\", \"source\": { \"file_name\": \"tmp_sample.csv\", \"file_type\": \"CSV\", \"row_count\": 2, \"column_count\": 2, \"columns\": [ \"Site\", \"Value\" ], \"imported_at\": \"2026-06-23T03:02:34.858Z\" } }"
+      - generic [ref=e1370]:
+        - generic [ref=e1373]: 已连接
+        - generic [ref=e1374]:
+          - generic [ref=e1375]: 尚未保存
+          - generic [ref=e1376]:
+            - img [ref=e1377]
+            - text: 自动保存已开启 (5s)
+    - generic [ref=e1380]:
+      - generic [ref=e1697]:
+        - button "属性编辑" [ref=e1698]
+        - button "配色中心" [ref=e1699]
+      - generic [ref=e1700]:
+        - generic [ref=e1701]:
+          - heading "颜色组（批量修改）" [level=3] [ref=e1703]
+          - generic [ref=e1704]:
+            - textbox [ref=e1706] [cursor=pointer]: "#000000"
+            - generic [ref=e1707]:
+              - generic [ref=e1708]: title.0
+              - generic [ref=e1709]: 17 个元素
+          - generic [ref=e1710]:
+            - textbox [ref=e1712] [cursor=pointer]: "#1f78b4"
+            - generic [ref=e1713]:
+              - generic [ref=e1714]: _child0
+              - generic [ref=e1715]: 1 个元素
+        - generic [ref=e1716]:
+          - 'heading "Object: title.0" [level=3] [ref=e1718]'
+          - generic [ref=e1719]:
+            - generic [ref=e1720]:
+              - generic [ref=e1721]: text
+              - textbox [ref=e1722]: Test Figure
+            - generic [ref=e1723]:
+              - generic [ref=e1724]: fontsize
+              - spinbutton [ref=e1725]: "14"
+            - generic [ref=e1726]:
+              - generic [ref=e1727]: fontfamily
+              - generic [ref=e1728]:
+                - combobox [ref=e1729]:
+                  - option "sans-serif"
+                  - option "serif"
+                  - option "monospace"
+                  - option "DejaVu Sans" [selected]
+                  - option "Arial"
+                  - option "Times New Roman"
+                  - option "Helvetica"
+                  - option "Courier New"
+                  - option "Verdana"
+                  - option "Georgia"
+                - textbox "或输入自定义字体..." [ref=e1730]
+            - generic [ref=e1731]:
+              - generic [ref=e1732]: color
+              - textbox [ref=e1734] [cursor=pointer]: "#000000"
+              - textbox [ref=e1735]: BLACK
+        - generic [ref=e1736]:
+          - heading "Global Properties" [level=3] [ref=e1738]
+          - generic [ref=e1739]:
+            - generic [ref=e1740]:
+              - generic [ref=e1741]: figure.width_in
+              - spinbutton [ref=e1742]: "6"
+            - generic [ref=e1743]:
+              - generic [ref=e1744]: figure.height_in
+              - spinbutton [ref=e1745]: "4"
+            - generic [ref=e1746]:
+              - generic [ref=e1747]: figure.dpi
+              - spinbutton [ref=e1748]: "150"
+        - generic [ref=e1749]: 数值类参数现在在失焦或按 Enter 时才提交后端重渲染，避免每次敲字都卡住画布。

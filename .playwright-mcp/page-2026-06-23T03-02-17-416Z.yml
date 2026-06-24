@@ -1,0 +1,150 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: S
+        - generic [ref=e9]: SciFigure Studio
+      - generic [ref=e10]:
+        - button "项目与资源" [ref=e11]
+        - button "当前项目数据" [ref=e13]
+        - button "帮助" [ref=e14]:
+          - text: 帮助
+          - img [ref=e15]
+    - generic [ref=e17]:
+      - button "导入数据" [ref=e918]:
+        - img [ref=e19]
+        - text: 导入数据
+      - button "新建图形项目" [ref=e919]:
+        - img [ref=e920]
+        - text: 新建图形项目
+      - generic [ref=e24] [cursor=pointer]:
+        - img "Avatar"
+  - generic [ref=e921]:
+    - generic [ref=e923]:
+      - generic [ref=e924]:
+        - img [ref=e963]
+        - generic [ref=e926]: 上传数据
+      - generic [ref=e928]:
+        - img [ref=e1011]
+        - generic [ref=e930]: 字段映射
+      - generic [ref=e932]:
+        - generic [ref=e933]: "3"
+        - generic [ref=e934]: 配置图形
+      - generic [ref=e936]:
+        - generic [ref=e937]: "4"
+        - generic [ref=e938]: AI 生成
+    - generic [ref=e939]:
+      - generic [ref=e940]:
+        - generic [ref=e941]:
+          - heading "数据源上传" [level=2] [ref=e942]:
+            - img [ref=e943]
+            - text: 数据源上传
+          - generic [ref=e946] [cursor=pointer]:
+            - img [ref=e948]
+            - generic [ref=e951]: 拖拽或点击上传数据文件
+            - generic [ref=e952]: 支持 CSV, TSV, TXT, XLSX。最大 50MB
+            - generic [ref=e961]: tmp_sample.csv (已上传)
+        - generic [ref=e966]:
+          - heading "字段映射" [level=2] [ref=e967]:
+            - img [ref=e968]
+            - text: 字段映射
+          - generic [ref=e973]:
+            - generic [ref=e974]:
+              - generic [ref=e975]:
+                - generic [ref=e976]: X 轴 (分类)
+                - combobox [ref=e977]:
+                  - option "Site" [selected]
+                  - option "Value"
+              - generic [ref=e978]:
+                - generic [ref=e979]: Y 轴 (数值)
+                - combobox [ref=e980]:
+                  - option "Site"
+                  - option "Value" [selected]
+            - generic [ref=e981]:
+              - generic [ref=e982]:
+                - generic [ref=e983]: 分组 (Group)
+                - combobox [ref=e984]:
+                  - option "无分组" [selected]
+                  - option "Site"
+                  - option "Value"
+              - generic [ref=e985]:
+                - generic [ref=e986]: 误差棒 (Err)
+                - combobox [ref=e987]:
+                  - option "无" [selected]
+                  - option "Site"
+                  - option "Value"
+          - generic [ref=e988]:
+            - generic [ref=e989]:
+              - generic [ref=e990]: 数据预览 (前 5 行)
+              - generic [ref=e991]: 已加载
+            - table [ref=e993]:
+              - rowgroup [ref=e994]:
+                - row "Site Value" [ref=e995]:
+                  - columnheader "Site" [ref=e996]
+                  - columnheader "Value" [ref=e997]
+              - rowgroup [ref=e998]:
+                - row "A 1" [ref=e999]:
+                  - cell "A" [ref=e1000]
+                  - cell "1" [ref=e1001]
+                - row "B 2" [ref=e1002]:
+                  - cell "B" [ref=e1003]
+                  - cell "2" [ref=e1004]
+                - row "... ..." [ref=e1005]:
+                  - cell "..." [ref=e1006]
+                  - cell "..." [ref=e1007]
+            - generic [ref=e1008]: 共 2 行数据，2 列字段
+        - generic [ref=e1014]:
+          - heading "AI 绘图参数生成" [level=2] [ref=e1015]:
+            - img [ref=e1016]
+            - text: AI 绘图参数生成
+          - generic [ref=e1019]:
+            - generic [ref=e1020]: 图形类型
+            - generic [ref=e1021]:
+              - generic [ref=e1022] [cursor=pointer]:
+                - img [ref=e1023]
+                - text: 分组柱状图
+              - generic [ref=e1028] [cursor=pointer]:
+                - img [ref=e1029]
+                - text: 散点拟合图
+              - generic [ref=e1034] [cursor=pointer]:
+                - img [ref=e1035]
+                - text: 排序响应图
+              - generic [ref=e1040] [cursor=pointer]:
+                - img [ref=e1041]
+                - text: 自定义脚本
+              - generic [ref=e1046]:
+                - generic [ref=e1047]: 更多类型
+                - generic [ref=e1048]: 开发中
+            - generic [ref=e1054]:
+              - generic [ref=e1055]: 粘贴或编写您的 Python 绘图脚本
+              - generic [ref=e1056]:
+                - textbox "# 平台通过 plt.gcf() 捕获 Figure，无需 savefig/show\\nimport matplotlib.pyplot as plt\\nimport pandas as pd\\nimport numpy as np\\n\\n# 数据在 _uploaded_data (list[dict]) 中\\n# df = pd.DataFrame(_uploaded_data)\\n\\nfig, ax = plt.subplots()\\n# 您的代码..." [ref=e1057]
+                - button "直接应用代码" [ref=e1059]
+            - generic [ref=e1060]:
+              - generic [ref=e1062]: 🤖 AI 改写（拷贝到网页 AI → 粘贴回来）
+              - generic [ref=e1063]:
+                - paragraph [ref=e1064]: 操作步骤：
+                - list [ref=e1065]:
+                  - listitem [ref=e1066]:
+                    - text: 点击下方按钮
+                    - strong [ref=e1067]: 「复制提示词 + 脚本」
+                  - listitem [ref=e1068]: 打开 ChatGPT / DeepSeek / Gemini 等网页 AI
+                  - listitem [ref=e1069]: 粘贴到对话框，让 AI 改写
+                  - listitem [ref=e1070]:
+                    - text: 把 AI 返回的代码
+                    - strong [ref=e1071]: 复制回来
+                    - text: 粘贴到下方输入框
+                  - listitem [ref=e1072]:
+                    - text: 点击
+                    - strong [ref=e1073]: 「应用 AI 结果并打开编辑器」
+              - textbox [ref=e1074]: "## SciFigure 平台 — Matplotlib 脚本规范 你正在帮助用户编写 Matplotlib 脚本，该脚本将在 SciFigure 平台的 **运行时内省引擎** 上执行。平台原样运行脚本，通过内省 matplotlib artist 树自动识别可编辑图元。 --- ### 1. 环境与数据 **运行环境：** - Python 3.x，matplotlib（Agg 后端）、numpy、pandas、scipy - 中文字体：Microsoft YaHei、SimHei、Noto Sans SC、Times New Roman **数据传入（必读）：** - 上传的数据已解析为 `_uploaded_data` 变量，类型为 **list[dict]**（每行一个 dict，key 为列名） - 用 `df = pd.DataFrame(_uploaded_data)` 加载，**不要用 pd.read_csv() / pd.read_excel()** **输出捕获：** - 脚本执行后平台自动通过 `plt.gcf()` 获取当前 Figure - **脚本末尾应确保 `plt.gcf()` 能拿到 Figure 对象**（用 `fig, ax = plt.subplots()` 模式） - 无需调用 `plt.savefig()` 或 `plt.show()` ### 2. 平台可识别图元（内省清单） 脚本生成的 Figure 中以下图元会被平台自动识别为可交互编辑对象： | 图元 | gid 格式 | 可编辑属性 | |---|---|---| | 标题 | `title.{ax_idx}` | text, fontsize, fontfamily, color | | X 轴标签 | `xlabel.{ax_idx}` | text, fontsize, fontfamily, color | | Y 轴标签 | `ylabel.{ax_idx}` | text, fontsize, fontfamily, color | | X 轴刻度标签 | `xtick.{ax_idx}.{i}` | text, fontsize, fontfamily, color | | Y 轴刻度标签 | `ytick.{ax_idx}.{i}` | text, fontsize, fontfamily, color | | 脊柱（四边） | `spine.{side}.{ax_idx}` | visible, color, linewidth | | 折线 | `line.{ax_idx}.{i}` | color, linewidth, linestyle, alpha | | 散点/填充集 | `collection.{ax_idx}.{i}` | facecolor, edgecolor, alpha | | 图例 | `legend.{ax_idx}` | visible, fontsize | **推荐的代码模式：** ```python import matplotlib.pyplot as plt import pandas as pd df = pd.DataFrame(_uploaded_data) fig, ax = plt.subplots(figsize=(8, 5)) ax.bar(df['x'], df['y'], color='#1F78B4') ax.set_title('图表标题', fontsize=14, fontfamily='sans-serif') ax.set_xlabel('X 轴', fontsize=12) ax.set_ylabel('Y 轴', fontsize=12) ``` ### 3. 样式约定（建议遵循） - **配色：** 推荐使用 #1F78B4（蓝色）表示 promoted、#D62728（红色）表示 suppressed - **背景：** 白色背景，不添加网格线 - **边框：** 四边 spine 全显示（left + bottom + top + right），默认 matplotlib 全框即可 - **字体：** 默认 sans-serif，中文需指定支持 CJK 的字体 - **标题位置：** 默认居中（`loc='center'`） ### 4. 安全性限制（以下操作会被拦截） - ✗ 读写本地文件（open、pd.read_csv、pickle.load 等） - ✗ sys.exit()、os.system、subprocess - ✗ import 未预装包 - ✗ eval()、exec()、__import__ - ✗ 网络请求 ### 5. 输出要求 - 只返回纯 Python 代码，**不要用 ``` 包裹** - 不要添加任何说明文字或注释 - 确保代码没有语法错误，可直接在平台后端的 exec() 中运行 - **注意**：set_xticks/set_xticklabels、set_yticks/set_yticklabels 的数量必须严格一致 --- ### 本次任务 数据集列名：[\"Site\",\"Value\"] 数据预览（前 5 行）： [{\"Site\":\"A\"},{\"Value\":1}] [{\"Site\":\"B\"},{\"Value\":2}] 数值列统计： Value: 范围 [1, 2], 均值 1.50, 2 个非空值 文本列：Site 数值列：Value 用户原始脚本见下方。请改写它： 1. 使用 `_uploaded_data` 变量替代文件读取 2. 列名与上述列名匹配 3. 保留绘图意图（配色、标题、统计逻辑） 4. 确保生成的 Figure 可被内省引擎完整识别 5. 根据数据预览和统计信息，**检查并修正**用户脚本中与实际数据不匹配的地方（如列名拼写、零值权重、缺失值处理等） 用户原始脚本:"
+              - button "📋 复制提示词 + 脚本" [ref=e1076]
+              - generic [ref=e1077]: 粘贴 AI 改写结果
+              - textbox "将 AI 返回的代码粘贴到这里..." [ref=e1078]
+              - button "✨ 应用 AI 结果并打开编辑器" [ref=e1080]
+          - button "生成 Figure Spec" [ref=e1050]:
+            - img [ref=e1051]
+            - text: 生成 Figure Spec
+      - generic [ref=e956]:
+        - heading "图形草稿" [level=2] [ref=e957]
+        - generic [ref=e959]: 等待配置...

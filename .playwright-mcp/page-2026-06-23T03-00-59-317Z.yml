@@ -1,0 +1,371 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: S
+        - generic [ref=e9]: SciFigure Studio
+      - generic [ref=e10]:
+        - button "项目与资源" [ref=e11]
+        - button "当前项目数据" [ref=e13]
+        - button "帮助" [ref=e14]:
+          - text: 帮助
+          - img [ref=e15]
+    - generic [ref=e17]:
+      - button "重新配置" [ref=e263]:
+        - img [ref=e19]
+        - text: 重新配置
+      - button "保存项目" [ref=e264]:
+        - img [ref=e265]
+        - text: 保存项目
+      - generic [ref=e269]:
+        - button "导出图形" [ref=e270]:
+          - img [ref=e271]
+          - text: 导出图形
+        - button [ref=e274]:
+          - img [ref=e275]
+      - generic [ref=e24] [cursor=pointer]:
+        - img "Avatar"
+  - generic [ref=e25]:
+    - generic [ref=e277]:
+      - generic [ref=e278]:
+        - button [ref=e279]:
+          - img [ref=e281]
+        - button [ref=e284]:
+          - img [ref=e285]
+        - button [ref=e286]:
+          - img [ref=e287]
+        - button [ref=e291]:
+          - img [ref=e292]
+        - button [ref=e294]:
+          - img [ref=e295]
+      - button [ref=e297]:
+        - img [ref=e298]
+      - img [ref=e302] [cursor=pointer]
+    - generic [ref=e305]:
+      - generic [ref=e306]:
+        - heading "项目资源" [level=2] [ref=e308]
+        - list [ref=e309]:
+          - listitem [ref=e310] [cursor=pointer]:
+            - img [ref=e311]
+            - text: data.csv
+          - listitem [ref=e314] [cursor=pointer]:
+            - img [ref=e315]
+            - text: figure_spec.json
+          - listitem [ref=e320] [cursor=pointer]:
+            - img [ref=e321]
+            - text: render.py
+      - generic [ref=e326]:
+        - heading "图层结构" [level=2] [ref=e328]:
+          - img [ref=e329]
+          - text: 图层结构
+        - generic [ref=e333]:
+          - generic [ref=e334] [cursor=pointer]:
+            - generic [ref=e335]:
+              - button [ref=e336]:
+                - img [ref=e337]
+              - generic [ref=e339]: 全局图像
+            - button [ref=e340]:
+              - img [ref=e341]
+          - generic [ref=e345]:
+            - generic [ref=e346] [cursor=pointer]:
+              - generic [ref=e347]:
+                - button [ref=e348]:
+                  - img [ref=e349]
+                - generic [ref=e351]: 画布
+              - button [ref=e352]:
+                - img [ref=e353]
+            - generic [ref=e358] [cursor=pointer]:
+              - generic [ref=e361]: 背景
+              - button [ref=e362]:
+                - img [ref=e363]
+            - generic [ref=e368] [cursor=pointer]:
+              - generic [ref=e371]: 导出边界
+              - button [ref=e372]:
+                - img [ref=e373]
+          - generic [ref=e377]:
+            - generic [ref=e378] [cursor=pointer]:
+              - generic [ref=e379]:
+                - button [ref=e380]:
+                  - img [ref=e381]
+                - generic [ref=e383]: 坐标系
+              - button [ref=e384]:
+                - img [ref=e385]
+            - generic [ref=e390] [cursor=pointer]:
+              - generic [ref=e393]: 坐标系框线
+              - button [ref=e394]:
+                - img [ref=e395]
+            - generic [ref=e400] [cursor=pointer]:
+              - generic [ref=e403]: X轴刻度
+              - button [ref=e404]:
+                - img [ref=e405]
+            - generic [ref=e410] [cursor=pointer]:
+              - generic [ref=e413]: Y轴刻度
+              - button [ref=e414]:
+                - img [ref=e415]
+            - generic [ref=e420] [cursor=pointer]:
+              - generic [ref=e423]: X轴标签
+              - button [ref=e424]:
+                - img [ref=e425]
+            - generic [ref=e430] [cursor=pointer]:
+              - generic [ref=e433]: Y轴标签
+              - button [ref=e434]:
+                - img [ref=e435]
+            - generic [ref=e440] [cursor=pointer]:
+              - generic [ref=e443]: X轴标题
+              - button [ref=e444]:
+                - img [ref=e445]
+            - generic [ref=e450] [cursor=pointer]:
+              - generic [ref=e453]: Y轴标题
+              - button [ref=e454]:
+                - img [ref=e455]
+            - generic [ref=e460] [cursor=pointer]:
+              - generic [ref=e461]:
+                - img [ref=e464]
+                - generic [ref=e466]: 图表标题
+              - button [ref=e467]:
+                - img [ref=e468]
+          - generic [ref=e472]:
+            - generic [ref=e473] [cursor=pointer]:
+              - generic [ref=e474]:
+                - button [ref=e475]:
+                  - img [ref=e476]
+                - generic [ref=e478]: 数据图层
+              - button [ref=e479]:
+                - img [ref=e480]
+            - generic [ref=e485] [cursor=pointer]:
+              - generic [ref=e486]:
+                - img [ref=e489]
+                - generic [ref=e490]: "数据图层: EWR"
+              - button [ref=e491]:
+                - img [ref=e492]
+            - generic [ref=e497] [cursor=pointer]:
+              - generic [ref=e498]:
+                - img [ref=e501]
+                - generic [ref=e502]: "数据图层: NEWR"
+              - button [ref=e503]:
+                - img [ref=e504]
+            - generic [ref=e509] [cursor=pointer]:
+              - generic [ref=e510]:
+                - img [ref=e513]
+                - generic [ref=e514]: "数据图层: Default"
+              - button [ref=e515]:
+                - img [ref=e516]
+            - generic [ref=e521] [cursor=pointer]:
+              - generic [ref=e524]: 显著性标记
+              - button [ref=e525]:
+                - img [ref=e526]
+          - generic [ref=e530]:
+            - generic [ref=e531] [cursor=pointer]:
+              - generic [ref=e532]:
+                - button [ref=e533]:
+                  - img [ref=e534]
+                - generic [ref=e536]: 图例
+              - button [ref=e537]:
+                - img [ref=e538]
+            - generic [ref=e543] [cursor=pointer]:
+              - generic [ref=e546]: 图例容器
+              - button [ref=e547]:
+                - img [ref=e548]
+      - generic [ref=e552]:
+        - generic [ref=e553]:
+          - img [ref=e555]
+          - generic [ref=e557]:
+            - generic [ref=e558]: Matplotlib
+            - generic [ref=e559]: Parsed Successfully
+        - generic [ref=e560]:
+          - img [ref=e561]
+          - text: Publication Ready
+    - generic [ref=e563]:
+      - generic [ref=e564]:
+        - generic [ref=e565]:
+          - img [ref=e566] [cursor=pointer]
+          - img [ref=e569]
+          - generic [ref=e571] [cursor=pointer]: 项目
+          - img [ref=e572]
+          - generic [ref=e574]:
+            - text: 未命名项目
+            - img [ref=e575] [cursor=pointer]
+        - generic [ref=e577]:
+          - button "撤销" [disabled] [ref=e578]
+          - button "重做" [disabled] [ref=e579]
+          - button "保存" [ref=e581]:
+            - img [ref=e582]
+            - text: 保存
+          - button "同步至引擎并预览 SVG" [ref=e586]
+          - button "未保存" [ref=e588]: 未保存
+      - generic [ref=e590]:
+        - generic [ref=e591]:
+          - generic [ref=e592]:
+            - button "预览" [ref=e593]
+            - button "代码" [ref=e594]
+            - button "数据" [ref=e595]
+            - button "Spec" [ref=e596]
+          - generic [ref=e597]:
+            - generic [ref=e598]:
+              - text: 实时渲染
+              - generic [ref=e600]: "?"
+            - generic [ref=e694]: 最近渲染 11:00:58
+        - generic [ref=e604]:
+          - generic [ref=e605]:
+            - button "缩小" [ref=e695]:
+              - img [ref=e696]
+            - button "放大" [ref=e697]:
+              - img [ref=e698]
+            - button "适配" [ref=e699]
+            - button "100%" [ref=e700]
+            - generic [ref=e701]: 91%
+          - generic [ref=e702]:
+            - img [ref=e703]
+            - generic [ref=e708]: 空格 + 拖动平移
+            - generic [ref=e709]: "|"
+            - img [ref=e710]
+            - generic [ref=e717]: 滚轮缩放
+          - img [ref=e870]:
+            - generic [ref=e874]:
+              - generic [ref=e881]:
+                - generic [ref=e884]: A
+                - generic [ref=e887]: B
+                - generic [ref=e889]: Sample
+              - generic [ref=e890]:
+                - generic [ref=e893]: "0.0"
+                - generic [ref=e896]: "0.5"
+                - generic [ref=e899]: "1.0"
+                - generic [ref=e902]: "1.5"
+                - generic [ref=e905]: "2.0"
+                - generic [ref=e908]: "2.5"
+                - generic [ref=e910]: Relative abundance (%)
+              - generic [ref=e912]: Relative abundance of ARGs
+              - generic [ref=e917]: Default
+        - generic [ref=e608]:
+          - generic [ref=e609]:
+            - generic [ref=e610]:
+              - button "Python Code" [ref=e611]
+              - button "Figure Spec" [ref=e612]
+              - button "日志" [ref=e613]
+              - button "Manifest (v2)" [ref=e614]
+            - generic [ref=e615]:
+              - button [ref=e616]:
+                - img [ref=e617]
+              - button [ref=e619]:
+                - img [ref=e620]
+              - button "Copy" [ref=e625]
+              - button [ref=e626]:
+                - img [ref=e627]
+          - generic [ref=e630]:
+            - generic [ref=e631]:
+              - generic [ref=e632]:
+                - generic [ref=e633]: "1"
+                - generic [ref=e634]: "2"
+                - generic [ref=e635]: "3"
+                - generic [ref=e636]: "4"
+                - generic [ref=e637]: "5"
+                - generic [ref=e638]: "6"
+                - generic [ref=e639]: "7"
+                - generic [ref=e640]: "8"
+                - generic [ref=e641]: "9"
+                - generic [ref=e642]: "10"
+                - generic [ref=e643]: "11"
+                - generic [ref=e644]: "12"
+                - generic [ref=e645]: "13"
+                - generic [ref=e646]: "14"
+                - generic [ref=e647]: "15"
+                - generic [ref=e648]: "16"
+                - generic [ref=e649]: "17"
+                - generic [ref=e650]: "18"
+                - generic [ref=e651]: "19"
+                - generic [ref=e652]: "20"
+                - generic [ref=e653]: "21"
+                - generic [ref=e654]: "22"
+                - generic [ref=e655]: "23"
+                - generic [ref=e656]: "24"
+                - generic [ref=e657]: "25"
+                - generic [ref=e658]: "26"
+              - generic [ref=e659]: "import matplotlib.pyplot as plt import numpy as np fig, ax = plt.subplots(figsize=(3.3465, 2.7559), dpi=600) labels = [\"A\",\"B\"] x = np.arange(len(labels)) width = 0.8000 vals_Default = np.array([1,2]) ax.bar(x + 0.0000 * width, vals_Default, width, label=\"Default\", color=\"#1f77b4\") ax.set_xticks(x) ax.set_xticklabels(labels, rotation=0) ax.set_title(\"Relative abundance of ARGs\", fontsize=16, fontweight=\"bold\") ax.set_xlabel(\"Sample\", fontsize=16) ax.set_ylabel(\"Relative abundance (%)\", fontsize=16) ax.tick_params(direction=\"out\", labelsize=11, width=1) ax.spines[\"top\"].set_visible(True) ax.spines[\"bottom\"].set_visible(True) ax.spines[\"left\"].set_visible(True) ax.spines[\"right\"].set_visible(True) for spine in ax.spines.values(): spine.set_linewidth(1) ax.legend(loc=\"upper right\", frameon=False, fontsize=10) plt.tight_layout()"
+            - generic [ref=e660]:
+              - generic [ref=e661]:
+                - generic [ref=e662]: "1"
+                - generic [ref=e663]: "2"
+                - generic [ref=e664]: "3"
+                - generic [ref=e665]: "4"
+                - generic [ref=e666]: "5"
+                - generic [ref=e667]: "6"
+                - generic [ref=e668]: "7"
+                - generic [ref=e669]: "8"
+                - generic [ref=e670]: "9"
+                - generic [ref=e671]: "10"
+                - generic [ref=e672]: "11"
+                - generic [ref=e673]: "12"
+                - generic [ref=e674]: "13"
+                - generic [ref=e675]: "14"
+                - generic [ref=e676]: "15"
+                - generic [ref=e677]: "16"
+                - generic [ref=e678]: "17"
+                - generic [ref=e679]: "18"
+                - generic [ref=e680]: "19"
+                - generic [ref=e681]: "20"
+              - generic [ref=e682]: "{ \"plot_type\": \"bar\", \"figure\": { \"width\": 85, \"height\": 70, \"unit\": \"mm\", \"dpi\": 600 }, \"data\": { \"x\": \"site\", \"y\": \"abundance\", \"group\": \"period\" }, \"font\": { \"family\": \"Arial, sans-serif\", \"title_size\": 16, \"tick_size\": 11, \"legend_size\": 10 }, \"axes\": { \"title\": \"Relative abundance of ARGs\", \"xlabel\": \"Sample\", \"ylabel\": \"Relative abundance (%)\", \"x_tick_rotation\": 0, \"tick_direction\": \"out\", \"show_ticks\": true, \"spine_width\": 1, \"spine_top\": true, \"spine_bottom\": true, \"spine_left\": true, \"spine_right\": true, \"linestyle\": \"实线 (Solid)\" }, \"colors\": { \"EWR\": \"#1f77b4\", \"NEWR\": \"#17becf\", \"Default\": \"#1f77b4\" }, \"legend\": { \"show\": true, \"location\": \"upper right\", \"frameon\": false }, \"raw_data\": { \"categories\": [ \"A\", \"B\" ], \"groups\": { \"Default\": { \"values\": [ 1, 2 ] } } }, \"export\": { \"format\": \"PDF\", \"dpi\": 600 }, \"custom_script\": \"\", \"source\": { \"file_name\": \"tmp_sample.csv\", \"file_type\": \"CSV\", \"row_count\": 2, \"column_count\": 2, \"columns\": [ \"Site\", \"Value\" ], \"imported_at\": \"2026-06-23T03:00:33.233Z\" } }"
+      - generic [ref=e683]:
+        - generic [ref=e686]: 已连接
+        - generic [ref=e687]:
+          - generic [ref=e688]: 尚未保存
+          - generic [ref=e689]:
+            - img [ref=e690]
+            - text: 自动保存已开启 (5s)
+    - generic [ref=e693]:
+      - generic [ref=e769]:
+        - button "属性编辑" [ref=e770]
+        - button "配色中心" [ref=e771]
+      - generic [ref=e772]:
+        - generic [ref=e773]:
+          - heading "颜色组（批量修改）" [level=3] [ref=e775]
+          - generic [ref=e776]:
+            - textbox [ref=e778] [cursor=pointer]: "#000000"
+            - generic [ref=e779]:
+              - generic [ref=e780]: title.0
+              - generic [ref=e781]: 17 个元素
+          - generic [ref=e782]:
+            - textbox [ref=e784] [cursor=pointer]: "#1f77b4"
+            - generic [ref=e785]:
+              - generic [ref=e786]: Default
+              - generic [ref=e787]: 3 个元素
+        - generic [ref=e788]:
+          - 'heading "Object: title.0" [level=3] [ref=e790]'
+          - generic [ref=e791]:
+            - generic [ref=e792]:
+              - generic [ref=e793]: text
+              - textbox [ref=e794]: Relative abundance of ARGs
+            - generic [ref=e795]:
+              - generic [ref=e796]: fontsize
+              - spinbutton [ref=e797]: "16"
+            - generic [ref=e798]:
+              - generic [ref=e799]: fontfamily
+              - generic [ref=e800]:
+                - combobox [ref=e801]:
+                  - option "sans-serif"
+                  - option "serif"
+                  - option "monospace"
+                  - option "DejaVu Sans" [selected]
+                  - option "Arial"
+                  - option "Times New Roman"
+                  - option "Helvetica"
+                  - option "Courier New"
+                  - option "Verdana"
+                  - option "Georgia"
+                - textbox "或输入自定义字体..." [ref=e802]
+            - generic [ref=e803]:
+              - generic [ref=e804]: color
+              - textbox [ref=e806] [cursor=pointer]: "#000000"
+              - textbox [ref=e807]: BLACK
+        - generic [ref=e808]:
+          - heading "Global Properties" [level=3] [ref=e810]
+          - generic [ref=e811]:
+            - generic [ref=e812]:
+              - generic [ref=e813]: figure.width_in
+              - spinbutton [ref=e814]: "3.3465"
+            - generic [ref=e815]:
+              - generic [ref=e816]: figure.height_in
+              - spinbutton [ref=e817]: "2.7559"
+            - generic [ref=e818]:
+              - generic [ref=e819]: figure.dpi
+              - spinbutton [ref=e820]: "600"
+        - generic [ref=e821]: 数值类参数现在在失焦或按 Enter 时才提交后端重渲染，避免每次敲字都卡住画布。

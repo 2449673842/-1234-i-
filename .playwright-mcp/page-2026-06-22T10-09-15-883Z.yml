@@ -1,0 +1,431 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: S
+        - generic [ref=e9]: SciFigure Studio
+      - generic [ref=e10]:
+        - button "项目与资源" [ref=e11]
+        - button "当前项目数据" [ref=e13]
+        - button "帮助" [ref=e14]:
+          - text: 帮助
+          - img [ref=e15]
+    - generic [ref=e17]:
+      - button "重新配置" [ref=e275]:
+        - img [ref=e19]
+        - text: 重新配置
+      - button "保存项目" [ref=e276]:
+        - img [ref=e277]
+        - text: 保存项目
+      - generic [ref=e281]:
+        - button "导出图形" [ref=e282]:
+          - img [ref=e283]
+          - text: 导出图形
+        - button [ref=e286]:
+          - img [ref=e287]
+      - generic [ref=e24] [cursor=pointer]:
+        - img "Avatar"
+  - generic [ref=e25]:
+    - generic [ref=e289]:
+      - generic [ref=e290]:
+        - button [ref=e291]:
+          - img [ref=e293]
+        - button [ref=e296]:
+          - img [ref=e297]
+        - button [ref=e298]:
+          - img [ref=e299]
+        - button [ref=e303]:
+          - img [ref=e304]
+        - button [ref=e306]:
+          - img [ref=e307]
+      - button [ref=e309]:
+        - img [ref=e310]
+      - img [ref=e314] [cursor=pointer]
+    - generic [ref=e317]:
+      - generic [ref=e318]:
+        - heading "项目资源" [level=2] [ref=e320]
+        - list [ref=e321]:
+          - listitem [ref=e322] [cursor=pointer]:
+            - img [ref=e323]
+            - text: data.csv
+          - listitem [ref=e326] [cursor=pointer]:
+            - img [ref=e327]
+            - text: figure_spec.json
+          - listitem [ref=e332] [cursor=pointer]:
+            - img [ref=e333]
+            - text: render.py
+      - generic [ref=e338]:
+        - heading "图层结构" [level=2] [ref=e340]:
+          - img [ref=e341]
+          - text: 图层结构
+        - generic [ref=e345]:
+          - generic [ref=e346] [cursor=pointer]:
+            - generic [ref=e347]:
+              - button [ref=e348]:
+                - img [ref=e349]
+              - generic [ref=e351]: 全局图像
+            - button [ref=e352]:
+              - img [ref=e353]
+          - generic [ref=e357]:
+            - generic [ref=e358] [cursor=pointer]:
+              - generic [ref=e359]:
+                - button [ref=e360]:
+                  - img [ref=e361]
+                - generic [ref=e363]: SVG 文本对象
+              - button [ref=e364]:
+                - img [ref=e365]
+            - generic [ref=e370] [cursor=pointer]:
+              - generic [ref=e371]:
+                - img [ref=e374]
+                - generic [ref=e379]: 请先渲染 SVG
+              - button [ref=e380]:
+                - img [ref=e381]
+          - generic [ref=e385]:
+            - generic [ref=e386] [cursor=pointer]:
+              - generic [ref=e387]:
+                - button [ref=e388]:
+                  - img [ref=e389]
+                - generic [ref=e391]: SVG 图形对象
+              - button [ref=e392]:
+                - img [ref=e393]
+            - generic [ref=e398] [cursor=pointer]:
+              - generic [ref=e399]:
+                - img [ref=e402]
+                - generic [ref=e407]: 请先渲染 SVG
+              - button [ref=e408]:
+                - img [ref=e409]
+      - generic [ref=e413]:
+        - generic [ref=e414]:
+          - img [ref=e416]
+          - generic [ref=e418]:
+            - generic [ref=e419]: Matplotlib
+            - generic [ref=e420]: Parsed Successfully
+        - generic [ref=e421]:
+          - img [ref=e422]
+          - text: Publication Ready
+    - generic [ref=e424]:
+      - generic [ref=e425]:
+        - generic [ref=e426]:
+          - img [ref=e427] [cursor=pointer]
+          - img [ref=e430]
+          - generic [ref=e432] [cursor=pointer]: 项目
+          - img [ref=e433]
+          - generic [ref=e435]:
+            - text: 未命名项目
+            - img [ref=e436] [cursor=pointer]
+        - generic [ref=e438]:
+          - button "撤销" [disabled] [ref=e439]
+          - button "重做" [disabled] [ref=e440]
+          - button "保存" [ref=e442]:
+            - img [ref=e443]
+            - text: 保存
+          - button "同步至引擎并预览 SVG" [ref=e447]
+          - generic [ref=e448]: 自定义脚本修改需重新渲染后生效
+          - button "未保存" [ref=e450]: 未保存
+      - generic [ref=e452]:
+        - generic [ref=e453]:
+          - generic [ref=e454]:
+            - button "预览" [ref=e455]
+            - button "代码" [ref=e456]
+            - button "数据" [ref=e457]
+            - button "Spec" [ref=e458]
+          - generic [ref=e459]:
+            - generic [ref=e460]:
+              - text: 实时渲染
+              - generic [ref=e462]: "?"
+            - generic [ref=e463]: 真实 SVG 对象可直接编辑；全局参数改完后再重新渲染
+        - generic [ref=e465]:
+          - generic [ref=e467]:
+            - generic [ref=e468]: 🐍
+            - heading "自定义脚本模式" [level=3] [ref=e469]
+            - paragraph [ref=e470]: 当前图表由用户自定义 Python 脚本生成，前端预览不可用。
+            - generic [ref=e471]: 请点击上方「同步至引擎并预览 SVG」查看渲染结果
+          - generic [ref=e472]: 选中真实 SVG 文本、线条或图形后，可在右侧直接修改。图尺寸、全局字体等参数改完后，再点击「同步至引擎并预览 SVG」重渲染。
+        - generic [ref=e473]:
+          - generic [ref=e474]:
+            - generic [ref=e475]:
+              - button "Python Code" [ref=e476]
+              - button "Figure Spec" [ref=e477]
+              - button "日志" [ref=e478]
+            - generic [ref=e479]:
+              - button [ref=e480]:
+                - img [ref=e481]
+              - button [ref=e483]:
+                - img [ref=e484]
+              - button "Copy" [ref=e489]
+              - button [ref=e490]:
+                - img [ref=e491]
+          - generic [ref=e494]:
+            - generic [ref=e495]:
+              - generic [ref=e496]:
+                - generic [ref=e497]: "1"
+                - generic [ref=e498]: "2"
+                - generic [ref=e499]: "3"
+                - generic [ref=e500]: "4"
+                - generic [ref=e501]: "5"
+                - generic [ref=e502]: "6"
+                - generic [ref=e503]: "7"
+                - generic [ref=e504]: "8"
+                - generic [ref=e505]: "9"
+                - generic [ref=e506]: "10"
+                - generic [ref=e507]: "11"
+                - generic [ref=e508]: "12"
+                - generic [ref=e509]: "13"
+                - generic [ref=e510]: "14"
+                - generic [ref=e511]: "15"
+                - generic [ref=e512]: "16"
+                - generic [ref=e513]: "17"
+                - generic [ref=e514]: "18"
+                - generic [ref=e515]: "19"
+                - generic [ref=e516]: "20"
+                - generic [ref=e517]: "21"
+                - generic [ref=e518]: "22"
+                - generic [ref=e519]: "23"
+                - generic [ref=e520]: "24"
+                - generic [ref=e521]: "25"
+                - generic [ref=e522]: "26"
+                - generic [ref=e523]: "27"
+                - generic [ref=e524]: "28"
+                - generic [ref=e525]: "29"
+                - generic [ref=e526]: "30"
+                - generic [ref=e527]: "31"
+                - generic [ref=e528]: "32"
+                - generic [ref=e529]: "33"
+                - generic [ref=e530]: "34"
+                - generic [ref=e531]: "35"
+                - generic [ref=e532]: "36"
+                - generic [ref=e533]: "37"
+                - generic [ref=e534]: "38"
+                - generic [ref=e535]: "39"
+                - generic [ref=e536]: "40"
+                - generic [ref=e537]: "41"
+                - generic [ref=e538]: "42"
+                - generic [ref=e539]: "43"
+                - generic [ref=e540]: "44"
+                - generic [ref=e541]: "45"
+                - generic [ref=e542]: "46"
+                - generic [ref=e543]: "47"
+                - generic [ref=e544]: "48"
+                - generic [ref=e545]: "49"
+                - generic [ref=e546]: "50"
+                - generic [ref=e547]: "51"
+                - generic [ref=e548]: "52"
+                - generic [ref=e549]: "53"
+                - generic [ref=e550]: "54"
+                - generic [ref=e551]: "55"
+                - generic [ref=e552]: "56"
+                - generic [ref=e553]: "57"
+                - generic [ref=e554]: "58"
+                - generic [ref=e555]: "59"
+                - generic [ref=e556]: "60"
+                - generic [ref=e557]: "61"
+                - generic [ref=e558]: "62"
+                - generic [ref=e559]: "63"
+                - generic [ref=e560]: "64"
+                - generic [ref=e561]: "65"
+                - generic [ref=e562]: "66"
+                - generic [ref=e563]: "67"
+                - generic [ref=e564]: "68"
+                - generic [ref=e565]: "69"
+                - generic [ref=e566]: "70"
+                - generic [ref=e567]: "71"
+                - generic [ref=e568]: "72"
+                - generic [ref=e569]: "73"
+                - generic [ref=e570]: "74"
+                - generic [ref=e571]: "75"
+                - generic [ref=e572]: "76"
+                - generic [ref=e573]: "77"
+                - generic [ref=e574]: "78"
+                - generic [ref=e575]: "79"
+                - generic [ref=e576]: "80"
+                - generic [ref=e577]: "81"
+                - generic [ref=e578]: "82"
+                - generic [ref=e579]: "83"
+                - generic [ref=e580]: "84"
+                - generic [ref=e581]: "85"
+                - generic [ref=e582]: "86"
+                - generic [ref=e583]: "87"
+                - generic [ref=e584]: "88"
+                - generic [ref=e585]: "89"
+                - generic [ref=e586]: "90"
+                - generic [ref=e587]: "91"
+                - generic [ref=e588]: "92"
+                - generic [ref=e589]: "93"
+                - generic [ref=e590]: "94"
+                - generic [ref=e591]: "95"
+                - generic [ref=e592]: "96"
+                - generic [ref=e593]: "97"
+                - generic [ref=e594]: "98"
+                - generic [ref=e595]: "99"
+                - generic [ref=e596]: "100"
+                - generic [ref=e597]: "101"
+                - generic [ref=e598]: "102"
+                - generic [ref=e599]: "103"
+                - generic [ref=e600]: "104"
+                - generic [ref=e601]: "105"
+                - generic [ref=e602]: "106"
+                - generic [ref=e603]: "107"
+                - generic [ref=e604]: "108"
+                - generic [ref=e605]: "109"
+                - generic [ref=e606]: "110"
+                - generic [ref=e607]: "111"
+                - generic [ref=e608]: "112"
+                - generic [ref=e609]: "113"
+                - generic [ref=e610]: "114"
+                - generic [ref=e611]: "115"
+                - generic [ref=e612]: "116"
+                - generic [ref=e613]: "117"
+                - generic [ref=e614]: "118"
+                - generic [ref=e615]: "119"
+                - generic [ref=e616]: "120"
+                - generic [ref=e617]: "121"
+                - generic [ref=e618]: "122"
+                - generic [ref=e619]: "123"
+                - generic [ref=e620]: "124"
+                - generic [ref=e621]: "125"
+                - generic [ref=e622]: "126"
+                - generic [ref=e623]: "127"
+                - generic [ref=e624]: "128"
+                - generic [ref=e625]: "129"
+                - generic [ref=e626]: "130"
+                - generic [ref=e627]: "131"
+                - generic [ref=e628]: "132"
+                - generic [ref=e629]: "133"
+                - generic [ref=e630]: "134"
+                - generic [ref=e631]: "135"
+                - generic [ref=e632]: "136"
+                - generic [ref=e633]: "137"
+                - generic [ref=e634]: "138"
+                - generic [ref=e635]: "139"
+                - generic [ref=e636]: "140"
+                - generic [ref=e637]: "141"
+                - generic [ref=e638]: "142"
+                - generic [ref=e639]: "143"
+                - generic [ref=e640]: "144"
+                - generic [ref=e641]: "145"
+                - generic [ref=e642]: "146"
+                - generic [ref=e643]: "147"
+                - generic [ref=e644]: "148"
+                - generic [ref=e645]: "149"
+                - generic [ref=e646]: "150"
+                - generic [ref=e647]: "151"
+                - generic [ref=e648]: "152"
+                - generic [ref=e649]: "153"
+                - generic [ref=e650]: "154"
+                - generic [ref=e651]: "155"
+                - generic [ref=e652]: "156"
+                - generic [ref=e653]: "157"
+                - generic [ref=e654]: "158"
+                - generic [ref=e655]: "159"
+                - generic [ref=e656]: "160"
+                - generic [ref=e657]: "161"
+                - generic [ref=e658]: "162"
+                - generic [ref=e659]: "163"
+                - generic [ref=e660]: "164"
+                - generic [ref=e661]: "165"
+                - generic [ref=e662]: "166"
+                - generic [ref=e663]: "167"
+                - generic [ref=e664]: "168"
+                - generic [ref=e665]: "169"
+                - generic [ref=e666]: "170"
+                - generic [ref=e667]: "171"
+                - generic [ref=e668]: "172"
+                - generic [ref=e669]: "173"
+                - generic [ref=e670]: "174"
+                - generic [ref=e671]: "175"
+                - generic [ref=e672]: "176"
+                - generic [ref=e673]: "177"
+                - generic [ref=e674]: "178"
+              - generic [ref=e675]: "import matplotlib.pyplot as plt import numpy as np import pandas as pd # Reproduced from SciFigure spec export _uploaded_data = [ { \"Site\": \"S1\", \"LNRR\": -0.8 }, { \"Site\": \"S2\", \"LNRR\": -0.3 }, { \"Site\": \"S3\", \"LNRR\": 0.2 }, { \"Site\": \"S4\", \"LNRR\": 0.7 }, { \"Site\": \"S5\", \"LNRR\": 1.4 } ] from __future__ import annotations import matplotlib matplotlib.use(\"Agg\") import matplotlib.pyplot as plt import numpy as np import pandas as pd BLUE = \"#1F78B4\" RED = \"#D62728\" ZERO = \"#333333\" def configure_matplotlib() -> None: plt.rcParams.update( { \"font.family\": \"serif\", \"font.serif\": [\"Times New Roman\"], \"mathtext.fontset\": \"custom\", \"mathtext.rm\": \"Times New Roman\", \"mathtext.it\": \"Times New Roman:italic\", \"mathtext.bf\": \"Times New Roman:bold\", \"axes.unicode_minus\": False, \"pdf.fonttype\": 42, \"ps.fonttype\": 42, } ) def style_full_box(ax: plt.Axes) -> None: for spine in ax.spines.values(): spine.set_visible(True) spine.set_linewidth(0.9) spine.set_color(\"black\") ax.grid(False) ax.tick_params(axis=\"both\", direction=\"out\", width=0.8, length=3.5, colors=\"black\") def draw_ranked_response(df: pd.DataFrame) -> None: configure_matplotlib() # Sort by LNRR ascending and recompute y, Group, Color df = df.sort_values(\"LNRR\", ascending=True).reset_index(drop=True) df[\"y\"] = np.arange(len(df)) df[\"Group\"] = np.where(df[\"LNRR\"] > 0, \"Promoted\", \"Suppressed/non-promoted\") df[\"Color\"] = np.where(df[\"LNRR\"] > 0, BLUE, RED) promoted_n = int((df[\"LNRR\"] > 0).sum()) non_promoted_n = int((df[\"LNRR\"] <= 0).sum()) total_n = len(df) fig = plt.figure(figsize=(8.2, 7.2), dpi=600) ax = fig.add_axes([0.14, 0.11, 0.815, 0.805]) fig.patch.set_facecolor(\"white\") ax.set_facecolor(\"white\") for _, row in df.iterrows(): x = float(row[\"LNRR\"]) y = float(row[\"y\"]) color = row[\"Color\"] ax.hlines(y, 0, x, color=color, linewidth=1.9, zorder=2) ax.scatter(x, y, s=34, color=color, edgecolor=\"white\", linewidth=0.6, zorder=3) ax.axvline(0, color=ZERO, linestyle=(0, (4, 3)), linewidth=1.0, zorder=1) ax.set_yticks(df[\"y\"]) ax.set_yticklabels(df[\"Site\"], fontsize=8.4, fontweight=\"bold\") ax.invert_yaxis() xmin = float(df[\"LNRR\"].min()) xmax = float(df[\"LNRR\"].max()) span = xmax - xmin ax.set_xlim(xmin - 0.12 * span, xmax + 0.23 * span) ax.set_ylim(total_n - 0.15, -0.85) ax.set_xticks([-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0]) ax.tick_params(axis=\"x\", labelsize=10.5) ax.set_xlabel(\"LnRR = ln(DTR / DCK)\", fontsize=12, fontweight=\"bold\", labelpad=7) ax.set_ylabel(\"Site code\", fontsize=12, fontweight=\"bold\", labelpad=20) ax.set_title( \"Ferrihydrite-induced N$_2$O response ranked by site code\", fontsize=15, fontweight=\"bold\", pad=11, ) style_full_box(ax) handles = [ plt.Line2D( [0], [0], color=BLUE, marker=\"o\", markersize=6, linewidth=1.9, label=\"Promoted: LnRR > 0\" ), plt.Line2D( [0], [0], color=RED, marker=\"o\", markersize=6, linewidth=1.9, label=\"Suppressed/non-promoted: LnRR <= 0\", ), ] ax.legend( handles=handles, loc=\"upper right\", bbox_to_anchor=(0.985, 0.992), frameon=False, fontsize=10, handlelength=1.8, ) x_stat = xmax + 0.17 * span y_stat = total_n - 4.8 ax.text( x_stat, y_stat, f\"LnRR > 0: {promoted_n}\\nLnRR <= 0: {non_promoted_n}\\nn = {total_n}\", ha=\"right\", va=\"bottom\", fontsize=10, fontweight=\"bold\", zorder=4, ) plt.show() if __name__ == \"__main__\": df = pd.DataFrame(_uploaded_data) draw_ranked_response(df) # Spec-level overrides applied in SciFigure fig = plt.gcf() fig.set_size_inches(4.7244, 3.5433, forward=True) fig.set_dpi(300) for ax in fig.axes: ax.set_title(\"Demo Title\", fontsize=16, fontweight=\"bold\") ax.set_xlabel(\"Demo X\", fontsize=16) ax.set_ylabel(\"Demo Y\", fontsize=16) ax.tick_params(labelsize=10, width=1) visibility = { \"top\": True, \"bottom\": True, \"left\": True, \"right\": True, } for side, spine in ax.spines.items(): spine.set_linewidth(1) spine.set_visible(visibility.get(side, True)) ax.legend(loc=\"upper right\", frameon=False, fontsize=10) plt.tight_layout() plt.savefig(\"figure.svg\", format=\"svg\", bbox_inches=\"tight\") plt.show()"
+            - generic [ref=e676]:
+              - generic [ref=e677]:
+                - generic [ref=e678]: "1"
+                - generic [ref=e679]: "2"
+                - generic [ref=e680]: "3"
+                - generic [ref=e681]: "4"
+                - generic [ref=e682]: "5"
+                - generic [ref=e683]: "6"
+                - generic [ref=e684]: "7"
+                - generic [ref=e685]: "8"
+                - generic [ref=e686]: "9"
+                - generic [ref=e687]: "10"
+                - generic [ref=e688]: "11"
+                - generic [ref=e689]: "12"
+                - generic [ref=e690]: "13"
+                - generic [ref=e691]: "14"
+                - generic [ref=e692]: "15"
+                - generic [ref=e693]: "16"
+                - generic [ref=e694]: "17"
+                - generic [ref=e695]: "18"
+                - generic [ref=e696]: "19"
+                - generic [ref=e697]: "20"
+              - generic [ref=e698]: "{ \"plot_type\": \"custom\", \"figure\": { \"width\": 120, \"height\": 90, \"unit\": \"mm\", \"dpi\": 300 }, \"data\": { \"x\": \"x\", \"y\": \"y\", \"group\": \"\" }, \"font\": { \"family\": \"'Times New Roman', serif\", \"title_size\": 16, \"tick_size\": 10, \"legend_size\": 10 }, \"axes\": { \"title\": \"Demo Title\", \"xlabel\": \"Demo X\", \"ylabel\": \"Demo Y\", \"x_tick_rotation\": 0, \"tick_direction\": \"out\", \"show_ticks\": true, \"spine_width\": 1, \"spine_top\": true, \"spine_bottom\": true, \"spine_left\": true, \"spine_right\": true, \"linestyle\": \"实线 (Solid)\" }, \"colors\": { \"GroupA\": \"#1F78B4\", \"Default\": \"#1f77b4\" }, \"legend\": { \"show\": true, \"location\": \"upper right\", \"frameon\": false }, \"raw_data\": { \"custom_data\": [ { \"Site\": \"S1\", \"LNRR\": -0.8 }, { \"Site\": \"S2\", \"LNRR\": -0.3 }, { \"Site\": \"S3\", \"LNRR\": 0.2 }, { \"Site\": \"S4\", \"LNRR\": 0.7 }, { \"Site\": \"S5\", \"LNRR\": 1.4 } ] }, \"export\": { \"format\": \"SVG\", \"dpi\": 300 }, \"custom_script\": \"from __future__ import annotations\\n\\nimport matplotlib\\n\\nmatplotlib.use(\\\"Agg\\\")\\nimport matplotlib.pyplot as plt\\nimport numpy as np\\nimport pandas as pd\\n\\nBLUE = \\\"#1F78B4\\\"\\nRED = \\\"#D62728\\\"\\nZERO = \\\"#333333\\\"\\n\\n\\ndef configure_matplotlib() -> None:\\n plt.rcParams.update(\\n {\\n \\\"font.family\\\": \\\"serif\\\",\\n \\\"font.serif\\\": [\\\"Times New Roman\\\"],\\n \\\"mathtext.fontset\\\": \\\"custom\\\",\\n \\\"mathtext.rm\\\": \\\"Times New Roman\\\",\\n \\\"mathtext.it\\\": \\\"Times New Roman:italic\\\",\\n \\\"mathtext.bf\\\": \\\"Times New Roman:bold\\\",\\n \\\"axes.unicode_minus\\\": False,\\n \\\"pdf.fonttype\\\": 42,\\n \\\"ps.fonttype\\\": 42,\\n }\\n )\\n\\n\\ndef style_full_box(ax: plt.Axes) -> None:\\n for spine in ax.spines.values():\\n spine.set_visible(True)\\n spine.set_linewidth(0.9)\\n spine.set_color(\\\"black\\\")\\n ax.grid(False)\\n ax.tick_params(axis=\\\"both\\\", direction=\\\"out\\\", width=0.8, length=3.5, colors=\\\"black\\\")\\n\\n\\ndef draw_ranked_response(df: pd.DataFrame) -> None:\\n configure_matplotlib()\\n\\n # Sort by LNRR ascending and recompute y, Group, Color\\n df = df.sort_values(\\\"LNRR\\\", ascending=True).reset_index(drop=True)\\n df[\\\"y\\\"] = np.arange(len(df))\\n df[\\\"Group\\\"] = np.where(df[\\\"LNRR\\\"] > 0, \\\"Promoted\\\", \\\"Suppressed/non-promoted\\\")\\n df[\\\"Color\\\"] = np.where(df[\\\"LNRR\\\"] > 0, BLUE, RED)\\n\\n promoted_n = int((df[\\\"LNRR\\\"] > 0).sum())\\n non_promoted_n = int((df[\\\"LNRR\\\"] <= 0).sum())\\n total_n = len(df)\\n\\n fig = plt.figure(figsize=(8.2, 7.2), dpi=600)\\n ax = fig.add_axes([0.14, 0.11, 0.815, 0.805])\\n fig.patch.set_facecolor(\\\"white\\\")\\n ax.set_facecolor(\\\"white\\\")\\n\\n for _, row in df.iterrows():\\n x = float(row[\\\"LNRR\\\"])\\n y = float(row[\\\"y\\\"])\\n color = row[\\\"Color\\\"]\\n ax.hlines(y, 0, x, color=color, linewidth=1.9, zorder=2)\\n ax.scatter(x, y, s=34, color=color, edgecolor=\\\"white\\\", linewidth=0.6, zorder=3)\\n\\n ax.axvline(0, color=ZERO, linestyle=(0, (4, 3)), linewidth=1.0, zorder=1)\\n\\n ax.set_yticks(df[\\\"y\\\"])\\n ax.set_yticklabels(df[\\\"Site\\\"], fontsize=8.4, fontweight=\\\"bold\\\")\\n ax.invert_yaxis()\\n\\n xmin = float(df[\\\"LNRR\\\"].min())\\n xmax = float(df[\\\"LNRR\\\"].max())\\n span = xmax - xmin\\n ax.set_xlim(xmin - 0.12 * span, xmax + 0.23 * span)\\n ax.set_ylim(total_n - 0.15, -0.85)\\n ax.set_xticks([-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0])\\n ax.tick_params(axis=\\\"x\\\", labelsize=10.5)\\n\\n ax.set_xlabel(\\\"LnRR = ln(DTR / DCK)\\\", fontsize=12, fontweight=\\\"bold\\\", labelpad=7)\\n ax.set_ylabel(\\\"Site code\\\", fontsize=12, fontweight=\\\"bold\\\", labelpad=20)\\n ax.set_title(\\n \\\"Ferrihydrite-induced N$_2$O response ranked by site code\\\",\\n fontsize=15,\\n fontweight=\\\"bold\\\",\\n pad=11,\\n )\\n style_full_box(ax)\\n\\n handles = [\\n plt.Line2D(\\n [0], [0], color=BLUE, marker=\\\"o\\\", markersize=6, linewidth=1.9, label=\\\"Promoted: LnRR > 0\\\"\\n ),\\n plt.Line2D(\\n [0],\\n [0],\\n color=RED,\\n marker=\\\"o\\\",\\n markersize=6,\\n linewidth=1.9,\\n label=\\\"Suppressed/non-promoted: LnRR <= 0\\\",\\n ),\\n ]\\n ax.legend(\\n handles=handles,\\n loc=\\\"upper right\\\",\\n bbox_to_anchor=(0.985, 0.992),\\n frameon=False,\\n fontsize=10,\\n handlelength=1.8,\\n )\\n\\n x_stat = xmax + 0.17 * span\\n y_stat = total_n - 4.8\\n ax.text(\\n x_stat,\\n y_stat,\\n f\\\"LnRR > 0: {promoted_n}\\\\nLnRR <= 0: {non_promoted_n}\\\\nn = {total_n}\\\",\\n ha=\\\"right\\\",\\n va=\\\"bottom\\\",\\n fontsize=10,\\n fontweight=\\\"bold\\\",\\n zorder=4,\\n )\\n\\n plt.show()\\n\\n\\nif __name__ == \\\"__main__\\\":\\n df = pd.DataFrame(_uploaded_data)\\n draw_ranked_response(df)\", \"source\": { \"file_name\": \"tmp_custom_lnrr.csv\", \"file_type\": \"CSV\", \"row_count\": 5, \"column_count\": 2, \"columns\": [ \"Site\", \"LNRR\" ], \"imported_at\": \"2026-06-22T10:09:14.051Z\" } }"
+      - generic [ref=e699]:
+        - generic [ref=e702]: 已连接
+        - generic [ref=e703]:
+          - generic [ref=e704]: 尚未保存
+          - generic [ref=e705]:
+            - img [ref=e706]
+            - text: 自动保存已开启 (5s)
+    - generic [ref=e709]:
+      - generic [ref=e710]:
+        - generic [ref=e711]:
+          - generic [ref=e712]: 图表类型
+          - combobox [ref=e713]:
+            - option "分组柱状图 (Bar)"
+            - option "分层散点拟合图 (Scatter Fit)"
+            - option "排序响应图 (Ranked Response)"
+            - option "自定义脚本 (Custom)" [selected]
+        - generic [ref=e714]: 对象检查器
+        - generic [ref=e715]: Figure
+      - generic [ref=e717]:
+        - generic [ref=e718]:
+          - heading "图像尺寸" [level=3] [ref=e720]
+          - generic [ref=e721]:
+            - generic [ref=e722]:
+              - generic [ref=e723]: 宽度
+              - generic [ref=e724]:
+                - spinbutton [ref=e725]: "120"
+                - generic [ref=e726]: mm
+            - generic [ref=e727]:
+              - generic [ref=e728]: 高度
+              - generic [ref=e729]:
+                - spinbutton [ref=e730]: "90"
+                - generic [ref=e731]: mm
+        - generic [ref=e732]:
+          - heading "全局数据颜色" [level=3] [ref=e734]
+          - generic [ref=e735]:
+            - generic [ref=e737]:
+              - generic [ref=e738]: GroupA
+              - textbox [ref=e740] [cursor=pointer]: "#1f78b4"
+              - textbox [ref=e741]: "#1F78B4"
+            - generic [ref=e743]:
+              - generic [ref=e744]: Default
+              - textbox [ref=e746] [cursor=pointer]: "#1f77b4"
+              - textbox [ref=e747]: "#1F77B4"
+      - generic [ref=e749]:
+        - heading "全局字体" [level=3] [ref=e751]
+        - generic [ref=e752]:
+          - generic [ref=e753]:
+            - generic [ref=e754]: 字体
+            - combobox [ref=e755]:
+              - option "Arial"
+              - option "Times New Roman" [selected]
+              - option "Courier New"
+              - option "Helvetica"
+              - option "Microsoft YaHei"
+          - generic [ref=e756]:
+            - generic [ref=e757]: 标题字号
+            - generic [ref=e758]:
+              - spinbutton [ref=e759]: "16"
+              - slider [ref=e760]: "16"
+          - generic [ref=e761]:
+            - generic [ref=e762]: 刻度字号
+            - generic [ref=e763]:
+              - spinbutton [ref=e764]: "10"
+              - slider [ref=e765]: "10"
+          - generic [ref=e766]:
+            - generic [ref=e767]: 图例字号
+            - generic [ref=e768]:
+              - spinbutton [ref=e769]: "10"
+              - slider [ref=e770]: "10"

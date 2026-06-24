@@ -1,0 +1,124 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: S
+        - generic [ref=e9]: SciFigure Studio
+      - generic [ref=e10]:
+        - button "项目与资源" [ref=e11]: 项目与资源
+        - button "当前项目数据" [ref=e13]
+        - button "帮助" [ref=e14]:
+          - text: 帮助
+          - img [ref=e15]
+    - generic [ref=e17]:
+      - button "导入数据" [ref=e18]:
+        - img [ref=e19]
+        - text: 导入数据
+      - button "新建图形项目" [ref=e22]:
+        - img [ref=e23]
+        - text: 新建图形项目
+      - generic [ref=e24] [cursor=pointer]:
+        - img "Avatar"
+  - generic [ref=e25]:
+    - generic [ref=e106]:
+      - generic [ref=e107]:
+        - generic [ref=e108]: 项目
+        - button "首页" [ref=e109]:
+          - img [ref=e110]
+          - text: 首页
+        - button "我的项目" [ref=e113]:
+          - img [ref=e114]
+          - text: 我的项目
+        - button "当前项目数据" [ref=e116]:
+          - img [ref=e117]
+          - text: 当前项目数据
+      - generic [ref=e121]:
+        - button "设置" [ref=e122]:
+          - img [ref=e123]
+          - text: 设置
+        - button "集成" [ref=e126]:
+          - img [ref=e127]
+          - text: 集成
+      - generic [ref=e131]:
+        - generic [ref=e132]:
+          - generic [ref=e133]: 当前计划
+          - generic [ref=e134]: 专业版
+        - generic [ref=e135]: 有效期：永久有效
+        - generic [ref=e137]:
+          - generic [ref=e138]: 68.4 GB / 200 GB
+          - generic [ref=e139]: 34%
+        - button "管理存储 ›" [ref=e142]:
+          - text: 管理存储
+          - generic [ref=e143]: ›
+    - generic [ref=e145]:
+      - generic [ref=e146]:
+        - heading "我的项目" [level=1] [ref=e147]:
+          - img [ref=e148]
+          - text: 我的项目
+        - generic [ref=e150]:
+          - generic [ref=e151]:
+            - img [ref=e152]
+            - textbox "搜索项目..." [ref=e155]
+          - button "新建项目" [ref=e156]
+      - generic [ref=e157]:
+        - table [ref=e158]:
+          - rowgroup [ref=e159]:
+            - row "项目名称 分组 / 样品 修改时间 创建时间" [ref=e160]:
+              - columnheader "项目名称" [ref=e161]
+              - columnheader "分组 / 样品" [ref=e162]
+              - columnheader "修改时间" [ref=e163]
+              - columnheader "创建时间" [ref=e164]
+              - columnheader [ref=e165]
+          - rowgroup [ref=e166]:
+            - row "未命名项目 2 组 · 6 个样品 2 组6 样品 2026-06-23 08:15:14 2026-06-22 02:21:17" [ref=e167] [cursor=pointer]:
+              - cell "未命名项目 2 组 · 6 个样品" [ref=e168]:
+                - img [ref=e170]
+                - generic [ref=e173]:
+                  - generic [ref=e174]: 未命名项目
+                  - generic [ref=e175]: 2 组 · 6 个样品
+              - cell "2 组6 样品" [ref=e176]:
+                - generic [ref=e177]: 2 组
+                - generic [ref=e178]: 6 样品
+              - cell "2026-06-23 08:15:14" [ref=e179]
+              - cell "2026-06-22 02:21:17" [ref=e180]
+              - cell [ref=e181]:
+                - generic [ref=e182]:
+                  - button "打开" [ref=e183]:
+                    - img [ref=e184]
+                  - button "删除" [ref=e188]:
+                    - img [ref=e189]
+            - row "未命名项目 0 组 · 0 个样品 0 组0 样品 2026-06-23 03:10:30 2026-06-23 02:34:00" [ref=e192] [cursor=pointer]:
+              - cell "未命名项目 0 组 · 0 个样品" [ref=e193]:
+                - img [ref=e195]
+                - generic [ref=e198]:
+                  - generic [ref=e199]: 未命名项目
+                  - generic [ref=e200]: 0 组 · 0 个样品
+              - cell "0 组0 样品" [ref=e201]:
+                - generic [ref=e202]: 0 组
+                - generic [ref=e203]: 0 样品
+              - cell "2026-06-23 03:10:30" [ref=e204]
+              - cell "2026-06-23 02:34:00" [ref=e205]
+              - cell [ref=e206]:
+                - generic [ref=e207]:
+                  - button "打开" [ref=e208]:
+                    - img [ref=e209]
+                  - button "删除" [ref=e213]:
+                    - img [ref=e214]
+            - row "未命名项目 0 组 · 0 个样品 0 组0 样品 2026-06-23 01:07:01 2026-06-22 13:29:01" [ref=e217] [cursor=pointer]:
+              - cell "未命名项目 0 组 · 0 个样品" [ref=e218]:
+                - img [ref=e220]
+                - generic [ref=e223]:
+                  - generic [ref=e224]: 未命名项目
+                  - generic [ref=e225]: 0 组 · 0 个样品
+              - cell "0 组0 样品" [ref=e226]:
+                - generic [ref=e227]: 0 组
+                - generic [ref=e228]: 0 样品
+              - cell "2026-06-23 01:07:01" [ref=e229]
+              - cell "2026-06-22 13:29:01" [ref=e230]
+              - cell [ref=e231]:
+                - generic [ref=e232]:
+                  - button "打开" [ref=e233]:
+                    - img [ref=e234]
+                  - button "删除" [ref=e238]:
+                    - img [ref=e239]
+        - generic [ref=e243]: 共 3 个项目

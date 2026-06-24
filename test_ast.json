@@ -1,0 +1,1 @@
+{"script": "import os\nos.system('echo hacked')"}

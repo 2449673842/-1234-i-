@@ -1,0 +1,85 @@
+- generic [ref=e644]:
+  - navigation [ref=e645]:
+    - generic [ref=e646]:
+      - generic [ref=e647] [cursor=pointer]:
+        - generic [ref=e649]: S
+        - generic [ref=e650]: SciFigure Studio
+      - generic [ref=e651]:
+        - button "项目与资源" [ref=e652]: 项目与资源
+        - button "当前项目数据" [ref=e654]
+        - button "帮助" [ref=e655]:
+          - text: 帮助
+          - img [ref=e656]
+    - generic [ref=e658]:
+      - button "导入数据" [ref=e659]:
+        - img [ref=e660]
+        - text: 导入数据
+      - button "新建图形项目" [ref=e663]:
+        - img [ref=e664]
+        - text: 新建图形项目
+      - generic [ref=e665] [cursor=pointer]:
+        - img "Avatar"
+  - generic [ref=e666]:
+    - generic [ref=e667]:
+      - generic [ref=e668]:
+        - generic [ref=e669]: 项目
+        - button "首页" [ref=e670]:
+          - img [ref=e671]
+          - text: 首页
+        - button "我的项目" [ref=e674]:
+          - img [ref=e675]
+          - text: 我的项目
+        - button "当前项目数据" [ref=e677]:
+          - img [ref=e678]
+          - text: 当前项目数据
+      - generic [ref=e682]:
+        - button "设置" [ref=e683]:
+          - img [ref=e684]
+          - text: 设置
+        - button "集成" [ref=e687]:
+          - img [ref=e688]
+          - text: 集成
+      - generic [ref=e692]:
+        - generic [ref=e693]:
+          - generic [ref=e694]: 当前计划
+          - generic [ref=e695]: 专业版
+        - generic [ref=e696]: 有效期：永久有效
+        - generic [ref=e698]:
+          - generic [ref=e699]: 68.4 GB / 200 GB
+          - generic [ref=e700]: 34%
+        - button "管理存储 ›" [ref=e703]:
+          - text: 管理存储
+          - generic [ref=e704]: ›
+    - generic [ref=e706]:
+      - generic [ref=e707]:
+        - generic [ref=e709]:
+          - generic [ref=e710]:
+            - img [ref=e711]
+            - text: 本地科研绘图工具
+          - heading "从真实数据开始，不展示伪统计和伪项目。" [level=1] [ref=e713]
+          - paragraph [ref=e714]: 当前版本只保留可执行的本地工作流入口。新项目从数据导入开始，已有项目从本地数据库打开，不再展示样板活动、虚构协作者或占位模板。
+        - generic [ref=e715]:
+          - button "新建项目 导入 CSV / Excel，完成字段映射，然后进入编辑器继续调整和导出。" [ref=e716]:
+            - img [ref=e718]
+            - generic [ref=e721]:
+              - generic [ref=e722]:
+                - heading "新建项目" [level=2] [ref=e723]
+                - paragraph [ref=e724]: 导入 CSV / Excel，完成字段映射，然后进入编辑器继续调整和导出。
+              - img [ref=e725]
+          - button "打开已有项目 从本地 SQLite 项目库里打开、继续编辑或检查之前保存的 figure spec。" [ref=e727]:
+            - img [ref=e729]
+            - generic [ref=e731]:
+              - generic [ref=e732]:
+                - heading "打开已有项目" [level=2] [ref=e733]
+                - paragraph [ref=e734]: 从本地 SQLite 项目库里打开、继续编辑或检查之前保存的 figure spec。
+              - img [ref=e735]
+      - generic [ref=e737]:
+        - generic [ref=e738]:
+          - heading "数据入口" [level=3] [ref=e739]
+          - paragraph [ref=e740]: 唯一推荐入口是“导入数据”，避免模板页和样板文件分散注意力。
+        - generic [ref=e741]:
+          - heading "状态说明" [level=3] [ref=e742]
+          - paragraph [ref=e743]: 项目、数据源和渲染结果都以本地状态为准，不再展示虚构指标。
+        - generic [ref=e744]:
+          - heading "当前限制" [level=3] [ref=e745]
+          - paragraph [ref=e746]: 模板库和外部资源库未接入真实内容前，不应继续作为主入口暴露。

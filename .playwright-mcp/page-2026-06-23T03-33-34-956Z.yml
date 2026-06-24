@@ -1,0 +1,237 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: S
+        - generic [ref=e9]: SciFigure Studio
+      - generic [ref=e10]:
+        - button "项目与资源" [ref=e11]
+        - button "当前项目数据" [ref=e13]
+        - button "帮助" [ref=e14]:
+          - text: 帮助
+          - img [ref=e15]
+    - generic [ref=e17]:
+      - button "重新配置" [ref=e244]:
+        - img [ref=e19]
+        - text: 重新配置
+      - button "保存项目" [ref=e245]:
+        - img [ref=e246]
+        - text: 保存项目
+      - generic [ref=e250]:
+        - button "导出图形" [ref=e251]:
+          - img [ref=e252]
+          - text: 导出图形
+        - button [ref=e255]:
+          - img [ref=e256]
+      - generic [ref=e24] [cursor=pointer]:
+        - img "Avatar"
+  - generic [ref=e25]:
+    - generic [ref=e258]:
+      - generic [ref=e259]:
+        - button [ref=e260]:
+          - img [ref=e262]
+        - button [ref=e265]:
+          - img [ref=e266]
+        - button [ref=e267]:
+          - img [ref=e268]
+        - button [ref=e272]:
+          - img [ref=e273]
+        - button [ref=e275]:
+          - img [ref=e276]
+      - button [ref=e278]:
+        - img [ref=e279]
+      - img [ref=e283] [cursor=pointer]
+    - generic [ref=e286]:
+      - generic [ref=e287]:
+        - heading "项目资源" [level=2] [ref=e289]
+        - list [ref=e290]:
+          - listitem [ref=e291] [cursor=pointer]:
+            - img [ref=e292]
+            - text: data.csv
+          - listitem [ref=e295] [cursor=pointer]:
+            - img [ref=e296]
+            - text: figure_spec.json
+          - listitem [ref=e301] [cursor=pointer]:
+            - img [ref=e302]
+            - text: render.py
+      - generic [ref=e307]:
+        - heading "图层结构" [level=2] [ref=e309]:
+          - img [ref=e310]
+          - text: 图层结构
+        - generic [ref=e314]:
+          - generic [ref=e316] [cursor=pointer]:
+            - button [ref=e317]:
+              - img [ref=e318]
+            - generic [ref=e320]: 全局图像 (Figure)
+          - generic [ref=e322]:
+            - generic [ref=e324] [cursor=pointer]:
+              - button [ref=e325]:
+                - img [ref=e326]
+              - generic [ref=e328]: 画布与边界 (Canvas)
+            - generic [ref=e331] [cursor=pointer]:
+              - generic [ref=e334]: 无画布元素
+              - generic [ref=e335]:
+                - button "锁定图层" [ref=e336]:
+                  - img [ref=e337]
+                - button "隐藏图层" [ref=e340]:
+                  - img [ref=e341]
+          - generic [ref=e345]:
+            - generic [ref=e347] [cursor=pointer]:
+              - button [ref=e348]:
+                - img [ref=e349]
+              - generic [ref=e351]: 坐标系与网格 (Axes)
+            - generic [ref=e354] [cursor=pointer]:
+              - generic [ref=e357]: 无坐标系元素
+              - generic [ref=e358]:
+                - button "锁定图层" [ref=e359]:
+                  - img [ref=e360]
+                - button "隐藏图层" [ref=e363]:
+                  - img [ref=e364]
+          - generic [ref=e368]:
+            - generic [ref=e370] [cursor=pointer]:
+              - button [ref=e371]:
+                - img [ref=e372]
+              - generic [ref=e374]: 数据图层 (Data Layers)
+            - generic [ref=e377] [cursor=pointer]:
+              - generic [ref=e380]: 无数据元素
+              - generic [ref=e381]:
+                - button "锁定图层" [ref=e382]:
+                  - img [ref=e383]
+                - button "隐藏图层" [ref=e386]:
+                  - img [ref=e387]
+          - generic [ref=e391]:
+            - generic [ref=e393] [cursor=pointer]:
+              - button [ref=e394]:
+                - img [ref=e395]
+              - generic [ref=e397]: 图例图层 (Legend)
+            - generic [ref=e400] [cursor=pointer]:
+              - generic [ref=e403]: 无图例元素
+              - generic [ref=e404]:
+                - button "锁定图层" [ref=e405]:
+                  - img [ref=e406]
+                - button "隐藏图层" [ref=e409]:
+                  - img [ref=e410]
+      - generic [ref=e414]:
+        - generic [ref=e415]:
+          - img [ref=e417]
+          - generic [ref=e419]:
+            - generic [ref=e420]: Matplotlib
+            - generic [ref=e421]: Parsed Successfully
+        - generic [ref=e422]:
+          - img [ref=e423]
+          - text: Publication Ready
+    - generic [ref=e425]:
+      - generic [ref=e426]:
+        - generic [ref=e427]:
+          - img [ref=e428] [cursor=pointer]
+          - img [ref=e431]
+          - generic [ref=e433] [cursor=pointer]: 项目
+          - img [ref=e434]
+          - generic [ref=e436]:
+            - text: 未命名项目
+            - img [ref=e437] [cursor=pointer]
+        - generic [ref=e439]:
+          - button "撤销" [disabled] [ref=e440]
+          - button "重做" [disabled] [ref=e441]
+          - button "保存" [ref=e443]:
+            - img [ref=e444]
+            - text: 保存
+          - button "渲染中..." [disabled] [ref=e448]
+          - button "已保存" [ref=e450]: 已保存
+      - generic [ref=e452]:
+        - generic [ref=e453]:
+          - generic [ref=e454]:
+            - button "预览" [ref=e455]
+            - button "代码" [ref=e456]
+            - button "数据" [ref=e457]
+            - button "Spec" [ref=e458]
+          - generic [ref=e459]:
+            - generic [ref=e460]:
+              - text: 实时渲染
+              - generic [ref=e462]: "?"
+            - generic [ref=e463]: Python 引擎运行中...
+        - generic [ref=e467]:
+          - generic [ref=e468]: 🐍
+          - heading "等待 Python 渲染结果" [level=3] [ref=e469]
+          - paragraph [ref=e470]: 当前画布只显示后端真渲染 SVG。请点击上方「同步至引擎并预览 SVG」生成预览。
+        - generic [ref=e471]:
+          - generic [ref=e472]:
+            - generic [ref=e473]:
+              - button "Python Code" [ref=e474]
+              - button "Figure Spec" [ref=e475]
+              - button "日志" [ref=e476]
+              - button "Manifest (v2)" [ref=e477]
+            - generic [ref=e478]:
+              - button [ref=e479]:
+                - img [ref=e480]
+              - button [ref=e482]:
+                - img [ref=e483]
+              - button "Copy" [ref=e488]
+              - button [ref=e489]:
+                - img [ref=e490]
+          - generic [ref=e493]:
+            - generic [ref=e494]:
+              - generic [ref=e495]:
+                - generic [ref=e496]: "1"
+                - generic [ref=e497]: "2"
+                - generic [ref=e498]: "3"
+                - generic [ref=e499]: "4"
+                - generic [ref=e500]: "5"
+                - generic [ref=e501]: "6"
+                - generic [ref=e502]: "7"
+                - generic [ref=e503]: "8"
+                - generic [ref=e504]: "9"
+                - generic [ref=e505]: "10"
+                - generic [ref=e506]: "11"
+                - generic [ref=e507]: "12"
+                - generic [ref=e508]: "13"
+                - generic [ref=e509]: "14"
+                - generic [ref=e510]: "15"
+                - generic [ref=e511]: "16"
+                - generic [ref=e512]: "17"
+                - generic [ref=e513]: "18"
+                - generic [ref=e514]: "19"
+                - generic [ref=e515]: "20"
+                - generic [ref=e516]: "21"
+                - generic [ref=e517]: "22"
+                - generic [ref=e518]: "23"
+                - generic [ref=e519]: "24"
+                - generic [ref=e520]: "25"
+                - generic [ref=e521]: "26"
+                - generic [ref=e522]: "27"
+                - generic [ref=e523]: "28"
+                - generic [ref=e524]: "29"
+                - generic [ref=e525]: "30"
+                - generic [ref=e526]: "31"
+              - generic [ref=e527]: "import matplotlib.pyplot as plt import numpy as np fig, ax = plt.subplots(figsize=(3.3465, 2.7559), dpi=600) labels = [\"U1\",\"U2\",\"M1\",\"M2\",\"P1\",\"P2\"] x = np.arange(len(labels)) width = 0.4000 vals_EWR = np.array([11.5,21.8,9,15.9,25,11]) errs_EWR = np.array([1,1.3,0.8,1.2,1.4,1.1]) ax.bar(x + -0.5000 * width, vals_EWR, width, label=\"EWR\", color=\"#1f77b4\", yerr=errs_EWR, capsize=4) vals_NEWR = np.array([18,29.8,13.8,20,30.2,14.1]) errs_NEWR = np.array([1.2,0.9,0.9,0.8,0.6,0.8]) ax.bar(x + 0.5000 * width, vals_NEWR, width, label=\"NEWR\", color=\"#17becf\", yerr=errs_NEWR, capsize=4) ax.set_xticks(x) ax.set_xticklabels(labels, rotation=0) ax.set_title(\"Relative abundance of ARGs\", fontsize=16, fontweight=\"bold\") ax.set_xlabel(\"Sample\", fontsize=16) ax.set_ylabel(\"Relative abundance (%)\", fontsize=16) ax.tick_params(direction=\"out\", labelsize=11, width=1) ax.spines[\"top\"].set_visible(True) ax.spines[\"bottom\"].set_visible(True) ax.spines[\"left\"].set_visible(True) ax.spines[\"right\"].set_visible(True) for spine in ax.spines.values(): spine.set_linewidth(1) ax.legend(loc=\"upper right\", frameon=False, fontsize=10) plt.tight_layout()"
+            - generic [ref=e528]:
+              - generic [ref=e529]:
+                - generic [ref=e530]: "1"
+                - generic [ref=e531]: "2"
+                - generic [ref=e532]: "3"
+                - generic [ref=e533]: "4"
+                - generic [ref=e534]: "5"
+                - generic [ref=e535]: "6"
+                - generic [ref=e536]: "7"
+                - generic [ref=e537]: "8"
+                - generic [ref=e538]: "9"
+                - generic [ref=e539]: "10"
+                - generic [ref=e540]: "11"
+                - generic [ref=e541]: "12"
+                - generic [ref=e542]: "13"
+                - generic [ref=e543]: "14"
+                - generic [ref=e544]: "15"
+                - generic [ref=e545]: "16"
+                - generic [ref=e546]: "17"
+                - generic [ref=e547]: "18"
+                - generic [ref=e548]: "19"
+                - generic [ref=e549]: "20"
+              - generic [ref=e550]: "{ \"plot_type\": \"bar\", \"figure\": { \"width\": 85, \"height\": 70, \"unit\": \"mm\", \"dpi\": 600 }, \"data\": { \"x\": \"site\", \"y\": \"abundance\", \"group\": \"period\" }, \"font\": { \"family\": \"'Times New Roman', serif\", \"title_size\": 16, \"tick_size\": 11, \"legend_size\": 10 }, \"axes\": { \"title\": \"Relative abundance of ARGs\", \"xlabel\": \"Sample\", \"ylabel\": \"Relative abundance (%)\", \"x_tick_rotation\": 0, \"tick_direction\": \"out\", \"show_ticks\": true, \"spine_width\": 1 }, \"colors\": { \"EWR\": \"#1f77b4\", \"NEWR\": \"#17becf\" }, \"legend\": { \"show\": true, \"location\": \"upper right\", \"frameon\": false, \"x\": 86, \"y\": 17 }, \"raw_data\": { \"categories\": [ \"U1\", \"U2\", \"M1\", \"M2\", \"P1\", \"P2\" ], \"groups\": { \"EWR\": { \"values\": [ 11.5, 21.8, 9, 15.9, 25, 11 ], \"errors\": [ 1, 1.3, 0.8, 1.2, 1.4, 1.1 ] }, \"NEWR\": { \"values\": [ 18, 29.8, 13.8, 20, 30.2, 14.1 ], \"errors\": [ 1.2, 0.9, 0.9, 0.8, 0.6, 0.8 ] } }, \"scatter\": { \"Background FeP\": { \"x\": [ 400, 420, 410, 480, 500, 520, 510, 430, 490, 450 ], \"y\": [ -0.2, 0.1, -0.5, 1.2, 1.5, 2.1, 1.8, -0.1, 1.1, 0.5 ] }, \"FeP-enriched\": { \"x\": [ 410, 430, 420, 490, 510, 530, 520, 440, 500, 460 ], \"y\": [ -1.2, -0.8, -1.5, -0.2, 0.5, 1.1, 0.8, -1.1, 0.1, -0.5 ] } } }, \"export\": { \"format\": \"PDF\", \"dpi\": 600 } }"
+      - generic [ref=e551]:
+        - generic [ref=e554]: 已连接
+        - generic [ref=e555]:
+          - generic [ref=e556]: 尚未保存
+          - generic [ref=e557]:
+            - img [ref=e558]
+            - text: 自动保存已开启 (5s)
+    - generic [ref=e561]: Waiting for introspection...
