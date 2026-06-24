@@ -173,7 +173,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     if (!svgEl) { setOverlayBoxes([]); return; }
     const boxes: { gid: string; x: number; y: number; w: number; h: number }[] = [];
     selectedGids.forEach(gid => {
-      const el = svgEl.querySelector(`[id="${gid}"]`);
+      const el = svgEl.querySelector(`[id="${escId(gid)}"]`);
       if (!el) return;
       try {
         const bbox = el.getBBox();
@@ -228,46 +228,49 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   }, [validGids, selectedGids, onSelectGids, onSelectObject]);
 
   // Resolve a completed text drag: calculate new axes position and dispatch patch
+  const escId = (id: string) => CSS.escape(id);
+
   const resolveTextDrag = useCallback((gid: string, svgDeltaX: number, svgDeltaY: number) => {
     const svgEl = svgContainerRef.current?.querySelector('svg');
     if (!svgEl || !onPatch) return;
-    const axIdx = extractAxIdx(gid);
     const obj = figSession?.manifest?.objects.find(o => o.id === gid);
     if (!obj) return;
 
+    // V1: skip data-coordinate text drag (non-normalized coords)
+    const coordSystem = obj.currentProps.coord_system as string || 'axes';
+    if (coordSystem === 'data') return;
+
     const origX = obj.currentProps.x as number;
     const origY = obj.currentProps.y as number;
-    const coordSystem = obj.currentProps.coord_system as string || 'axes';
+    const axIdx = extractAxIdx(gid);
 
-    if (axIdx && (coordSystem === 'axes' || coordSystem === 'data')) {
-      const leftSpine = svgEl.querySelector(`[id="spine.left.${axIdx}"]`);
-      const rightSpine = svgEl.querySelector(`[id="spine.right.${axIdx}"]`);
-      const bottomSpine = svgEl.querySelector(`[id="spine.bottom.${axIdx}"]`);
-      const topSpine = svgEl.querySelector(`[id="spine.top.${axIdx}"]`);
-      if (leftSpine && rightSpine && bottomSpine && topSpine) {
-        try {
+    // Axes-coordinate text: map screen delta via spine bbox
+    if (axIdx && coordSystem === 'axes') {
+      try {
+        const leftSpine = svgEl.querySelector(`[id="${escId('spine.left.' + axIdx)}"]`);
+        const rightSpine = svgEl.querySelector(`[id="${escId('spine.right.' + axIdx)}"]`);
+        const bottomSpine = svgEl.querySelector(`[id="${escId('spine.bottom.' + axIdx)}"]`);
+        const topSpine = svgEl.querySelector(`[id="${escId('spine.top.' + axIdx)}"]`);
+        if (leftSpine && rightSpine && bottomSpine && topSpine) {
           const axesW = rightSpine.getBBox().x - leftSpine.getBBox().x;
           const axesH = bottomSpine.getBBox().y - topSpine.getBBox().y;
           const axesDx = svgDeltaX / axesW;
           const axesDy = -(svgDeltaY / axesH);
           onPatch([{
-            op: 'set',
-            mode: 'backend_patch',
-            gid,
+            op: 'set', mode: 'backend_patch', gid,
             prop: 'position',
-            value: { x: origX + axesDx, y: origY + axesDy, coord_system: coordSystem }
+            value: { x: origX + axesDx, y: origY + axesDy, coord_system: 'axes' }
           }]);
           return;
-        } catch { /* bbox error */ }
-      }
+        }
+      } catch { /* bbox error, fall through */ }
     }
-    // Fallback: figure coordinates
+
+    // Figure-coordinate fallback (fig_text, or axes text missing spines)
     onPatch([{
-      op: 'set',
-      mode: 'backend_patch',
-      gid,
+      op: 'set', mode: 'backend_patch', gid,
       prop: 'position',
-      value: { x: origX + svgDeltaX / svgSize.width, y: origY + svgDeltaY / svgSize.height, coord_system: coordSystem }
+      value: { x: origX + svgDeltaX / svgSize.width, y: origY - svgDeltaY / svgSize.height, coord_system: 'figure' }
     }]);
   }, [figSession?.manifest?.objects, onPatch, svgSize]);
 
@@ -293,7 +296,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       const pt = getSvgPoint(event.clientX, event.clientY);
       if (pt) {
         dragTextGidRef.current = foundGid;
-        const el = svgContainerRef.current?.querySelector(`[id="${foundGid}"]`);
+        const el = svgContainerRef.current?.querySelector(`[id="${escId(foundGid)}"]`);
         dragTextElRef.current = el || null;
         if (el) (el as HTMLElement).style.cursor = 'grabbing';
         dragStartSvgRef.current = pt;
@@ -384,7 +387,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         const mr = marqueeRectRef.current;
         const hitGids: string[] = [];
         validGids.forEach(gid => {
-          const el = svgEl.querySelector(`[id="${gid}"]`);
+          const el = svgEl.querySelector(`[id="${escId(gid)}"]`);
           if (!el) return;
           try {
             const bbox = el.getBBox();
