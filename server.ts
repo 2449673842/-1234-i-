@@ -37,10 +37,21 @@ async function startServer() {
   // --- Multer Storage Setup for Project Files ---
   const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-      const projectId = req.params.id;
-      const uploadDir = path.join(process.cwd(), 'data', 'projects', projectId, 'files');
-      fs.mkdirSync(uploadDir, { recursive: true });
-      cb(null, uploadDir);
+      try {
+        const projectId = req.params.id;
+        // Validate projectId before using it for path construction
+        assertSafeProjectId(projectId);
+        const root = path.resolve(process.cwd(), 'data', 'projects');
+        const projectDir = path.resolve(root, projectId);
+        if (!projectDir.startsWith(root + path.sep)) {
+          return cb(new Error('项目路径逃逸'), '');
+        }
+        const uploadDir = path.join(projectDir, 'files');
+        fs.mkdirSync(uploadDir, { recursive: true });
+        cb(null, uploadDir);
+      } catch (err: any) {
+        cb(err, '');
+      }
     },
     filename: (req, file, cb) => {
       const ext = path.extname(file.originalname);
@@ -61,7 +72,7 @@ async function startServer() {
       if (allowed.includes(ext)) {
         cb(null, true);
       } else {
-        cb(new Error(`不支持的文件格式: ${ext}，仅允许 CSV/TSV/XLSX`));
+        cb(new Error(`不支持的文件格式: ${ext}，仅允许 CSV/TSV/TXT/XLSX`));
       }
     },
   });
@@ -494,6 +505,12 @@ async function startServer() {
 
       const reqFormat = (format || 'svg').toLowerCase();
 
+      // AST gate before executing script
+      const astCheck = await validateAst(session.script);
+      if (!astCheck.ok) {
+        return res.status(400).json({ status: 'error', message: '脚本安全校验失败', details: astCheck.message, errors: astCheck.errors });
+      }
+
       // 1. Ensure we have the latest SVG and export if necessary
       const resultStr = await spawnPythonWithPayload('introspector.py', {
         script: session.script,
@@ -560,7 +577,9 @@ async function startServer() {
 
   app.get('/api/projects/:id', (req, res) => {
     try {
-      const project = getProject(req.params.id);
+      const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      const project = getProject(projectId);
       if (!project) return res.status(404).json({ status: 'error', message: 'Project not found' });
       
       const datasets = listProjectFiles(req.params.id);
@@ -611,9 +630,11 @@ async function startServer() {
 
   app.put('/api/projects/:id', (req, res) => {
     try {
+      const projectId = req.params.id;
+      assertSafeProjectId(projectId);
       const { name, spec } = req.body;
       if (!name) return res.status(400).json({ status: 'error', message: 'name required' });
-      const existing = getProject(req.params.id);
+      const existing = getProject(projectId);
       if (!existing) return res.status(404).json({ status: 'error', message: 'Project not found' });
       if (spec) {
         const script = spec.custom_script || spec.script || '';
