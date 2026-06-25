@@ -1,1 +1,13 @@
 @import "tailwindcss";
+
+@keyframes render-progress {
+  0% {
+    transform: translateX(-110%);
+  }
+  55% {
+    transform: translateX(70%);
+  }
+  100% {
+    transform: translateX(210%);
+  }
+}

@@ -1,6 +1,7 @@
 import { Download, CheckCircle, AlertTriangle, FileImage, Settings2, FileCode, Check } from 'lucide-react';
 import { ViewState } from '../App';
 import { FigureSpec } from '../types';
+import type { FigureSession } from '../schemas/manifest';
 
 const DPI_OPTIONS = [
   { value: 300, label: '300 dpi (标准印花)' },
@@ -20,54 +21,81 @@ function downloadTextFile(filename: string, content: string, mimeType: string) {
   URL.revokeObjectURL(url);
 }
 
-import { FigureSession } from '../schemas/manifest';
-
-export function ExportSettingsPage({ spec, onNavigate, onSpecChange, figSession }: { spec: FigureSpec, onNavigate: (view: ViewState) => void, onSpecChange: (spec: FigureSpec) => void, figSession: FigureSession | null }) {
+export function ExportSettingsPage({
+  spec,
+  onNavigate,
+  onSpecChange,
+  figSession,
+  projectId,
+  activeFigureId,
+}: {
+  spec: FigureSpec;
+  onNavigate: (view: ViewState) => void;
+  onSpecChange: (spec: FigureSpec) => void;
+  figSession: FigureSession | null;
+  projectId?: string | null;
+  activeFigureId?: string;
+}) {
+  const exportConfig = spec.export ?? { format: 'PDF', dpi: 600, color_mode: 'RGB', embed_fonts: true };
+  const figureConfig = spec.figure ?? { width: 100, height: 80, unit: 'mm', dpi: exportConfig.dpi };
 
   const updateExportFormat = (format: string) => {
-    onSpecChange({ ...spec, export: { ...spec.export, format } });
+    onSpecChange({ ...spec, export: { ...exportConfig, format } });
   };
 
   const updateExportDpi = (dpi: number) => {
-    onSpecChange({ ...spec, export: { ...spec.export, dpi } });
+    onSpecChange({ ...spec, export: { ...exportConfig, dpi } });
   };
 
   const updateFigureWidth = (width: number) => {
-    onSpecChange({ ...spec, figure: { ...spec.figure, width } });
+    onSpecChange({ ...spec, figure: { ...figureConfig, width } });
   };
 
   const updateFigureHeight = (height: number) => {
-    onSpecChange({ ...spec, figure: { ...spec.figure, height } });
+    onSpecChange({ ...spec, figure: { ...figureConfig, height } });
   };
 
-  const handleExport = async () => {
+  const handleExport = async (formatOverride?: string) => {
     try {
-      if (!figSession?.sessionId) {
+      const selectedFormat = formatOverride || exportConfig.format || 'PDF';
+      const selectedDpi = exportConfig.dpi || 600;
+      const isProjectExport = Boolean(projectId && activeFigureId);
+
+      if (!isProjectExport && !figSession?.sessionId) {
         alert('请先在编辑器中渲染一次图形，然后再进行导出。');
         return;
       }
-      const res = await fetch('/api/figure/export', {
+
+      const endpoint = isProjectExport ? `/api/projects/${projectId}/export` : '/api/figure/export';
+      const payload = isProjectExport
+        ? { figureId: activeFigureId, format: selectedFormat, dpi: selectedDpi }
+        : { sessionId: figSession?.sessionId, format: selectedFormat, dpi: selectedDpi };
+
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: figSession.sessionId,
-          format: spec.export.format,
-          dpi: spec.export.dpi
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (data.status !== 'success') throw new Error(data.message || 'Export failed');
+
+      const exportPayload = isProjectExport
+        ? data.figures?.find((figure: any) => figure.figureId === activeFigureId) || data.figures?.[0]
+        : data;
+      if (!exportPayload) {
+        throw new Error('没有可导出的 Figure');
+      }
 
       // Show a note if format conversion fell back to SVG
       if (data.format_note) {
         alert(`提示: ${data.format_note}`);
       }
 
-      const fmt = data.format.toLowerCase();
+      const fmt = (exportPayload.format || selectedFormat).toLowerCase();
       let blob: Blob;
 
-      if (data.binary_b64) {
-        const byteStr = atob(data.binary_b64);
+      if (exportPayload.binary_b64) {
+        const byteStr = atob(exportPayload.binary_b64);
         const byteArr = new Uint8Array(byteStr.length);
         for (let i = 0; i < byteStr.length; i++) byteArr[i] = byteStr.charCodeAt(i);
         const mimeMap: Record<string, string> = {
@@ -78,13 +106,13 @@ export function ExportSettingsPage({ spec, onNavigate, onSpecChange, figSession 
         };
         blob = new Blob([byteArr], { type: mimeMap[fmt] || 'application/octet-stream' });
       } else {
-        blob = new Blob([data.svg], { type: 'image/svg+xml' });
+        blob = new Blob([exportPayload.svg], { type: 'image/svg+xml' });
       }
 
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `figure.${data.binary_b64 ? fmt : 'svg'}`;
+      a.download = `${exportPayload.figureId || 'figure'}.${exportPayload.binary_b64 ? fmt : 'svg'}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -131,7 +159,7 @@ export function ExportSettingsPage({ spec, onNavigate, onSpecChange, figSession 
                       <button 
                         key={fmt}
                         onClick={() => updateExportFormat(fmt)}
-                        className={`flex-1 py-2 text-center rounded-md text-sm font-medium transition-all ${spec.export.format === fmt ? 'bg-white shadow-sm text-blue-600 border border-slate-200/50' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50'}`}
+                        className={`flex-1 py-2 text-center rounded-md text-sm font-medium transition-all ${exportConfig.format === fmt ? 'bg-white shadow-sm text-blue-600 border border-slate-200/50' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50'}`}
                       >
                         {fmt}
                       </button>
@@ -143,7 +171,7 @@ export function ExportSettingsPage({ spec, onNavigate, onSpecChange, figSession 
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">分辨率 (DPI)</label>
                   <select
-                    value={spec.export.dpi}
+                    value={exportConfig.dpi}
                     onChange={(e) => updateExportDpi(Number(e.target.value))}
                     className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
                   >
@@ -159,13 +187,13 @@ export function ExportSettingsPage({ spec, onNavigate, onSpecChange, figSession 
                     <div className="flex-1">
                       <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-blue-500">
                         <span className="bg-slate-50 px-3 py-2 border-r border-slate-300 text-slate-500 text-sm">宽</span>
-                        <input type="number" value={spec.figure.width} onChange={(e) => updateFigureWidth(Number(e.target.value))} className="w-full p-2 outline-none text-sm" />
+                        <input type="number" value={figureConfig.width} onChange={(e) => updateFigureWidth(Number(e.target.value))} className="w-full p-2 outline-none text-sm" />
                       </div>
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-blue-500">
                         <span className="bg-slate-50 px-3 py-2 border-r border-slate-300 text-slate-500 text-sm">高</span>
-                        <input type="number" value={spec.figure.height} onChange={(e) => updateFigureHeight(Number(e.target.value))} className="w-full p-2 outline-none text-sm" />
+                        <input type="number" value={figureConfig.height} onChange={(e) => updateFigureHeight(Number(e.target.value))} className="w-full p-2 outline-none text-sm" />
                       </div>
                     </div>
                   </div>
@@ -178,8 +206,8 @@ export function ExportSettingsPage({ spec, onNavigate, onSpecChange, figSession 
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">颜色模式</label>
                   <select 
-                    value={spec.export.color_mode || 'RGB'} 
-                    onChange={(e) => onSpecChange({ ...spec, export: { ...spec.export, color_mode: e.target.value } })}
+                    value={exportConfig.color_mode || 'RGB'} 
+                    onChange={(e) => onSpecChange({ ...spec, export: { ...exportConfig, color_mode: e.target.value } })}
                     className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="RGB">RGB (默认屏幕显示)</option>
@@ -192,8 +220,8 @@ export function ExportSettingsPage({ spec, onNavigate, onSpecChange, figSession 
                   <label className="flex items-center gap-2 cursor-pointer mb-2">
                     <input 
                       type="checkbox" 
-                      checked={spec.export.embed_fonts ?? true} 
-                      onChange={(e) => onSpecChange({ ...spec, export: { ...spec.export, embed_fonts: e.target.checked } })}
+                      checked={exportConfig.embed_fonts ?? true} 
+                      onChange={(e) => onSpecChange({ ...spec, export: { ...exportConfig, embed_fonts: e.target.checked } })}
                       className="w-4 h-4 text-blue-600 rounded cursor-pointer accent-blue-600" 
                     />
                     <span className="text-sm font-medium text-slate-800">嵌入字体 (Embed Fonts)</span>
@@ -233,11 +261,11 @@ export function ExportSettingsPage({ spec, onNavigate, onSpecChange, figSession 
               </div>
 
               <div className="space-y-3">
-                <button onClick={handleExport} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow-md hover:bg-blue-700 flex items-center justify-center gap-2 transition-all hover:-translate-y-0.5">
-                  <Download className="w-4 h-4" /> 导出高质量图形 ({spec.export.format})
+                <button onClick={() => handleExport()} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow-md hover:bg-blue-700 flex items-center justify-center gap-2 transition-all hover:-translate-y-0.5">
+                  <Download className="w-4 h-4" /> 导出高质量图形 ({exportConfig.format})
                 </button>
                 <div className="grid grid-cols-2 gap-3">
-                  <button onClick={() => { updateExportFormat('PDF'); handleExport(); }} className="py-2.5 bg-slate-50 border border-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-100 transition-colors flex items-center justify-center gap-1.5 shadow-sm">
+                  <button onClick={() => { updateExportFormat('PDF'); void handleExport('PDF'); }} className="py-2.5 bg-slate-50 border border-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-100 transition-colors flex items-center justify-center gap-1.5 shadow-sm">
                     <FileImage className="w-4 h-4 text-red-500" /> PDF 矢量
                   </button>
                   <button 

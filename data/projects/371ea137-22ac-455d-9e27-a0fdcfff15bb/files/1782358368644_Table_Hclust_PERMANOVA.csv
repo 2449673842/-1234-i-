@@ -1,0 +1,2 @@
+﻿method,distance,n_permutations,pseudo_F,R2,p
+PERMANOVA,Euclidean distance on standardized temporal LNRR matrix,999,21.524751607735194,0.629536670137201,0.001

@@ -1,0 +1,245 @@
+{
+  "figureId": "fig_4",
+  "index": 3,
+  "editLog": [
+    {
+      "gid": "xlabel.0",
+      "prop": "fontsize",
+      "value": 22,
+      "mode": "backend_patch",
+      "timestamp": 1782373412064
+    },
+    {
+      "gid": "ylabel.0",
+      "prop": "fontsize",
+      "value": 22,
+      "mode": "backend_patch",
+      "timestamp": 1782373423219
+    },
+    {
+      "gid": "axis.x.0",
+      "prop": "tick_labelsize",
+      "value": 16,
+      "mode": "backend_patch",
+      "timestamp": 1782373433612
+    },
+    {
+      "gid": "axis.y.0",
+      "prop": "tick_labelsize",
+      "value": 16,
+      "mode": "backend_patch",
+      "timestamp": 1782373446900
+    },
+    {
+      "gid": "text.0.0",
+      "prop": "fontsize",
+      "value": 14,
+      "mode": "backend_patch",
+      "timestamp": 1782373467372
+    },
+    {
+      "gid": "text.0.1",
+      "prop": "fontsize",
+      "value": 14,
+      "mode": "backend_patch",
+      "timestamp": 1782373467372
+    },
+    {
+      "gid": "text.0.2",
+      "prop": "fontsize",
+      "value": 14,
+      "mode": "backend_patch",
+      "timestamp": 1782373467372
+    },
+    {
+      "gid": "text.0.3",
+      "prop": "fontsize",
+      "value": 14,
+      "mode": "backend_patch",
+      "timestamp": 1782373467372
+    },
+    {
+      "gid": "text.0.4",
+      "prop": "fontsize",
+      "value": 14,
+      "mode": "backend_patch",
+      "timestamp": 1782373467372
+    },
+    {
+      "gid": "title.left.0",
+      "prop": "fontsize",
+      "value": 22,
+      "mode": "backend_patch",
+      "timestamp": 1782373480081
+    },
+    {
+      "gid": "title.left.0",
+      "prop": "fontsize",
+      "value": 16,
+      "mode": "backend_patch",
+      "timestamp": 1782373496452
+    },
+    {
+      "gid": "spine_group.0",
+      "prop": "linewidth",
+      "value": 2,
+      "mode": "backend_patch",
+      "timestamp": 1782373521300
+    },
+    {
+      "gid": "axis.y.0",
+      "prop": "visible",
+      "value": false,
+      "mode": "local_patch",
+      "timestamp": 1782373549182
+    },
+    {
+      "gid": "axis.y.0",
+      "prop": "visible",
+      "value": false,
+      "mode": "local_patch",
+      "timestamp": 1782373550393
+    },
+    {
+      "gid": "axis.y.0",
+      "prop": "visible",
+      "value": false,
+      "mode": "local_patch",
+      "timestamp": 1782373550774
+    },
+    {
+      "gid": "title.0",
+      "prop": "visible",
+      "value": false,
+      "mode": "local_patch",
+      "timestamp": 1782373555605
+    },
+    {
+      "gid": "title.0",
+      "prop": "visible",
+      "value": false,
+      "mode": "local_patch",
+      "timestamp": 1782373555793
+    },
+    {
+      "gid": "legend_text.0.0",
+      "prop": "fontsize",
+      "value": 14,
+      "mode": "backend_patch",
+      "timestamp": 1782373617832
+    },
+    {
+      "gid": "legend_text.0.1",
+      "prop": "fontsize",
+      "value": 14,
+      "mode": "backend_patch",
+      "timestamp": 1782373617832
+    },
+    {
+      "gid": "legend_text.0.2",
+      "prop": "fontsize",
+      "value": 14,
+      "mode": "backend_patch",
+      "timestamp": 1782373617832
+    },
+    {
+      "gid": "legend_text.0.3",
+      "prop": "fontsize",
+      "value": 14,
+      "mode": "backend_patch",
+      "timestamp": 1782373617832
+    },
+    {
+      "gid": "legend_text.0.0",
+      "prop": "fontsize",
+      "value": 10,
+      "mode": "backend_patch",
+      "timestamp": 1782373638682
+    },
+    {
+      "gid": "legend_text.0.1",
+      "prop": "fontsize",
+      "value": 10,
+      "mode": "backend_patch",
+      "timestamp": 1782373638682
+    },
+    {
+      "gid": "legend_text.0.2",
+      "prop": "fontsize",
+      "value": 10,
+      "mode": "backend_patch",
+      "timestamp": 1782373638682
+    },
+    {
+      "gid": "legend_text.0.3",
+      "prop": "fontsize",
+      "value": 10,
+      "mode": "backend_patch",
+      "timestamp": 1782373638682
+    },
+    {
+      "gid": "legend_text.0.0",
+      "prop": "fontsize",
+      "value": 7.4,
+      "mode": "backend_patch",
+      "timestamp": 1782373652456
+    },
+    {
+      "gid": "legend_text.0.1",
+      "prop": "fontsize",
+      "value": 7.4,
+      "mode": "backend_patch",
+      "timestamp": 1782373652456
+    },
+    {
+      "gid": "legend_text.0.2",
+      "prop": "fontsize",
+      "value": 7.4,
+      "mode": "backend_patch",
+      "timestamp": 1782373652456
+    },
+    {
+      "gid": "legend_text.0.3",
+      "prop": "fontsize",
+      "value": 7.4,
+      "mode": "backend_patch",
+      "timestamp": 1782373652456
+    },
+    {
+      "gid": "global",
+      "prop": "figure.dpi",
+      "value": 600,
+      "mode": "backend_patch",
+      "timestamp": 1782374269573
+    },
+    {
+      "gid": "grid.0",
+      "prop": "visible",
+      "value": true,
+      "mode": "local_patch",
+      "timestamp": 1782374488257
+    },
+    {
+      "gid": "grid.0",
+      "prop": "visible",
+      "value": true,
+      "mode": "local_patch",
+      "timestamp": 1782374489410
+    },
+    {
+      "gid": "title.left.0",
+      "prop": "fontsize",
+      "value": 10,
+      "mode": "backend_patch",
+      "timestamp": 1782374515512
+    },
+    {
+      "gid": "grid.0",
+      "prop": "visible",
+      "value": false,
+      "mode": "local_patch",
+      "timestamp": 1782374523380
+    }
+  ],
+  "revision": 25
+}

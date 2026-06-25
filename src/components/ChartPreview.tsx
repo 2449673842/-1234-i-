@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { Minus, Plus, ScanSearch, Move, Type } from 'lucide-react';
+import { Minus, Plus, ScanSearch, Move } from 'lucide-react';
 import { FigureSpec } from '../types';
 import { sanitizeSvg } from '../utils/svgEditor';
 import { PatchEntry, FigureSession } from '../schemas/manifest';
@@ -8,12 +8,6 @@ const TEXT_GID_RE = /^(text|title|xlabel|ylabel|legend_text|legend_title|fig_tex
 
 function isTextGid(gid: string): boolean {
   return TEXT_GID_RE.test(gid);
-}
-
-function extractAxIdx(gid: string): string | null {
-  if (gid.startsWith('fig_text.')) return null;
-  const m = gid.match(/\.(\d+)(\.|$)/);
-  return m ? m[1] : null;
 }
 
 interface ChartPreviewProps {
@@ -33,7 +27,7 @@ function clamp(value: number, min: number, max: number) {
 }
 
 function parseSvgDimensions(svg: string | null | undefined) {
-  if (!svg) return { width: 900, height: 700 };
+  if (!svg) return { width: 900, height: 700, viewBox: { x: 0, y: 0, width: 900, height: 700 } };
   const widthMatch = svg.match(/width="([\d.]+)(pt|px|mm)?"/i);
   const heightMatch = svg.match(/height="([\d.]+)(pt|px|mm)?"/i);
   const viewBoxMatch = svg.match(/viewBox="([\d.\s-]+)"/i);
@@ -44,26 +38,28 @@ function parseSvgDimensions(svg: string | null | undefined) {
   };
   const width = widthMatch ? Number(widthMatch[1]) * unitScale(widthMatch[2]) : NaN;
   const height = heightMatch ? Number(heightMatch[1]) * unitScale(heightMatch[2]) : NaN;
-  if (Number.isFinite(width) && Number.isFinite(height)) return { width, height };
   if (viewBoxMatch) {
     const parts = viewBoxMatch[1].trim().split(/\s+/).map(Number);
-    if (parts.length === 4 && parts.every(Number.isFinite)) return { width: parts[2], height: parts[3] };
+    if (parts.length === 4 && parts.every(Number.isFinite)) {
+      return {
+        width: Number.isFinite(width) ? width : parts[2],
+        height: Number.isFinite(height) ? height : parts[3],
+        viewBox: { x: parts[0], y: parts[1], width: parts[2], height: parts[3] },
+      };
+    }
   }
-  return { width: 900, height: 700 };
+  if (Number.isFinite(width) && Number.isFinite(height)) return { width, height, viewBox: { x: 0, y: 0, width, height } };
+  return { width: 900, height: 700, viewBox: { x: 0, y: 0, width: 900, height: 700 } };
 }
 
 export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObject, selectedGids = [], onSelectGids, renderedSVG, onPatch, figSession }: ChartPreviewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgContainerRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const panStartRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null);
   const didPanRef = useRef(false);
   const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
   const marqueeRectRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
-  // Text drag state
-  const dragTextGidRef = useRef<string | null>(null);
-  const dragTextElRef = useRef<Element | null>(null);
-  const dragStartSvgRef = useRef<{ x: number; y: number } | null>(null);
-  const [isDraggingText, setIsDraggingText] = useState(false);
 
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [zoomMode, setZoomMode] = useState<'fit' | 'manual'>('fit');
@@ -73,7 +69,9 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const [isPanning, setIsPanning] = useState(false);
   const [marqueeRect, setMarqueeRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [overlayBoxes, setOverlayBoxes] = useState<{ gid: string; x: number; y: number; w: number; h: number }[]>([]);
+  const [overlayFrame, setOverlayFrame] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const svgSize = useMemo(() => parseSvgDimensions(renderedSVG), [renderedSVG]);
+  const escId = (id: string) => CSS.escape(id);
   const fitScale = useMemo(() => {
     if (!viewport.width || !viewport.height) return 1;
     const availableWidth = Math.max(viewport.width - 64, 200);
@@ -85,11 +83,71 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const validGids = useMemo(() => new Set((figSession?.manifest?.objects || []).map(o => o.id)), [figSession?.manifest?.objects]);
 
   const getSvgPoint = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
-    const svgEl = svgContainerRef.current?.querySelector('svg');
+    const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
     if (!svgEl) return null;
+    const ctm = svgEl.getScreenCTM();
+    if (ctm) {
+      const point = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+      return { x: point.x, y: point.y };
+    }
     const rect = svgEl.getBoundingClientRect();
-    return { x: (clientX - rect.left) / scale, y: (clientY - rect.top) / scale };
-  }, [scale]);
+    const viewBox = svgEl.viewBox.baseVal;
+    return {
+      x: viewBox.x + ((clientX - rect.left) / rect.width) * viewBox.width,
+      y: viewBox.y + ((clientY - rect.top) / rect.height) * viewBox.height,
+    };
+  }, []);
+
+  const getElementSvgBox = useCallback((el: Element, svgEl: SVGSVGElement) => {
+    const rect = el.getBoundingClientRect();
+    const corners = [
+      getSvgPoint(rect.left, rect.top),
+      getSvgPoint(rect.right, rect.top),
+      getSvgPoint(rect.right, rect.bottom),
+      getSvgPoint(rect.left, rect.bottom),
+    ].filter((point): point is { x: number; y: number } => Boolean(point));
+    if (corners.length !== 4) return null;
+    const xs = corners.map(point => point.x);
+    const ys = corners.map(point => point.y);
+    const x = Math.min(...xs);
+    const y = Math.min(...ys);
+    return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
+  }, [getSvgPoint]);
+
+  const updateOverlayGeometry = useCallback(() => {
+    const stageEl = stageRef.current;
+    const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
+    if (!stageEl || !svgEl) {
+      setOverlayFrame(null);
+      setOverlayBoxes([]);
+      return;
+    }
+
+    const stageRect = stageEl.getBoundingClientRect();
+    const svgRect = svgEl.getBoundingClientRect();
+    setOverlayFrame({
+      left: (svgRect.left - stageRect.left) / scale,
+      top: (svgRect.top - stageRect.top) / scale,
+      width: svgRect.width / scale,
+      height: svgRect.height / scale,
+    });
+
+    if (selectedGids.length === 0) {
+      setOverlayBoxes([]);
+      return;
+    }
+
+    const boxes: { gid: string; x: number; y: number; w: number; h: number }[] = [];
+    selectedGids.forEach(gid => {
+      const el = svgEl.querySelector(`[id="${escId(gid)}"]`);
+      if (!el) return;
+      try {
+        const box = getElementSvgBox(el, svgEl);
+        if (box) boxes.push({ gid, ...box });
+      } catch { /* skip */ }
+    });
+    setOverlayBoxes(boxes);
+  }, [getElementSvgBox, scale, selectedGids]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -127,7 +185,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   }, []);
 
   useEffect(() => {
-    const handleMouseUp = () => {
+    const handlePointerUp = () => {
       setIsPanning(false);
       panStartRef.current = null;
       if (marqueeStartRef.current) {
@@ -135,16 +193,10 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         marqueeRectRef.current = null;
         setMarqueeRect(null);
       }
-      if (dragTextGidRef.current) {
-        dragTextGidRef.current = null;
-        dragTextElRef.current = null;
-        dragStartSvgRef.current = null;
-        setIsDraggingText(false);
-      }
       setTimeout(() => { didPanRef.current = false; }, 0);
     };
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => window.removeEventListener('mouseup', handleMouseUp);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => window.removeEventListener('pointerup', handlePointerUp);
   }, []);
 
   const setManualZoom = (nextScale: number) => {
@@ -165,26 +217,11 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   }, [renderedSVG, scale]);
 
   useEffect(() => {
-    if (!svgContainerRef.current || selectedGids.length === 0) {
-      setOverlayBoxes([]);
-      return;
-    }
-    const svgEl = svgContainerRef.current.querySelector('svg');
-    if (!svgEl) { setOverlayBoxes([]); return; }
-    const boxes: { gid: string; x: number; y: number; w: number; h: number }[] = [];
-    selectedGids.forEach(gid => {
-      const el = svgEl.querySelector(`[id="${escId(gid)}"]`);
-      if (!el) return;
-      try {
-        const bbox = el.getBBox();
-        boxes.push({ gid, x: bbox.x, y: bbox.y, w: bbox.width, h: bbox.height });
-      } catch { /* skip */ }
-    });
-    setOverlayBoxes(boxes);
-  }, [selectedGids, renderedSVG]);
+    updateOverlayGeometry();
+  }, [updateOverlayGeometry, renderedSVG, pan.x, pan.y, scale]);
 
   const handleSvgClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (didPanRef.current || marqueeStartRef.current || dragTextGidRef.current) return;
+    if (didPanRef.current || marqueeStartRef.current) return;
     const target = event.target as HTMLElement;
     
     let current: HTMLElement | null = target;
@@ -227,54 +264,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     }
   }, [validGids, selectedGids, onSelectGids, onSelectObject]);
 
-  // Resolve a completed text drag: calculate new axes position and dispatch patch
-  const escId = (id: string) => CSS.escape(id);
-
-  const resolveTextDrag = useCallback((gid: string, svgDeltaX: number, svgDeltaY: number) => {
-    const svgEl = svgContainerRef.current?.querySelector('svg');
-    if (!svgEl || !onPatch) return;
-    const obj = figSession?.manifest?.objects.find(o => o.id === gid);
-    if (!obj) return;
-
-    // V1: skip data-coordinate text drag (non-normalized coords)
-    const coordSystem = obj.currentProps.coord_system as string || 'axes';
-    if (coordSystem === 'data') return;
-
-    const origX = obj.currentProps.x as number;
-    const origY = obj.currentProps.y as number;
-    const axIdx = extractAxIdx(gid);
-
-    // Axes-coordinate text: map screen delta via spine bbox
-    if (axIdx && coordSystem === 'axes') {
-      try {
-        const leftSpine = svgEl.querySelector(`[id="${escId('spine.left.' + axIdx)}"]`);
-        const rightSpine = svgEl.querySelector(`[id="${escId('spine.right.' + axIdx)}"]`);
-        const bottomSpine = svgEl.querySelector(`[id="${escId('spine.bottom.' + axIdx)}"]`);
-        const topSpine = svgEl.querySelector(`[id="${escId('spine.top.' + axIdx)}"]`);
-        if (leftSpine && rightSpine && bottomSpine && topSpine) {
-          const axesW = rightSpine.getBBox().x - leftSpine.getBBox().x;
-          const axesH = bottomSpine.getBBox().y - topSpine.getBBox().y;
-          const axesDx = svgDeltaX / axesW;
-          const axesDy = -(svgDeltaY / axesH);
-          onPatch([{
-            op: 'set', mode: 'backend_patch', gid,
-            prop: 'position',
-            value: { x: origX + axesDx, y: origY + axesDy, coord_system: 'axes' }
-          }]);
-          return;
-        }
-      } catch { /* bbox error, fall through */ }
-    }
-
-    // Figure-coordinate fallback (fig_text, or axes text missing spines)
-    onPatch([{
-      op: 'set', mode: 'backend_patch', gid,
-      prop: 'position',
-      value: { x: origX + svgDeltaX / svgSize.width, y: origY - svgDeltaY / svgSize.height, coord_system: 'figure' }
-    }]);
-  }, [figSession?.manifest?.objects, onPatch, svgSize]);
-
-  const handleSvgMouseDown = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+  const handleSvgPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (spacePressed || event.button === 1) {
       event.preventDefault();
       setIsPanning(true);
@@ -285,25 +275,6 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
     const target = event.target as HTMLElement;
     let current: HTMLElement | null = target;
-    let foundGid: string | null = null;
-    while (current) {
-      if (current.id && validGids.has(current.id)) { foundGid = current.id; break; }
-      current = current.parentElement;
-    }
-
-    // Check if it's a text object → start text drag
-    if (foundGid && isTextGid(foundGid) && target.closest('svg')) {
-      const pt = getSvgPoint(event.clientX, event.clientY);
-      if (pt) {
-        dragTextGidRef.current = foundGid;
-        const el = svgContainerRef.current?.querySelector(`[id="${escId(foundGid)}"]`);
-        dragTextElRef.current = el || null;
-        if (el) (el as HTMLElement).style.cursor = 'grabbing';
-        dragStartSvgRef.current = pt;
-        setIsDraggingText(true);
-        return;
-      }
-    }
 
     // Start marquee on background (not on a valid element)
     let hitElement = false;
@@ -315,9 +286,9 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     if (!hitElement && target.closest('svg')) {
       marqueeStartRef.current = { x: event.clientX, y: event.clientY };
     }
-  }, [spacePressed, pan.x, pan.y, validGids, getSvgPoint]);
+  }, [spacePressed, pan.x, pan.y, validGids]);
 
-  const handleSvgMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+  const handleSvgPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (panStartRef.current) {
       const dx = event.clientX - panStartRef.current.x;
       const dy = event.clientY - panStartRef.current.y;
@@ -326,63 +297,27 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       return;
     }
 
-    // Text dragging: apply CSS transform preview
-    if (dragTextGidRef.current && dragStartSvgRef.current) {
-      const pt = getSvgPoint(event.clientX, event.clientY);
-      if (pt) {
-        const dx = pt.x - dragStartSvgRef.current.x;
-        const dy = pt.y - dragStartSvgRef.current.y;
-        const el = dragTextElRef.current;
-        if (el) {
-          (el as HTMLElement).style.transform = `translate(${dx}px, ${dy}px)`;
-          (el as HTMLElement).style.transition = 'none';
-        }
-      }
-      return;
-    }
-
     if (marqueeStartRef.current && svgContainerRef.current) {
       const svgEl = svgContainerRef.current.querySelector('svg');
       if (!svgEl) return;
-      const svgRect = svgEl.getBoundingClientRect();
-      const x0 = Math.min(marqueeStartRef.current.x, event.clientX) - svgRect.left;
-      const y0 = Math.min(marqueeStartRef.current.y, event.clientY) - svgRect.top;
-      const x1 = Math.max(marqueeStartRef.current.x, event.clientX) - svgRect.left;
-      const y1 = Math.max(marqueeStartRef.current.y, event.clientY) - svgRect.top;
-      const rect = { x: x0 / scale, y: y0 / scale, w: (x1 - x0) / scale, h: (y1 - y0) / scale };
+      const p0 = getSvgPoint(marqueeStartRef.current.x, marqueeStartRef.current.y);
+      const p1 = getSvgPoint(event.clientX, event.clientY);
+      if (!p0 || !p1) return;
+      const rect = {
+        x: Math.min(p0.x, p1.x),
+        y: Math.min(p0.y, p1.y),
+        w: Math.abs(p1.x - p0.x),
+        h: Math.abs(p1.y - p0.y),
+      };
       marqueeRectRef.current = rect;
       setMarqueeRect(rect);
     }
-  }, [scale, getSvgPoint]);
+  }, [getSvgPoint]);
 
-  const handleSvgMouseUp = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    // Resolve text drag
-    if (dragTextGidRef.current && dragStartSvgRef.current) {
-      const pt = getSvgPoint(event.clientX, event.clientY);
-      if (pt) {
-        const dx = pt.x - dragStartSvgRef.current.x;
-        const dy = pt.y - dragStartSvgRef.current.y;
-        // Clean up CSS transform
-        const el = dragTextElRef.current;
-        if (el) {
-          (el as HTMLElement).style.transform = '';
-          (el as HTMLElement).style.transition = '';
-          (el as HTMLElement).style.cursor = '';
-        }
-        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) {
-          resolveTextDrag(dragTextGidRef.current, dx, dy);
-        }
-      }
-      dragTextGidRef.current = null;
-      dragTextElRef.current = null;
-      dragStartSvgRef.current = null;
-      setIsDraggingText(false);
-      return;
-    }
-
+  const handleSvgPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     // Resolve marquee
     if (marqueeStartRef.current && marqueeRectRef.current) {
-      const svgEl = svgContainerRef.current?.querySelector('svg');
+      const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
       if (svgEl) {
         const mr = marqueeRectRef.current;
         const hitGids: string[] = [];
@@ -390,9 +325,9 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
           const el = svgEl.querySelector(`[id="${escId(gid)}"]`);
           if (!el) return;
           try {
-            const bbox = el.getBBox();
-            if (bbox.x < mr.x + mr.w && bbox.x + bbox.width > mr.x &&
-                bbox.y < mr.y + mr.h && bbox.y + bbox.height > mr.y) {
+            const bbox = getElementSvgBox(el, svgEl);
+            if (bbox && bbox.x < mr.x + mr.w && bbox.x + bbox.w > mr.x &&
+                bbox.y < mr.y + mr.h && bbox.y + bbox.h > mr.y) {
               hitGids.push(gid);
             }
           } catch { /* skip */ }
@@ -409,16 +344,15 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     marqueeStartRef.current = null;
     marqueeRectRef.current = null;
     setMarqueeRect(null);
-  }, [validGids, selectedGids, onSelectGids, getSvgPoint, resolveTextDrag]);
+  }, [validGids, selectedGids, onSelectGids, getElementSvgBox]);
 
-  // Hover effect: show grab cursor on text elements
-  const handleSvgMouseOver = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (dragTextGidRef.current) return;
+  // Hover effect: show pointer cursor generally, grab if selected
+  const handleSvgPointerOver = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
     let current: HTMLElement | null = target;
     while (current) {
       if (current.id && isTextGid(current.id) && validGids.has(current.id)) {
-        current.style.cursor = 'grab';
+        current.style.cursor = 'pointer';
         break;
       }
       current = current.parentElement;
@@ -456,57 +390,41 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
           <ScanSearch className="w-3.5 h-3.5" /><span>滚轮缩放</span>
           <span className="text-slate-300">|</span>
           <span>拖动框选</span>
-          <span className="text-slate-300">|</span>
-          <Type className="w-3 h-3" /><span>拖动文本</span>
         </div>
 
         <div
           ref={containerRef}
           className={`w-full h-full overflow-hidden flex items-center justify-center ${
             spacePressed ? (isPanning ? 'cursor-grabbing' : 'cursor-grab')
-            : isDraggingText ? 'cursor-grabbing'
             : marqueeStartRef.current ? 'crosshair'
             : 'cursor-default'
           }`}
-          onMouseDown={handleSvgMouseDown}
-          onMouseMove={handleSvgMouseMove}
-          onMouseUp={handleSvgMouseUp}
+          onPointerDown={handleSvgPointerDown}
+          onPointerMove={handleSvgPointerMove}
+          onPointerUp={handleSvgPointerUp}
         >
           <div
+            ref={stageRef}
             style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`, transformOrigin: 'center center' }}
             className="transition-transform duration-150 will-change-transform relative"
           >
             <div
               ref={svgContainerRef}
               onClick={handleSvgClick}
-              onMouseOver={handleSvgMouseOver}
-              onDoubleClick={(event) => {
-                const target = event.target as HTMLElement;
-                let current: HTMLElement | null = target;
-                let foundGid: string | null = null;
-                while (current) {
-                  if (current.id && (validGids.has(current.id) || current.id === 'Figure')) { foundGid = current.id; break; }
-                  current = current.parentElement;
-                }
-                if (foundGid && onPatch) {
-                  if (isTextGid(foundGid)) {
-                    onSelectObject(foundGid);
-                    const currentText = target.textContent?.trim() || "";
-                    const newText = window.prompt("修改文本内容:", currentText);
-                    if (newText !== null && newText !== currentText) {
-                      onPatch([{ op: 'set', mode: 'local_patch', gid: foundGid, prop: 'text', value: newText }]);
-                    }
-                  }
-                }
-              }}
+              onPointerOver={handleSvgPointerOver}
               className="shadow-sm bg-white flex items-center justify-center [&>svg]:block [&>svg]:w-auto [&>svg]:h-auto [&>svg]:max-w-none [&>svg]:max-h-none"
               dangerouslySetInnerHTML={{ __html: sanitizeSvg(renderedSVG) }}
             />
-            {(overlayBoxes.length > 0 || marqueeRect) && (
+            {overlayFrame && (overlayBoxes.length > 0 || marqueeRect) && (
               <svg
-                className="absolute inset-0 pointer-events-none"
-                style={{ width: svgSize.width, height: svgSize.height }}
-                viewBox={`0 0 ${svgSize.width} ${svgSize.height}`}
+                className="absolute pointer-events-none"
+                style={{
+                  left: overlayFrame.left,
+                  top: overlayFrame.top,
+                  width: overlayFrame.width,
+                  height: overlayFrame.height,
+                }}
+                viewBox={`${svgSize.viewBox.x} ${svgSize.viewBox.y} ${svgSize.viewBox.width} ${svgSize.viewBox.height}`}
               >
                 {overlayBoxes.map(box => (
                   <rect

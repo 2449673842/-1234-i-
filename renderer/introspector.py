@@ -82,6 +82,25 @@ def _guard_user_script_io(cwd: Optional[str] = None, uploaded_file_paths: Option
     original_read_csv = getattr(pd, "read_csv", None)
     original_read_excel = getattr(pd, "read_excel", None)
 
+    from urllib.parse import urlparse
+
+    BLOCKED_SCHEMES = {
+        "http",
+        "https",
+        "ftp",
+        "ftps",
+        "s3",
+        "gs",
+        "file",
+    }
+
+    def _reject_protocol_path(path):
+        if not isinstance(path, str):
+            return
+        parsed = urlparse(path.strip())
+        if parsed.scheme and parsed.scheme.lower() in BLOCKED_SCHEMES:
+            raise PermissionError(f"Protocol paths are not allowed: {path}")
+
     def _resolve_mapped_path(filepath_or_buffer):
         if not isinstance(filepath_or_buffer, str):
             return filepath_or_buffer
@@ -105,6 +124,13 @@ def _guard_user_script_io(cwd: Optional[str] = None, uploaded_file_paths: Option
             mapped = uploaded_file_paths[base_key]
         elif base_without_ext in uploaded_file_paths:
             mapped = uploaded_file_paths[base_without_ext]
+        else:
+            # 处理值匹配：用户通过 _uploaded_file_paths[key] 取值后传入 read_csv
+            # 此时 filepath_or_buffer 是存储路径（相对服务端根目录），键表查不到
+            for v in uploaded_file_paths.values():
+                if v == filepath_or_buffer or v == lookup_key:
+                    mapped = v
+                    break
             
         if mapped:
             if not os.path.isabs(mapped) and original_cwd:
@@ -124,6 +150,7 @@ def _guard_user_script_io(cwd: Optional[str] = None, uploaded_file_paths: Option
         return os.path.commonpath([child, parent]) == parent
 
     def _sandboxed_read_csv(filepath_or_buffer, *args, **kwargs):
+        _reject_protocol_path(filepath_or_buffer)
         if not cwd:
             raise RuntimeError("请不要在自定义脚本中直接读取本地文件；请通过上传数据并使用 _uploaded_data。")
         resolved_path = _resolve_mapped_path(filepath_or_buffer)
@@ -133,6 +160,7 @@ def _guard_user_script_io(cwd: Optional[str] = None, uploaded_file_paths: Option
         return original_read_csv(resolved_path, *args, **kwargs)
 
     def _sandboxed_read_excel(io_path, *args, **kwargs):
+        _reject_protocol_path(io_path)
         if not cwd:
             raise RuntimeError("请不要在自定义脚本中直接读取本地文件；请通过上传数据并使用 _uploaded_data。")
         resolved_path = _resolve_mapped_path(io_path)
@@ -181,12 +209,7 @@ def iter_artists(fig):
         # Freeze ticks so that their `gid` and properties are preserved during savefig
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            if ax.xaxis.get_scale() == 'linear' or ax.xaxis.get_scale() == 'log':
-                ax.set_xticks(ax.get_xticks())
-                ax.set_xticklabels([t.get_text() for t in ax.get_xticklabels()])
-            if ax.yaxis.get_scale() == 'linear' or ax.yaxis.get_scale() == 'log':
-                ax.set_yticks(ax.get_yticks())
-                ax.set_yticklabels([t.get_text() for t in ax.get_yticklabels()])
+            _freeze_ticklabels_preserving_style(ax)
 
         yield f"axes.{ax_idx}", "axes", ax
         yield f"grid.{ax_idx}", "grid", ax
@@ -197,10 +220,11 @@ def iter_artists(fig):
         yield f"spine_group.{ax_idx}", "spine_group", ax
         yield f"axis.x.{ax_idx}", "axis_x", ax.xaxis
         yield f"axis.y.{ax_idx}", "axis_y", ax.yaxis
-        yield f"title.{ax_idx}", "text", ax.title
-        if hasattr(ax, '_left_title') and ax._left_title:
+        if ax.title is not None and ax.title.get_text():
+            yield f"title.{ax_idx}", "text", ax.title
+        if hasattr(ax, '_left_title') and ax._left_title and ax._left_title.get_text():
             yield f"title.left.{ax_idx}", "text", ax._left_title
-        if hasattr(ax, '_right_title') and ax._right_title:
+        if hasattr(ax, '_right_title') and ax._right_title and ax._right_title.get_text():
             yield f"title.right.{ax_idx}", "text", ax._right_title
         yield f"xlabel.{ax_idx}", "text", ax.xaxis.label
         yield f"ylabel.{ax_idx}", "text", ax.yaxis.label
@@ -258,6 +282,59 @@ def iter_artists(fig):
             if patch in patch_labels:
                 patch.set_label(patch_labels[patch])
             yield f"patch.{ax_idx}.{i}", "patch", patch
+
+
+def _snapshot_text_style(text):
+    return {
+        "fontsize": text.get_fontsize(),
+        "fontname": text.get_fontname(),
+        "color": text.get_color(),
+        "rotation": text.get_rotation(),
+        "ha": text.get_horizontalalignment(),
+        "va": text.get_verticalalignment(),
+        "visible": text.get_visible(),
+    }
+
+
+def _restore_text_style(text, style: dict):
+    try:
+        text.set_fontsize(style["fontsize"])
+        text.set_fontname(style["fontname"])
+        text.set_color(style["color"])
+        text.set_rotation(style["rotation"])
+        text.set_horizontalalignment(style["ha"])
+        text.set_verticalalignment(style["va"])
+        text.set_visible(style["visible"])
+    except Exception:
+        pass
+
+
+def _freeze_ticklabels_preserving_style(ax):
+    """Materialize tick labels without discarding prior UI-applied font edits."""
+    try:
+        ax.figure.canvas.draw()
+    except Exception:
+        pass
+
+    for axis_name in ("x", "y"):
+        axis = ax.xaxis if axis_name == "x" else ax.yaxis
+        if axis.get_scale() not in ("linear", "log"):
+            continue
+
+        get_ticks = ax.get_xticks if axis_name == "x" else ax.get_yticks
+        get_labels = ax.get_xticklabels if axis_name == "x" else ax.get_yticklabels
+        set_ticks = ax.set_xticks if axis_name == "x" else ax.set_yticks
+        set_labels = ax.set_xticklabels if axis_name == "x" else ax.set_yticklabels
+
+        labels = list(get_labels())
+        texts = [label.get_text() for label in labels]
+        styles = [_snapshot_text_style(label) for label in labels]
+        set_ticks(get_ticks())
+        next_labels = set_labels(texts)
+        if not next_labels:
+            next_labels = list(get_labels())
+        for label, style in zip(next_labels, styles):
+            _restore_text_style(label, style)
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +537,7 @@ def _read_axis_props(axis, axis_name: str) -> dict:
         "show_minor_ticks": len(minor_ticks) > 0,
         "tick_labelsize": labels[0].get_fontsize() if labels else 10,
         "tick_labelcolor": _get_tick_metric(major_tick, "color", "#000000"),
+        "tick_labelfamily": labels[0].get_fontname() if labels else "",
         "sci_notation": sci_notation,
         "use_math_text": use_math_text,
         "offset_text_size": axis.get_offset_text().get_fontsize(),
@@ -574,8 +652,8 @@ _EDITABLE = {
     "collection": ["facecolor", "edgecolor", "alpha", "zorder"],
     "axes": ["xlim", "ylim", "show_minor_ticks", "x_tick_rotation", "tick_direction", "zorder"],
     "grid": ["visible", "color", "linewidth", "linestyle", "alpha", "zorder"],
-    "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "sci_notation", "use_math_text", "offset_text_size"],
-    "axis_y": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "sci_notation", "use_math_text", "offset_text_size"],
+    "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "sci_notation", "use_math_text", "offset_text_size"],
+    "axis_y": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "sci_notation", "use_math_text", "offset_text_size"],
 }
 
 
@@ -856,6 +934,10 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         if prop == "tick_labelcolor":
             parent_ax.tick_params(axis=axis_name, which="major", labelcolor=value, colors=value)
             return
+        if prop == "tick_labelfamily":
+            for label in artist.get_ticklabels():
+                label.set_fontname(str(value))
+            return
         if prop == "tick_direction":
             parent_ax.tick_params(axis=axis_name, which="both", direction=str(value))
             return
@@ -981,12 +1063,39 @@ def _apply_global(fig, prop: str, value: Any):
         return
 
 
+def _apply_virtual_font_center_patch(fig, gid: str, prop: str, value: Any) -> bool:
+    """Backward compatibility for edit logs written with UI control ids.
+
+    Older RightSidebar builds accidentally persisted ids like
+    ``font-center-yticks`` instead of real matplotlib gids.  Expand them here so
+    existing projects remain replayable after refresh/reopen.
+    """
+    if gid not in {"font-center-xticks", "font-center-yticks"}:
+        return False
+
+    axis_prefix = "axis.x." if gid == "font-center-xticks" else "axis.y."
+    if prop == "fontsize":
+        axis_prop = "tick_labelsize"
+    elif prop == "fontfamily":
+        axis_prop = "tick_labelfamily"
+    elif prop == "color":
+        axis_prop = "tick_labelcolor"
+    else:
+        return True
+
+    for ax_idx, ax in enumerate(fig.axes):
+        axis_artist = ax.xaxis if axis_prefix == "axis.x." else ax.yaxis
+        _apply_single(axis_artist, axis_prop, value, f"{axis_prefix}{ax_idx}")
+    return True
+
+
 def apply_edit_log(fig, edit_log: list[dict]):
     """Apply an edit_log to a Figure in-place.
 
     Called AFTER the script has been executed but BEFORE introspection.
     """
     gid_map = _build_gid_map(fig)
+    needs_layout_refresh = False
 
     for entry in edit_log:
         gid = entry.get("gid")
@@ -997,10 +1106,32 @@ def apply_edit_log(fig, edit_log: list[dict]):
             _apply_global(fig, prop, value)
             continue
 
+        if _apply_virtual_font_center_patch(fig, gid, prop, value):
+            continue
+
         artist = gid_map.get(gid)
         if artist is None:
             continue
         _apply_single(artist, prop, value, gid)
+        if prop in {
+            "fontsize",
+            "fontfamily",
+            "text",
+            "label",
+            "label_fontsize",
+            "tick_labelsize",
+            "tick_labelfamily",
+            "title",
+            "ncol",
+            "markerscale",
+        }:
+            needs_layout_refresh = True
+
+    if needs_layout_refresh:
+        try:
+            fig.tight_layout()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1050,9 +1181,8 @@ def replay_render(
     ns: dict = {
         "__name__": "__main__",
         "_uploaded_data": data.get("custom_data", []) if data else [],
+        "_uploaded_file_paths": uploaded_file_paths or {},
     }
-    if uploaded_file_paths:
-        ns["_uploaded_file_paths"] = uploaded_file_paths
 
     try:
         with _guard_user_script_io(cwd, uploaded_file_paths=uploaded_file_paths, original_cwd=original_cwd):

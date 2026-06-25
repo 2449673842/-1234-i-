@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 
 import Editor from '@monaco-editor/react';
 import { ChartPreview } from './ChartPreview';
 import { ManifestViewer } from './ManifestViewer';
-import { FigureSpec } from '../types';
+import { DatasetEntry, FigureSpec } from '../types';
 import { Home, ChevronRight, PenLine, Maximize, Settings, UploadCloud, Minus, Baseline, Download, Loader2, Save, Eye } from 'lucide-react';
 import { ViewState } from '../App';
 import { buildReproduciblePython } from '../utils/reproduciblePython';
@@ -28,9 +28,11 @@ interface MainWorkspaceProps {
   onRedo: () => void;
   figSession: FigureSession | null;
   isRendering: boolean;
+  renderProgressText?: string | null;
   renderError: string | null;
   renderTraceback: string | null;
   renderLog: string[];
+  datasets?: DatasetEntry[];
   onRenderLog: (lines: string[]) => void;
   onRender: (script: string, dataPayload?: any) => Promise<RenderResponse>;
   onPatch: (patches: PatchEntry[]) => Promise<PatchResponse>;
@@ -67,9 +69,11 @@ export function MainWorkspace({
   onRedo,
   figSession,
   isRendering,
+  renderProgressText,
   renderError,
   renderTraceback,
   renderLog,
+  datasets = [],
   onRenderLog,
   onRender,
   onPatch,
@@ -91,6 +95,23 @@ export function MainWorkspace({
   const [nameInput, setNameInput] = useState(projectName);
   const [scriptDragOver, setScriptDragOver] = useState(false);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [renderElapsedMs, setRenderElapsedMs] = useState(0);
+
+  useEffect(() => {
+    if (!isRendering) {
+      setRenderElapsedMs(0);
+      return;
+    }
+
+    const startedAt = Date.now();
+    setRenderElapsedMs(0);
+    const timer = window.setInterval(() => {
+      setRenderElapsedMs(Date.now() - startedAt);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [isRendering]);
+
+  const activeRenderProgressText = renderProgressText || 'Python 引擎运行中：正在重放编辑并更新 SVG...';
   const autoSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const generatePythonCode = (nextSpec: FigureSpec) => buildReproduciblePython(nextSpec);
@@ -129,9 +150,122 @@ export function MainWorkspace({
     ? { custom_data: spec.raw_data.custom_data }
     : null;
 
+  const downloadTextFile = (filename: string, content: string, mimeType: string) => {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  };
+
+  const buildDiagnosticReport = () => {
+    const renderedOrTranslatedScript = spec.custom_script || figSession?.script || generatePythonCode(spec);
+    const sourceColumns = spec.source?.columns || [];
+    const fallbackDataset = sourceColumns.length > 0
+      ? [{
+          datasetId: 'current-spec-source',
+          fileName: spec.source?.file_name || '当前导入数据',
+          filePath: '',
+          columns: sourceColumns,
+          rowCount: spec.source?.row_count ?? spec.raw_data?.custom_data?.length ?? 0,
+          uploadedAt: spec.source?.imported_at || '',
+        }]
+      : [];
+    const datasetEntries = datasets.length > 0 ? datasets : fallbackDataset;
+    const errorLines = renderLog.filter(line => /错误|异常|error|failed|traceback/i.test(line));
+
+    return [
+      '# SciFigure 渲染诊断记录',
+      '',
+      `- 导出时间: ${new Date().toLocaleString()}`,
+      `- 项目名称: ${projectName}`,
+      `- 项目 ID: ${projectId || '未保存/非项目模式'}`,
+      `- 当前 Figure: ${activeFigureId || '单图模式'}`,
+      `- 图类型: ${spec.plot_type}`,
+      '',
+      '## 上传数据文件与表头',
+      '',
+      datasetEntries.length > 0
+        ? datasetEntries.map((dataset, index) => [
+            `### ${index + 1}. ${dataset.fileName}`,
+            '',
+            `- datasetId: ${dataset.datasetId}`,
+            `- rowCount: ${dataset.rowCount}`,
+            dataset.filePath ? `- filePath: ${dataset.filePath}` : '- filePath: 未记录',
+            dataset.uploadedAt ? `- uploadedAt: ${dataset.uploadedAt}` : '- uploadedAt: 未记录',
+            `- columns (${dataset.columns.length}):`,
+            '',
+            '```text',
+            dataset.columns.join(', '),
+            '```',
+          ].join('\n')).join('\n\n')
+        : '未检测到已上传数据文件或表头。',
+      '',
+      '## AI 转义后 / 当前平台脚本',
+      '',
+      '```python',
+      renderedOrTranslatedScript || '# 当前没有可导出的脚本',
+      '```',
+      '',
+      '## 当前渲染日志',
+      '',
+      '```text',
+      renderLog.length > 0 ? renderLog.join('\n') : '当前没有日志。',
+      '```',
+      '',
+      '## 实际报错摘要',
+      '',
+      '```text',
+      [
+        renderError ? `renderError: ${renderError}` : '',
+        errorLines.length > 0 ? errorLines.join('\n') : '',
+      ].filter(Boolean).join('\n') || '当前没有捕获到错误摘要。',
+      '```',
+      '',
+      '## Python Traceback',
+      '',
+      '```text',
+      renderTraceback || '当前没有 traceback。',
+      '```',
+      '',
+      '## 当前 Figure 编辑上下文',
+      '',
+      '```json',
+      JSON.stringify({
+        sessionId: figSession?.sessionId ?? null,
+        revision: figSession?.revision ?? null,
+        editLog: figSession?.editLog ?? [],
+        manifestSummary: figSession?.manifest ? {
+          objectCount: figSession.manifest.objects?.length ?? 0,
+          paletteCount: figSession.manifest.palettes?.length ?? 0,
+          groupCount: figSession.manifest.groups?.length ?? 0,
+          coverageReport: figSession.manifest.coverageReport ?? null,
+        } : null,
+      }, null, 2),
+      '```',
+      '',
+    ].join('\n');
+  };
+
+  const handleExportDiagnosticReport = () => {
+    const safeProjectName = projectName.replace(/[\\/:*?"<>|]+/g, '_').trim() || 'scifigure';
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    downloadTextFile(
+      `${safeProjectName}_render_diagnostic_${timestamp}.md`,
+      buildDiagnosticReport(),
+      'text/markdown;charset=utf-8'
+    );
+  };
+
   const handleRender = async () => {
     if (projectId && onProjectRender) {
-      const script = spec.custom_script || '';
+      const script = spec.plot_type === 'custom'
+        ? (spec.custom_script || generatePythonCode(spec))
+        : generatePythonCode(spec);
       await onProjectRender(script);
       return;
     }
@@ -421,7 +555,13 @@ export function MainWorkspace({
                 真实 SVG 对象可直接编辑；全局参数改完后再重新渲染
               </div>
             )}
-            {isRendering && <div className="text-xs text-blue-600 font-medium">Python 引擎运行中...</div>}
+            {isRendering && (
+              <div className="flex items-center gap-2 text-xs text-blue-700 font-medium bg-blue-50 border border-blue-100 px-2 py-1 rounded-full">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>{activeRenderProgressText}</span>
+                <span className="text-blue-400">{(renderElapsedMs / 1000).toFixed(1)}s</span>
+              </div>
+            )}
             {figSession?.updatedAt && <div className="text-xs text-slate-500">最近渲染 {new Date(figSession.updatedAt).toLocaleTimeString()}</div>}
           </div>
         </div>
@@ -456,6 +596,26 @@ export function MainWorkspace({
                 onPatch={onPatch}
                 figSession={figSession}
               />
+              {isRendering && (
+                <div className="absolute left-1/2 top-20 z-40 w-[min(520px,calc(100%-48px))] -translate-x-1/2 overflow-hidden rounded-xl border border-blue-100 bg-white/95 shadow-xl backdrop-blur">
+                  <div className="flex items-start gap-3 px-4 py-3">
+                    <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-600">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-slate-800">正在重新渲染当前图形</div>
+                      <div className="mt-1 text-xs leading-relaxed text-slate-500">{activeRenderProgressText}</div>
+                      <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
+                        <span>执行 Python → 应用 editLog → 生成 SVG → 刷新画布</span>
+                        <span>{(renderElapsedMs / 1000).toFixed(1)}s</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden bg-blue-50">
+                    <div className="h-full w-1/2 animate-[render-progress_1.15s_ease-in-out_infinite] rounded-r-full bg-blue-500" />
+                  </div>
+                </div>
+              )}
               {spec.plot_type === 'custom' && (
                 <div className="absolute left-4 top-4 max-w-sm bg-white/95 border border-amber-200 text-amber-900 px-3 py-2 rounded-lg shadow-sm text-xs leading-relaxed">
                   选中真实 SVG 文本、线条或图形后，可在右侧直接修改。图尺寸、全局字体等参数改完后，再点击「同步至引擎并预览 SVG」重渲染。
@@ -623,39 +783,55 @@ export function MainWorkspace({
             )}
 
             {bottomTab === 'log' && (
-              <div className="w-full h-full bg-[#1e1e1e] text-emerald-400 p-4 text-xs font-mono overflow-auto space-y-3">
-                {renderLog.map((line, index) => (
-                  <div key={index} className={line.includes('错误') || line.includes('异常') ? 'text-red-400' : line.includes('完成') ? 'text-emerald-300 font-bold' : 'text-emerald-400'}>
-                    {line}
+              <div className="w-full h-full bg-[#1e1e1e] text-emerald-400 text-xs font-mono overflow-hidden flex flex-col">
+                <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-slate-700 bg-slate-900/80 shrink-0">
+                  <div className="text-slate-300">
+                    诊断日志 · 数据文件 {datasets.length || (spec.source?.columns?.length ? 1 : 0)} 个 · 日志 {renderLog.length} 行
                   </div>
-                ))}
-                {renderError && (
-                  <div className="border border-red-900/60 bg-red-950/30 rounded p-3 space-y-2">
-                    <div className="text-red-300 font-semibold">错误说明</div>
-                    <div className="text-red-200 whitespace-pre-wrap">{renderError}</div>
-                    {renderError.includes('not supported between instances') && (
-                      <div className="text-amber-200">
-                        提示：这通常是 CSV 列类型混杂导致的。检查数值列是否混入了字符串、空值或单位文本。
-                      </div>
-                    )}
-                    {(renderError.includes('does not match the number of labels') || renderError.includes('FixedLocator')) && (
-                      <div className="text-amber-200">
-                        提示：坐标轴刻度位置(set_xticks)和刻度标签(set_xticklabels)数量不一致。请检查自定义脚本中 tick 设置。
-                      </div>
-                    )}
-                    {renderError.includes("Weights sum to zero") && (
-                      <div className="text-amber-200">
-                        提示：直方图/加权操作中所有权重之和为零。检查数据列是否全为 0、空值或选中了错误的列作为权重。
-                      </div>
-                    )}
-                    {renderTraceback && (
-                      <details className="text-slate-200">
-                        <summary className="cursor-pointer text-slate-100">展开 Python traceback</summary>
-                        <pre className="mt-2 whitespace-pre-wrap text-[11px] leading-relaxed">{renderTraceback}</pre>
-                      </details>
-                    )}
-                  </div>
-                )}
+                  <button
+                    type="button"
+                    onClick={handleExportDiagnosticReport}
+                    className="inline-flex items-center gap-1.5 rounded border border-slate-600 bg-slate-800 px-2.5 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-700 hover:text-white transition-colors"
+                    title="导出当前项目数据文件、表头、脚本、日志和报错"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    导出诊断记录
+                  </button>
+                </div>
+                <div className="flex-1 overflow-auto p-4 space-y-3">
+                  {renderLog.map((line, index) => (
+                    <div key={index} className={line.includes('错误') || line.includes('异常') ? 'text-red-400' : line.includes('完成') ? 'text-emerald-300 font-bold' : 'text-emerald-400'}>
+                      {line}
+                    </div>
+                  ))}
+                  {renderError && (
+                    <div className="border border-red-900/60 bg-red-950/30 rounded p-3 space-y-2">
+                      <div className="text-red-300 font-semibold">错误说明</div>
+                      <div className="text-red-200 whitespace-pre-wrap">{renderError}</div>
+                      {renderError.includes('not supported between instances') && (
+                        <div className="text-amber-200">
+                          提示：这通常是 CSV 列类型混杂导致的。检查数值列是否混入了字符串、空值或单位文本。
+                        </div>
+                      )}
+                      {(renderError.includes('does not match the number of labels') || renderError.includes('FixedLocator')) && (
+                        <div className="text-amber-200">
+                          提示：坐标轴刻度位置(set_xticks)和刻度标签(set_xticklabels)数量不一致。请检查自定义脚本中 tick 设置。
+                        </div>
+                      )}
+                      {renderError.includes("Weights sum to zero") && (
+                        <div className="text-amber-200">
+                          提示：直方图/加权操作中所有权重之和为零。检查数据列是否全为 0、空值或选中了错误的列作为权重。
+                        </div>
+                      )}
+                      {renderTraceback && (
+                        <details className="text-slate-200">
+                          <summary className="cursor-pointer text-slate-100">展开 Python traceback</summary>
+                          <pre className="mt-2 whitespace-pre-wrap text-[11px] leading-relaxed">{renderTraceback}</pre>
+                        </details>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
             {bottomTab === 'manifest' && (

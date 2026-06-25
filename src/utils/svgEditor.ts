@@ -28,6 +28,26 @@ export function sanitizeSvg(svg: string) {
     .trim();
 }
 
+function setInlineStyle(element: Element, prop: string, value: string) {
+  const style = element.getAttribute('style') || '';
+  const declarations = style
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => part.split(':')[0]?.trim().toLowerCase() !== prop.toLowerCase());
+  declarations.push(`${prop}: ${value}`);
+  element.setAttribute('style', declarations.join('; '));
+}
+
+function getInlineStyleValue(element: Element, prop: string) {
+  const style = element.getAttribute('style') || '';
+  const match = style
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.split(':')[0]?.trim().toLowerCase() === prop.toLowerCase());
+  return match?.split(':').slice(1).join(':').trim() || '';
+}
+
 function patchElementAttribute(element: Element, prop: string, value: unknown) {
   const nextValue = value == null ? '' : String(value);
   const tagName = element.tagName.toLowerCase();
@@ -38,10 +58,16 @@ function patchElementAttribute(element: Element, prop: string, value: unknown) {
     case 'color':
       if (tagName === 'text' || tagName === 'tspan') {
         element.setAttribute('fill', nextValue);
-      } else if (element.hasAttribute('stroke')) {
+        setInlineStyle(element, 'fill', nextValue);
+      } else if (
+        element.hasAttribute('stroke') ||
+        (getInlineStyleValue(element, 'stroke') && getInlineStyleValue(element, 'fill') === 'none')
+      ) {
         element.setAttribute('stroke', nextValue);
+        setInlineStyle(element, 'stroke', nextValue);
       } else {
         element.setAttribute('fill', nextValue);
+        setInlineStyle(element, 'fill', nextValue);
       }
       break;
     case 'visible':
@@ -49,25 +75,59 @@ function patchElementAttribute(element: Element, prop: string, value: unknown) {
       break;
     case 'facecolor':
       element.setAttribute('fill', nextValue);
+      setInlineStyle(element, 'fill', nextValue);
       break;
     case 'edgecolor':
       element.setAttribute('stroke', nextValue);
+      setInlineStyle(element, 'stroke', nextValue);
       break;
     case 'linewidth':
       element.setAttribute('stroke-width', nextValue);
+      setInlineStyle(element, 'stroke-width', nextValue);
       break;
     case 'fontsize':
       element.setAttribute('font-size', nextValue);
+      setInlineStyle(element, 'font-size', nextValue);
       break;
     case 'fontfamily':
       element.setAttribute('font-family', nextValue);
+      setInlineStyle(element, 'font-family', nextValue);
       break;
     case 'alpha':
       element.setAttribute('opacity', nextValue);
+      setInlineStyle(element, 'opacity', nextValue);
       break;
     default:
       break;
   }
+}
+
+function patchElementTree(root: Element, prop: string, value: unknown) {
+  patchElementAttribute(root, prop, value);
+
+  if (root.tagName.toLowerCase() !== 'g') {
+    return;
+  }
+
+  const selector = prop === 'color'
+    ? 'text,tspan,path,use,rect,circle,ellipse,line,polyline,polygon'
+    : prop === 'facecolor'
+      ? 'path,use,rect,circle,ellipse,polygon,polyline'
+      : prop === 'edgecolor' || prop === 'linewidth'
+        ? 'path,use,rect,circle,ellipse,line,polyline,polygon'
+        : prop === 'fontsize' || prop === 'fontfamily'
+          ? 'text,tspan'
+          : prop === 'alpha' || prop === 'visible'
+            ? '*'
+            : '';
+
+  if (!selector) {
+    return;
+  }
+
+  root.querySelectorAll(selector).forEach((child) => {
+    patchElementAttribute(child, prop, value);
+  });
 }
 
 export interface SvgRuntimePatch {
@@ -87,7 +147,7 @@ export function applyRuntimePatchesToSvg(svg: string, patches: SvgRuntimePatch[]
   for (const patch of patches) {
     const target = doc.getElementById(patch.gid);
     if (!target) continue;
-    patchElementAttribute(target, patch.prop, patch.value);
+    patchElementTree(target, patch.prop, patch.value);
   }
 
   return new XMLSerializer().serializeToString(doc);

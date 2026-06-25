@@ -12,9 +12,9 @@ interface ProjectSummary {
 }
 
 export function ProjectsPage({ subView, onNavigate, onLoadProject }: {
-  subView: string;
+  subView?: string;
   onNavigate: (view: string) => void;
-  onLoadProject: (id: string, name: string, spec: any) => void;
+  onLoadProject: (id: string, name: string, data: any) => void;
 }) {
   const title = subView === 'trash' ? '回收站' : subView === 'shared' ? '与我共享' : '我的项目';
   const icon = subView === 'trash' ? <Trash2 className="w-5 h-5" /> : subView === 'shared' ? <Users className="w-5 h-5" /> : <Folder className="w-5 h-5" />;
@@ -60,8 +60,7 @@ export function ProjectsPage({ subView, onNavigate, onLoadProject }: {
       const res = await fetch(`/api/projects/${id}`);
       const data = await res.json();
       if (data.status === 'success') {
-        const spec = JSON.parse(data.project.spec);
-        onLoadProject(id, name, spec);
+        onLoadProject(id, name, data.project);
       }
     } catch (e) {
       alert('加载项目失败');
@@ -131,7 +130,7 @@ export function ProjectsPage({ subView, onNavigate, onLoadProject }: {
               />
             </div>
             <button
-              onClick={() => onNavigate('data_import')}
+              onClick={() => onNavigate('project_create')}
               className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 shadow-sm"
             >
               新建项目

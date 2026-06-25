@@ -74,7 +74,7 @@ export function Navbar({ currentView, onNavigate }: NavbarProps) {
             </button>
             <button 
               type="button"
-              onClick={() => onNavigate('data_import')}
+              onClick={() => onNavigate('project_create')}
               className="hidden sm:flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium text-white bg-blue-600 border border-blue-600 rounded-md hover:bg-blue-700 transition-colors shadow-sm tracking-wide"
             >
               <Plus className="w-4 h-4" />

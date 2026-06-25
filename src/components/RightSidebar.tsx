@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Lock, Layout, Palette, Sliders } from 'lucide-react';
+import { Baseline, Lock, Layout, Palette, Sliders } from 'lucide-react';
 import { FigureSession, PatchEntry, ManifestObject, ManifestField, Binding } from '../schemas/manifest';
 
 interface RightSidebarProps {
@@ -21,8 +21,16 @@ const DEFAULT_PRESETS: Record<string, string[]> = {
   IEEE: ['#0072B2', '#009E73', '#D55E00', '#CC79A7', '#F0E442'],
 };
 const PRESET_STORAGE_KEY = 'scifigure:palette-presets:v1';
+const FONT_PRESET_STORAGE_KEY = 'scifigure:font-presets:v1';
 const LEGEND_LOCATIONS = ['best', 'upper right', 'upper left', 'lower left', 'lower right', 'right', 'center left', 'center right', 'lower center', 'upper center', 'center'];
 const TICK_DIRECTIONS = ['out', 'in', 'inout'];
+const DEFAULT_FONT_PRESETS: Record<string, { family: string; title: number; label: number; tick: number; legend: number }> = {
+  Nature: { family: 'Arial', title: 14, label: 11, tick: 9, legend: 9 },
+  'Times 论文': { family: 'Times New Roman', title: 15, label: 12, tick: 10, legend: 10 },
+  '中文兼容': { family: 'Microsoft YaHei', title: 14, label: 11, tick: 9, legend: 9 },
+};
+
+type FontPreset = { family: string; title: number; label: number; tick: number; legend: number };
 
 function isLocalPatch(kind: string, prop: string) {
   if (!LOCAL_PROPS.has(prop)) {
@@ -49,9 +57,11 @@ export function RightSidebar({
   onPatch,
   lockedObjects,
 }: RightSidebarProps) {
-  const [activeTab, setActiveTab] = useState<'properties' | 'groups' | 'palette'>('properties');
+  const [activeTab, setActiveTab] = useState<'properties' | 'groups' | 'palette' | 'fonts'>('properties');
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
+  const [colorDraftValues, setColorDraftValues] = useState<Record<string, string>>({});
   const [customPresets, setCustomPresets] = useState<Record<string, string[]>>({});
+  const [customFontPresets, setCustomFontPresets] = useState<Record<string, FontPreset>>({});
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set());
   const [lastSelectedGroupId, setLastSelectedGroupId] = useState<string | null>(null);
 
@@ -74,6 +84,15 @@ export function RightSidebar({
     } catch {
       setCustomPresets({});
     }
+    try {
+      const raw = window.localStorage.getItem(FONT_PRESET_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, FontPreset>;
+        setCustomFontPresets(parsed);
+      }
+    } catch {
+      setCustomFontPresets({});
+    }
   }, []);
 
   const objects = figSession?.manifest?.objects || [];
@@ -93,6 +112,7 @@ export function RightSidebar({
   const { manifest } = figSession;
   const isLocked = Boolean(selectedObject && lockedObjects?.has(selectedObject));
   const presetMap = { ...DEFAULT_PRESETS, ...customPresets };
+  const fontPresetMap: Record<string, FontPreset> = { ...DEFAULT_FONT_PRESETS, ...customFontPresets };
 
   const getDraftKey = (gid: string, prop: string) => `${gid}::${prop}`;
 
@@ -143,14 +163,25 @@ export function RightSidebar({
     });
   };
 
-  const commitNumberDraft = (gid: string, prop: string, currentValue: number | undefined, rawValue: string) => {
+  const commitNumberDraft = (
+    gid: string,
+    prop: string,
+    currentValue: number | undefined,
+    rawValue: string,
+    onValue?: (nextValue: number) => void
+  ) => {
     const trimmed = rawValue.trim();
     if (!trimmed) return;
     const nextValue = Number(trimmed);
     if (!Number.isFinite(nextValue)) return;
     if (nextValue !== currentValue) {
-      handlePatch(gid, prop, nextValue);
+      if (onValue) {
+        onValue(nextValue);
+      } else {
+        handlePatch(gid, prop, nextValue);
+      }
     }
+    clearDraft(gid, prop);
   };
 
   const resolvePickerColor = (val: unknown): string => {
@@ -192,10 +223,10 @@ export function RightSidebar({
           className="border border-slate-200 rounded p-1.5 w-full outline-none bg-white text-slate-700 focus:border-blue-500"
           value={inputValue}
           onChange={(event) => updateDraft(gid, label, event.target.value)}
-          onBlur={(event) => commitNumberDraft(gid, label, value, event.target.value)}
+          onBlur={(event) => commitNumberDraft(gid, label, value, event.target.value, onValue)}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
-              commitNumberDraft(gid, label, value, (event.target as HTMLInputElement).value);
+              commitNumberDraft(gid, label, value, (event.target as HTMLInputElement).value, onValue);
               (event.target as HTMLInputElement).blur();
             }
             if (event.key === 'Escape') {
@@ -241,9 +272,21 @@ export function RightSidebar({
     );
   };
 
-  const renderColorInput = (label: string, value: string, onValue: (nextValue: string) => void) => {
+  const renderColorInput = (label: string, value: string, onValue: (nextValue: string) => void, draftScope = label) => {
     const hexColor = resolvePickerColor(value);
-    const textValue = typeof value === 'string' ? value : hexColor;
+    const draftKey = `color::${draftScope}`;
+    const textValue = colorDraftValues[draftKey] ?? (typeof value === 'string' ? value : hexColor);
+    const commitColor = (raw: string) => {
+      const trimmed = raw.trim();
+      if (/^#[0-9A-Fa-f]{6}$/.test(trimmed)) {
+        onValue(trimmed);
+        setColorDraftValues(prev => {
+          const next = { ...prev };
+          delete next[draftKey];
+          return next;
+        });
+      }
+    };
 
     return (
       <div className="grid grid-cols-[80px_auto_1fr] items-center gap-3 text-sm" key={label}>
@@ -253,14 +296,37 @@ export function RightSidebar({
             type="color"
             className="absolute inset-0 w-[200%] h-[200%] -top-[50%] -left-[50%] cursor-pointer"
             value={hexColor}
-            onChange={(event) => onValue(event.target.value)}
+            onChange={(event) => {
+              setColorDraftValues(prev => ({ ...prev, [draftKey]: event.target.value }));
+              onValue(event.target.value);
+            }}
           />
         </div>
         <input
           type="text"
           className="border border-slate-200 rounded p-1.5 uppercase text-slate-600 outline-none w-full text-xs font-mono"
           value={textValue.toUpperCase()}
-          onChange={(event) => onValue(event.target.value)}
+          onChange={(event) => {
+            const next = event.target.value;
+            setColorDraftValues(prev => ({ ...prev, [draftKey]: next }));
+            if (/^#[0-9A-Fa-f]{6}$/.test(next.trim())) {
+              commitColor(next);
+            }
+          }}
+          onBlur={(event) => commitColor(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              commitColor((event.target as HTMLInputElement).value);
+              (event.target as HTMLInputElement).blur();
+            }
+            if (event.key === 'Escape') {
+              setColorDraftValues(prev => {
+                const next = { ...prev };
+                delete next[draftKey];
+                return next;
+              });
+            }
+          }}
         />
       </div>
     );
@@ -383,7 +449,7 @@ export function RightSidebar({
       return renderBoolInput(prop, currentValue as boolean, (v) => handlePatch(gid, prop, v));
     }
     if (fieldType === 'color' || prop.includes('color')) {
-      return renderColorInput(prop, currentValue as string, (v) => handlePatch(gid, prop, v));
+      return renderColorInput(prop, currentValue as string, (v) => handlePatch(gid, prop, v), `${gid}:${prop}`);
     }
     if (prop === 'fontfamily') {
       return renderFontSelect(gid, prop, currentValue as string, (v) => handlePatch(gid, prop, v));
@@ -467,7 +533,7 @@ export function RightSidebar({
           {renderBoolInput('开启网格', Boolean(props.visible), (v) => handlePatch(obj.id, 'visible', v))}
           {props.visible !== false && (
             <>
-              {renderColorInput('网格线颜色', props.color || '#cccccc', (v) => handlePatch(obj.id, 'color', v))}
+              {renderColorInput('网格线颜色', props.color || '#cccccc', (v) => handlePatch(obj.id, 'color', v), `${obj.id}:color`)}
               {renderNumberInput(obj.id, 'linewidth', props.linewidth || 0.5, (v) => handlePatch(obj.id, 'linewidth', v), { min: 0.1, max: 5, step: 0.1 })}
               {renderSelectInput('线型', props.linestyle || '-', ['-', '--', '-.', ':'], (v) => handlePatch(obj.id, 'linestyle', v))}
               {renderNumberInput(obj.id, 'alpha', props.alpha || 1.0, (v) => handlePatch(obj.id, 'alpha', v), { min: 0.0, max: 1.0, step: 0.1 })}
@@ -485,7 +551,7 @@ export function RightSidebar({
         {renderPanelTitle('统一边框 (Spine Group)')}
         <div className="space-y-4">
           {renderBoolInput('显示四边框', Boolean(props.visible), (v) => handlePatch(obj.id, 'visible', v))}
-          {renderColorInput('边框颜色', props.color || '#000000', (v) => handlePatch(obj.id, 'color', v))}
+          {renderColorInput('边框颜色', props.color || '#000000', (v) => handlePatch(obj.id, 'color', v), `${obj.id}:color`)}
           {renderNumberInput(obj.id, 'linewidth', props.linewidth || 1, (v) => handlePatch(obj.id, 'linewidth', v), { min: 0, max: 8, step: 0.1 })}
         </div>
       </div>
@@ -502,19 +568,20 @@ export function RightSidebar({
           {renderRangePair(obj.id, `${axisName} 范围`, limits, 'limits')}
           {renderTextInput(obj.id, 'label', props.label || '', (v) => handlePatch(obj.id, 'label', v))}
           {renderNumberInput(obj.id, 'label_fontsize', props.label_fontsize || 12, (v) => handlePatch(obj.id, 'label_fontsize', v), { min: 4, max: 40, step: 0.5 })}
-          {renderColorInput('label_color', props.label_color || '#000000', (v) => handlePatch(obj.id, 'label_color', v))}
+          {renderColorInput('label_color', props.label_color || '#000000', (v) => handlePatch(obj.id, 'label_color', v), `${obj.id}:label_color`)}
           {renderNumberInput(obj.id, 'tick_rotation', props.tick_rotation || 0, (v) => handlePatch(obj.id, 'tick_rotation', v), { min: -180, max: 180, step: 1 })}
           {renderSelectInput('tick_direction', props.tick_direction || 'out', TICK_DIRECTIONS, (v) => handlePatch(obj.id, 'tick_direction', v))}
           {renderNumberInput(obj.id, 'tick_length', props.tick_length || 3.5, (v) => handlePatch(obj.id, 'tick_length', v), { min: 0, max: 20, step: 0.5 })}
           {renderNumberInput(obj.id, 'tick_width', props.tick_width || 0.8, (v) => handlePatch(obj.id, 'tick_width', v), { min: 0, max: 10, step: 0.1 })}
-          {renderColorInput('tick_color', props.tick_color || '#000000', (v) => handlePatch(obj.id, 'tick_color', v))}
+          {renderColorInput('tick_color', props.tick_color || '#000000', (v) => handlePatch(obj.id, 'tick_color', v), `${obj.id}:tick_color`)}
           {renderNumberInput(obj.id, 'tick_pad', props.tick_pad || 3.5, (v) => handlePatch(obj.id, 'tick_pad', v), { min: 0, max: 20, step: 0.5 })}
           {renderBoolInput('show_minor_ticks', Boolean(props.show_minor_ticks), (v) => handlePatch(obj.id, 'show_minor_ticks', v))}
           {renderNumberInput(obj.id, 'minor_tick_length', props.minor_tick_length || 2, (v) => handlePatch(obj.id, 'minor_tick_length', v), { min: 0, max: 20, step: 0.5 })}
           {renderNumberInput(obj.id, 'minor_tick_width', props.minor_tick_width || 0.6, (v) => handlePatch(obj.id, 'minor_tick_width', v), { min: 0, max: 10, step: 0.1 })}
-          {renderColorInput('minor_tick_color', props.minor_tick_color || '#000000', (v) => handlePatch(obj.id, 'minor_tick_color', v))}
+          {renderColorInput('minor_tick_color', props.minor_tick_color || '#000000', (v) => handlePatch(obj.id, 'minor_tick_color', v), `${obj.id}:minor_tick_color`)}
           {renderNumberInput(obj.id, 'tick_labelsize', props.tick_labelsize || 10, (v) => handlePatch(obj.id, 'tick_labelsize', v), { min: 4, max: 30, step: 0.5 })}
-          {renderColorInput('tick_labelcolor', props.tick_labelcolor || '#000000', (v) => handlePatch(obj.id, 'tick_labelcolor', v))}
+          {renderColorInput('tick_labelcolor', props.tick_labelcolor || '#000000', (v) => handlePatch(obj.id, 'tick_labelcolor', v), `${obj.id}:tick_labelcolor`)}
+          {renderFontSelect(obj.id, 'tick_labelfamily', props.tick_labelfamily || 'Arial', (v) => handlePatch(obj.id, 'tick_labelfamily', v))}
           {renderBoolInput('sci_notation', Boolean(props.sci_notation), (v) => handlePatch(obj.id, 'sci_notation', v))}
           {renderBoolInput('use_math_text', Boolean(props.use_math_text), (v) => handlePatch(obj.id, 'use_math_text', v))}
           {renderNumberInput(obj.id, 'offset_text_size', props.offset_text_size || 10, (v) => handlePatch(obj.id, 'offset_text_size', v), { min: 4, max: 30, step: 0.5 })}
@@ -541,8 +608,8 @@ export function RightSidebar({
               {renderBoolInput('显示背景框 (Border)', Boolean(props.frameon), (v) => handlePatch(obj.id, 'frameon', v))}
               {props.frameon !== false && (
                 <>
-                  {renderColorInput('背景填充色', props.facecolor || '#ffffff', (v) => handlePatch(obj.id, 'facecolor', v))}
-                  {renderColorInput('边框颜色', props.edgecolor || '#000000', (v) => handlePatch(obj.id, 'edgecolor', v))}
+                  {renderColorInput('背景填充色', props.facecolor || '#ffffff', (v) => handlePatch(obj.id, 'facecolor', v), `${obj.id}:facecolor`)}
+                  {renderColorInput('边框颜色', props.edgecolor || '#000000', (v) => handlePatch(obj.id, 'edgecolor', v), `${obj.id}:edgecolor`)}
                   {renderNumberInput(obj.id, 'linewidth', props.linewidth || 1.0, (v) => handlePatch(obj.id, 'linewidth', v), { min: 0.0, max: 5.0, step: 0.1 })}
                   {renderNumberInput(obj.id, 'alpha', props.alpha || 1.0, (v) => handlePatch(obj.id, 'alpha', v), { min: 0.0, max: 1.0, step: 0.1 })}
                 </>
@@ -602,7 +669,7 @@ export function RightSidebar({
               return renderTextInput('global', key, f.value, (v) => handlePatch('global', key, v));
             }
             if (f.type === 'color') {
-              return renderColorInput(key, f.value, (v) => handlePatch('global', key, v));
+              return renderColorInput(key, f.value, (v) => handlePatch('global', key, v), `global:${key}`);
             }
             if (f.type === 'boolean') {
               return renderBoolInput(key, f.value, (v) => handlePatch('global', key, v));
@@ -956,6 +1023,8 @@ export function RightSidebar({
     if (prop === 'alpha') return ['line', 'patch', 'collection', 'legend', 'grid', 'text', 'figure'].includes(obj.kind);
     if (prop === 'color') return ['line', 'patch', 'collection', 'text', 'spine', 'grid'].includes(obj.kind);
     if (prop === 'linewidth') return ['line', 'patch', 'collection', 'spine', 'grid'].includes(obj.kind);
+    if (prop === 'fontsize') return obj.kind === 'text' || obj.kind === 'legend';
+    if (prop === 'fontfamily') return obj.kind === 'text' || obj.kind === 'legend';
     return false;
   };
 
@@ -969,8 +1038,42 @@ export function RightSidebar({
       const alphas = batchObjects.map(o => o.currentProps.alpha).filter(a => a !== undefined);
       return alphas.length > 0 && alphas.every(a => a === alphas[0]) ? alphas[0] : undefined;
     })();
+    const fontObjects = batchObjects.filter(o => supportsBatchProp(o, 'fontsize') || supportsBatchProp(o, 'fontfamily'));
+    const commonFontSize = (() => {
+      const sizes = fontObjects.map(o => o.currentProps.fontsize).filter(v => typeof v === 'number');
+      return sizes.length > 0 && sizes.every(size => size === sizes[0]) ? sizes[0] as number : undefined;
+    })();
+    const commonFontFamily = (() => {
+      const families = fontObjects.map(o => o.currentProps.fontfamily).filter(v => typeof v === 'string' && v);
+      return families.length > 0 && families.every(family => family === families[0]) ? families[0] as string : 'Arial';
+    })();
 
     const handleBatchPatch = (prop: string, value: unknown) => {
+      const selectedObjects = selectedGids
+        .map(gid => objects.find(o => o.id === gid))
+        .filter(Boolean) as ManifestObject[];
+      const allXTicks = selectedObjects.length > 0 && selectedObjects.every(obj => obj.id.startsWith('xtick.'));
+      const allYTicks = selectedObjects.length > 0 && selectedObjects.every(obj => obj.id.startsWith('ytick.'));
+      if ((allXTicks || allYTicks) && (prop === 'fontsize' || prop === 'fontfamily' || prop === 'color')) {
+        const regex = allXTicks ? /^xtick\.(\d+)\./ : /^ytick\.(\d+)\./;
+        const axisPrefix = allXTicks ? 'axis.x.' : 'axis.y.';
+        const axisProp = prop === 'fontsize'
+          ? 'tick_labelsize'
+          : prop === 'fontfamily'
+            ? 'tick_labelfamily'
+            : 'tick_labelcolor';
+        const axisIndexes = Array.from(new Set(selectedObjects.map(obj => obj.id.match(regex)?.[1]).filter(Boolean))) as string[];
+        const patches = axisIndexes.map(index => ({
+          op: 'set' as const,
+          mode: 'backend_patch' as const,
+          gid: `${axisPrefix}${index}`,
+          prop: axisProp,
+          value,
+        }));
+        if (patches.length > 0) void onPatch(patches);
+        return;
+      }
+
       const patches: PatchEntry[] = selectedGids.map(gid => {
         const obj = objects.find(o => o.id === gid);
         if (!supportsBatchProp(obj, prop)) return null;
@@ -1005,7 +1108,14 @@ export function RightSidebar({
           </button>
         </div>
         <div className="space-y-3 pt-2 border-t border-indigo-100">
-          {renderColorInput('颜色', commonColor, (v) => handleBatchPatch('color', v))}
+          {fontObjects.length > 0 && (
+            <div className="rounded-md border border-indigo-100 bg-white/70 p-3 space-y-3">
+              <div className="text-[11px] font-semibold text-indigo-900">字体批量编辑（文本/标签 {fontObjects.length} 个）</div>
+              {renderNumberInput('batch', 'fontsize', commonFontSize, (v) => handleBatchPatch('fontsize', v), { min: 4, max: 48, step: 0.5 })}
+              {renderFontSelect('batch', 'fontfamily', commonFontFamily, (v) => handleBatchPatch('fontfamily', v))}
+            </div>
+          )}
+          {renderColorInput('颜色', commonColor, (v) => handleBatchPatch('color', v), `batch:${selectedGids.join('|')}:color`)}
           <div className="grid grid-cols-[80px_1fr] items-center gap-3 text-xs">
             <span className="text-slate-600 font-medium">不透明度</span>
             <input
@@ -1050,6 +1160,226 @@ export function RightSidebar({
                 全部隐藏
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const getFontRole = (obj: ManifestObject): { id: string; label: string; presetKey: 'title' | 'label' | 'tick' | 'legend' } | null => {
+    if (obj.kind !== 'text' && obj.kind !== 'legend') return null;
+    if (obj.id.startsWith('title.') || obj.id.startsWith('fig_text.')) {
+      return { id: 'titles', label: '标题 / 图内主文本', presetKey: 'title' };
+    }
+    if (obj.id.startsWith('xlabel.')) {
+      return { id: 'xlabels', label: 'X 轴标签', presetKey: 'label' };
+    }
+    if (obj.id.startsWith('ylabel.')) {
+      return { id: 'ylabels', label: 'Y 轴标签', presetKey: 'label' };
+    }
+    if (obj.id.startsWith('xtick.')) {
+      return { id: 'xticks', label: 'X 轴刻度文字', presetKey: 'tick' };
+    }
+    if (obj.id.startsWith('ytick.')) {
+      return { id: 'yticks', label: 'Y 轴刻度文字', presetKey: 'tick' };
+    }
+    if (obj.id.startsWith('legend_text.') || obj.id.startsWith('legend_title.') || obj.kind === 'legend') {
+      return { id: 'legend_text', label: '图例文字', presetKey: 'legend' };
+    }
+    if (obj.kind === 'text') {
+      return { id: 'other_text', label: '其它文本标注', presetKey: 'label' };
+    }
+    return null;
+  };
+
+  const getFontGroups = () => {
+    const groups = new Map<string, { id: string; label: string; presetKey: 'title' | 'label' | 'tick' | 'legend'; objects: ManifestObject[] }>();
+    objects.forEach((obj) => {
+      const role = getFontRole(obj);
+      if (!role) return;
+      const current = groups.get(role.id) || { ...role, objects: [] };
+      current.objects.push(obj);
+      groups.set(role.id, current);
+    });
+    return Array.from(groups.values()).filter(group => group.objects.length > 0);
+  };
+
+  const commonProp = (items: ManifestObject[], prop: string, fallback: unknown) => {
+    const values = items.map(item => item.currentProps[prop]).filter(value => value !== undefined && value !== null && value !== '');
+    return values.length > 0 && values.every(value => value === values[0]) ? values[0] : fallback;
+  };
+
+  const handleFontGroupPatch = (roleId: string, items: ManifestObject[], prop: 'fontsize' | 'fontfamily' | 'color', value: unknown) => {
+    const tickAxisMatch = roleId === 'xticks'
+      ? { regex: /^xtick\.(\d+)\./, axisPrefix: 'axis.x.', sizeProp: 'tick_labelsize', colorProp: 'tick_labelcolor', familyProp: 'tick_labelfamily' }
+      : roleId === 'yticks'
+        ? { regex: /^ytick\.(\d+)\./, axisPrefix: 'axis.y.', sizeProp: 'tick_labelsize', colorProp: 'tick_labelcolor', familyProp: 'tick_labelfamily' }
+        : null;
+
+    if (tickAxisMatch) {
+      const axisIndexes = Array.from(new Set(items.map(obj => obj.id.match(tickAxisMatch.regex)?.[1]).filter(Boolean))) as string[];
+      const axisProp = prop === 'fontsize'
+        ? tickAxisMatch.sizeProp
+        : prop === 'fontfamily'
+          ? tickAxisMatch.familyProp
+          : tickAxisMatch.colorProp;
+      const patches = axisIndexes.map(index => ({
+        op: 'set' as const,
+        mode: 'backend_patch' as const,
+        gid: `${tickAxisMatch.axisPrefix}${index}`,
+        prop: axisProp,
+        value,
+      }));
+      if (patches.length > 0) void onPatch(patches);
+      return;
+    }
+
+    const patches: PatchEntry[] = items.map((obj) => {
+      if (!supportsBatchProp(obj, prop)) return null;
+      return {
+        op: 'set' as const,
+        mode: prop === 'color' ? 'local_patch' as const : 'backend_patch' as const,
+        gid: obj.id,
+        prop,
+        value,
+      };
+    }).filter(Boolean) as PatchEntry[];
+    if (patches.length > 0) void onPatch(patches);
+  };
+
+  const renderFontCenterPanel = () => {
+    const fontGroups = getFontGroups();
+
+    if (fontGroups.length === 0) {
+      return (
+        <div className="text-sm text-slate-500 py-8 text-center">
+          当前图中没有可识别的文本或标签对象。
+          <p className="text-xs text-slate-400 mt-2">渲染后会自动识别标题、坐标轴标签、刻度文字和图例文字。</p>
+        </div>
+      );
+    }
+
+    const applyFontPreset = (name: string) => {
+      const preset = fontPresetMap[name];
+      if (!preset) return;
+      const patches: PatchEntry[] = [];
+      fontGroups.forEach(group => {
+        group.objects.forEach(obj => {
+          if (supportsBatchProp(obj, 'fontfamily')) {
+            patches.push({ op: 'set', mode: 'backend_patch', gid: obj.id, prop: 'fontfamily', value: preset.family });
+          }
+          if (supportsBatchProp(obj, 'fontsize')) {
+            patches.push({ op: 'set', mode: 'backend_patch', gid: obj.id, prop: 'fontsize', value: preset[group.presetKey] });
+          }
+        });
+      });
+      if (patches.length > 0) void onPatch(patches);
+    };
+
+    const saveFontPreset = () => {
+      const name = window.prompt('输入字体预设名称');
+      if (!name) return;
+      const titleGroup = fontGroups.find(group => group.presetKey === 'title');
+      const labelGroup = fontGroups.find(group => group.presetKey === 'label');
+      const tickGroup = fontGroups.find(group => group.presetKey === 'tick');
+      const legendGroup = fontGroups.find(group => group.presetKey === 'legend');
+      const firstTextGroup = fontGroups[0];
+      const nextPreset = {
+        family: String(commonProp(firstTextGroup.objects, 'fontfamily', 'Arial')),
+        title: Number(commonProp(titleGroup?.objects || firstTextGroup.objects, 'fontsize', 14)),
+        label: Number(commonProp(labelGroup?.objects || firstTextGroup.objects, 'fontsize', 11)),
+        tick: Number(commonProp(tickGroup?.objects || firstTextGroup.objects, 'fontsize', 9)),
+        legend: Number(commonProp(legendGroup?.objects || firstTextGroup.objects, 'fontsize', 9)),
+      };
+      const next = { ...customFontPresets, [name]: nextPreset };
+      setCustomFontPresets(next);
+      window.localStorage.setItem(FONT_PRESET_STORAGE_KEY, JSON.stringify(next));
+    };
+
+    const deleteFontPreset = (name: string) => {
+      if (!window.confirm(`确定删除字体预设"${name}"？`)) return;
+      const next = { ...customFontPresets };
+      delete next[name];
+      setCustomFontPresets(next);
+      window.localStorage.setItem(FONT_PRESET_STORAGE_KEY, JSON.stringify(next));
+    };
+
+    return (
+      <div className="space-y-6">
+        <div>
+          {renderPanelTitle('字体中心')}
+          <p className="text-xs text-slate-400 mb-4">按真实 matplotlib 文本对象自动分组，统一修改标题、轴标签、刻度和图例字体。</p>
+          <div className="space-y-4">
+            {fontGroups.map(group => {
+              const family = String(commonProp(group.objects, 'fontfamily', 'Arial'));
+              const size = commonProp(group.objects, 'fontsize', undefined) as number | undefined;
+              const color = resolvePickerColor(commonProp(group.objects, 'color', '#000000'));
+              return (
+                <div key={group.id} className="p-3 rounded-lg border border-slate-100 bg-slate-50/50 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-800">{group.label}</div>
+                      <div className="text-[10px] text-slate-400">对象 {group.objects.length} 个</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onSelectGids?.(group.objects.map(obj => obj.id))}
+                      className="text-xs font-semibold text-blue-600 hover:text-blue-700"
+                    >
+                      选中整组
+                    </button>
+                  </div>
+                  <div className="space-y-3 pt-2 border-t border-slate-100">
+                    {renderNumberInput(`font-center-${group.id}`, 'fontsize', size, (v) => handleFontGroupPatch(group.id, group.objects, 'fontsize', v), { min: 4, max: 48, step: 0.5 })}
+                    {renderFontSelect(`font-center-${group.id}`, 'fontfamily', family, (v) => handleFontGroupPatch(group.id, group.objects, 'fontfamily', v))}
+                    {renderColorInput('文字颜色', color, (v) => handleFontGroupPatch(group.id, group.objects, 'color', v), `font-center:${group.id}:color`)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="pt-5 border-t border-slate-200">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">字体预设</h4>
+            <button
+              type="button"
+              onClick={saveFontPreset}
+              className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
+            >
+              保存当前预设
+            </button>
+          </div>
+          <div className="space-y-2">
+            {Object.entries(fontPresetMap).map(([name, preset]) => {
+              const isCustom = Object.hasOwn(customFontPresets, name);
+              return (
+                <div key={name} className="relative group">
+                  <button
+                    type="button"
+                    onClick={() => applyFontPreset(name)}
+                    className="w-full flex items-center justify-between rounded border border-slate-200 bg-white p-2 text-left hover:bg-slate-50 transition-colors"
+                  >
+                    <div>
+                      <div className="text-xs font-semibold text-slate-700">{name}</div>
+                      <div className="text-[10px] text-slate-400">{preset.family} · 标题 {preset.title} / 标签 {preset.label} / 刻度 {preset.tick}</div>
+                    </div>
+                    <Baseline className="w-4 h-4 text-slate-400" />
+                  </button>
+                  {isCustom && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); deleteFontPreset(name); }}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+                      title="删除此预设"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -1226,6 +1556,18 @@ export function RightSidebar({
           <Palette className="w-3.5 h-3.5" />
           配色中心
         </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('fonts')}
+          className={`flex-1 py-3 text-center text-xs font-semibold border-b-2 transition-colors flex items-center justify-center gap-1.5 ${
+            activeTab === 'fonts'
+              ? 'border-blue-500 text-blue-600'
+              : 'border-transparent text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          <Baseline className="w-3.5 h-3.5" />
+          字体中心
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 custom-scrollbar relative">
@@ -1253,6 +1595,8 @@ export function RightSidebar({
           {activeTab === 'groups' && renderGroupsPanel()}
 
           {activeTab === 'palette' && renderPalettePanel()}
+
+          {activeTab === 'fonts' && renderFontCenterPanel()}
         </div>
       </div>
     </div>

@@ -55,13 +55,24 @@ function initSchema() {
     );
   `);
 
+  const ignoreDuplicateColumnOnly = (e: unknown) => {
+    const msg = String((e as any)?.message || e);
+    if (!msg.includes("duplicate column") && !msg.includes("duplicate column name")) {
+      throw e;
+    }
+  };
+
   // Safe migration for script and file_count columns
   try {
     db.prepare("ALTER TABLE projects ADD COLUMN script TEXT").run();
-  } catch (e) {}
+  } catch (e) {
+    ignoreDuplicateColumnOnly(e);
+  }
   try {
     db.prepare("ALTER TABLE projects ADD COLUMN file_count INTEGER DEFAULT 0").run();
-  } catch (e) {}
+  } catch (e) {
+    ignoreDuplicateColumnOnly(e);
+  }
 }
 
 export interface ProjectRow {
@@ -200,21 +211,36 @@ export interface SciFigureProject {
   updatedAt: string;
 }
 
+function countCjkChars(value: string): number {
+  return (value.match(/[\u4e00-\u9fff]/g) || []).length;
+}
+
+function normalizeStoredFileName(fileName: string): string {
+  const decoded = Buffer.from(fileName, 'latin1').toString('utf8');
+  if (decoded.includes('\uFFFD')) {
+    return fileName;
+  }
+  return countCjkChars(decoded) > countCjkChars(fileName) ? decoded : fileName;
+}
+
 // Project files helpers
 export function addProjectFile(id: string, projectId: string, originalName: string, storedPath: string, columns: string[], rowCount: number): void {
-  getDb().prepare(`
-    INSERT INTO project_files (id, project_id, original_name, stored_path, columns, row_count)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, projectId, originalName, storedPath, JSON.stringify(columns), rowCount);
-  
-  getDb().prepare('UPDATE projects SET file_count = file_count + 1 WHERE id = ?').run(projectId);
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO project_files (id, project_id, original_name, stored_path, columns, row_count)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, projectId, originalName, storedPath, JSON.stringify(columns), rowCount);
+    
+    db.prepare('UPDATE projects SET file_count = file_count + 1 WHERE id = ?').run(projectId);
+  })();
 }
 
 export function listProjectFiles(projectId: string): DatasetEntry[] {
   const rows = getDb().prepare('SELECT * FROM project_files WHERE project_id = ? ORDER BY uploaded_at ASC').all(projectId) as any[];
   return rows.map(r => ({
     datasetId: r.id,
-    fileName: r.original_name,
+    fileName: normalizeStoredFileName(r.original_name),
     filePath: r.stored_path,
     columns: JSON.parse(r.columns),
     rowCount: r.row_count,
@@ -227,8 +253,11 @@ export function getProjectFile(fileId: string): any {
 }
 
 export function deleteProjectFile(projectId: string, fileId: string): void {
-  getDb().prepare('DELETE FROM project_files WHERE id = ? AND project_id = ?').run(fileId, projectId);
-  getDb().prepare('UPDATE projects SET file_count = CASE WHEN file_count > 0 THEN file_count - 1 ELSE 0 END WHERE id = ?').run(projectId);
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare('DELETE FROM project_files WHERE id = ? AND project_id = ?').run(fileId, projectId);
+    db.prepare('UPDATE projects SET file_count = CASE WHEN file_count > 0 THEN file_count - 1 ELSE 0 END WHERE id = ?').run(projectId);
+  })();
 }
 
 // Project figures helpers
@@ -248,4 +277,50 @@ export function listProjectFigures(projectId: string): any[] {
 
 export function deleteProjectFigures(projectId: string): void {
   getDb().prepare('DELETE FROM project_figures WHERE project_id = ?').run(projectId);
+}
+
+export interface FigSessionInput {
+  figureIndex: number;
+  sessionId: string;
+  editLog: any[];
+  revision: number;
+}
+
+export function replaceProjectFiguresAndSessions(
+  projectId: string,
+  figures: FigSessionInput[],
+  script: string,
+  dataPayload: Record<string, unknown> | null
+): void {
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare('DELETE FROM project_figures WHERE project_id = ?').run(projectId);
+    const insertFig = db.prepare(`
+      INSERT INTO project_figures (id, project_id, figure_index, session_id)
+      VALUES (?, ?, ?, ?)
+    `);
+    const insertSession = db.prepare(`
+      INSERT INTO sessions (id, script, data_payload, edit_log, revision, updated_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        script = excluded.script,
+        data_payload = excluded.data_payload,
+        edit_log = excluded.edit_log,
+        revision = excluded.revision,
+        updated_at = datetime('now')
+    `);
+
+    figures.forEach(fig => {
+      insertFig.run(projectId + '_' + fig.figureIndex, projectId, fig.figureIndex, fig.sessionId);
+
+      const payload = dataPayload ? JSON.stringify(dataPayload) : null;
+      insertSession.run(
+        fig.sessionId,
+        script,
+        payload,
+        JSON.stringify(fig.editLog),
+        fig.revision
+      );
+    });
+  })();
 }

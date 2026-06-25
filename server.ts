@@ -27,6 +27,8 @@ import {
   addProjectFigure,
   listProjectFigures,
   deleteProjectFigures,
+  replaceProjectFiguresAndSessions,
+  type FigSessionInput,
   type DatasetEntry,
   type FigureEntry
 } from './db';
@@ -54,8 +56,10 @@ async function startServer() {
       }
     },
     filename: (req, file, cb) => {
-      const ext = path.extname(file.originalname);
-      const base = path.basename(file.originalname, ext);
+      const normalizedName = normalizeUploadFileName(file.originalname);
+      file.originalname = normalizedName;
+      const ext = path.extname(normalizedName);
+      const base = path.basename(normalizedName, ext);
       const safeBase = base.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5.-]/g, '');
       cb(null, `${Date.now()}_${safeBase}${ext}`);
     }
@@ -91,6 +95,30 @@ async function startServer() {
 
   function escapeRegExp(s: string): string {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function countCjkChars(value: string): number {
+    return (value.match(/[\u4e00-\u9fff]/g) || []).length;
+  }
+
+  function normalizeUploadFileName(fileName: string): string {
+    const decoded = Buffer.from(fileName, 'latin1').toString('utf8');
+    if (decoded.includes('\uFFFD')) {
+      return fileName;
+    }
+    return countCjkChars(decoded) > countCjkChars(fileName) ? decoded : fileName;
+  }
+
+  function addUploadedFilePathAliases(target: Record<string, string>, fileName: string, filePath: string): void {
+    const names = new Set([fileName, normalizeUploadFileName(fileName)]);
+    names.forEach(name => {
+      target[name] = filePath;
+      const ext = path.extname(name);
+      const base = path.basename(name, ext);
+      if (base) {
+        target[base] = filePath;
+      }
+    });
   }
 
   async function validateAst(script: string): Promise<{ ok: boolean; message?: string; errors?: string[] }> {
@@ -155,9 +183,16 @@ async function startServer() {
     saveSession(s.sessionId, s.script, s.dataPayload, s.editLog, s.revision);
   }
 
+  function resolvePythonBin(): string {
+    if (process.env.PYTHON_BIN) {
+      return process.env.PYTHON_BIN;
+    }
+    return /^win/.test(process.platform) ? 'python' : 'python3';
+  }
+
   function spawnPythonWithPayload(scriptName: string, payload: any): Promise<string> {
     return new Promise((resolve, reject) => {
-      const pythonBin = /^win/.test(process.platform) ? 'python' : 'python3';
+      const pythonBin = resolvePythonBin();
       const scriptPath = path.join(process.cwd(), 'renderer', scriptName);
       const proc = spawn(pythonBin, [scriptPath]);
       let stdout = '';
@@ -185,6 +220,62 @@ async function startServer() {
 
   function cleanScript(script: string): string {
     return script.replace(/^```[a-z]*\n?/im, '').replace(/\n?```\s*$/i, '');
+  }
+
+  function resolveDatasetAbsolutePath(storedPath: string): string {
+    return path.resolve(process.cwd(), storedPath);
+  }
+
+  function readWorkbookFromFile(filePath: string): XLSX.WorkBook {
+    const buffer = fs.readFileSync(filePath);
+    return XLSX.read(buffer, { type: 'buffer' });
+  }
+
+  function loadDatasetRows(filePath: string): any[] {
+    const absPath = resolveDatasetAbsolutePath(filePath);
+    const ext = path.extname(absPath).toLowerCase();
+
+    if (ext === '.csv' || ext === '.tsv' || ext === '.txt') {
+      const fileContent = fs.readFileSync(absPath, 'utf8');
+      const delimiter = ext === '.tsv' ? '\t' : ',';
+      const parsed = Papa.parse(fileContent, {
+        header: true,
+        skipEmptyLines: true,
+        delimiter,
+        dynamicTyping: true,
+      });
+      return Array.isArray(parsed.data) ? parsed.data as any[] : [];
+    }
+
+    if (ext === '.xlsx' || ext === '.xls') {
+      const workbook = readWorkbookFromFile(absPath);
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      const json = XLSX.utils.sheet_to_json(worksheet, { defval: null });
+      return Array.isArray(json) ? json as any[] : [];
+    }
+
+    return [];
+  }
+
+  function buildProjectDataPayload(datasets: DatasetEntry[]): Record<string, unknown> | null {
+    if (!datasets || datasets.length === 0) {
+      return null;
+    }
+
+    const firstDataset = datasets[0];
+    const customData = loadDatasetRows(firstDataset.filePath);
+    return {
+      custom_data: customData,
+      datasets: datasets.map(dataset => ({
+        datasetId: dataset.datasetId,
+        fileName: dataset.fileName,
+        filePath: dataset.filePath,
+        columns: dataset.columns,
+        rowCount: dataset.rowCount,
+        uploadedAt: dataset.uploadedAt,
+      })),
+    };
   }
 
   function applyCodePatch(script: string, patch: any): string {
@@ -284,12 +375,13 @@ async function startServer() {
         });
       }
 
+      const patchTimestamp = Date.now();
       const newEdits: EditEntry[] = regularPatches.map((p: any) => ({
         gid: p.gid,
         prop: p.prop,
         value: p.value,
         mode: p.mode || 'backend_patch',
-        timestamp: Date.now(),
+        timestamp: patchTimestamp,
       }));
 
       const backendPatches = newEdits.filter(e => e.mode === 'backend_patch');
@@ -318,12 +410,11 @@ async function startServer() {
       if (figRow) {
         const projectId = figRow.project_id;
         const datasets = listProjectFiles(projectId);
+        const projectDataPayload = buildProjectDataPayload(datasets);
+        session.dataPayload = projectDataPayload;
         uploaded_file_paths = {};
         datasets.forEach(d => {
-          uploaded_file_paths![d.fileName] = d.filePath;
-          const ext = path.extname(d.fileName);
-          const base = path.basename(d.fileName, ext);
-          uploaded_file_paths![base] = d.filePath;
+          addUploadedFilePathAliases(uploaded_file_paths!, d.fileName, d.filePath);
         });
         cwd = path.join(process.cwd(), 'data', 'projects', projectId, 'files').replace(/\\/g, '/');
       }
@@ -405,12 +496,10 @@ async function startServer() {
       if (figRow) {
         const projectId = figRow.project_id;
         const datasets = listProjectFiles(projectId);
+        dataPayload = buildProjectDataPayload(datasets);
         uploaded_file_paths = {};
         datasets.forEach(d => {
-          uploaded_file_paths![d.fileName] = d.filePath;
-          const ext = path.extname(d.fileName);
-          const base = path.basename(d.fileName, ext);
-          uploaded_file_paths![base] = d.filePath;
+          addUploadedFilePathAliases(uploaded_file_paths!, d.fileName, d.filePath);
         });
         cwd = path.join(process.cwd(), 'data', 'projects', projectId, 'files').replace(/\\/g, '/');
       }
@@ -714,7 +803,7 @@ async function startServer() {
         columns = rows.length > 0 ? rows[0] : [];
         rowCount = rows.length > 0 ? Math.max(0, rows.length - 1) : 0;
       } else if (ext === '.xlsx' || ext === '.xls') {
-        const workbook = XLSX.readFile(file.path);
+        const workbook = readWorkbookFromFile(file.path);
         const firstSheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[firstSheetName];
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
@@ -788,72 +877,67 @@ async function startServer() {
       }
 
       const datasets = listProjectFiles(projectId);
+      const projectDataPayload = buildProjectDataPayload(datasets);
       const uploaded_file_paths: Record<string, string> = {};
       datasets.forEach(d => {
-        uploaded_file_paths[d.fileName] = d.filePath;
-        const ext = path.extname(d.fileName);
-        const base = path.basename(d.fileName, ext);
-        uploaded_file_paths[base] = d.filePath;
+        addUploadedFilePathAliases(uploaded_file_paths, d.fileName, d.filePath);
       });
 
       const cwd = path.join(process.cwd(), 'data', 'projects', projectId, 'files');
       fs.mkdirSync(cwd, { recursive: true });
 
+      // Read existing figure bindings before render so omitted editLogs still
+      // participate in the returned SVG/manifest, not only in persisted state.
+      const oldFigRows = listProjectFigures(projectId);
+      const oldEditLogMap: Record<string, any[]> = {};
+      const oldSessionMap: Record<string, any> = {};
+      for (const row of oldFigRows) {
+        const key = `fig_${row.figure_index + 1}`;
+        const sess = loadSession(row.session_id);
+        if (sess) {
+          oldEditLogMap[key] = sess.editLog;
+          oldSessionMap[key] = sess;
+        }
+      }
+      const effectiveEditLogs = { ...oldEditLogMap, ...(editLogs || {}) };
+
       const resultStr = await spawnPythonWithPayload('introspector.py', {
         script,
+        dataPayload: projectDataPayload,
         cwd: cwd.replace(/\\/g, '/'),
         uploaded_file_paths,
-        editLogs: editLogs || {},
+        editLogs: effectiveEditLogs,
         renderOptions: { dpi: 150 }
       });
       const parsed = JSON.parse(resultStr);
 
       if (parsed.status === 'success') {
-        // Read existing figure bindings to preserve editLogs
-        const oldFigRows = listProjectFigures(projectId);
-        const oldEditLogMap: Record<string, any[]> = {};
-        const oldSessionMap: Record<string, any> = {};
-        for (const row of oldFigRows) {
-          const key = `fig_${row.figure_index + 1}`;
-          const sess = loadSession(row.session_id);
-          if (sess) {
-            oldEditLogMap[key] = sess.editLog;
-            oldSessionMap[key] = sess;
-          }
-        }
-
         // Detect figure count drift
         const newFigures = parsed.figures || [];
         const oldCount = oldFigRows.length;
         const newCount = newFigures.length;
         const figureCountChanged = oldCount > 0 && oldCount !== newCount;
 
-        // Clear old bindings, re-create with preserved editLogs
-        deleteProjectFigures(projectId);
-
+        // Prepare figures and sessions input for transaction helper
+        const figInputs: FigSessionInput[] = [];
         for (let i = 0; i < newFigures.length; i++) {
           const fig = newFigures[i];
           const figKey = `fig_${i + 1}`;
-          const figSessionId = `${projectId}_${figKey}`;
-
-          // Preserve old editLog if frontend didn't pass new ones
-          const incomingEditLog = editLogs?.[fig.figureId];
+          const figSessionIdResolved = `${projectId}_${figKey}`;
+          const incomingEditLog = effectiveEditLogs?.[fig.figureId];
           const preservedEditLog = incomingEditLog !== undefined
             ? incomingEditLog
             : (oldEditLogMap[figKey] || []);
-
-          persistSession({
-            sessionId: figSessionId,
-            script,
-            dataPayload: { datasets } as any,
+          figInputs.push({
+            figureIndex: i,
+            sessionId: figSessionIdResolved,
             editLog: preservedEditLog,
-            revision: oldSessionMap[figKey]?.revision || 1,
-            createdAt: oldSessionMap[figKey]?.createdAt || Date.now(),
-            updatedAt: Date.now()
+            revision: oldSessionMap[figKey]?.revision || 1
           });
-
-          addProjectFigure(figSessionId, projectId, i, figSessionId);
         }
+
+        // Atomically replace figures and sessions using the database transaction helper
+        replaceProjectFiguresAndSessions(projectId, figInputs, script, projectDataPayload);
 
         // Attach figure count drift warning
         if (figureCountChanged) {
@@ -977,13 +1061,11 @@ async function startServer() {
         }
       }
       const datasets = listProjectFiles(projectId);
+      const projectDataPayload = buildProjectDataPayload(datasets);
 
       const uploaded_file_paths: Record<string, string> = {};
       datasets.forEach(d => {
-        uploaded_file_paths[d.fileName] = d.filePath;
-        const ext = path.extname(d.fileName);
-        const base = path.basename(d.fileName, ext);
-        uploaded_file_paths[base] = d.filePath;
+        addUploadedFilePathAliases(uploaded_file_paths, d.fileName, d.filePath);
       });
 
       const cwd = path.join(process.cwd(), 'data', 'projects', projectId, 'files');
@@ -995,6 +1077,7 @@ async function startServer() {
         const targetFigId = `fig_${fig.figure_index + 1}`;
         const resultStr = await spawnPythonWithPayload('introspector.py', {
           script: session.script,
+          dataPayload: projectDataPayload || session.dataPayload || null,
           cwd: cwd.replace(/\\/g, '/'),
           uploaded_file_paths,
           editLogs: { [targetFigId]: session.editLog },

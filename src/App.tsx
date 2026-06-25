@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useRef, type ReactNode, type ErrorInfo } from 'react';
 import { Navbar } from './components/Navbar';
 import { IconSidebar } from './components/IconSidebar';
 import { LeftSidebar } from './components/LeftSidebar';
@@ -12,12 +12,43 @@ import { ExportSettingsPage } from './components/ExportSettingsPage';
 import { ProjectsPage } from './components/ProjectsPage';
 import { DataFilesPage } from './components/DataFilesPage';
 import { SettingsPage } from './components/SettingsPage';
+import { ProjectCreatePage } from './components/ProjectCreatePage';
 import { FigureSpec, defaultSpec, DatasetEntry, FigureEntry } from './types';
 import { useFigureSession } from './hooks/useFigureSession';
+import { buildReproduciblePython } from './utils/reproduciblePython';
+import { applyRuntimePatchesToManifest, applyRuntimePatchesToSvg } from './utils/svgEditor';
 import type { FigureSession, EditEntry, PatchEntry } from './schemas/manifest';
 import './index.css';
 
-export type ViewState = 'home' | 'templates' | 'data_import' | 'editor' | 'workspace' | 'export_settings' | 'projects' | 'data' | 'settings';
+class EditorErrorBoundary extends React.Component<
+  Record<string, unknown>,
+  { hasError: boolean; error: Error | null }
+> {
+  state: { hasError: boolean; error: Error | null } = { hasError: false, error: null };
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, _info: ErrorInfo) {
+    console.error('Editor crashed:', error, _info.componentStack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex-1 flex items-center justify-center bg-slate-50 p-8">
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-8 max-w-lg text-center space-y-4">
+            <div className="text-4xl">⚠️</div>
+            <h2 className="text-lg font-semibold text-slate-800">编辑器出现异常</h2>
+            <p className="text-sm text-slate-500">{this.state.error?.message || '未知错误'}</p>
+            <p className="text-xs text-slate-400">请检查浏览器控制台（F12）查看详细错误信息</p>
+          </div>
+        </div>
+      );
+    }
+    return (this as any).props.children as ReactNode;
+  }
+}
+
+export type ViewState = 'home' | 'templates' | 'data_import' | 'editor' | 'workspace' | 'export_settings' | 'projects' | 'data' | 'settings' | 'project_create';
 
 const SPEC_STORAGE_KEY = 'scifigure:app-state:v2';
 
@@ -34,6 +65,8 @@ interface PersistedAppState {
   datasets?: DatasetEntry[];
   selectedGids?: string[];
   projectHistory?: Record<string, { past: EditEntry[][]; future: EditEntry[][] }>;
+  currentView?: ViewState;
+  subView?: string;
 }
 
 function cloneSpec(spec: FigureSpec): FigureSpec {
@@ -50,6 +83,8 @@ function loadInitialState(): PersistedAppState {
       projectName: '未命名项目',
       figSession: null,
       renderLog: ['> 日志待机中... 点击"同步至引擎并预览 SVG"开始渲染'],
+      currentView: 'home',
+      subView: 'home',
     };
   }
 
@@ -78,6 +113,8 @@ function loadInitialState(): PersistedAppState {
       datasets: parsed.datasets ?? [],
       selectedGids: parsed.selectedGids ?? [],
       projectHistory: parsed.projectHistory ?? {},
+      currentView: parsed.currentView ?? 'home',
+      subView: parsed.subView ?? 'home',
     };
   } catch {
     return {
@@ -93,15 +130,18 @@ function loadInitialState(): PersistedAppState {
       datasets: [],
       selectedGids: [],
       projectHistory: {},
+      currentView: 'home',
+      subView: 'home',
     };
   }
 }
 
 export default function App() {
   const initialState = useMemo(() => loadInitialState(), []);
+  const hasRestoredProjectFiguresRef = useRef(false);
   const [spec, setSpec] = useState<FigureSpec>(initialState.spec);
-  const [currentView, setCurrentView] = useState<ViewState>('home');
-  const [subView, setSubView] = useState<string>('home');
+  const [currentView, setCurrentView] = useState<ViewState>(initialState.currentView ?? 'home');
+  const [subView, setSubView] = useState<string>(initialState.subView ?? 'home');
   const [selectedObject, setSelectedObject] = useState<string>('Figure');
   const [projectId, setProjectId] = useState<string | null>(initialState.projectId);
   const [projectName, setProjectName] = useState<string>(initialState.projectName);
@@ -154,9 +194,14 @@ export default function App() {
     reset,
   } = useFigureSession(initialState.figSession);
   const [renderLog, setRenderLog] = useState<string[]>(initialState.renderLog);
+  const [projectIsRendering, setProjectIsRendering] = useState(false);
+  const [renderProgressText, setRenderProgressText] = useState<string | null>(null);
 
   // Virtual active session wrapper for project mode
   const activeFig = projectId && projectFigures[activeFigureId] ? projectFigures[activeFigureId] : null;
+  const activeProjectHistory = projectId ? projectHistory[activeFigureId] : null;
+  const canUndoActiveFigure = projectId ? Boolean(activeProjectHistory?.past?.length || activeFig?.editLog?.length) : canUndoFigure;
+  const canRedoActiveFigure = projectId ? Boolean(activeProjectHistory?.future?.length) : canRedoFigure;
   const figSession: FigureSession | null = projectId 
     ? (activeFig ? {
         sessionId: `${projectId}_${activeFigureId}`,
@@ -173,6 +218,22 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
+
+    // Strip heavy svg from projectFigures for session storage
+    const serializedFigures: Record<string, any> = {};
+    if (projectFigures) {
+      Object.entries(projectFigures as Record<string, any>).forEach(([id, fig]) => {
+        serializedFigures[id] = {
+          figureId: fig.figureId,
+          index: fig.index,
+          manifest: fig.manifest,
+          editLog: fig.editLog,
+          revision: fig.revision,
+          fingerprint: (fig as any).fingerprint,
+        };
+      });
+    }
+
     const nextState: PersistedAppState = {
       spec,
       history: specHistory,
@@ -181,14 +242,80 @@ export default function App() {
       projectName,
       figSession: hookSession,
       renderLog,
-      projectFigures,
+      projectFigures: serializedFigures as any,
       activeFigureId,
       datasets,
       selectedGids,
       projectHistory,
+      currentView,
+      subView,
     };
     window.sessionStorage.setItem(SPEC_STORAGE_KEY, JSON.stringify(nextState));
-  }, [spec, specHistory, historyIndex, projectId, projectName, hookSession, renderLog, projectFigures, activeFigureId, datasets, selectedGids, projectHistory]);
+  }, [spec, specHistory, historyIndex, projectId, projectName, hookSession, renderLog, projectFigures, activeFigureId, datasets, selectedGids, projectHistory, currentView, subView]);
+
+  // Auto-rebuild project figures on mount/refresh if SVGs are missing
+  useEffect(() => {
+    const figsArray = Object.values(projectFigures as Record<string, any>);
+    if (projectId && figsArray.length > 0 && !figsArray[0].svg) {
+      if (hasRestoredProjectFiguresRef.current) return;
+      hasRestoredProjectFiguresRef.current = true;
+      setProjectIsRendering(true);
+      setRenderProgressText('正在恢复项目预览：读取服务端编辑历史并重建 SVG...');
+
+      (async () => {
+        try {
+          const latestProjectRes = await fetch(`/api/projects/${projectId}`);
+          const latestProject = await latestProjectRes.json();
+          const latestFigures = latestProject.status === 'success' ? (latestProject.project?.figures || []) : [];
+          const latestScript = latestProject.status === 'success'
+            ? (latestProject.project?.script || spec.custom_script || '')
+            : (spec.custom_script || '');
+          const renderScript = spec.plot_type === 'custom'
+            ? (latestScript || buildReproduciblePython(spec))
+            : buildReproduciblePython(spec);
+          if (!renderScript) return;
+
+          const editLogs: Record<string, any[]> = {};
+          if (latestFigures.length > 0) {
+            latestFigures.forEach((fig: any) => {
+              editLogs[fig.figureId] = fig.editLog || [];
+            });
+          } else {
+            Object.keys(projectFigures).forEach(figId => {
+              editLogs[figId] = projectFigures[figId]?.editLog || [];
+            });
+          }
+
+          const renderRes = await fetch(`/api/projects/${projectId}/figures/render`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ script: renderScript, editLogs })
+          });
+          const data = await renderRes.json();
+          if (data.status === 'success') {
+            const nextFigs: Record<string, FigureEntry> = {};
+            (data.figures || []).forEach((f: any) => {
+              nextFigs[f.figureId] = {
+                figureId: f.figureId,
+                index: f.figureId === 'fig_1' ? 0 : parseInt(f.figureId.split('_')[1]) - 1,
+                manifest: f.manifest,
+                svg: f.svg,
+                editLog: editLogs[f.figureId] || [],
+                revision: projectFigures[f.figureId]?.revision || 1
+              };
+            });
+            setProjectFigures(nextFigs);
+            setRenderLog((prev: string[]) => [...prev, `> [自动] 已从服务端编辑历史重建项目多图预览`]);
+          }
+        } catch (err) {
+          console.error('Auto render failed:', err);
+        } finally {
+          setProjectIsRendering(false);
+          setRenderProgressText(null);
+        }
+      })();
+    }
+  }, [projectId]);
 
   const applySpecChange = (nextSpec: FigureSpec, options?: { recordHistory?: boolean }) => {
     const recordHistory = options?.recordHistory !== false;
@@ -206,11 +333,50 @@ export default function App() {
   };
 
   const handlePatch = async (patches: PatchEntry[]) => {
+    const needsBackendRender = patches.some((patchItem: any) => patchItem.type === 'code_patch' || patchItem.mode !== 'local_patch');
+    const patchSummary = patches.length === 1
+      ? `${(patches[0] as any).gid || (patches[0] as any).target_id || '对象'} / ${(patches[0] as any).prop || '代码'}`
+      : `${patches.length} 个参数`;
+
     if (projectId) {
       // Record previous editLog for undo before applying patch
       const prevEditLog = projectFigures[activeFigureId]?.editLog || [];
+      const localPatchTimestamp = Date.now();
+      const localPatchEntries = patches
+        .filter((patchItem: any) => patchItem.mode === 'local_patch' && patchItem.gid && patchItem.prop)
+        .map((patchItem: any) => ({
+          gid: patchItem.gid,
+          prop: patchItem.prop,
+          value: patchItem.value,
+          mode: patchItem.mode,
+          timestamp: localPatchTimestamp,
+        }));
+
+      if (!needsBackendRender && localPatchEntries.length > 0) {
+        setProjectFigures(prev => {
+          const active = prev[activeFigureId];
+          if (!active) return prev;
+          const runtimePatches = localPatchEntries.map(({ gid, prop, value }) => ({ gid, prop, value }));
+          return {
+            ...prev,
+            [activeFigureId]: {
+              ...active,
+              svg: applyRuntimePatchesToSvg(active.svg || '', runtimePatches),
+              manifest: applyRuntimePatchesToManifest(active.manifest || null, runtimePatches) || active.manifest,
+              editLog: [...(active.editLog || []), ...localPatchEntries],
+              revision: (active.revision || 1) + 1,
+            },
+          };
+        });
+        pushProjectHistory(activeFigureId, prevEditLog);
+      }
 
       try {
+        if (needsBackendRender) {
+          setProjectIsRendering(true);
+          setRenderProgressText(`正在应用 ${patchSummary}：Python 重放编辑并生成 SVG...`);
+          setRenderLog(prev => [...prev, `> [应用] ${activeFigureId} 正在重渲染 ${patchSummary}...`]);
+        }
         const res = await fetch('/api/figure/patch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -221,6 +387,9 @@ export default function App() {
         });
         const data = await res.json();
         if (data.status === 'success') {
+          if (needsBackendRender) {
+            setRenderLog(prev => [...prev, `> [完成] ${activeFigureId} 参数已应用，预览已更新`]);
+          }
           setProjectFigures(prev => {
             const next = { ...prev };
             const active = next[activeFigureId];
@@ -237,7 +406,9 @@ export default function App() {
           });
 
           // Record history snapshot
-          pushProjectHistory(activeFigureId, prevEditLog);
+          if (needsBackendRender) {
+            pushProjectHistory(activeFigureId, prevEditLog);
+          }
 
           // Handle color mapping update inside spec for AST sync
           const codePatches = patches.filter((p: any) => p.type === 'code_patch');
@@ -259,42 +430,66 @@ export default function App() {
         }
         return data;
       } catch (err: any) {
+        if (needsBackendRender) {
+          setRenderLog(prev => [...prev, `> [异常] 参数应用失败: ${err.message}`]);
+        }
         return { status: 'error', message: err.message };
-      }
-    } else {
-      const res = await patch(patches);
-      if (res.status === 'success') {
-        const codePatches = patches.filter((p: any) => p.type === 'code_patch');
-        if (codePatches.length > 0) {
-          const nextSpec = cloneSpec(spec);
-          if (!nextSpec.colors) {
-            nextSpec.colors = {};
-          }
-          nextSpec.colors = { ...nextSpec.colors };
-          codePatches.forEach((cp: any) => {
-            const palettes = figSession?.manifest?.palettes || [];
-            const palette = palettes.find(p => p.id === cp.target_id);
-            if (palette && palette.label) {
-              nextSpec.colors[palette.label] = cp.new_value as string;
-            }
-          });
-
-          if (res.script) {
-            nextSpec.custom_script = res.script;
-          } else if (figSession?.script) {
-            nextSpec.custom_script = figSession.script;
-          }
-
-          applySpecChange(nextSpec);
+      } finally {
+        if (needsBackendRender) {
+          setProjectIsRendering(false);
+          setRenderProgressText(null);
         }
       }
-      return res;
+    } else {
+      if (needsBackendRender) {
+        setRenderProgressText(`正在应用 ${patchSummary}：Python 重放编辑并生成 SVG...`);
+        setRenderLog(prev => [...prev, `> [应用] 正在重渲染 ${patchSummary}...`]);
+      }
+      try {
+        const res = await patch(patches);
+        if (res.status === 'success') {
+          if (needsBackendRender) {
+            setRenderLog(prev => [...prev, `> [完成] 参数已应用，预览已更新`]);
+          }
+          const codePatches = patches.filter((p: any) => p.type === 'code_patch');
+          if (codePatches.length > 0) {
+            const nextSpec = cloneSpec(spec);
+            if (!nextSpec.colors) {
+              nextSpec.colors = {};
+            }
+            nextSpec.colors = { ...nextSpec.colors };
+            codePatches.forEach((cp: any) => {
+              const palettes = figSession?.manifest?.palettes || [];
+              const palette = palettes.find(p => p.id === cp.target_id);
+              if (palette && palette.label) {
+                nextSpec.colors[palette.label] = cp.new_value as string;
+              }
+            });
+
+            if (res.script) {
+              nextSpec.custom_script = res.script;
+            } else if (figSession?.script) {
+              nextSpec.custom_script = figSession.script;
+            }
+
+            applySpecChange(nextSpec);
+          }
+        }
+        return res;
+      } finally {
+        if (needsBackendRender) {
+          setRenderProgressText(null);
+        }
+      }
     }
   };
 
   const handleCodePatch = async (script: string, force?: boolean) => {
     if (projectId) {
       try {
+        setProjectIsRendering(true);
+        setRenderProgressText('正在应用代码修改：校验脚本、检测漂移并重新渲染...');
+        setRenderLog(prev => [...prev, `> [代码补丁] 正在校验并重渲染 ${activeFigureId}...`]);
         const res = await fetch('/api/figure/code-patch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -335,10 +530,16 @@ export default function App() {
         }
         return data;
       } catch (err: any) {
+        setRenderLog(prev => [...prev, `> [代码异常] ${err.message}`]);
         return { status: 'error', message: err.message };
+      } finally {
+        setProjectIsRendering(false);
+        setRenderProgressText(null);
       }
     } else {
+      setRenderProgressText('正在应用代码修改：校验脚本、检测漂移并重新渲染...');
       const res = await codePatch(script, force);
+      setRenderProgressText(null);
       if (res.status === 'success') {
         const nextSpec = cloneSpec(spec);
         nextSpec.custom_script = script;
@@ -359,6 +560,9 @@ export default function App() {
   const rerenderProjectWithEditLogs = async (editLogs: Record<string, any[]>): Promise<void> => {
     if (!projectId) return;
     try {
+      setProjectIsRendering(true);
+      setRenderProgressText('正在撤销/重做：重放当前项目编辑历史并刷新 SVG...');
+      setRenderLog(prev => [...prev, `> [历史] 正在重放项目编辑历史...`]);
       const res = await fetch(`/api/projects/${projectId}/figures/render`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -379,17 +583,40 @@ export default function App() {
           }
           return next;
         });
+        setRenderLog(prev => [...prev, `> [历史] 撤销/重做已应用，预览已刷新`]);
       }
-    } catch { /* best-effort re-render */ }
+    } catch (err: any) {
+      setRenderLog(prev => [...prev, `> [历史异常] ${err.message || '重放失败'}`]);
+    } finally {
+      setProjectIsRendering(false);
+      setRenderProgressText(null);
+    }
   };
 
   const handleProjectUndo = async (figureId: string) => {
     const history = projectHistory[figureId];
-    if (!history || history.past.length === 0) return;
     const currentEditLog = projectFigures[figureId]?.editLog || [];
-    history.future.unshift(currentEditLog);
-    const prevEditLog = history.past.pop()!;
-    setProjectHistory(prev => ({ ...prev, [figureId]: { past: [...history.past], future: [...history.future] } }));
+    if (currentEditLog.length === 0) return;
+
+    let prevEditLog: EditEntry[];
+    let nextPast: EditEntry[][];
+    let nextFuture: EditEntry[][];
+
+    if (history?.past?.length) {
+      prevEditLog = history.past[history.past.length - 1];
+      nextPast = history.past.slice(0, -1);
+      nextFuture = [currentEditLog, ...history.future];
+    } else {
+      const lastTimestamp = currentEditLog[currentEditLog.length - 1]?.timestamp;
+      const fallbackIndex = lastTimestamp == null
+        ? currentEditLog.length - 1
+        : currentEditLog.findIndex(entry => entry.timestamp === lastTimestamp);
+      prevEditLog = currentEditLog.slice(0, Math.max(0, fallbackIndex));
+      nextPast = [];
+      nextFuture = [currentEditLog];
+    }
+
+    setProjectHistory(prev => ({ ...prev, [figureId]: { past: nextPast, future: nextFuture } }));
     setProjectFigures(prev => {
       const fig = prev[figureId];
       if (!fig) return prev;
@@ -406,9 +633,10 @@ export default function App() {
     const history = projectHistory[figureId];
     if (!history || history.future.length === 0) return;
     const currentEditLog = projectFigures[figureId]?.editLog || [];
-    history.past.push(currentEditLog);
-    const nextEditLog = history.future.shift()!;
-    setProjectHistory(prev => ({ ...prev, [figureId]: { past: [...history.past], future: [...history.future] } }));
+    const nextEditLog = history.future[0];
+    const nextPast = [...history.past, currentEditLog];
+    const nextFuture = history.future.slice(1);
+    setProjectHistory(prev => ({ ...prev, [figureId]: { past: nextPast, future: nextFuture } }));
     setProjectFigures(prev => {
       const fig = prev[figureId];
       if (!fig) return prev;
@@ -437,6 +665,10 @@ export default function App() {
   };
 
   const handleUndo = async () => {
+    if (projectId) {
+      await handleProjectUndo(activeFigureId);
+      return;
+    }
     if (historyIndex > 0) {
       const prevSpec = specHistory[historyIndex - 1];
       setHistoryIndex(prev => prev - 1);
@@ -455,6 +687,10 @@ export default function App() {
   };
 
   const handleRedo = async () => {
+    if (projectId) {
+      await handleProjectRedo(activeFigureId);
+      return;
+    }
     if (historyIndex < specHistory.length - 1) {
       const nextSpec = specHistory[historyIndex + 1];
       setHistoryIndex(prev => prev + 1);
@@ -507,13 +743,53 @@ export default function App() {
       setActiveFigureId('fig_1');
     }
 
+    const initialEditLogs: Record<string, any[]> = {};
+    figList.forEach((f: any) => {
+      initialEditLogs[f.figureId] = f.editLog || [];
+    });
+
     handleNavigate('editor');
 
-    // Trigger render to fetch SVGs and manifests
+    // Trigger initial render
     setRenderLog(['> 项目已加载，正在调用渲染引擎重建多图...']);
-    setTimeout(() => {
-      void handleProjectRender(cleanSpec.custom_script);
-    }, 100);
+    try {
+      const renderScript = cleanSpec.plot_type === 'custom'
+        ? (cleanSpec.custom_script || buildReproduciblePython(cleanSpec))
+        : buildReproduciblePython(cleanSpec);
+      if (renderScript) {
+        setProjectIsRendering(true);
+        setTimeout(() => {
+          fetch(`/api/projects/${id}/figures/render`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ script: renderScript, editLogs: initialEditLogs })
+          }).then(r => r.json()).then(data => {
+            if (data.status === 'success') {
+              const nextFigs: Record<string, FigureEntry> = {};
+              (data.figures || []).forEach((f: any) => {
+                nextFigs[f.figureId] = {
+                  figureId: f.figureId,
+                  index: f.figureId === 'fig_1' ? 0 : parseInt(f.figureId.split('_')[1]) - 1,
+                  manifest: f.manifest,
+                  svg: f.svg,
+                  editLog: initialEditLogs[f.figureId] || [],
+                  revision: 1
+                };
+              });
+              setProjectFigures(nextFigs);
+              setRenderLog((prev: string[]) => [...prev, `> 渲染成功，已捕获 ${data.figures?.length || 0} 张 Figure`]);
+            } else {
+              setRenderLog((prev: string[]) => [...prev, `> [渲染错误] ${data.message || '未知错误'}`]);
+            }
+          }).catch((err) => {
+            setRenderLog((prev: string[]) => [...prev, `> [渲染异常] ${err.message}`]);
+          }).finally(() => setProjectIsRendering(false));
+        }, 100);
+      }
+    } catch (err: any) {
+      setRenderLog((prev: string[]) => [...prev, `> [错误] 生成渲染脚本失败: ${err.message}`]);
+      setProjectIsRendering(false);
+    }
   };
 
   // V3.2A File Handlers
@@ -570,7 +846,8 @@ export default function App() {
   // V3.2A Project Render Handler
   const handleProjectRender = async (customScriptToUse?: string) => {
     if (!projectId) return;
-    // Set mock hook states for UI compatibility
+    setProjectIsRendering(true);
+    setRenderProgressText('正在调用 Python 引擎：执行脚本、捕获 Figure、生成 SVG...');
     setSpec(prev => {
       const next = cloneSpec(prev);
       if (customScriptToUse !== undefined) {
@@ -579,14 +856,24 @@ export default function App() {
       return next;
     });
     
-    // Set isRendering local logic (since hook is bypassed)
-    // We can simulate rendering logs on App
     const startedAt = new Date();
     setRenderLog(prev => [...prev, `> [开始] 调用 Python 引擎进行多图渲染... ${startedAt.toLocaleTimeString()}`]);
     
-    const scriptToRender = customScriptToUse ?? spec.custom_script ?? '';
+    let scriptToRender: string;
+    try {
+      scriptToRender = spec.plot_type === 'custom'
+        ? (customScriptToUse ?? spec.custom_script ?? '')
+        : buildReproduciblePython(spec);
+      if (spec.plot_type === 'custom' && !scriptToRender) {
+        scriptToRender = buildReproduciblePython(spec);
+      }
+    } catch (err: any) {
+      setRenderLog(prev => [...prev, `> [错误] 生成渲染脚本失败: ${err.message}`]);
+      setProjectIsRendering(false);
+      setRenderProgressText(null);
+      return;
+    }
     
-    // Construct editLogs map
     const editLogs: Record<string, any[]> = {};
     Object.keys(projectFigures).forEach(figId => {
       editLogs[figId] = projectFigures[figId].editLog;
@@ -596,18 +883,13 @@ export default function App() {
       const res = await fetch(`/api/projects/${projectId}/figures/render`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          script: scriptToRender,
-          editLogs
-        })
+        body: JSON.stringify({ script: scriptToRender, editLogs })
       });
       const data = await res.json();
       if (data.status === 'success') {
         setRenderLog(prev => [...prev, `> [引擎] 渲染成功，共捕获 ${data.figures?.length || 0} 张 Figure`]);
-        
         const nextFigures: Record<string, FigureEntry> = {};
-        const figuresList = data.figures || [];
-        figuresList.forEach((f: any) => {
+        (data.figures || []).forEach((f: any) => {
           nextFigures[f.figureId] = {
             figureId: f.figureId,
             index: f.figureId === 'fig_1' ? 0 : parseInt(f.figureId.split('_')[1]) - 1,
@@ -618,15 +900,17 @@ export default function App() {
           };
         });
         setProjectFigures(nextFigures);
-        if (figuresList.length > 0 && !nextFigures[activeFigureId]) {
-          setActiveFigureId(figuresList[0].figureId);
+        if (Object.keys(nextFigures).length > 0 && !nextFigures[activeFigureId]) {
+          setActiveFigureId(Object.keys(nextFigures)[0]);
         }
       } else {
-        // Bubble rendering error
         setRenderLog(prev => [...prev, `> [错误] ${data.message}`]);
       }
     } catch (err: any) {
       setRenderLog(prev => [...prev, `> [异常] ${err.message}`]);
+    } finally {
+      setProjectIsRendering(false);
+      setRenderProgressText(null);
     }
   };
 
@@ -646,6 +930,13 @@ export default function App() {
     if (sub !== undefined) {
       setSubView(sub);
     }
+    // Synchronously persist navigation so refresh after a crash restores the right view
+    try {
+      const prev = JSON.parse(window.sessionStorage.getItem(SPEC_STORAGE_KEY) || '{}');
+      prev.currentView = view;
+      if (sub !== undefined) prev.subView = sub;
+      window.sessionStorage.setItem(SPEC_STORAGE_KEY, JSON.stringify(prev));
+    } catch {}
   };
 
   const handleRenderLog = (lines: string[]) => {
@@ -658,7 +949,7 @@ export default function App() {
       
       <div className="flex flex-1 overflow-hidden relative">
         {(currentView === 'editor' || currentView === 'workspace') && (
-          <>
+          <EditorErrorBoundary>
             <IconSidebar />
              <LeftSidebar
               spec={spec}
@@ -690,15 +981,17 @@ export default function App() {
               onProjectChange={(id, name) => { setProjectId(id); setProjectName(name); }}
               specHistory={specHistory}
               historyIndex={historyIndex}
-              canUndoFigure={canUndoFigure}
-              canRedoFigure={canRedoFigure}
+              canUndoFigure={canUndoActiveFigure}
+              canRedoFigure={canRedoActiveFigure}
               onUndo={handleUndo}
               onRedo={handleRedo}
               figSession={figSession}
-              isRendering={isRendering}
+              isRendering={isRendering || projectIsRendering}
+              renderProgressText={renderProgressText}
               renderError={renderError}
               renderTraceback={renderTraceback}
               renderLog={renderLog}
+              datasets={datasets}
               onRenderLog={handleRenderLog}
               onRender={render}
               onPatch={handlePatch}
@@ -720,7 +1013,7 @@ export default function App() {
               onPatch={handlePatch}
               lockedObjects={lockedObjects}
             />
-          </>
+          </EditorErrorBoundary>
         )}
         
         {currentView === 'home' && (
@@ -746,6 +1039,10 @@ export default function App() {
               onLoadProject={handleLoadProject}
             />
           </>
+        )}
+
+        {currentView === 'project_create' && (
+          <ProjectCreatePage onNavigate={handleNavigate} onLoadProject={handleLoadProject} />
         )}
 
         {currentView === 'data' && (
@@ -775,7 +1072,14 @@ export default function App() {
               onSelectObject={handleSelectObject}
               figSession={figSession}
             />
-            <ExportSettingsPage spec={spec} onNavigate={(v) => handleNavigate(v)} onSpecChange={applySpecChange} figSession={figSession} />
+            <ExportSettingsPage
+              spec={spec}
+              onNavigate={(v) => handleNavigate(v)}
+              onSpecChange={applySpecChange}
+              figSession={figSession}
+              projectId={projectId}
+              activeFigureId={activeFigureId}
+            />
           </>
         )}
       </div>

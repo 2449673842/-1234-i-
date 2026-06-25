@@ -3,6 +3,12 @@ import Papa from 'papaparse';
 import { UploadCloud, CheckCircle2, FileSpreadsheet, BoxSelect, Cpu, Play, ChevronRight, LayoutGrid, FileJson, FileCode2 } from 'lucide-react';
 import { ViewState } from '../App';
 import { FigureSpec } from '../types';
+import {
+  buildTranslationPrompt,
+  chooseDefaultFields,
+  inferFieldTypes,
+  type DataRow,
+} from '../utils/scriptTranslationContract';
 
 export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate: (view: ViewState) => void, spec: FigureSpec, onSpecChange: (spec: FigureSpec) => void }) {
   const [step, setStep] = useState(1);
@@ -18,121 +24,17 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
   );
   const [customScript, setCustomScript] = useState(spec.custom_script || "");
   const [dragOver, setDragOver] = useState(false);
-  const getAiPrompt = () => `## SciFigure 平台 — Matplotlib 脚本规范
-
-你正在帮助用户编写 Matplotlib 脚本，该脚本将在 SciFigure 平台的 **运行时内省引擎** 上执行。平台原样运行脚本，通过内省 matplotlib artist 树自动识别可编辑图元。
-
----
-
-### 1. 环境与数据
-
-**运行环境：**
-- Python 3.x，matplotlib（Agg 后端）、numpy、pandas、scipy
-- 中文字体：Microsoft YaHei、SimHei、Noto Sans SC、Times New Roman
-
-**数据传入（必读）：**
-- 上传的数据已解析为 \`_uploaded_data\` 变量，类型为 **list[dict]**（每行一个 dict，key 为列名）
-- 用 \`df = pd.DataFrame(_uploaded_data)\` 加载，**不要用 pd.read_csv() / pd.read_excel()**
-
-**输出捕获：**
-- 脚本执行后平台自动通过 \`plt.gcf()\` 获取当前 Figure
-- **脚本末尾应确保 \`plt.gcf()\` 能拿到 Figure 对象**（用 \`fig, ax = plt.subplots()\` 模式）
-- 无需调用 \`plt.savefig()\` 或 \`plt.show()\`
-
-### 2. 平台可识别图元（内省清单）
-
-脚本生成的 Figure 中以下图元会被平台自动识别为可交互编辑对象：
-
-| 图元 | gid 格式 | 可编辑属性 |
-|---|---|---|
-| 标题 | \`title.{ax_idx}\` | text, fontsize, fontfamily, color |
-| X 轴标签 | \`xlabel.{ax_idx}\` | text, fontsize, fontfamily, color |
-| Y 轴标签 | \`ylabel.{ax_idx}\` | text, fontsize, fontfamily, color |
-| X 轴刻度标签 | \`xtick.{ax_idx}.{i}\` | text, fontsize, fontfamily, color |
-| Y 轴刻度标签 | \`ytick.{ax_idx}.{i}\` | text, fontsize, fontfamily, color |
-| 脊柱（四边） | \`spine.{side}.{ax_idx}\` | visible, color, linewidth |
-| 折线 | \`line.{ax_idx}.{i}\` | color, linewidth, linestyle, alpha |
-| 散点/填充集 | \`collection.{ax_idx}.{i}\` | facecolor, edgecolor, alpha |
-| 图例 | \`legend.{ax_idx}\` | visible, fontsize |
-
-**推荐的代码模式：**
-\`\`\`python
-import matplotlib.pyplot as plt
-import pandas as pd
-
-df = pd.DataFrame(_uploaded_data)
-fig, ax = plt.subplots(figsize=(8, 5))
-
-ax.bar(df['x'], df['y'], color='#1F78B4')
-ax.set_title('图表标题', fontsize=14, fontfamily='sans-serif')
-ax.set_xlabel('X 轴', fontsize=12)
-ax.set_ylabel('Y 轴', fontsize=12)
-\`\`\`
-
-### 3. 样式约定（建议遵循）
-
-- **配色：** 推荐使用 #1F78B4（蓝色）表示 promoted、#D62728（红色）表示 suppressed
-- **背景：** 白色背景，不添加网格线
-- **边框：** 四边 spine 全显示（left + bottom + top + right），默认 matplotlib 全框即可
-- **字体：** 默认 sans-serif，中文需指定支持 CJK 的字体
-- **标题位置：** 默认居中（\`loc='center'\`）
-
-### 4. 安全性限制（以下操作会被拦截）
-
-- ✗ 读写本地文件（open、pd.read_csv、pickle.load 等）
-- ✗ sys.exit()、os.system、subprocess
-- ✗ import 未预装包
-- ✗ eval()、exec()、\_\_import\_\_
-- ✗ 网络请求
-
-### 5. 输出要求
-
-- 只返回纯 Python 代码，**不要用 \`\`\` 包裹**
-- 不要添加任何说明文字或注释
-- 确保代码没有语法错误，可直接在平台后端的 exec() 中运行
-- **注意**：set_xticks/set_xticklabels、set_yticks/set_yticklabels 的数量必须严格一致
-
----
-
-### 本次任务
-
-数据集列名：${JSON.stringify(headers)}
-${(() => {
-  if (!allData.length) return '';
-  const numericCols: string[] = [];
-  const stringCols: string[] = [];
-  for (const f of headers) {
-    const vals = allData.slice(0, 100).map((r: any) => r[f]);
-    const nums = vals.filter((v: any) => !isNaN(parseFloat(v)) && v !== null && v !== '');
-    if (nums.length > vals.length * 0.5) numericCols.push(f);
-    else stringCols.push(f);
-  }
-  const statsLines: string[] = [];
-  for (const col of numericCols) {
-    const vals = allData.map((r: any) => parseFloat(r[col])).filter((v: number) => !isNaN(v));
-    if (vals.length === 0) continue;
-    const min = Math.min(...vals);
-    const max = Math.max(...vals);
-    const avg = vals.reduce((a: number, b: number) => a + b, 0) / vals.length;
-    const zeroCount = vals.filter((v: number) => v === 0).length;
-    statsLines.push(`  ${col}: 范围 [${min}, ${max}], 均值 ${avg.toFixed(2)}, ${vals.length} 个非空值` + (zeroCount > 0 ? `, 含 ${zeroCount} 个零值` : ''));
-  }
-  return `数据预览（前 5 行）：
-${previewData.map((r: any) => JSON.stringify(headers.map(h => ({ [h]: r[h] })))).join('\n')}
-
-数值列统计：
-${statsLines.length ? statsLines.join('\n') : '无数值列'}
-
-文本列：${stringCols.join(', ')}
-数值列：${numericCols.join(', ')}`;
-})()}
-
-用户原始脚本见下方。请改写它：
-1. 使用 \`_uploaded_data\` 变量替代文件读取
-2. 列名与上述列名匹配
-3. 保留绘图意图（配色、标题、统计逻辑）
-4. 确保生成的 Figure 可被内省引擎完整识别
-5. 根据数据预览和统计信息，**检查并修正**用户脚本中与实际数据不匹配的地方（如列名拼写、零值权重、缺失值处理等）`;
+  const getAiPrompt = () => buildTranslationPrompt({
+    headers,
+    rows: allData as DataRow[],
+    previewRows: previewData as DataRow[],
+    primaryDataFileName: file?.name,
+    xField,
+    yField,
+    groupField,
+    errField,
+    originalScript: customScript,
+  });
 
   const [aiResult, setAiResult] = useState('');
   const [file, setFile] = useState<File | null>(null);
@@ -162,16 +64,12 @@ ${statsLines.length ? statsLines.join('\n') : '无数值列'}
           setPreviewData(json.slice(0, 5));
           setAllData(json as any[]);
           // Auto-map fields
-          const numericFields: string[] = [];
-          const stringFields: string[] = [];
-          for (const f of fields) {
-            const vals = json.slice(0, 20).map((r: any) => r[f]);
-            const nums = vals.filter((v: any) => !isNaN(parseFloat(v)) && v !== null && v !== '');
-            if (nums.length > vals.length * 0.6) numericFields.push(f);
-            else stringFields.push(f);
-          }
-          if (stringFields.length > 0) { setXField(stringFields[0]); setGroupField(''); }
-          if (numericFields.length > 0) { setYField(numericFields[0]); setErrField(numericFields.length > 1 ? numericFields[1] : ''); }
+          const { numericFields, stringFields } = inferFieldTypes(json as any[], fields);
+          const defaults = chooseDefaultFields(fields, json as any[], numericFields, stringFields);
+          setXField(defaults.xField);
+          setYField(defaults.yField);
+          setGroupField(defaults.groupField);
+          setErrField(defaults.errField);
         });
       };
       reader.readAsArrayBuffer(uploadedFile);
@@ -188,16 +86,13 @@ ${statsLines.length ? statsLines.join('\n') : '无数值列'}
         setPreviewData(results.data.slice(0, 5));
         setAllData(results.data as any[]);
         // Auto-map fields
-        const numericFields: string[] = [];
-        const stringFields: string[] = [];
-        for (const f of fields) {
-          const vals = results.data.slice(0, 20).map((r: any) => r[f]);
-          const nums = vals.filter((v: any) => !isNaN(parseFloat(v)) && v !== null && v !== '');
-          if (nums.length > vals.length * 0.6) numericFields.push(f);
-          else stringFields.push(f);
-        }
-        if (stringFields.length > 0) { setXField(stringFields[0]); setGroupField(''); }
-        if (numericFields.length > 0) { setYField(numericFields[0]); setErrField(numericFields.length > 1 ? numericFields[1] : ''); }
+        const typedRows = results.data as any[];
+        const { numericFields, stringFields } = inferFieldTypes(typedRows, fields);
+        const defaults = chooseDefaultFields(fields, typedRows, numericFields, stringFields);
+        setXField(defaults.xField);
+        setYField(defaults.yField);
+        setGroupField(defaults.groupField);
+        setErrField(defaults.errField);
       }
     });
   }
