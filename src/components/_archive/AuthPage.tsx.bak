@@ -1,0 +1,142 @@
+import { useEffect, useState } from 'react';
+import { KeyRound, LogIn, Ticket, UserPlus } from 'lucide-react';
+import { ViewState } from '../App';
+
+export interface AppUser {
+  id: string;
+  email: string;
+  name: string;
+  plan: string;
+  planExpiresAt?: string | null;
+}
+
+interface AuthPageProps {
+  user: AppUser | null;
+  onUserChange: (user: AppUser | null) => void;
+  onNavigate: (view: ViewState, subView?: string) => void;
+}
+
+export function AuthPage({ user, onUserChange, onNavigate }: AuthPageProps) {
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [email, setEmail] = useState('');
+  const [name, setName] = useState('');
+  const [password, setPassword] = useState('');
+  const [redeemCode, setRedeemCode] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setMessage('');
+  }, [mode]);
+
+  const submitAuth = async () => {
+    setBusy(true);
+    setMessage('');
+    try {
+      const res = await fetch(mode === 'login' ? '/api/auth/login' : '/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, name }),
+      });
+      const data = await res.json();
+      if (data.status !== 'success') throw new Error(data.message || '操作失败');
+      onUserChange(data.user);
+      window.localStorage.setItem('scifigure:user', JSON.stringify(data.user));
+      setMessage(mode === 'login' ? '登录成功' : '注册成功');
+    } catch (err: any) {
+      setMessage(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const redeem = async () => {
+    if (!user) {
+      setMessage('请先登录再兑换');
+      return;
+    }
+    setBusy(true);
+    setMessage('');
+    try {
+      const res = await fetch('/api/auth/redeem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id, code: redeemCode }),
+      });
+      const data = await res.json();
+      if (data.status !== 'success') throw new Error(data.message || '兑换失败');
+      onUserChange(data.user);
+      window.localStorage.setItem('scifigure:user', JSON.stringify(data.user));
+      setMessage('兑换成功，权益已更新');
+    } catch (err: any) {
+      setMessage(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const logout = () => {
+    onUserChange(null);
+    window.localStorage.removeItem('scifigure:user');
+  };
+
+  return (
+    <div className="flex-1 overflow-auto bg-slate-950 text-white">
+      <div className="mx-auto grid min-h-[calc(100svh-56px)] max-w-6xl items-center gap-10 px-8 py-12 md:grid-cols-[1fr_420px]">
+        <div>
+          <div className="mb-4 inline-flex rounded-full border border-white/10 bg-white/10 px-3 py-1 text-sm text-blue-100 backdrop-blur">
+            账户与兑换码
+          </div>
+          <h1 className="text-5xl font-semibold tracking-tight">把使用权和项目数据分开管理。</h1>
+          <p className="mt-5 max-w-xl text-lg leading-8 text-slate-300">
+            当前实现为本地账户系统，适合内测、兑换码授权和桌面部署。正式上线时可替换为云端 session、支付回调和设备绑定。
+          </p>
+          {user && (
+            <div className="mt-8 rounded-2xl border border-emerald-300/20 bg-emerald-300/10 p-5 text-emerald-50">
+              <div className="text-sm text-emerald-200">当前登录</div>
+              <div className="mt-1 text-2xl font-semibold">{user.name}</div>
+              <div className="mt-2 text-sm text-emerald-100/80">{user.email} · {user.plan} · 到期 {user.planExpiresAt || '未激活'}</div>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-3xl border border-white/10 bg-white/[0.08] p-6 shadow-2xl backdrop-blur-xl">
+          <div className="mb-5 flex rounded-xl bg-slate-900/70 p-1">
+            <button type="button" onClick={() => setMode('login')} className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold ${mode === 'login' ? 'bg-white text-slate-950' : 'text-slate-300'}`}>登录</button>
+            <button type="button" onClick={() => setMode('register')} className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold ${mode === 'register' ? 'bg-white text-slate-950' : 'text-slate-300'}`}>注册</button>
+          </div>
+
+          <div className="space-y-3">
+            {mode === 'register' && (
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="昵称" className="w-full rounded-xl border border-white/10 bg-slate-900 px-4 py-3 outline-none focus:border-blue-400" />
+            )}
+            <input value={email} onChange={e => setEmail(e.target.value)} placeholder="邮箱" className="w-full rounded-xl border border-white/10 bg-slate-900 px-4 py-3 outline-none focus:border-blue-400" />
+            <input value={password} onChange={e => setPassword(e.target.value)} placeholder="密码" type="password" className="w-full rounded-xl border border-white/10 bg-slate-900 px-4 py-3 outline-none focus:border-blue-400" />
+            <button type="button" disabled={busy} onClick={submitAuth} className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-500 px-4 py-3 font-semibold text-white transition hover:bg-blue-400 disabled:opacity-50">
+              {mode === 'login' ? <LogIn className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />}
+              {mode === 'login' ? '登录' : '创建账户'}
+            </button>
+          </div>
+
+          <div className="my-6 h-px bg-white/10" />
+
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
+              <Ticket className="h-4 w-4 text-emerald-300" /> 兑换码
+            </div>
+            <input value={redeemCode} onChange={e => setRedeemCode(e.target.value.toUpperCase())} placeholder="例如 SCIFIGURE-TRIAL" className="w-full rounded-xl border border-white/10 bg-slate-900 px-4 py-3 font-mono outline-none focus:border-emerald-300" />
+            <button type="button" disabled={busy || !user} onClick={redeem} className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-300 px-4 py-3 font-semibold text-emerald-950 transition hover:bg-emerald-200 disabled:opacity-40">
+              <KeyRound className="h-4 w-4" /> 兑换并激活
+            </button>
+          </div>
+
+          {message && <div className="mt-4 rounded-xl border border-white/10 bg-white/10 px-4 py-3 text-sm text-slate-100">{message}</div>}
+          <div className="mt-5 flex items-center justify-between text-sm text-slate-400">
+            <button type="button" onClick={() => onNavigate('landing')} className="hover:text-white">返回介绍页</button>
+            {user && <button type="button" onClick={logout} className="hover:text-white">退出登录</button>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

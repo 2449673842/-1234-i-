@@ -1,0 +1,125 @@
+import { useEffect, useState } from 'react';
+import { Download, FileImage, RefreshCw, Search } from 'lucide-react';
+import { ViewState } from '../App';
+
+interface ExportItem {
+  name: string;
+  format: string;
+  size: number;
+  exportedAt: string;
+  url: string;
+}
+
+interface ExportLibraryPageProps {
+  projectId: string | null;
+  onNavigate: (view: ViewState, subView?: string) => void;
+}
+
+export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPageProps) {
+  const [items, setItems] = useState<ExportItem[]>([]);
+  const [query, setQuery] = useState('');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(false);
+
+  const load = async () => {
+    if (!projectId) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/exports`);
+      const data = await res.json();
+      setItems(data.exports || []);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, [projectId]);
+
+  const filtered = items.filter(item => item.name.toLowerCase().includes(query.toLowerCase()) || item.format.toLowerCase().includes(query.toLowerCase()));
+  const totalSelected = selected.size;
+
+  return (
+    <div className="flex-1 overflow-auto bg-slate-50 p-8">
+      <div className="mx-auto max-w-6xl">
+        <div className="mb-7 flex items-start justify-between">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight text-slate-900">导出图片管理</h1>
+            <p className="mt-2 text-sm text-slate-500">按项目保存导出的 SVG / PNG / PDF，支持搜索、排序、多选下载。</p>
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={load} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-100">
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> 刷新
+            </button>
+            <button type="button" onClick={() => onNavigate('export_settings')} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700">
+              去导出
+            </button>
+          </div>
+        </div>
+
+        {!projectId ? (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-8 text-amber-900">
+            请先打开或保存一个项目，再查看项目导出库。
+          </div>
+        ) : (
+          <>
+            <div className="mb-4 flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+              <div className="flex items-center gap-2 px-2 text-slate-500">
+                <Search className="h-4 w-4" />
+                <input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索文件名或格式..." className="w-72 bg-transparent text-sm outline-none" />
+              </div>
+              <div className="text-sm text-slate-500">已选 {totalSelected} / {filtered.length}</div>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="grid grid-cols-[44px_1fr_100px_120px_180px] border-b border-slate-100 bg-slate-50 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <span />
+                <span>文件名</span>
+                <span>格式</span>
+                <span>大小</span>
+                <span>导出时间</span>
+              </div>
+              {filtered.length === 0 ? (
+                <div className="p-10 text-center text-sm text-slate-500">暂无导出文件。</div>
+              ) : filtered.map(item => (
+                <div key={item.name} className="grid grid-cols-[44px_1fr_100px_120px_180px] items-center border-b border-slate-100 px-4 py-3 text-sm last:border-0 hover:bg-slate-50">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(item.name)}
+                    onChange={event => {
+                      const next = new Set(selected);
+                      if (event.target.checked) next.add(item.name);
+                      else next.delete(item.name);
+                      setSelected(next);
+                    }}
+                  />
+                  <a href={item.url} className="flex min-w-0 items-center gap-2 font-medium text-slate-800 hover:text-blue-600">
+                    <FileImage className="h-4 w-4 shrink-0 text-blue-500" />
+                    <span className="truncate">{item.name}</span>
+                  </a>
+                  <span className="text-slate-600">{item.format}</span>
+                  <span className="text-slate-500">{(item.size / 1024).toFixed(1)} KB</span>
+                  <span className="text-slate-500">{new Date(item.exportedAt).toLocaleString()}</span>
+                </div>
+              ))}
+            </div>
+
+            {totalSelected > 0 && (
+              <div className="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-3 rounded-full border border-slate-200 bg-white px-4 py-2 shadow-xl">
+                <span className="text-sm font-medium text-slate-700">已选择 {totalSelected} 个文件</span>
+                <button
+                  type="button"
+                  onClick={() => items.filter(i => selected.has(i.name)).forEach(i => window.open(i.url, '_blank'))}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white"
+                >
+                  <Download className="h-4 w-4" /> 批量下载
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

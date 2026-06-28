@@ -1,5 +1,7 @@
 # 下个 AI 的任务清单
 
+> Gemini 接手任何代码修改前，必须先阅读并遵守 `docs/GEMINI_CODING_PROTOCOL.md`。未完成 Preflight、源码证据收集、影响面分析和验证前，不允许宣称修复完成。
+
 以下每个任务是独立的 Task agent prompt，可以一次发送一个或多个。
 
 ---

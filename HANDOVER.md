@@ -1,5 +1,7 @@
 # IFC v2 Handover
 
+> 外部 AI 尤其是 Gemini 接手代码修改前，必须先阅读 `docs/GEMINI_CODING_PROTOCOL.md`。该文件是防止无证据判断、大范围重构和未验证交付的项目级约束。
+
 > 本会话实现了 IFC v2 架构的 Phase 1 + Phase 2 核心管线。剩余 Phase 3–5 和 4 项 P1 遗留债。
 
 ---

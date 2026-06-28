@@ -1,0 +1,182 @@
+import { useMemo, useState } from 'react';
+import { ArrowDownUp, Download, Grid2X2, Move, Type } from 'lucide-react';
+import { ViewState } from '../App';
+
+interface FigureComposerPageProps {
+  projectFigures: Record<string, any>;
+  projectName: string;
+  onNavigate: (view: ViewState, subView?: string) => void;
+}
+
+const LAYOUTS = {
+  '2': { label: '2 图横排', cols: 2, rows: 1 },
+  '4': { label: '4 图矩阵', cols: 2, rows: 2 },
+  '6': { label: '6 图矩阵', cols: 3, rows: 2 },
+};
+
+export function FigureComposerPage({ projectFigures, projectName, onNavigate }: FigureComposerPageProps) {
+  const figureIds = useMemo(() => Object.keys(projectFigures || {}).sort(), [projectFigures]);
+  const [layoutKey, setLayoutKey] = useState<'2' | '4' | '6'>('4');
+  const [slots, setSlots] = useState<string[]>(() => figureIds.slice(0, 4));
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [labelStyle, setLabelStyle] = useState<'upper' | 'lower'>('lower');
+  const [uniformWidth, setUniformWidth] = useState(420);
+  const [gap, setGap] = useState(28);
+
+  const layout = LAYOUTS[layoutKey];
+  const slotCount = Number(layoutKey);
+  const currentSlots = Array.from({ length: slotCount }, (_, index) => slots[index] || figureIds[index] || '');
+
+  const setLayout = (key: '2' | '4' | '6') => {
+    setLayoutKey(key);
+    setSlots(prev => Array.from({ length: Number(key) }, (_, index) => prev[index] || figureIds[index] || ''));
+  };
+
+  const swap = (from: number, to: number) => {
+    const next = [...currentSlots];
+    [next[from], next[to]] = [next[to], next[from]];
+    setSlots(next);
+  };
+
+  const exportCompositeSvg = () => {
+    const panelW = uniformWidth;
+    const panelH = Math.round(uniformWidth * 0.76);
+    const width = layout.cols * panelW + (layout.cols - 1) * gap + 44;
+    const height = layout.rows * panelH + (layout.rows - 1) * gap + 54;
+    const content = currentSlots.map((figId, index) => {
+      const col = index % layout.cols;
+      const row = Math.floor(index / layout.cols);
+      const x = 22 + col * (panelW + gap);
+      const y = 38 + row * (panelH + gap);
+      const letter = String.fromCharCode(97 + index);
+      const label = labelStyle === 'upper' ? `(${letter.toUpperCase()})` : `(${letter})`;
+      const svg = projectFigures[figId]?.svg || '';
+      const inner = svg
+        .replace(/<\?xml[\s\S]*?\?>/g, '')
+        .replace(/<!DOCTYPE[\s\S]*?>/g, '')
+        .replace(/<svg[^>]*>/, '')
+        .replace(/<\/svg>\s*$/, '');
+      return `
+        <g transform="translate(${x},${y})">
+          <text x="0" y="-12" font-family="Arial" font-size="18" font-weight="700">${label}</text>
+          <svg x="0" y="0" width="${panelW}" height="${panelH}" viewBox="0 0 ${panelW} ${panelH}" preserveAspectRatio="xMidYMid meet">
+            ${inner}
+          </svg>
+        </g>
+      `;
+    }).join('\n');
+
+    const composite = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+      <rect width="100%" height="100%" fill="white"/>
+      ${content}
+    </svg>`;
+    const blob = new Blob([composite], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${projectName || 'scifigure'}_composite_${Date.now()}.svg`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="flex-1 overflow-hidden bg-slate-100">
+      <div className="flex h-full">
+        <aside className="w-80 shrink-0 border-r border-slate-200 bg-white p-5">
+          <h1 className="text-xl font-semibold text-slate-900">组合图编辑</h1>
+          <p className="mt-2 text-sm leading-6 text-slate-500">选择 2/4/6 张图，统一尺寸、自动标注 (a)(b)，并可拖动交换位置。</p>
+
+          <div className="mt-6 space-y-5">
+            <div>
+              <div className="mb-2 text-xs font-semibold text-slate-500">布局</div>
+              <div className="grid gap-2">
+                {(Object.keys(LAYOUTS) as Array<'2' | '4' | '6'>).map(key => (
+                  <button key={key} type="button" onClick={() => setLayout(key)} className={`flex items-center justify-between rounded-xl border px-3 py-2 text-sm font-medium ${layoutKey === key ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-700 hover:bg-slate-50'}`}>
+                    <span className="flex items-center gap-2"><Grid2X2 className="h-4 w-4" /> {LAYOUTS[key].label}</span>
+                    <span>{key}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 text-xs font-semibold text-slate-500">图槽</div>
+              <div className="space-y-2">
+                {currentSlots.map((figId, index) => (
+                  <select
+                    key={index}
+                    value={figId}
+                    onChange={event => {
+                      const next = [...currentSlots];
+                      next[index] = event.target.value;
+                      setSlots(next);
+                    }}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                  >
+                    <option value="">空槽位</option>
+                    {figureIds.map(id => <option key={id} value={id}>Figure {id.split('_')[1] || id}</option>)}
+                  </select>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-xs font-semibold text-slate-500">
+                单图宽度
+                <input type="number" value={uniformWidth} onChange={e => setUniformWidth(Number(e.target.value) || 420)} className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-2 text-sm text-slate-700" />
+              </label>
+              <label className="text-xs font-semibold text-slate-500">
+                间距
+                <input type="number" value={gap} onChange={e => setGap(Number(e.target.value) || 28)} className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-2 text-sm text-slate-700" />
+              </label>
+            </div>
+
+            <button type="button" onClick={() => setLabelStyle(labelStyle === 'lower' ? 'upper' : 'lower')} className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+              <Type className="h-4 w-4" /> 标注格式：{labelStyle === 'lower' ? '(a)(b)' : '(A)(B)'}
+            </button>
+
+            <button type="button" onClick={exportCompositeSvg} className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white hover:bg-blue-700">
+              <Download className="h-4 w-4" /> 导出组合 SVG
+            </button>
+            <button type="button" onClick={() => onNavigate('editor')} className="w-full text-sm font-medium text-slate-500 hover:text-slate-800">返回编辑器</button>
+          </div>
+        </aside>
+
+        <main className="flex-1 overflow-auto p-8">
+          <div
+            className="mx-auto grid rounded-3xl border border-slate-200 bg-white p-8 shadow-sm"
+            style={{ gridTemplateColumns: `repeat(${layout.cols}, minmax(0, ${uniformWidth}px))`, gap }}
+          >
+            {currentSlots.map((figId, index) => (
+              <div
+                key={`${figId}-${index}`}
+                draggable
+                onDragStart={() => setDragIndex(index)}
+                onDragOver={event => event.preventDefault()}
+                onDrop={() => {
+                  if (dragIndex !== null) swap(dragIndex, index);
+                  setDragIndex(null);
+                }}
+                className="group relative rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+                style={{ width: uniformWidth }}
+              >
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-lg font-bold text-slate-900">{labelStyle === 'upper' ? `(${String.fromCharCode(65 + index)})` : `(${String.fromCharCode(97 + index)})`}</div>
+                  <div className="flex items-center gap-1 text-xs text-slate-400"><Move className="h-3.5 w-3.5" /> 拖动交换</div>
+                </div>
+                {projectFigures[figId]?.svg ? (
+                  <div className="overflow-hidden rounded border border-slate-100 bg-white" dangerouslySetInnerHTML={{ __html: projectFigures[figId].svg }} />
+                ) : (
+                  <div className="grid h-56 place-items-center rounded border border-dashed border-slate-300 text-sm text-slate-400">空槽位</div>
+                )}
+                <button type="button" onClick={() => index > 0 && swap(index, index - 1)} className="absolute bottom-3 right-3 hidden rounded-full bg-slate-900 px-2 py-1 text-xs font-medium text-white group-hover:inline-flex">
+                  <ArrowDownUp className="mr-1 h-3 w-3" /> 前移
+                </button>
+              </div>
+            ))}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}

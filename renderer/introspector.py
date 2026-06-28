@@ -733,6 +733,13 @@ def _read_errorbar_container_props(container) -> dict:
     elif bar_cols:
         color = bar_cols[0].get_color()
     if color is not None:
+        try:
+            from matplotlib import colors as mcolors
+            if hasattr(color, "ndim") and color.ndim > 1:
+                color = color[0]
+            color = mcolors.to_hex(color, keep_alpha=False)
+        except Exception:
+            pass
         props["color"] = color
         
     # Linewidth
@@ -777,6 +784,11 @@ def _read_boxplot_container_props(container) -> dict:
     elif bp.get("medians"):
         color = bp["medians"][0].get_color()
     if color is not None:
+        try:
+            from matplotlib import colors as mcolors
+            color = mcolors.to_hex(color, keep_alpha=False)
+        except Exception:
+            pass
         props["color"] = color
         
     # Linewidth
@@ -789,11 +801,21 @@ def _read_boxplot_container_props(container) -> dict:
         
     # Box Color
     if bp.get("boxes"):
-        props["box_color"] = bp["boxes"][0].get_color()
+        try:
+            from matplotlib import colors as mcolors
+            box_c = bp["boxes"][0].get_color()
+            props["box_color"] = mcolors.to_hex(box_c, keep_alpha=False)
+        except Exception:
+            props["box_color"] = bp["boxes"][0].get_color()
         
     # Median Color
     if bp.get("medians"):
-        props["median_color"] = bp["medians"][0].get_color()
+        try:
+            from matplotlib import colors as mcolors
+            med_c = bp["medians"][0].get_color()
+            props["median_color"] = mcolors.to_hex(med_c, keep_alpha=False)
+        except Exception:
+            props["median_color"] = bp["medians"][0].get_color()
         
     return props
 
