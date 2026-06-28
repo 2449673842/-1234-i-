@@ -7,7 +7,7 @@ import { Home, ChevronRight, PenLine, Maximize, Settings, UploadCloud, Minus, Ba
 import { ViewState } from '../App';
 import { buildReproduciblePython } from '../utils/reproduciblePython';
 import { sanitizeSvg } from '../utils/svgEditor';
-import { FigureSession, RenderResponse, PatchEntry, PatchResponse, EditEntry } from '../schemas/manifest';
+import { FigureSession, RenderResponse, PatchEntry, PatchResponse, EditEntry, ProjectHistoryState } from '../schemas/manifest';
 
 interface MainWorkspaceProps {
   spec: FigureSpec;
@@ -45,9 +45,18 @@ interface MainWorkspaceProps {
   onProjectRender?: (script?: string) => Promise<void>;
 
   // V3.2B Selection & Undo
-  projectHistory?: Record<string, { past: EditEntry[][]; future: EditEntry[][] }>;
+  projectHistory?: Record<string, ProjectHistoryState>;
   onProjectUndo?: (figureId: string) => Promise<void>;
   onProjectRedo?: (figureId: string) => Promise<void>;
+  onProjectHistoryJump?: (figureId: string, targetIndex: number) => Promise<void>;
+}
+
+interface DataPreviewState {
+  loading: boolean;
+  error: string | null;
+  rows: Array<Record<string, unknown>>;
+  totalRows: number;
+  returnedRows: number;
 }
 
 export function MainWorkspace({
@@ -85,6 +94,7 @@ export function MainWorkspace({
   projectHistory,
   onProjectUndo,
   onProjectRedo,
+  onProjectHistoryJump,
 }: MainWorkspaceProps) {
   const [activeTab, setActiveTab] = useState<'preview' | 'code' | 'data' | 'spec'>('preview');
   const [bottomTab, setBottomTab] = useState<'python' | 'spec' | 'log'>('python');
@@ -94,8 +104,17 @@ export function MainWorkspace({
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState(projectName);
   const [scriptDragOver, setScriptDragOver] = useState(false);
+  const [showHistoryMenu, setShowHistoryMenu] = useState(false);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [renderElapsedMs, setRenderElapsedMs] = useState(0);
+  const [activeDataFileId, setActiveDataFileId] = useState<string | null>(null);
+  const [dataPreview, setDataPreview] = useState<DataPreviewState>({
+    loading: false,
+    error: null,
+    rows: [],
+    totalRows: 0,
+    returnedRows: 0,
+  });
 
   useEffect(() => {
     if (!isRendering) {
@@ -115,6 +134,98 @@ export function MainWorkspace({
   const autoSyncTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const generatePythonCode = (nextSpec: FigureSpec) => buildReproduciblePython(nextSpec);
+  const activeProjectFigure = projectFigures?.[activeFigureId];
+  const activeCodeSlice = activeProjectFigure?.codeSlice ?? null;
+  const activeScript = spec.custom_script || figSession?.script || generatePythonCode(spec);
+  const codeSliceConfidenceClass =
+    activeCodeSlice?.confidence === 'high'
+      ? 'border-emerald-500/40 bg-emerald-950/35 text-emerald-100'
+      : activeCodeSlice?.confidence === 'medium'
+        ? 'border-amber-500/40 bg-amber-950/35 text-amber-100'
+        : 'border-slate-600 bg-slate-900 text-slate-200';
+  const fallbackDataset = spec.source?.columns?.length
+    ? [{
+        datasetId: 'local_raw_data',
+        fileName: spec.source.file_name || '当前导入数据',
+        filePath: '',
+        columns: spec.source.columns,
+        rowCount: spec.source.row_count ?? spec.raw_data?.custom_data?.length ?? 0,
+        uploadedAt: spec.source.imported_at || '',
+      }]
+    : [];
+  const dataFiles = datasets.length > 0 ? datasets : fallbackDataset;
+  const activeDataFile = dataFiles.find(item => item.datasetId === activeDataFileId) || dataFiles[0] || null;
+  const localDataRows = activeDataFile?.datasetId === 'local_raw_data'
+    ? (spec.raw_data?.custom_data || [])
+    : [];
+  const activeDataRows = projectId ? dataPreview.rows : localDataRows;
+  const activeDataColumns = activeDataFile?.columns?.length
+    ? activeDataFile.columns
+    : (activeDataRows[0] ? Object.keys(activeDataRows[0]) : []);
+  const visibleDataRows = activeDataRows.slice(0, 500);
+  const shownRowCount = projectId ? dataPreview.returnedRows : visibleDataRows.length;
+  const totalRowCount = projectId ? dataPreview.totalRows : activeDataRows.length;
+  const formatCellValue = (value: unknown) => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
+    if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+    return String(value);
+  };
+
+  useEffect(() => {
+    if (dataFiles.length === 0) {
+      setActiveDataFileId(null);
+      return;
+    }
+    if (!activeDataFileId || !dataFiles.some(item => item.datasetId === activeDataFileId)) {
+      setActiveDataFileId(dataFiles[0].datasetId);
+    }
+  }, [activeDataFileId, dataFiles]);
+
+  useEffect(() => {
+    if (activeTab !== 'data' || !projectId || !activeDataFile || activeDataFile.datasetId === 'local_raw_data') {
+      return;
+    }
+
+    let cancelled = false;
+    setDataPreview(prev => ({ ...prev, loading: true, error: null }));
+    fetch(`/api/projects/${projectId}/files/${activeDataFile.datasetId}/preview?limit=500`)
+      .then(res => res.json())
+      .then(data => {
+        if (cancelled) return;
+        if (data.status !== 'success') {
+          setDataPreview({
+            loading: false,
+            error: data.message || '数据预览加载失败',
+            rows: [],
+            totalRows: 0,
+            returnedRows: 0,
+          });
+          return;
+        }
+        setDataPreview({
+          loading: false,
+          error: null,
+          rows: Array.isArray(data.rows) ? data.rows : [],
+          totalRows: Number(data.totalRows || data.dataset?.rowCount || 0),
+          returnedRows: Number(data.returnedRows || data.rows?.length || 0),
+        });
+      })
+      .catch((err: Error) => {
+        if (cancelled) return;
+        setDataPreview({
+          loading: false,
+          error: err.message,
+          rows: [],
+          totalRows: 0,
+          returnedRows: 0,
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, activeDataFile, projectId]);
 
   const generateThumbnail = (svg: string | undefined): Promise<string | undefined> => {
     if (!svg) return Promise.resolve(undefined);
@@ -146,6 +257,20 @@ export function MainWorkspace({
   };
   const canUndoAny = canUndoFigure || historyIndex > 0;
   const canRedoAny = canRedoFigure || historyIndex < specHistory.length - 1;
+  const activeHistory = projectId ? projectHistory?.[activeFigureId] : null;
+  const historyCurrentIndex = activeHistory?.past.length ?? historyIndex;
+  const historyMenuEnabled = Boolean(projectId && onProjectHistoryJump);
+  const historyItems = projectId
+    ? [
+        ...(activeHistory?.past || []),
+        { editLog: figSession?.editLog || [], label: '当前状态', timestamp: Date.now() },
+        ...(activeHistory?.future || []),
+      ]
+    : specHistory.map((_, index) => ({
+        editLog: [],
+        label: index === 0 ? '初始规格' : `规格步骤 ${index}`,
+        timestamp: Date.now(),
+      }));
   const currentDataPayload = spec.raw_data?.custom_data
     ? { custom_data: spec.raw_data.custom_data }
     : null;
@@ -160,6 +285,20 @@ export function MainWorkspace({
     anchor.click();
     document.body.removeChild(anchor);
     URL.revokeObjectURL(url);
+  };
+
+  const exportActiveDataPreview = () => {
+    if (!activeDataFile || activeDataColumns.length === 0) return;
+    const escapeCsv = (value: unknown) => {
+      const text = formatCellValue(value);
+      return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const csv = [
+      activeDataColumns.map(escapeCsv).join(','),
+      ...visibleDataRows.map(row => activeDataColumns.map(column => escapeCsv(row[column])).join(',')),
+    ].join('\n');
+    const safeName = activeDataFile.fileName.replace(/\.[^.]+$/, '') || 'data_preview';
+    downloadTextFile(`${safeName}_preview.csv`, csv, 'text/csv;charset=utf-8');
   };
 
   const buildDiagnosticReport = () => {
@@ -493,6 +632,60 @@ export function MainWorkspace({
           >
             重做
           </button>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowHistoryMenu(prev => !prev)}
+              disabled={!historyMenuEnabled || historyItems.length <= 1}
+              className={`px-3 py-1.5 text-sm font-medium rounded transition-colors ${
+                historyMenuEnabled && historyItems.length > 1
+                  ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                  : 'text-slate-300 cursor-not-allowed'
+              }`}
+              title={historyMenuEnabled ? '查看并跳转到具体历史步骤' : '项目模式下可查看具体编辑历史'}
+            >
+              历史
+            </button>
+            {historyMenuEnabled && showHistoryMenu && historyItems.length > 1 && (
+              <div className="absolute right-0 top-full mt-2 w-80 max-h-96 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl z-50 p-2">
+                <div className="px-2 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                  {projectId ? `${activeFigureId} 编辑历史` : '规格历史'}
+                </div>
+                {historyItems.map((item, index) => {
+                  const isCurrent = index === historyCurrentIndex;
+                  const editCount = item.editLog.length;
+                  return (
+                    <button
+                      type="button"
+                      key={`${index}-${item.timestamp}-${item.label}`}
+                      disabled={isCurrent}
+                      onClick={async () => {
+                        setShowHistoryMenu(false);
+                        if (onProjectHistoryJump) {
+                          await onProjectHistoryJump(activeFigureId, index);
+                        }
+                      }}
+                      className={`w-full rounded-lg px-2.5 py-2 text-left transition-colors ${
+                        isCurrent
+                          ? 'bg-blue-50 text-blue-700 cursor-default'
+                          : 'hover:bg-slate-50 text-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-xs font-semibold truncate">
+                          {index === 0 ? '0 初始图' : `${index} ${item.label}`}
+                        </span>
+                        {isCurrent && <span className="text-[10px] font-medium text-blue-600">当前</span>}
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-slate-400">
+                        {editCount} 条编辑记录
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
           <div className="w-px h-4 bg-slate-200 mx-2"></div>
           <button
             type="button"
@@ -662,14 +855,38 @@ export function MainWorkspace({
                     <span className="text-blue-700 font-semibold text-lg bg-white/80 px-4 py-2 rounded shadow">松开以上传 .py 文件</span>
                   </div>
                 )}
-                <Editor
-                  height="100%"
-                  defaultLanguage="python"
-                  theme="vs-dark"
-                  value={spec.custom_script || ''}
-                  onChange={value => onSpecChange({ ...spec, custom_script: value || '' })}
-                  options={{ minimap: { enabled: false }, fontSize: 13 }}
-                />
+                {projectId && activeCodeSlice && (
+                  <div className={`m-3 mb-0 rounded-lg border ${codeSliceConfidenceClass} shrink-0 overflow-hidden`}>
+                    <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-white/10">
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold truncate">
+                          {activeCodeSlice.title || `${activeFigureId} 关联代码`}
+                        </div>
+                        <div className="text-[11px] opacity-80 truncate">
+                          行 {activeCodeSlice.startLine}-{activeCodeSlice.endLine} · {activeCodeSlice.mode} · {activeCodeSlice.reason}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText(activeCodeSlice.code || '')}
+                        className="shrink-0 rounded border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-semibold hover:bg-white/15"
+                      >
+                        复制本图片段
+                      </button>
+                    </div>
+                    <pre className="max-h-36 overflow-auto p-3 text-[11px] leading-relaxed text-slate-100 whitespace-pre"><code>{activeCodeSlice.code}</code></pre>
+                  </div>
+                )}
+                <div className="flex-1 min-h-0">
+                  <Editor
+                    height="100%"
+                    defaultLanguage="python"
+                    theme="vs-dark"
+                    value={spec.custom_script || ''}
+                    onChange={value => onSpecChange({ ...spec, custom_script: value || '' })}
+                    options={{ minimap: { enabled: false }, fontSize: 13 }}
+                  />
+                </div>
                 <div className="flex justify-end gap-2 p-3 bg-slate-800 border-t border-slate-700 shrink-0 z-10">
                   <input
                     type="file"
@@ -710,6 +927,123 @@ export function MainWorkspace({
             )
           )}
 
+          {activeTab === 'data' && (
+            <div className="w-full h-full rounded-lg border border-slate-200 bg-white shadow-xl overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 shrink-0">
+                <div className="min-w-0">
+                  <div className="text-sm font-bold text-slate-800">数据工作表</div>
+                  <div className="text-xs text-slate-500 truncate">
+                    {activeDataFile
+                      ? `${activeDataFile.fileName} · ${activeDataColumns.length} 列 · ${totalRowCount || activeDataFile.rowCount || 0} 行`
+                      : '暂无数据文件'}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={exportActiveDataPreview}
+                    disabled={!activeDataFile || visibleDataRows.length === 0}
+                    className="inline-flex items-center gap-1.5 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    导出当前预览
+                  </button>
+                </div>
+              </div>
+
+              {dataFiles.length > 1 && (
+                <div className="flex gap-1 overflow-x-auto border-b border-slate-200 bg-white px-3 py-2 shrink-0">
+                  {dataFiles.map(file => (
+                    <button
+                      type="button"
+                      key={file.datasetId}
+                      onClick={() => setActiveDataFileId(file.datasetId)}
+                      className={`max-w-[260px] shrink-0 rounded-md border px-3 py-1.5 text-left text-xs transition-colors ${
+                        activeDataFile?.datasetId === file.datasetId
+                          ? 'border-blue-300 bg-blue-50 text-blue-700'
+                          : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                      }`}
+                      title={file.fileName}
+                    >
+                      <div className="truncate font-semibold">{file.fileName}</div>
+                      <div className="text-[10px] opacity-70">{file.columns.length} 列 · {file.rowCount} 行</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex-1 min-h-0 overflow-auto bg-white">
+                {dataPreview.loading && projectId && (
+                  <div className="flex h-full items-center justify-center gap-2 text-sm text-slate-500">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    正在读取数据预览...
+                  </div>
+                )}
+
+                {!dataPreview.loading && dataPreview.error && projectId && (
+                  <div className="m-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                    {dataPreview.error}
+                  </div>
+                )}
+
+                {!dataPreview.loading && !dataPreview.error && activeDataFile && activeDataColumns.length > 0 && (
+                  <table className="min-w-full border-separate border-spacing-0 text-xs">
+                    <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700 shadow-sm">
+                      <tr>
+                        <th className="sticky left-0 z-20 w-14 border-b border-r border-slate-200 bg-slate-100 px-2 py-2 text-right font-semibold text-slate-400">
+                          #
+                        </th>
+                        {activeDataColumns.map(column => (
+                          <th
+                            key={column}
+                            className="max-w-[260px] border-b border-r border-slate-200 px-3 py-2 text-left font-semibold"
+                            title={column}
+                          >
+                            <div className="truncate">{column}</div>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="font-mono text-slate-800">
+                      {visibleDataRows.map((row, rowIndex) => (
+                        <tr key={rowIndex} className={rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'}>
+                          <td className="sticky left-0 z-[1] border-b border-r border-slate-100 bg-inherit px-2 py-1.5 text-right text-slate-400">
+                            {rowIndex + 1}
+                          </td>
+                          {activeDataColumns.map(column => {
+                            const cellText = formatCellValue(row[column]);
+                            return (
+                              <td
+                                key={column}
+                                className="max-w-[260px] border-b border-r border-slate-100 px-3 py-1.5 align-top"
+                                title={cellText}
+                              >
+                                <div className="truncate">{cellText || <span className="text-slate-300">∅</span>}</div>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+
+                {!dataPreview.loading && !dataPreview.error && (!activeDataFile || activeDataColumns.length === 0) && (
+                  <div className="flex h-full items-center justify-center text-sm text-slate-400">
+                    当前项目没有可展示的数据表。请先在新建项目或数据管理中上传 CSV / Excel。
+                  </div>
+                )}
+              </div>
+
+              {activeDataFile && (
+                <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-4 py-2 text-xs text-slate-500 shrink-0">
+                  <span>显示 {shownRowCount} / {totalRowCount || activeDataFile.rowCount || 0} 行，最多预览 500 行</span>
+                  <span className="truncate">文件 ID: {activeDataFile.datasetId}</span>
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'spec' && (
             <div className="w-full h-full bg-[#1e1e1e] text-green-400 p-6 rounded font-mono text-sm whitespace-pre-wrap CustomScrollbar flex justify-start items-start text-left overflow-auto shadow-xl">
               {JSON.stringify(spec, null, 2)}
@@ -743,7 +1077,7 @@ export function MainWorkspace({
               <button type="button" className="hover:text-slate-600 transition-colors"><Maximize className="w-4 h-4" /></button>
               <button
                 type="button"
-                onClick={() => { navigator.clipboard.writeText(generatePythonCode(spec)); }}
+                onClick={() => { navigator.clipboard.writeText(activeScript); }}
                 className="hover:text-slate-600 transition-colors text-xs px-2 py-0.5 border border-slate-200 rounded bg-white text-slate-500"
                 title="复制代码"
               >
@@ -757,10 +1091,10 @@ export function MainWorkspace({
             {bottomTab === 'python' && (
               <div className="w-1/2 border-r border-slate-200 flex overflow-hidden">
                 <div className="w-10 bg-slate-100 text-slate-400 text-right pr-2 py-3 select-none text-xs border-r border-slate-200 shrink-0 space-y-1">
-                  {(figSession?.script || generatePythonCode(spec)).split('\n').map((_, index) => <div key={index}>{index + 1}</div>)}
+                  {activeScript.split('\n').map((_, index) => <div key={index}>{index + 1}</div>)}
                 </div>
                 <div className="p-3 text-slate-800 overflow-auto font-mono text-xs leading-relaxed whitespace-pre">
-                  {figSession?.script || generatePythonCode(spec)}
+                  {activeScript}
                 </div>
               </div>
             )}
@@ -768,10 +1102,12 @@ export function MainWorkspace({
             {bottomTab === 'python' && (
               <div className="w-1/2 flex overflow-hidden bg-white">
                 <div className="w-10 bg-slate-50 text-slate-400 text-right pr-2 py-3 select-none text-xs border-r border-slate-100 shrink-0 space-y-1">
-                  {JSON.stringify(spec, null, 2).split('\n').slice(0, 20).map((_, index) => <div key={index}>{index + 1}</div>)}
+                  {(activeCodeSlice?.code || JSON.stringify(spec, null, 2)).split('\n').slice(0, 80).map((_, index) => (
+                    <div key={index}>{activeCodeSlice ? activeCodeSlice.startLine + index : index + 1}</div>
+                  ))}
                 </div>
                 <div className="p-3 text-slate-800 overflow-auto whitespace-pre font-mono text-xs leading-relaxed">
-                  {JSON.stringify(spec, null, 2)}
+                  {activeCodeSlice ? activeCodeSlice.code : JSON.stringify(spec, null, 2)}
                 </div>
               </div>
             )}

@@ -54,7 +54,13 @@ export type ManifestObjectKind =
   | "axes"
   | "grid"
   | "axis_x"
-  | "axis_y";
+  | "axis_y"
+  | "bar_container"
+  | "errorbar_container"
+  | "stem_container"
+  | "boxplot_container"
+  | "violinplot_container"
+  | "container";
 
 export interface ManifestObject {
   id: string;
@@ -62,18 +68,41 @@ export interface ManifestObject {
   label: string;
   editable: string[];
   currentProps: Record<string, unknown>;
+  role?: string;
+  parentId?: string;
+  children?: string[];
+  stableKey?: string;
+  fingerprint?: string;
+  source?: {
+    artistClass: string;
+    axesIndex: number;
+    zorder?: number;
+  };
 }
 
 /* Coverage report — transparency about what the introspector missed */
-export type CoverageLevel = "full" | "partial" | "none";
+export interface CoverageSummary {
+  recognized: number;
+  editable: number;
+  readonly: number;
+  unsupported: number;
+}
+
+export interface CoverageKindDetail {
+  count: number;
+  editableProps: string[];
+}
+
+export interface UnsupportedArtistDetail {
+  class: string;
+  count: number;
+  reason: string;
+}
 
 export interface CoverageReport {
-  title: CoverageLevel;
-  axisLabels: CoverageLevel;
-  spines: CoverageLevel;
-  legend: CoverageLevel;
-  dataSeries: CoverageLevel;
-  annotations: CoverageLevel;
+  summary: CoverageSummary;
+  byKind: Record<string, CoverageKindDetail>;
+  unsupportedArtists: UnsupportedArtistDetail[];
 }
 
 /* ---- Manifest top-level ---- */
@@ -89,7 +118,7 @@ export interface Palette {
   id: string;
   label: string;
   color: string;
-  source: "constant" | "dict";
+  source: "constant" | "dict" | "inline" | string;
   line: number;
 }
 
@@ -134,6 +163,17 @@ export interface EditEntry {
   value: unknown;
   mode: EditMode;
   timestamp: number;
+}
+
+export interface HistorySnapshot {
+  editLog: EditEntry[];
+  label: string;
+  timestamp: number;
+}
+
+export interface ProjectHistoryState {
+  past: HistorySnapshot[];
+  future: HistorySnapshot[];
 }
 
 /* ---- Figure Session ---- */
@@ -194,7 +234,7 @@ export interface CodePatchEntry {
 export type PatchEntry = LocalPatchEntry | CodePatchEntry;
 
 export interface PatchResponse {
-  status: "success" | "error";
+  status: "success" | "error" | "conflict";
   sessionId: string;
   applied: PatchEntry[];
   svg?: string;
@@ -203,6 +243,7 @@ export interface PatchResponse {
   editLog?: EditEntry[];
   message?: string;
   script?: string;
+  requestId?: string;
 }
 
 export interface CodePatchRequest {

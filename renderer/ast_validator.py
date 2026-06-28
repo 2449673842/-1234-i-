@@ -47,8 +47,16 @@ def validate_script(script: str) -> dict:
 
 if __name__ == "__main__":
     try:
-        input_data = sys.stdin.read()
-        payload = json.loads(input_data)
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--payload-file", help="Path to JSON payload file")
+        args = parser.parse_args()
+        if args.payload_file:
+            with open(args.payload_file, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        else:
+            input_data = sys.stdin.read()
+            payload = json.loads(input_data)
         script = payload.get("script", "")
         
         result = validate_script(script)

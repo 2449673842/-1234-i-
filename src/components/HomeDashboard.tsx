@@ -60,6 +60,25 @@ export function HomeDashboard({ onNavigate }: { onNavigate: (view: ViewState, su
           </div>
         </section>
 
+        {/* Pro Banner */}
+        <div 
+          onClick={() => onNavigate('landing')}
+          className="bg-gradient-to-r from-amber-500/10 via-orange-500/10 to-indigo-500/10 border border-amber-200/60 rounded-2xl p-6 flex flex-col md:flex-row items-center justify-between gap-6 cursor-pointer hover:border-amber-300 transition-all shadow-sm group"
+        >
+          <div className="space-y-1 text-center md:text-left">
+            <h3 className="text-base font-bold text-amber-800 flex items-center justify-center md:justify-start gap-1.5">
+              <span>★</span> SciFigure Studio Pro 专业版已发布
+            </h3>
+            <p className="text-xs text-amber-700/80 leading-relaxed max-w-2xl">
+              解决 AI 绘图代码报错、图元微调困难、拼图布局复杂的问题。支持真 SVG 直选编辑、配色中心和高 DPI 导出，早期专业版按 <span className="font-bold text-amber-900">¥10 / 月</span> 规划验证。
+            </p>
+          </div>
+          <span className="shrink-0 px-4 py-2 bg-amber-600 text-white font-semibold text-xs rounded-xl shadow-md group-hover:bg-amber-700 transition-colors flex items-center gap-1">
+            了解详情并订阅
+            <ArrowRight className="w-3.5 h-3.5 animate-bounce-horizontal" />
+          </span>
+        </div>
+
         <section className="grid md:grid-cols-3 gap-4">
           {[
             ['数据入口', '唯一推荐入口是“导入数据”，避免模板页和样板文件分散注意力。'],

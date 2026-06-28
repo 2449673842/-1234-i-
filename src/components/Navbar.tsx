@@ -35,6 +35,14 @@ export function Navbar({ currentView, onNavigate }: NavbarProps) {
             {(currentView === 'home' || currentView === 'projects' || currentView === 'data' || currentView === 'settings') && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-t-full"></div>}
           </button>
           <button type="button" onClick={() => onNavigate('data', 'data_files')} className={`transition-colors relative pb-4 top-2 ${currentView === 'data' ? 'text-blue-600 font-semibold' : 'text-slate-600 hover:text-slate-900'}`}>当前项目数据</button>
+          <button 
+            type="button" 
+            onClick={() => onNavigate('landing')} 
+            className={`transition-colors relative pb-4 top-2 flex items-center gap-1 font-bold ${currentView === 'landing' ? 'text-amber-600' : 'text-amber-500 hover:text-amber-600'}`}
+          >
+            ★ 升级 Pro (¥10/月)
+            {currentView === 'landing' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-amber-500 rounded-t-full"></div>}
+          </button>
           <button type="button" className="transition-colors relative pb-4 top-2 text-slate-600 hover:text-slate-900 flex items-center gap-1">
             帮助 <ChevronDown className="w-3.5 h-3.5" />
           </button>
@@ -42,7 +50,7 @@ export function Navbar({ currentView, onNavigate }: NavbarProps) {
       </div>
 
       <div className="flex items-center gap-3">
-        {(currentView === 'editor' || currentView === 'export_settings') ? (
+        {(currentView === 'editor' || currentView === 'export_settings' || currentView === 'composer') ? (
           <>
             <button type="button" onClick={() => onNavigate('data_import')} className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors shadow-sm">
               <UploadCloud className="w-4 h-4 text-blue-600" />

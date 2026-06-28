@@ -94,6 +94,18 @@ export interface DatasetEntry {
   uploadedAt: string;
 }
 
+export interface FigureCodeSlice {
+  figureId: string;
+  title: string;
+  startLine: number;
+  endLine: number;
+  code: string;
+  confidence: 'high' | 'medium' | 'low';
+  mode: 'exact_range' | 'shared_function' | 'whole_script';
+  reason: string;
+  relatedFunctions?: string[];
+}
+
 export interface FigureEntry {
   figureId: string;
   index: number;
@@ -101,6 +113,8 @@ export interface FigureEntry {
   editLog: SavedEditEntry[];
   revision: number;
   svg?: string;
+  fingerprint?: string;
+  codeSlice?: FigureCodeSlice | null;
 }
 
 export interface SciFigureProject {
