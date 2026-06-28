@@ -182,6 +182,9 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
       return { status: 'error', message: 'No active session' } as PatchResponse;
     }
 
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 10)}`;
+    const baseRevision = session.revision;
+
     // --- Code patch intercept: send with full metadata, bypass EditEntry transform ---
     const hasCodePatch = patches.some((p: any) => p.type === 'code_patch');
     if (hasCodePatch) {
@@ -192,12 +195,19 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
           body: JSON.stringify({
             sessionId: session.sessionId,
             patches,
+            requestId,
+            baseRevision,
           }),
         });
         const data: PatchResponse & { script?: string } = await res.json();
+        if (data.status === 'conflict') {
+          await syncFigureState(session.editLog);
+          return { status: 'error', message: '冲突已自动恢复' } as PatchResponse;
+        }
         if (data.status === 'success') {
           setSession((prev) => {
             if (!prev) return prev;
+            if (data.revision !== undefined && data.revision < prev.revision) return prev;
             return {
               ...prev,
               svg: data.svg || prev.svg,
@@ -243,13 +253,20 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
           body: JSON.stringify({
             sessionId: session.sessionId,
             patches,
+            requestId,
+            baseRevision,
           }),
         });
         const data: PatchResponse = await res.json();
+        if (data.status === 'conflict') {
+          await syncFigureState(previousEditLog);
+          return { status: 'error', message: '冲突已自动恢复' } as PatchResponse;
+        }
         if (data.status === 'success') {
           const authoritativeEditLog = data.editLog || nextEditLog;
           setSession((prev) => {
             if (!prev) return prev;
+            if (data.revision !== undefined && data.revision < prev.revision) return prev;
             return {
               ...prev,
               editLog: authoritativeEditLog,
@@ -288,13 +305,21 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
         body: JSON.stringify({
           sessionId: session.sessionId,
           patches,
+          requestId,
+          baseRevision,
         }),
       });
       const data: PatchResponse & { traceback?: string; script?: string } = await res.json();
+      if (data.status === 'conflict') {
+        setRenderError(null);
+        await syncFigureState(session.editLog);
+        return { status: 'error', message: '冲突已自动恢复' } as PatchResponse;
+      }
       if (data.status === 'success') {
         const nextEditLog = data.editLog || [...session.editLog, ...nextEditEntries];
         setSession((prev) => {
           if (!prev) return prev;
+          if (data.revision !== undefined && data.revision < prev.revision) return prev;
           return {
             ...prev,
             sessionId: data.sessionId || prev.sessionId,

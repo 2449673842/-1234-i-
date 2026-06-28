@@ -9,15 +9,17 @@ import { TemplatesPage } from './components/TemplatesPage';
 import { AppSidebar } from './components/AppSidebar';
 import { DataImportPage } from './components/DataImportPage';
 import { ExportSettingsPage } from './components/ExportSettingsPage';
+import { ComposerPage } from './components/ComposerPage';
 import { ProjectsPage } from './components/ProjectsPage';
 import { DataFilesPage } from './components/DataFilesPage';
 import { SettingsPage } from './components/SettingsPage';
 import { ProjectCreatePage } from './components/ProjectCreatePage';
+import { LandingPage } from './components/LandingPage';
 import { FigureSpec, defaultSpec, DatasetEntry, FigureEntry } from './types';
 import { useFigureSession } from './hooks/useFigureSession';
 import { buildReproduciblePython } from './utils/reproduciblePython';
 import { applyRuntimePatchesToManifest, applyRuntimePatchesToSvg } from './utils/svgEditor';
-import type { FigureSession, EditEntry, PatchEntry } from './schemas/manifest';
+import type { FigureSession, EditEntry, PatchEntry, HistorySnapshot, ProjectHistoryState } from './schemas/manifest';
 import './index.css';
 
 class EditorErrorBoundary extends React.Component<
@@ -48,7 +50,7 @@ class EditorErrorBoundary extends React.Component<
   }
 }
 
-export type ViewState = 'home' | 'templates' | 'data_import' | 'editor' | 'workspace' | 'export_settings' | 'projects' | 'data' | 'settings' | 'project_create';
+export type ViewState = 'home' | 'templates' | 'data_import' | 'editor' | 'workspace' | 'export_settings' | 'composer' | 'projects' | 'data' | 'settings' | 'project_create' | 'landing';
 
 const SPEC_STORAGE_KEY = 'scifigure:app-state:v2';
 
@@ -64,13 +66,54 @@ interface PersistedAppState {
   activeFigureId?: string;
   datasets?: DatasetEntry[];
   selectedGids?: string[];
-  projectHistory?: Record<string, { past: EditEntry[][]; future: EditEntry[][] }>;
+  projectHistory?: Record<string, ProjectHistoryState>;
   currentView?: ViewState;
   subView?: string;
 }
 
 function cloneSpec(spec: FigureSpec): FigureSpec {
   return JSON.parse(JSON.stringify(spec)) as FigureSpec;
+}
+
+function cloneEditLog(editLog: EditEntry[]): EditEntry[] {
+  return JSON.parse(JSON.stringify(editLog || [])) as EditEntry[];
+}
+
+function makeHistorySnapshot(editLog: EditEntry[], label: string): HistorySnapshot {
+  return {
+    editLog: cloneEditLog(editLog),
+    label,
+    timestamp: Date.now(),
+  };
+}
+
+function normalizeHistorySnapshot(value: unknown, fallbackLabel: string): HistorySnapshot {
+  if (Array.isArray(value)) {
+    return makeHistorySnapshot(value as EditEntry[], fallbackLabel);
+  }
+  const candidate = value as Partial<HistorySnapshot> | null;
+  if (candidate && Array.isArray(candidate.editLog)) {
+    return {
+      editLog: cloneEditLog(candidate.editLog),
+      label: typeof candidate.label === 'string' && candidate.label ? candidate.label : fallbackLabel,
+      timestamp: typeof candidate.timestamp === 'number' ? candidate.timestamp : Date.now(),
+    };
+  }
+  return makeHistorySnapshot([], fallbackLabel);
+}
+
+function normalizeProjectHistory(raw: unknown): Record<string, ProjectHistoryState> {
+  const result: Record<string, ProjectHistoryState> = {};
+  if (!raw || typeof raw !== 'object') return result;
+  Object.entries(raw as Record<string, any>).forEach(([figureId, value]) => {
+    const pastRaw = Array.isArray(value?.past) ? value.past : [];
+    const futureRaw = Array.isArray(value?.future) ? value.future : [];
+    result[figureId] = {
+      past: pastRaw.map((entry: unknown, index: number) => normalizeHistorySnapshot(entry, index === 0 ? '初始图' : `历史步骤 ${index}`)),
+      future: futureRaw.map((entry: unknown, index: number) => normalizeHistorySnapshot(entry, `重做步骤 ${index + 1}`)),
+    };
+  });
+  return result;
 }
 
 function loadInitialState(): PersistedAppState {
@@ -112,7 +155,7 @@ function loadInitialState(): PersistedAppState {
       activeFigureId: parsed.activeFigureId ?? 'fig_1',
       datasets: parsed.datasets ?? [],
       selectedGids: parsed.selectedGids ?? [],
-      projectHistory: parsed.projectHistory ?? {},
+      projectHistory: normalizeProjectHistory(parsed.projectHistory),
       currentView: parsed.currentView ?? 'home',
       subView: parsed.subView ?? 'home',
     };
@@ -149,7 +192,7 @@ export default function App() {
   const [historyIndex, setHistoryIndex] = useState<number>(initialState.historyIndex);
   const [lockedObjects, setLockedObjects] = useState<Set<string>>(new Set());
   const [selectedGids, setSelectedGids] = useState<string[]>(initialState.selectedGids ?? []);
-  const [projectHistory, setProjectHistory] = useState<Record<string, { past: EditEntry[][]; future: EditEntry[][] }>>(initialState.projectHistory ?? {});
+  const [projectHistory, setProjectHistory] = useState<Record<string, ProjectHistoryState>>(initialState.projectHistory ?? {});
 
   const handleSelectGids = (gids: string[]) => {
     setSelectedGids(gids);
@@ -230,6 +273,7 @@ export default function App() {
           editLog: fig.editLog,
           revision: fig.revision,
           fingerprint: (fig as any).fingerprint,
+          codeSlice: fig.codeSlice ?? null,
         };
       });
     }
@@ -301,7 +345,9 @@ export default function App() {
                 manifest: f.manifest,
                 svg: f.svg,
                 editLog: editLogs[f.figureId] || [],
-                revision: projectFigures[f.figureId]?.revision || 1
+                revision: projectFigures[f.figureId]?.revision || 1,
+                fingerprint: f.fingerprint,
+                codeSlice: f.codeSlice ?? null,
               };
             });
             setProjectFigures(nextFigs);
@@ -364,11 +410,13 @@ export default function App() {
               svg: applyRuntimePatchesToSvg(active.svg || '', runtimePatches),
               manifest: applyRuntimePatchesToManifest(active.manifest || null, runtimePatches) || active.manifest,
               editLog: [...(active.editLog || []), ...localPatchEntries],
-              revision: (active.revision || 1) + 1,
+              // Keep the server revision unchanged during optimistic local
+              // preview. The API response below is the source of truth.
+              revision: active.revision || 1,
             },
           };
         });
-        pushProjectHistory(activeFigureId, prevEditLog);
+        pushProjectHistory(activeFigureId, prevEditLog, patchSummary);
       }
 
       try {
@@ -382,7 +430,9 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sessionId: `${projectId}_${activeFigureId}`,
-            patches
+            patches,
+            requestId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+            baseRevision: projectFigures[activeFigureId]?.revision || 1,
           })
         });
         const data = await res.json();
@@ -399,7 +449,8 @@ export default function App() {
                 svg: data.svg || active.svg,
                 manifest: data.manifest || active.manifest,
                 editLog: data.editLog || active.editLog,
-                revision: data.revision || active.revision + 1
+                revision: data.revision || active.revision,
+                codeSlice: data.codeSlice ?? active.codeSlice ?? null,
               };
             }
             return next;
@@ -407,7 +458,7 @@ export default function App() {
 
           // Record history snapshot
           if (needsBackendRender) {
-            pushProjectHistory(activeFigureId, prevEditLog);
+            pushProjectHistory(activeFigureId, prevEditLog, patchSummary);
           }
 
           // Handle color mapping update inside spec for AST sync
@@ -426,6 +477,23 @@ export default function App() {
               nextSpec.custom_script = data.script;
             }
             applySpecChange(nextSpec);
+          }
+        } else {
+          if (data.status === 'conflict' && typeof data.expectedRevision === 'number') {
+            setProjectFigures(prev => {
+              const active = prev[activeFigureId];
+              if (!active) return prev;
+              return {
+                ...prev,
+                [activeFigureId]: {
+                  ...active,
+                  revision: data.expectedRevision,
+                },
+              };
+            });
+            setRenderLog(prev => [...prev, `> [冲突] ${activeFigureId} 本地版本过旧，已同步到服务端版本 ${data.expectedRevision}，请重新应用刚才的修改。`]);
+          } else {
+            setRenderLog(prev => [...prev, `> [错误] 参数应用失败: ${data.message || res.statusText || '未知错误'}`]);
           }
         }
         return data;
@@ -510,7 +578,8 @@ export default function App() {
                 svg: data.svg || active.svg,
                 manifest: data.manifest || active.manifest,
                 editLog: data.editLog || active.editLog,
-                revision: data.revision || active.revision + 1
+                revision: data.revision || active.revision + 1,
+                codeSlice: data.codeSlice ?? active.codeSlice ?? null,
               };
             }
             return next;
@@ -577,8 +646,10 @@ export default function App() {
               ...next[f.figureId],
               svg: f.svg,
               manifest: f.manifest,
-              editLog: editLogs[f.figureId] || next[f.figureId]?.editLog || [],
-              revision: (next[f.figureId]?.revision || 1) + 1
+              editLog: f.editLog || editLogs[f.figureId] || next[f.figureId]?.editLog || [],
+              revision: f.revision || next[f.figureId]?.revision || 1,
+              fingerprint: f.fingerprint,
+              codeSlice: f.codeSlice ?? next[f.figureId]?.codeSlice ?? null,
             };
           }
           return next;
@@ -598,33 +669,33 @@ export default function App() {
     const currentEditLog = projectFigures[figureId]?.editLog || [];
     if (currentEditLog.length === 0) return;
 
-    let prevEditLog: EditEntry[];
-    let nextPast: EditEntry[][];
-    let nextFuture: EditEntry[][];
+    let prevSnapshot: HistorySnapshot;
+    let nextPast: HistorySnapshot[];
+    let nextFuture: HistorySnapshot[];
 
     if (history?.past?.length) {
-      prevEditLog = history.past[history.past.length - 1];
+      prevSnapshot = history.past[history.past.length - 1];
       nextPast = history.past.slice(0, -1);
-      nextFuture = [currentEditLog, ...history.future];
+      nextFuture = [makeHistorySnapshot(currentEditLog, '撤销前状态'), ...history.future];
     } else {
       const lastTimestamp = currentEditLog[currentEditLog.length - 1]?.timestamp;
       const fallbackIndex = lastTimestamp == null
         ? currentEditLog.length - 1
         : currentEditLog.findIndex(entry => entry.timestamp === lastTimestamp);
-      prevEditLog = currentEditLog.slice(0, Math.max(0, fallbackIndex));
+      prevSnapshot = makeHistorySnapshot(currentEditLog.slice(0, Math.max(0, fallbackIndex)), '撤销上一步');
       nextPast = [];
-      nextFuture = [currentEditLog];
+      nextFuture = [makeHistorySnapshot(currentEditLog, '撤销前状态')];
     }
 
     setProjectHistory(prev => ({ ...prev, [figureId]: { past: nextPast, future: nextFuture } }));
     setProjectFigures(prev => {
       const fig = prev[figureId];
       if (!fig) return prev;
-      return { ...prev, [figureId]: { ...fig, editLog: prevEditLog } };
+      return { ...prev, [figureId]: { ...fig, editLog: prevSnapshot.editLog } };
     });
     const editLogs: Record<string, any[]> = {};
     Object.keys(projectFigures).forEach(fid => {
-      editLogs[fid] = fid === figureId ? prevEditLog : projectFigures[fid].editLog;
+      editLogs[fid] = fid === figureId ? prevSnapshot.editLog : projectFigures[fid].editLog;
     });
     await rerenderProjectWithEditLogs(editLogs);
   };
@@ -633,35 +704,63 @@ export default function App() {
     const history = projectHistory[figureId];
     if (!history || history.future.length === 0) return;
     const currentEditLog = projectFigures[figureId]?.editLog || [];
-    const nextEditLog = history.future[0];
-    const nextPast = [...history.past, currentEditLog];
+    const nextSnapshot = history.future[0];
+    const nextPast = [...history.past, makeHistorySnapshot(currentEditLog, '重做前状态')];
     const nextFuture = history.future.slice(1);
     setProjectHistory(prev => ({ ...prev, [figureId]: { past: nextPast, future: nextFuture } }));
     setProjectFigures(prev => {
       const fig = prev[figureId];
       if (!fig) return prev;
-      return { ...prev, [figureId]: { ...fig, editLog: nextEditLog } };
+      return { ...prev, [figureId]: { ...fig, editLog: nextSnapshot.editLog } };
     });
     const editLogs: Record<string, any[]> = {};
     Object.keys(projectFigures).forEach(fid => {
-      editLogs[fid] = fid === figureId ? nextEditLog : projectFigures[fid].editLog;
+      editLogs[fid] = fid === figureId ? nextSnapshot.editLog : projectFigures[fid].editLog;
     });
     await rerenderProjectWithEditLogs(editLogs);
   };
 
   // Call after each successful patch in project mode to record history
   const MAX_HISTORY = 50;
-  const pushProjectHistory = (figureId: string, prevEditLog: EditEntry[]) => {
+  const pushProjectHistory = (figureId: string, prevEditLog: EditEntry[], label: string) => {
     setProjectHistory(prev => {
       const entry = prev[figureId] || { past: [], future: [] };
+      const snapshot = makeHistorySnapshot(
+        prevEditLog,
+        entry.past.length === 0 && prevEditLog.length === 0 ? '初始图' : label
+      );
       return {
         ...prev,
         [figureId]: {
-          past: [...entry.past, prevEditLog].slice(-MAX_HISTORY),
+          past: [...entry.past, snapshot].slice(-MAX_HISTORY),
           future: []
         }
       };
     });
+  };
+
+  const handleProjectHistoryJump = async (figureId: string, targetIndex: number) => {
+    const history = projectHistory[figureId] || { past: [], future: [] };
+    const currentEditLog = projectFigures[figureId]?.editLog || [];
+    const currentSnapshot = makeHistorySnapshot(currentEditLog, '当前状态');
+    const currentIndex = history.past.length;
+    const timeline = [...history.past, currentSnapshot, ...history.future];
+    const targetSnapshot = timeline[targetIndex];
+    if (!targetSnapshot || targetIndex === currentIndex) return;
+
+    const nextPast = timeline.slice(0, targetIndex);
+    const nextFuture = timeline.slice(targetIndex + 1);
+    setProjectHistory(prev => ({ ...prev, [figureId]: { past: nextPast, future: nextFuture } }));
+    setProjectFigures(prev => {
+      const fig = prev[figureId];
+      if (!fig) return prev;
+      return { ...prev, [figureId]: { ...fig, editLog: targetSnapshot.editLog } };
+    });
+    const editLogs: Record<string, any[]> = {};
+    Object.keys(projectFigures).forEach(fid => {
+      editLogs[fid] = fid === figureId ? targetSnapshot.editLog : projectFigures[fid].editLog;
+    });
+    await rerenderProjectWithEditLogs(editLogs);
   };
 
   const handleUndo = async () => {
@@ -732,7 +831,9 @@ export default function App() {
         index: f.index,
         manifest: f.manifest || null,
         editLog: f.editLog || [],
-        revision: f.revision || 1
+        revision: f.revision || 1,
+        fingerprint: f.fingerprint,
+        codeSlice: f.codeSlice ?? null,
       };
     });
     setProjectFigures(nextFigs);
@@ -744,8 +845,10 @@ export default function App() {
     }
 
     const initialEditLogs: Record<string, any[]> = {};
+    const initialRevisions: Record<string, number> = {};
     figList.forEach((f: any) => {
       initialEditLogs[f.figureId] = f.editLog || [];
+      initialRevisions[f.figureId] = f.revision || 1;
     });
 
     handleNavigate('editor');
@@ -772,8 +875,10 @@ export default function App() {
                   index: f.figureId === 'fig_1' ? 0 : parseInt(f.figureId.split('_')[1]) - 1,
                   manifest: f.manifest,
                   svg: f.svg,
-                  editLog: initialEditLogs[f.figureId] || [],
-                  revision: 1
+                  editLog: f.editLog || initialEditLogs[f.figureId] || [],
+                  revision: f.revision || initialRevisions[f.figureId] || 1,
+                  fingerprint: f.fingerprint,
+                  codeSlice: f.codeSlice ?? null,
                 };
               });
               setProjectFigures(nextFigs);
@@ -895,8 +1000,10 @@ export default function App() {
             index: f.figureId === 'fig_1' ? 0 : parseInt(f.figureId.split('_')[1]) - 1,
             manifest: f.manifest,
             svg: f.svg,
-            editLog: editLogs[f.figureId] || [],
-            revision: 1
+            editLog: f.editLog || editLogs[f.figureId] || [],
+            revision: f.revision || projectFigures[f.figureId]?.revision || 1,
+            fingerprint: f.fingerprint,
+            codeSlice: f.codeSlice ?? null,
           };
         });
         setProjectFigures(nextFigures);
@@ -1003,6 +1110,7 @@ export default function App() {
               projectHistory={projectHistory}
               onProjectUndo={handleProjectUndo}
               onProjectRedo={handleProjectRedo}
+              onProjectHistoryJump={handleProjectHistoryJump}
             />
             <RightSidebar
               figSession={figSession}
@@ -1081,6 +1189,17 @@ export default function App() {
               activeFigureId={activeFigureId}
             />
           </>
+        )}
+
+        {currentView === 'composer' && (
+          <ComposerPage
+            projectId={projectId}
+            onNavigate={(v) => handleNavigate(v)}
+          />
+        )}
+
+        {currentView === 'landing' && (
+          <LandingPage onNavigate={(v) => handleNavigate(v)} />
         )}
       </div>
     </div>

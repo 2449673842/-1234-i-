@@ -19,6 +19,12 @@ export default defineConfig(() => {
       watch: process.env.DISABLE_HMR === 'true' ? null : {
         ignored: [
           '**/data/**',
+          '**/tmp/**',
+          '**/.playwright-mcp/**',
+          '**/.agents/**',
+          '**/renderer/**',
+          '**/server.ts',
+          '**/*.md',
           '**/*.db',
           '**/*.db-journal',
           '**/*.db-wal',

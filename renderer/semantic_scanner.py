@@ -28,26 +28,60 @@ def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict
                 "source": "constant",
                 "line": i
             })
+            continue
+        stripped = line.strip()
+        # Keep dictionary entries represented by dict_<key> palettes.  Inline
+        # literals are separate so hard-coded plot colors such as
+        # ax.hlines(..., colors="#222222") can still be edited.
+        if (
+            re.match(r'^["\'][^"\']+["\']\s*:\s*["\']#[0-9A-Fa-f]{6}["\']', stripped)
+            or re.match(r'^[A-Za-z_][A-Za-z0-9_]*\s*=\s*\{.*#[0-9A-Fa-f]{6}', stripped)
+        ):
+            continue
+        for idx, hex_color in enumerate(re.findall(r'#[0-9A-Fa-f]{6}', line), 1):
+            palette_id = f"inline_{i}_{idx}_{hex_color[1:].lower()}"
+            if not any(p["id"] == palette_id for p in palettes):
+                palettes.append({
+                    "id": palette_id,
+                    "label": f"Inline {hex_color.upper()} - line {i}",
+                    "color": hex_color.lower(),
+                    "source": "inline",
+                    "line": i
+                })
             
     # 2. AST parsing to find dictionaries (Pattern B) and plotting calls
     try:
         tree = ast.parse(source)
         
-        # Look for SEMANTIC_COLORS dictionary definition
+        # Look for color dictionary definitions.  Older versions only scanned
+        # SEMANTIC_COLORS, but real converted scripts commonly use names such
+        # as CLUSTER_COLORS, GROUP_COLORS or COLORS.
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and len(node.targets) == 1:
                 target = node.targets[0]
-                if isinstance(target, ast.Name) and target.id == "SEMANTIC_COLORS":
+                if isinstance(target, ast.Name) and isinstance(node.value, ast.Dict):
+                    dict_name = target.id
+                    dict_entries = []
+                    has_hex_color = False
+                    for k, v in zip(node.value.keys, node.value.values):
+                        k_val = getattr(k, 'value', getattr(k, 's', None))
+                        v_val = getattr(v, 'value', getattr(v, 's', None))
+                        if k_val is not None and isinstance(v_val, str) and re.match(r'^\#[0-9A-Fa-f]{6}$', v_val):
+                            has_hex_color = True
+                            dict_entries.append((k_val, v_val))
+
+                    if not has_hex_color:
+                        continue
+
                     if isinstance(node.value, ast.Dict):
-                        for k, v in zip(node.value.keys, node.value.values):
-                            k_val = getattr(k, 'value', getattr(k, 's', None))
-                            v_val = getattr(v, 'value', getattr(v, 's', None))
-                            if k_val is not None and v_val is not None:
+                        for k_val, v_val in dict_entries:
+                            palette_id = f"dict_{k_val}"
+                            if not any(p["id"] == palette_id for p in palettes):
                                 palettes.append({
-                                    "id": f"dict_{k_val}",
+                                    "id": palette_id,
                                     "label": str(k_val),
                                     "color": str(v_val).lower(),
-                                    "source": "dict",
+                                    "source": f"dict:{dict_name}",
                                     "line": node.lineno
                                 })
 
@@ -66,7 +100,7 @@ def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict
                             if isinstance(kw.value, ast.Name):
                                 color_arg = kw.value.id
                             elif isinstance(kw.value, ast.Subscript):
-                                if isinstance(kw.value.value, ast.Name) and kw.value.value.id == "SEMANTIC_COLORS":
+                                if isinstance(kw.value.value, ast.Name):
                                     slice_node = kw.value.slice
                                     slice_val = getattr(slice_node, 'value', getattr(slice_node, 's', None))
                                     if slice_val is not None:
@@ -104,10 +138,11 @@ def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict
                         "source": "constant",
                         "line": 0 # Dynamic
                     })
-        # Check SEMANTIC_COLORS dict in namespace
-        sem_colors = namespace.get("SEMANTIC_COLORS")
-        if isinstance(sem_colors, dict):
-            for key, val in sem_colors.items():
+        # Check any runtime dict containing hex colors.
+        for dict_name, dict_value in namespace.items():
+            if not isinstance(dict_value, dict):
+                continue
+            for key, val in dict_value.items():
                 if isinstance(val, str) and re.match(r'^\#[0-9A-Fa-f]{6}$', val):
                     dict_id = f"dict_{key}"
                     if not any(p["id"] == dict_id for p in palettes):
@@ -115,7 +150,7 @@ def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict
                             "id": dict_id,
                             "label": str(key),
                             "color": val.lower(),
-                            "source": "dict",
+                            "source": f"dict:{dict_name}",
                             "line": 0
                         })
 

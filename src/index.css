@@ -11,3 +11,178 @@
     transform: translateX(210%);
   }
 }
+
+@keyframes landing-orb-drift {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(28px, -18px, 0) scale(1.08);
+  }
+}
+
+@keyframes landing-code-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes landing-line-draw {
+  0% {
+    stroke-dashoffset: 430;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes landing-selection-pulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 0 rgba(37, 99, 235, 0));
+    opacity: 0.9;
+  }
+  50% {
+    filter: drop-shadow(0 0 10px rgba(37, 99, 235, 0.55));
+    opacity: 1;
+  }
+}
+
+@keyframes landing-float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes landing-pipeline-dash {
+  0% {
+    stroke-dashoffset: 620;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes landing-node-in {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes landing-warning-blink {
+  0%, 100% {
+    opacity: 0.72;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes landing-pop-dot {
+  0%, 70%, 100% {
+    transform: scale(1);
+  }
+  20% {
+    transform: scale(1.38);
+  }
+}
+
+@keyframes landing-cursor-move {
+  0%, 100% {
+    transform: translate(0, 0);
+  }
+  45% {
+    transform: translate(-26px, 34px);
+  }
+  70% {
+    transform: translate(-18px, 26px);
+  }
+}
+
+@keyframes landing-composer-float {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-6px) rotate(-0.5deg);
+  }
+}
+
+.landing-page {
+  font-family: "Aptos", "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+
+.landing-orb {
+  position: absolute;
+  width: 19rem;
+  height: 19rem;
+  border-radius: 9999px;
+  background: radial-gradient(circle, rgba(34, 211, 238, 0.32), rgba(34, 211, 238, 0.02) 62%, transparent 70%);
+  filter: blur(10px);
+  animation: landing-orb-drift 9s ease-in-out infinite;
+}
+
+.landing-orb-alt {
+  background: radial-gradient(circle, rgba(251, 191, 36, 0.26), rgba(251, 191, 36, 0.02) 62%, transparent 70%);
+  animation-duration: 11s;
+  animation-delay: -4s;
+}
+
+.landing-code-line {
+  opacity: 0;
+  animation: landing-code-rise 520ms ease forwards;
+}
+
+.landing-draw-line {
+  stroke-dasharray: 430;
+  stroke-dashoffset: 430;
+  animation: landing-line-draw 2.2s ease-in-out forwards 650ms;
+}
+
+.landing-selection-box {
+  animation: landing-selection-pulse 2.4s ease-in-out infinite;
+}
+
+.landing-float {
+  animation: landing-float 4.8s ease-in-out infinite;
+}
+
+.landing-pipeline-path {
+  stroke-dasharray: 18 16;
+  animation: landing-pipeline-dash 9s linear infinite;
+}
+
+.landing-pipeline-node {
+  opacity: 0;
+  animation: landing-node-in 620ms ease forwards;
+}
+
+.landing-code-warning {
+  animation: landing-warning-blink 1.8s ease-in-out infinite;
+}
+
+.landing-pop-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: landing-pop-dot 2.8s ease-in-out infinite;
+}
+
+.landing-cursor {
+  animation: landing-cursor-move 3.6s ease-in-out infinite;
+}
+
+.landing-composer-panel {
+  animation: landing-composer-float 4.2s ease-in-out infinite;
+}

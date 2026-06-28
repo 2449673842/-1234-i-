@@ -32,6 +32,93 @@ const DEFAULT_FONT_PRESETS: Record<string, { family: string; title: number; labe
 
 type FontPreset = { family: string; title: number; label: number; tick: number; legend: number };
 
+const PROP_LABELS: Record<string, string> = {
+  text: '文字内容',
+  title: '标题',
+  label: '轴标签文字',
+  visible: '显示',
+  color: '颜色',
+  facecolor: '填充色',
+  edgecolor: '边框色',
+  linewidth: '线宽',
+  linestyle: '线型',
+  alpha: '透明度',
+  fontsize: '字号',
+  fontfamily: '字体',
+  fontweight: '字重',
+  rotation: '旋转角度',
+  ha: '水平对齐',
+  va: '垂直对齐',
+  x: 'X 位置',
+  y: 'Y 位置',
+  position: '位置',
+  marker: '点形状',
+  markersize: '点大小',
+  size: '散点面积',
+  zorder: '图层顺序',
+  xlim: 'X 轴范围',
+  ylim: 'Y 轴范围',
+  limits: '坐标范围',
+  label_fontsize: '轴标签字号',
+  label_color: '轴标签颜色',
+  tick_rotation: '刻度文字旋转',
+  tick_direction: '刻度方向',
+  tick_length: '主刻度长度',
+  tick_width: '主刻度线宽',
+  tick_color: '刻度线颜色',
+  tick_pad: '刻度间距',
+  show_minor_ticks: '显示副刻度',
+  minor_tick_length: '副刻度长度',
+  minor_tick_width: '副刻度线宽',
+  minor_tick_color: '副刻度颜色',
+  tick_labelsize: '刻度文字字号',
+  tick_labelcolor: '刻度文字颜色',
+  tick_labelfamily: '刻度文字字体',
+  sci_notation: '科学计数法',
+  use_math_text: '数学字体',
+  offset_text_size: '偏移文字字号',
+  x_tick_rotation: 'X 刻度旋转',
+  frameon: '显示图例背景框',
+  loc: '图例位置',
+  ncol: '图例列数',
+  markerscale: '图例点缩放',
+  width_in: '画布宽度(in)',
+  height_in: '画布高度(in)',
+  dpi: '分辨率 DPI',
+  'figure.width_in': '画布宽度(in)',
+  'figure.height_in': '画布高度(in)',
+  'figure.dpi': '分辨率 DPI',
+};
+
+const VALUE_LABELS: Record<string, Record<string, string>> = {
+  tick_direction: {
+    out: '朝外',
+    in: '朝内',
+    inout: '内外双向',
+  },
+  loc: {
+    best: '自动最佳',
+    'upper right': '右上',
+    'upper left': '左上',
+    'lower left': '左下',
+    'lower right': '右下',
+    right: '右侧',
+    'center left': '左中',
+    'center right': '右中',
+    'lower center': '下中',
+    'upper center': '上中',
+    center: '居中',
+  },
+  linestyle: {
+    '-': '实线',
+    '--': '虚线',
+    '-.': '点划线',
+    ':': '点线',
+    none: '无线',
+    None: '无线',
+  },
+};
+
 function isLocalPatch(kind: string, prop: string) {
   if (!LOCAL_PROPS.has(prop)) {
     return false;
@@ -40,12 +127,33 @@ function isLocalPatch(kind: string, prop: string) {
     return true;
   }
   if (kind === 'text') {
-    return prop === 'text' || prop === 'color';
+    return prop === 'color';
   }
   if (kind === 'line' || kind === 'patch' || kind === 'collection' || kind === 'spine') {
     return prop === 'color' || prop === 'facecolor' || prop === 'edgecolor' || prop === 'alpha';
   }
   return false;
+}
+
+function normalizeTickTextPatch(gid: string, prop: string) {
+  if (prop !== 'fontsize' && prop !== 'fontfamily' && prop !== 'color') {
+    return null;
+  }
+  const match = gid.match(/^([xy])tick\.(\d+)\./);
+  if (!match) {
+    return null;
+  }
+  const axis = match[1] === 'x' ? 'x' : 'y';
+  const axisIndex = match[2];
+  const axisProp = prop === 'fontsize'
+    ? 'tick_labelsize'
+    : prop === 'fontfamily'
+      ? 'tick_labelfamily'
+      : 'tick_labelcolor';
+  return {
+    gid: `axis.${axis}.${axisIndex}`,
+    prop: axisProp,
+  };
 }
 
 export function RightSidebar({
@@ -115,21 +223,52 @@ export function RightSidebar({
   const fontPresetMap: Record<string, FontPreset> = { ...DEFAULT_FONT_PRESETS, ...customFontPresets };
 
   const getDraftKey = (gid: string, prop: string) => `${gid}::${prop}`;
+  const getPropLabel = (prop: string) => PROP_LABELS[prop] || prop.replace(/_/g, ' ');
+  const getValueLabel = (prop: string, value: string) => VALUE_LABELS[prop]?.[value] || value;
+  const getSemanticObjectLabel = (obj: ManifestObject) => {
+    const id = obj.id;
+    if (id.startsWith('title.')) return '主标题';
+    if (id.startsWith('suptitle.')) return '总标题';
+    if (id.startsWith('xlabel.')) return 'X 轴标签';
+    if (id.startsWith('ylabel.')) return 'Y 轴标签';
+    if (id.startsWith('supxlabel.')) return '全局 X 轴标签';
+    if (id.startsWith('supylabel.')) return '全局 Y 轴标签';
+    if (id.startsWith('xtick.')) return 'X 轴刻度文字';
+    if (id.startsWith('ytick.')) return 'Y 轴刻度文字';
+    if (id.startsWith('legend_text.')) return '图例文字';
+    if (id.startsWith('legend.')) return '图例';
+    if (id.startsWith('axis.x.')) return 'X 轴系统';
+    if (id.startsWith('axis.y.')) return 'Y 轴系统';
+    if (id.startsWith('axes.')) return '坐标轴面板';
+    if (id.startsWith('grid.')) return '网格线';
+    if (id.startsWith('spine_group.')) return '四边框组';
+    if (id.startsWith('spine.left.')) return '左边框';
+    if (id.startsWith('spine.right.')) return '右边框';
+    if (id.startsWith('spine.top.')) return '上边框';
+    if (id.startsWith('spine.bottom.')) return '下边框';
+    if (id.startsWith('series.line.')) return '线条系列';
+    if (id.startsWith('series.collection.')) return '散点/集合系列';
+    if (id.startsWith('patch.')) return '图形块';
+    return '';
+  };
+  const getReadableObjectLabel = (obj: ManifestObject) => {
+    const semantic = getSemanticObjectLabel(obj);
+    const rawLabel = obj.label && obj.label !== obj.id ? obj.label : '';
+    return rawLabel || semantic || `${getObjectTypeLabel(obj.kind)} · ${obj.id}`;
+  };
 
   const handlePatch = (gid: string, prop: string, value: unknown) => {
     const currentObject = manifest.objects.find((item) => item.id === gid);
-    const isColorProp = prop === 'color' || prop === 'facecolor' || prop === 'edgecolor';
-    if (isColorProp && typeof value === 'string' && value.startsWith('#') && Array.isArray(manifest.bindings) && manifest.bindings.length > 0) {
-      const binding = manifest.bindings.find((b: Binding) => Array.isArray(b.gids) && b.gids.includes(gid));
-      if (binding && binding.paletteId) {
-        void onPatch([{
-          type: 'code_patch' as const,
-          target_id: binding.paletteId,
-          new_value: value,
-          gids: binding.gids
-        }]);
-        return;
-      }
+    const tickPatch = normalizeTickTextPatch(gid, prop);
+    if (tickPatch) {
+      void onPatch([{
+        op: 'set',
+        mode: 'backend_patch',
+        gid: tickPatch.gid,
+        prop: tickPatch.prop,
+        value,
+      }]);
+      return;
     }
 
     const mode = isLocalPatch(currentObject?.kind || '', prop) ? 'local_patch' : 'backend_patch';
@@ -146,6 +285,30 @@ export function RightSidebar({
       new_value: newColor,
       gids
     }]);
+  };
+
+  const getObjectTypeLabel = (kind: string) => {
+    const labels: Record<string, string> = {
+      text: '文本',
+      spine: '边框',
+      spine_group: '边框组',
+      legend: '图例',
+      line: '线条',
+      collection: '散点/集合',
+      patch: '图形块',
+      figure: '画布',
+      axes: '坐标轴',
+      grid: '网格',
+      axis_x: 'X轴',
+      axis_y: 'Y轴',
+    };
+    return labels[kind] || kind;
+  };
+
+  const selectPaletteTargets = (gids: string[]) => {
+    if (gids.length === 0) return;
+    onSelectGids?.(gids);
+    onSelectObject(gids[0]);
   };
 
   const updateDraft = (gid: string, prop: string, value: string) => {
@@ -184,6 +347,27 @@ export function RightSidebar({
     clearDraft(gid, prop);
   };
 
+  const commitRangeDraft = (
+    gid: string,
+    prop: string,
+    currentValues: number[],
+    rawMin: string,
+    rawMax: string,
+  ) => {
+    const low = Number(rawMin.trim());
+    const high = Number(rawMax.trim());
+    if (!Number.isFinite(low) || !Number.isFinite(high) || low === high) {
+      clearDraft(gid, `${prop}.min`);
+      clearDraft(gid, `${prop}.max`);
+      return;
+    }
+    if (low !== currentValues[0] || high !== currentValues[1]) {
+      handlePatch(gid, prop, [low, high]);
+    }
+    clearDraft(gid, `${prop}.min`);
+    clearDraft(gid, `${prop}.max`);
+  };
+
   const resolvePickerColor = (val: unknown): string => {
     if (typeof val === 'string' && val.startsWith('#')) {
       return val.slice(0, 7);
@@ -214,7 +398,7 @@ export function RightSidebar({
     const inputValue = draftValues[key] ?? (value ?? '').toString();
     return (
       <div className="grid grid-cols-[88px_1fr] items-center gap-2 text-sm" key={label}>
-        <span className="text-slate-600 capitalize">{label}</span>
+        <span className="text-slate-600">{getPropLabel(label)}</span>
         <input
           type="number"
           min={options?.min}
@@ -243,7 +427,7 @@ export function RightSidebar({
     const inputValue = draftValues[key] ?? value;
     return (
       <div className="text-sm space-y-1.5" key={label}>
-        <span className="text-slate-600 block capitalize">{label}</span>
+        <span className="text-slate-600 block">{getPropLabel(label)}</span>
         <input
           type="text"
           className="border border-slate-200 rounded p-1.5 outline-none focus:border-blue-500 w-full bg-white text-slate-700"
@@ -254,6 +438,7 @@ export function RightSidebar({
             if (nextVal !== value) {
               onValue(nextVal);
             }
+            clearDraft(gid, label);
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
@@ -261,6 +446,7 @@ export function RightSidebar({
               if (nextVal !== value) {
                 onValue(nextVal);
               }
+              clearDraft(gid, label);
               (event.target as HTMLInputElement).blur();
             }
             if (event.key === 'Escape') {
@@ -290,7 +476,7 @@ export function RightSidebar({
 
     return (
       <div className="grid grid-cols-[80px_auto_1fr] items-center gap-3 text-sm" key={label}>
-        <span className="text-slate-600 capitalize">{label}</span>
+        <span className="text-slate-600">{getPropLabel(label)}</span>
         <div className="w-8 h-8 rounded shrink-0 shadow-sm border border-slate-200 overflow-hidden relative cursor-pointer">
           <input
             type="color"
@@ -334,7 +520,7 @@ export function RightSidebar({
 
   const renderBoolInput = (label: string, value: boolean, onValue: (nextValue: boolean) => void) => (
     <div className="flex items-center justify-between mb-3 text-sm" key={label}>
-      <span className="text-slate-600 capitalize">{label}</span>
+      <span className="text-slate-600">{getPropLabel(label)}</span>
       <label className="relative inline-flex items-center cursor-pointer">
         <input
           type="checkbox"
@@ -406,40 +592,65 @@ export function RightSidebar({
 
   const renderSelectInput = (label: string, value: string, options: string[], onValue: (nextValue: string) => void) => (
     <div className="grid grid-cols-[80px_1fr] items-center gap-2 text-sm" key={label}>
-      <span className="text-slate-600 capitalize">{label}</span>
+      <span className="text-slate-600">{getPropLabel(label)}</span>
       <select
         className="border border-slate-200 rounded p-1.5 w-full outline-none bg-white text-slate-700 text-xs"
         value={value}
         onChange={(event) => onValue(event.target.value)}
       >
         {options.map((opt) => (
-          <option key={opt} value={opt}>{opt}</option>
+          <option key={opt} value={opt}>{getValueLabel(label, opt)}</option>
         ))}
       </select>
     </div>
   );
 
-  const renderRangePair = (objId: string, label: string, values: number[], prop: string) => (
-    <div key={prop} className="space-y-1.5">
-      <span className="text-xs text-slate-500 font-semibold block">{label}</span>
-      <div className="grid grid-cols-2 gap-2">
-        <input
-          type="number"
-          step="any"
-          className="border border-slate-200 rounded p-1.5 text-xs text-slate-700 bg-white"
-          value={values[0]}
-          onChange={(event) => handlePatch(objId, prop, [Number(event.target.value), values[1]])}
-        />
-        <input
-          type="number"
-          step="any"
-          className="border border-slate-200 rounded p-1.5 text-xs text-slate-700 bg-white"
-          value={values[1]}
-          onChange={(event) => handlePatch(objId, prop, [values[0], Number(event.target.value)])}
-        />
+  const renderRangePair = (objId: string, label: string, values: number[], prop: string) => {
+    const safeValues = Array.isArray(values) && values.length >= 2 ? values : [0, 1];
+    const minKey = getDraftKey(objId, `${prop}.min`);
+    const maxKey = getDraftKey(objId, `${prop}.max`);
+    const minValue = draftValues[minKey] ?? String(safeValues[0]);
+    const maxValue = draftValues[maxKey] ?? String(safeValues[1]);
+    const commit = () => commitRangeDraft(objId, prop, safeValues, minValue, maxValue);
+    const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+      if (event.key === 'Enter') {
+        commit();
+        (event.target as HTMLInputElement).blur();
+      }
+      if (event.key === 'Escape') {
+        clearDraft(objId, `${prop}.min`);
+        clearDraft(objId, `${prop}.max`);
+      }
+    };
+    return (
+      <div key={prop} className="space-y-1.5">
+        <span className="text-xs text-slate-500 font-semibold block">{label}</span>
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            type="number"
+            step="any"
+            className="border border-slate-200 rounded p-1.5 text-xs text-slate-700 bg-white focus:border-blue-500 outline-none"
+            value={minValue}
+            placeholder="min"
+            onChange={(event) => updateDraft(objId, `${prop}.min`, event.target.value)}
+            onBlur={commit}
+            onKeyDown={handleKeyDown}
+          />
+          <input
+            type="number"
+            step="any"
+            className="border border-slate-200 rounded p-1.5 text-xs text-slate-700 bg-white focus:border-blue-500 outline-none"
+            value={maxValue}
+            placeholder="max"
+            onChange={(event) => updateDraft(objId, `${prop}.max`, event.target.value)}
+            onBlur={commit}
+            onKeyDown={handleKeyDown}
+          />
+        </div>
+        <div className="text-[10px] text-slate-400">输入后按 Enter 或移出输入框应用。</div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const renderField = (gid: string, prop: string, fieldType: string, currentValue: unknown) => {
     if (fieldType === 'number' || typeof currentValue === 'number') {
@@ -470,49 +681,8 @@ export function RightSidebar({
       <div className="space-y-6">
         {renderPanelTitle('坐标轴微调 (Axis)')}
         <div className="space-y-4">
-          <div>
-            <span className="text-xs text-slate-500 font-semibold mb-2 block">X 轴范围 (Limits)</span>
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="number"
-                step="any"
-                className="border border-slate-200 rounded p-1.5 text-xs text-slate-700 bg-white"
-                value={xlim[0]}
-                placeholder="X min"
-                onChange={(e) => handlePatch(obj.id, 'xlim', [Number(e.target.value), xlim[1]])}
-              />
-              <input
-                type="number"
-                step="any"
-                className="border border-slate-200 rounded p-1.5 text-xs text-slate-700 bg-white"
-                value={xlim[1]}
-                placeholder="X max"
-                onChange={(e) => handlePatch(obj.id, 'xlim', [xlim[0], Number(e.target.value)])}
-              />
-            </div>
-          </div>
-          
-          <div>
-            <span className="text-xs text-slate-500 font-semibold mb-2 block">Y 轴范围 (Limits)</span>
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="number"
-                step="any"
-                className="border border-slate-200 rounded p-1.5 text-xs text-slate-700 bg-white"
-                value={ylim[0]}
-                placeholder="Y min"
-                onChange={(e) => handlePatch(obj.id, 'ylim', [Number(e.target.value), ylim[1]])}
-              />
-              <input
-                type="number"
-                step="any"
-                className="border border-slate-200 rounded p-1.5 text-xs text-slate-700 bg-white"
-                value={ylim[1]}
-                placeholder="Y max"
-                onChange={(e) => handlePatch(obj.id, 'ylim', [ylim[0], Number(e.target.value)])}
-              />
-            </div>
-          </div>
+          {renderRangePair(obj.id, 'X 轴范围 (Limits)', xlim, 'xlim')}
+          {renderRangePair(obj.id, 'Y 轴范围 (Limits)', ylim, 'ylim')}
 
           {renderNumberInput(obj.id, 'x_tick_rotation', props.x_tick_rotation, (v) => handlePatch(obj.id, 'x_tick_rotation', v), { min: 0, max: 90 })}
           
@@ -643,7 +813,11 @@ export function RightSidebar({
 
     return (
       <div className="space-y-6">
-        {renderPanelTitle(`对象属性: ${obj.label || obj.id}`)}
+        {renderPanelTitle(`对象属性：${getReadableObjectLabel(obj)}`)}
+        <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-500">
+          <div>类型：{getObjectTypeLabel(obj.kind)}</div>
+          <div className="font-mono truncate" title={obj.id}>GID：{obj.id}</div>
+        </div>
         <div className="space-y-4">
           {obj.editable.map((prop) => {
             const val = obj.currentProps[prop];
@@ -1022,10 +1196,300 @@ export function RightSidebar({
     if (prop === 'visible') return true;
     if (prop === 'alpha') return ['line', 'patch', 'collection', 'legend', 'grid', 'text', 'figure'].includes(obj.kind);
     if (prop === 'color') return ['line', 'patch', 'collection', 'text', 'spine', 'grid'].includes(obj.kind);
+    if (prop === 'facecolor') return ['patch', 'collection', 'legend'].includes(obj.kind);
+    if (prop === 'edgecolor') return ['patch', 'collection', 'legend'].includes(obj.kind);
     if (prop === 'linewidth') return ['line', 'patch', 'collection', 'spine', 'grid'].includes(obj.kind);
+    if (prop === 'markersize') return obj.kind === 'line';
+    if (prop === 'size') return obj.kind === 'collection';
     if (prop === 'fontsize') return obj.kind === 'text' || obj.kind === 'legend';
     if (prop === 'fontfamily') return obj.kind === 'text' || obj.kind === 'legend';
     return false;
+  };
+
+  const renderComponentsPanel = () => {
+    const hasColorRows = (value: unknown) => {
+      if (!Array.isArray(value)) return Boolean(value);
+      return value.length > 0;
+    };
+    const isMarkerLine = (obj: ManifestObject) => {
+      const marker = obj.currentProps.marker;
+      const linestyle = String(obj.currentProps.linestyle ?? '');
+      return obj.kind === 'line'
+        && typeof marker === 'string'
+        && marker !== ''
+        && marker !== 'None'
+        && marker !== 'none'
+        && linestyle.toLowerCase().includes('none');
+    };
+    const isScatterCollection = (obj: ManifestObject) => {
+      return obj.kind === 'collection'
+        && (typeof obj.currentProps.size === 'number' || hasColorRows(obj.currentProps.facecolor));
+    };
+    const lineObjects = objects.filter(obj => obj.kind === 'line' && !obj.id.startsWith('legend_') && !isMarkerLine(obj));
+    const pointObjects = objects.filter(obj => isMarkerLine(obj) || isScatterCollection(obj));
+    const errorbarObjects = objects.filter(obj => obj.kind === 'collection' && !isScatterCollection(obj));
+    const textObjects = objects.filter(obj => obj.kind === 'text');
+    const axisObjects = objects.filter(obj => ['axes', 'axis_x', 'axis_y'].includes(obj.kind));
+    const legendObjects = objects.filter(obj => obj.kind === 'legend');
+    const componentGroups = [
+      {
+        id: 'texts',
+        label: '文本 / 标签 / 刻度文字',
+        description: '标题、轴标签、刻度文字、图例文字等 Text 对象。',
+        objects: textObjects,
+        colorProp: 'color',
+        sizeProp: null,
+      },
+      {
+        id: 'axes',
+        label: '坐标轴系统',
+        description: '坐标范围、刻度、轴标签等坐标轴相关虚拟对象。',
+        objects: axisObjects,
+        colorProp: null,
+        sizeProp: null,
+      },
+      {
+        id: 'legends',
+        label: '图例容器',
+        description: 'Legend 容器，适合批量控制显隐、透明度和字号。',
+        objects: legendObjects,
+        colorProp: null,
+        sizeProp: null,
+      },
+      {
+        id: 'lines',
+        label: '线条 / 拟合线',
+        description: 'Line2D 对象，适合调整曲线、均值线、拟合线。',
+        objects: lineObjects,
+        colorProp: 'color',
+        sizeProp: null,
+      },
+      {
+        id: 'points',
+        label: '点 / 散点',
+        description: 'Marker 或 PathCollection，适合调整点填充色、边框色和点大小。',
+        objects: pointObjects,
+        colorProp: 'facecolor',
+        edgeColorProp: 'edgecolor',
+        sizeProp: 'size',
+      },
+      {
+        id: 'errorbars',
+        label: '误差棒 / 集合线',
+        description: 'LineCollection，适合调整误差棒颜色、线宽和透明度。',
+        objects: errorbarObjects,
+        colorProp: 'edgecolor',
+        sizeProp: null,
+      },
+      {
+        id: 'patches',
+        label: '柱形 / 面 / 图形块',
+        description: 'Bar、Rectangle、Patch 等对象。',
+        objects: objects.filter(obj => obj.kind === 'patch'),
+        colorProp: 'facecolor',
+        edgeColorProp: 'edgecolor',
+        sizeProp: null,
+      },
+      {
+        id: 'frames',
+        label: '边框 / 网格',
+        description: '坐标轴边框和网格线。',
+        objects: objects.filter(obj => ['spine', 'spine_group', 'grid'].includes(obj.kind)),
+        colorProp: 'color',
+        sizeProp: null,
+      },
+    ].filter(group => group.objects.length > 0);
+
+    const commonComponentProp = (items: ManifestObject[], prop: string, fallback: unknown) => {
+      const values = items.map(item => item.currentProps[prop]).filter(value => value !== undefined && value !== null && value !== '');
+      return values.length > 0 && values.every(value => JSON.stringify(value) === JSON.stringify(values[0])) ? values[0] : fallback;
+    };
+
+    const patchComponentGroup = (items: ManifestObject[], prop: string, value: unknown) => {
+      const patches = items.map(obj => {
+        if (!supportsBatchProp(obj, prop)) return null;
+        return {
+          op: 'set' as const,
+          mode: LOCAL_PROPS.has(prop) ? 'local_patch' as const : 'backend_patch' as const,
+          gid: obj.id,
+          prop,
+          value,
+        };
+      }).filter(Boolean) as PatchEntry[];
+      if (patches.length > 0) void onPatch(patches);
+    };
+
+    const patchPointFillColor = (items: ManifestObject[], value: unknown) => {
+      const patches = items.map(obj => {
+        const prop = obj.kind === 'line' ? 'color' : obj.kind === 'collection' ? 'facecolor' : null;
+        if (!prop || !supportsBatchProp(obj, prop)) return null;
+        return {
+          op: 'set' as const,
+          mode: LOCAL_PROPS.has(prop) ? 'local_patch' as const : 'backend_patch' as const,
+          gid: obj.id,
+          prop,
+          value,
+        };
+      }).filter(Boolean) as PatchEntry[];
+      if (patches.length > 0) void onPatch(patches);
+    };
+
+    if (componentGroups.length === 0) {
+      return (
+        <div className="text-sm text-slate-500 py-8 text-center">
+          当前图中没有可批量编辑的图形组件。
+          <p className="text-xs text-slate-400 mt-2">渲染后会自动识别线条、误差棒、散点集合、柱形和边框。</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-5">
+        {renderPanelTitle('组件中心')}
+        <p className="text-xs text-slate-400">按真实 matplotlib 图元聚合，不依赖脚本 label。线、点、误差棒分开控制，避免改错对象。</p>
+        {componentGroups.map(group => {
+          const selectedTargets = group.objects.filter(obj => selectedGids.includes(obj.id) || selectedObject === obj.id);
+          const targetObjects = selectedTargets.length > 0 ? selectedTargets : group.objects;
+          const isSubsetEditing = selectedTargets.length > 0 && selectedTargets.length < group.objects.length;
+          const colorValue = group.colorProp
+            ? resolvePickerColor(commonComponentProp(targetObjects, group.colorProp, '#000000'))
+            : null;
+          const edgeColorValue = group.edgeColorProp
+            ? resolvePickerColor(commonComponentProp(targetObjects, group.edgeColorProp, '#000000'))
+            : null;
+          const linewidth = commonComponentProp(targetObjects, 'linewidth', undefined) as number | undefined;
+          const markerSize = commonComponentProp(targetObjects, 'markersize', undefined) as number | undefined;
+          const pointSize = commonComponentProp(targetObjects, 'size', undefined) as number | undefined;
+          const alpha = commonComponentProp(targetObjects, 'alpha', 1) as number | undefined;
+          const visible = targetObjects.every(obj => obj.currentProps.visible !== false);
+          const previewObjects = group.objects.slice(0, 8);
+          const targetKey = targetObjects.map(obj => obj.id).join('|');
+          return (
+            <div key={group.id} className="rounded-lg border border-slate-100 bg-slate-50/50 p-3 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-800">{group.label}</div>
+                  <div className="text-[11px] text-slate-400 leading-relaxed">{group.description}</div>
+                  <div className="mt-1 text-[10px] text-slate-400">
+                    对象 {group.objects.length} 个
+                    {selectedTargets.length > 0 && (
+                      <span className="ml-1 text-blue-600">· 当前只编辑选中 {selectedTargets.length} 个</span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const gids = group.objects.map(obj => obj.id);
+                    onSelectGids?.(gids);
+                    if (gids[0]) onSelectObject(gids[0]);
+                  }}
+                  className="text-xs font-semibold text-blue-600 hover:text-blue-700 whitespace-nowrap"
+                >
+                  选中整组
+                </button>
+              </div>
+
+              <div className="rounded-md border border-slate-100 bg-white/75 p-2">
+                <div className="mb-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">包含对象</div>
+                <div className="space-y-1">
+                  {previewObjects.map(obj => (
+                    <button
+                      type="button"
+                      key={obj.id}
+                      onClick={() => {
+                        onSelectGids?.([obj.id]);
+                        onSelectObject(obj.id);
+                      }}
+                      className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-[11px] transition-colors ${
+                        selectedGids.includes(obj.id) || selectedObject === obj.id
+                          ? 'bg-blue-50 text-blue-700'
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                      title={obj.id}
+                    >
+                      <span className="truncate">{getReadableObjectLabel(obj)}</span>
+                      <span className="shrink-0 text-slate-400">{getObjectTypeLabel(obj.kind)}</span>
+                    </button>
+                  ))}
+                  {group.objects.length > previewObjects.length && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const gids = group.objects.map(obj => obj.id);
+                        onSelectGids?.(gids);
+                        if (gids[0]) onSelectObject(gids[0]);
+                      }}
+                      className="w-full rounded px-2 py-1 text-left text-[11px] font-medium text-blue-600 hover:bg-blue-50"
+                    >
+                      查看/选中其余 {group.objects.length - previewObjects.length} 个对象
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3 border-t border-slate-100 pt-3">
+                {isSubsetEditing && (
+                  <div className="rounded-md border border-blue-100 bg-blue-50 px-2 py-1.5 text-[11px] text-blue-700">
+                    当前控件只作用于本分类中已选中的 {selectedTargets.length} 个对象；点击“选中整组”才会修改整组。
+                  </div>
+                )}
+                {group.colorProp && colorValue && (
+                  renderColorInput(group.id === 'points' || group.id === 'patches' ? '填充色' : '颜色', colorValue, (value) => {
+                    if (group.id === 'points') {
+                      patchPointFillColor(targetObjects, value);
+                      return;
+                    }
+                    patchComponentGroup(targetObjects, group.colorProp!, value);
+                  }, `component:${group.id}:${targetKey}:color`)
+                )}
+                {group.edgeColorProp && edgeColorValue && (
+                  renderColorInput('边框色', edgeColorValue, (value) => patchComponentGroup(targetObjects, group.edgeColorProp!, value), `component:${group.id}:${targetKey}:edgecolor`)
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'fontsize')) && (
+                  renderNumberInput(`component-${group.id}`, 'fontsize', commonComponentProp(targetObjects, 'fontsize', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'fontsize', value), { min: 4, max: 48, step: 0.5 })
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'linewidth')) && (
+                  renderNumberInput(`component-${group.id}`, 'linewidth', linewidth, (value) => patchComponentGroup(targetObjects, 'linewidth', value), { min: 0, max: 20, step: 0.25 })
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'markersize')) && (
+                  renderNumberInput(`component-${group.id}`, 'markersize', markerSize, (value) => patchComponentGroup(targetObjects.filter(obj => obj.kind === 'line'), 'markersize', value), { min: 1, max: 60, step: 0.5 })
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'size')) && (
+                  renderNumberInput(`component-${group.id}`, 'size', pointSize, (value) => patchComponentGroup(targetObjects.filter(obj => obj.kind === 'collection'), 'size', value), { min: 1, max: 2000, step: 1 })
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'alpha')) && (
+                  <div className="grid grid-cols-[88px_1fr] items-center gap-2 text-sm">
+                    <span className="text-xs text-slate-500 font-medium">透明度</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={typeof alpha === 'number' ? alpha : 1}
+                      className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer"
+                      onChange={(event) => patchComponentGroup(targetObjects, 'alpha', Number(event.target.value))}
+                    />
+                  </div>
+                )}
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-medium">{selectedTargets.length > 0 ? '显示选中对象' : '显示整组'}</span>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="sr-only peer"
+                      checked={visible}
+                      onChange={(event) => patchComponentGroup(targetObjects, 'visible', event.target.checked)}
+                    />
+                    <div className="w-8 h-4 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
+                  </label>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
   };
 
   const renderBatchPanel = () => {
@@ -1052,6 +1516,26 @@ export function RightSidebar({
       const selectedObjects = selectedGids
         .map(gid => objects.find(o => o.id === gid))
         .filter(Boolean) as ManifestObject[];
+      if (prop === 'fontsize' || prop === 'fontfamily' || prop === 'color') {
+        const tickPatches = selectedObjects
+          .map(obj => normalizeTickTextPatch(obj.id, prop))
+          .filter(Boolean) as Array<{ gid: string; prop: string }>;
+        if (tickPatches.length > 0) {
+          const deduped = Array.from(
+            new Map(tickPatches.map(patch => [`${patch.gid}:${patch.prop}`, patch])).values()
+          );
+          if (deduped.length === selectedObjects.length || selectedObjects.every(obj => Boolean(normalizeTickTextPatch(obj.id, prop)))) {
+            void onPatch(deduped.map(patch => ({
+              op: 'set' as const,
+              mode: 'backend_patch' as const,
+              gid: patch.gid,
+              prop: patch.prop,
+              value,
+            })));
+            return;
+          }
+        }
+      }
       const allXTicks = selectedObjects.length > 0 && selectedObjects.every(obj => obj.id.startsWith('xtick.'));
       const allYTicks = selectedObjects.length > 0 && selectedObjects.every(obj => obj.id.startsWith('ytick.'));
       if ((allXTicks || allYTicks) && (prop === 'fontsize' || prop === 'fontfamily' || prop === 'color')) {
@@ -1081,6 +1565,7 @@ export function RightSidebar({
         if (prop === 'color' && obj && (obj.kind === 'patch' || obj.kind === 'collection')) {
           actualProp = 'facecolor';
         }
+        if (actualProp !== prop && !supportsBatchProp(obj, actualProp)) return null;
         return {
           op: 'set' as const,
           mode: LOCAL_PROPS.has(actualProp) ? 'local_patch' as const : 'backend_patch' as const,
@@ -1167,6 +1652,12 @@ export function RightSidebar({
   };
 
   const getFontRole = (obj: ManifestObject): { id: string; label: string; presetKey: 'title' | 'label' | 'tick' | 'legend' } | null => {
+    if (obj.kind === 'axis_x') {
+      return { id: 'xticks', label: 'X 轴刻度文字', presetKey: 'tick' };
+    }
+    if (obj.kind === 'axis_y') {
+      return { id: 'yticks', label: 'Y 轴刻度文字', presetKey: 'tick' };
+    }
     if (obj.kind !== 'text' && obj.kind !== 'legend') return null;
     if (obj.id.startsWith('title.') || obj.id.startsWith('fig_text.')) {
       return { id: 'titles', label: '标题 / 图内主文本', presetKey: 'title' };
@@ -1194,7 +1685,13 @@ export function RightSidebar({
 
   const getFontGroups = () => {
     const groups = new Map<string, { id: string; label: string; presetKey: 'title' | 'label' | 'tick' | 'legend'; objects: ManifestObject[] }>();
+    const hasAxisX = objects.some(obj => obj.kind === 'axis_x');
+    const hasAxisY = objects.some(obj => obj.kind === 'axis_y');
     objects.forEach((obj) => {
+      // Tick Text artists are regenerated by matplotlib. Prefer the stable
+      // virtual Axis objects so font edits survive backend rerenders.
+      if (hasAxisX && obj.id.startsWith('xtick.')) return;
+      if (hasAxisY && obj.id.startsWith('ytick.')) return;
       const role = getFontRole(obj);
       if (!role) return;
       const current = groups.get(role.id) || { ...role, objects: [] };
@@ -1209,32 +1706,49 @@ export function RightSidebar({
     return values.length > 0 && values.every(value => value === values[0]) ? values[0] : fallback;
   };
 
-  const handleFontGroupPatch = (roleId: string, items: ManifestObject[], prop: 'fontsize' | 'fontfamily' | 'color', value: unknown) => {
+  const fontGroupProp = (roleId: string, prop: 'fontsize' | 'fontfamily' | 'color') => {
+    if (roleId === 'xticks' || roleId === 'yticks') {
+      if (prop === 'fontsize') return 'tick_labelsize';
+      if (prop === 'fontfamily') return 'tick_labelfamily';
+      return 'tick_labelcolor';
+    }
+    return prop;
+  };
+
+  const commonFontGroupProp = (
+    roleId: string,
+    items: ManifestObject[],
+    prop: 'fontsize' | 'fontfamily' | 'color',
+    fallback: unknown,
+  ) => commonProp(items, fontGroupProp(roleId, prop), fallback);
+
+  const buildFontGroupPatches = (
+    roleId: string,
+    items: ManifestObject[],
+    prop: 'fontsize' | 'fontfamily' | 'color',
+    value: unknown,
+  ): PatchEntry[] => {
     const tickAxisMatch = roleId === 'xticks'
-      ? { regex: /^xtick\.(\d+)\./, axisPrefix: 'axis.x.', sizeProp: 'tick_labelsize', colorProp: 'tick_labelcolor', familyProp: 'tick_labelfamily' }
+      ? { textRegex: /^xtick\.(\d+)\./, axisRegex: /^axis\.x\.(\d+)$/, axisPrefix: 'axis.x.' }
       : roleId === 'yticks'
-        ? { regex: /^ytick\.(\d+)\./, axisPrefix: 'axis.y.', sizeProp: 'tick_labelsize', colorProp: 'tick_labelcolor', familyProp: 'tick_labelfamily' }
+        ? { textRegex: /^ytick\.(\d+)\./, axisRegex: /^axis\.y\.(\d+)$/, axisPrefix: 'axis.y.' }
         : null;
 
     if (tickAxisMatch) {
-      const axisIndexes = Array.from(new Set(items.map(obj => obj.id.match(tickAxisMatch.regex)?.[1]).filter(Boolean))) as string[];
-      const axisProp = prop === 'fontsize'
-        ? tickAxisMatch.sizeProp
-        : prop === 'fontfamily'
-          ? tickAxisMatch.familyProp
-          : tickAxisMatch.colorProp;
-      const patches = axisIndexes.map(index => ({
+      const axisIndexes = Array.from(new Set(items.map(obj => {
+        return obj.id.match(tickAxisMatch.axisRegex)?.[1] || obj.id.match(tickAxisMatch.textRegex)?.[1];
+      }).filter(Boolean))) as string[];
+      const axisProp = fontGroupProp(roleId, prop);
+      return axisIndexes.map(index => ({
         op: 'set' as const,
         mode: 'backend_patch' as const,
         gid: `${tickAxisMatch.axisPrefix}${index}`,
         prop: axisProp,
         value,
       }));
-      if (patches.length > 0) void onPatch(patches);
-      return;
     }
 
-    const patches: PatchEntry[] = items.map((obj) => {
+    return items.map((obj) => {
       if (!supportsBatchProp(obj, prop)) return null;
       return {
         op: 'set' as const,
@@ -1244,6 +1758,10 @@ export function RightSidebar({
         value,
       };
     }).filter(Boolean) as PatchEntry[];
+  };
+
+  const handleFontGroupPatch = (roleId: string, items: ManifestObject[], prop: 'fontsize' | 'fontfamily' | 'color', value: unknown) => {
+    const patches = buildFontGroupPatches(roleId, items, prop, value);
     if (patches.length > 0) void onPatch(patches);
   };
 
@@ -1264,14 +1782,8 @@ export function RightSidebar({
       if (!preset) return;
       const patches: PatchEntry[] = [];
       fontGroups.forEach(group => {
-        group.objects.forEach(obj => {
-          if (supportsBatchProp(obj, 'fontfamily')) {
-            patches.push({ op: 'set', mode: 'backend_patch', gid: obj.id, prop: 'fontfamily', value: preset.family });
-          }
-          if (supportsBatchProp(obj, 'fontsize')) {
-            patches.push({ op: 'set', mode: 'backend_patch', gid: obj.id, prop: 'fontsize', value: preset[group.presetKey] });
-          }
-        });
+        patches.push(...buildFontGroupPatches(group.id, group.objects, 'fontfamily', preset.family));
+        patches.push(...buildFontGroupPatches(group.id, group.objects, 'fontsize', preset[group.presetKey]));
       });
       if (patches.length > 0) void onPatch(patches);
     };
@@ -1285,11 +1797,11 @@ export function RightSidebar({
       const legendGroup = fontGroups.find(group => group.presetKey === 'legend');
       const firstTextGroup = fontGroups[0];
       const nextPreset = {
-        family: String(commonProp(firstTextGroup.objects, 'fontfamily', 'Arial')),
-        title: Number(commonProp(titleGroup?.objects || firstTextGroup.objects, 'fontsize', 14)),
-        label: Number(commonProp(labelGroup?.objects || firstTextGroup.objects, 'fontsize', 11)),
-        tick: Number(commonProp(tickGroup?.objects || firstTextGroup.objects, 'fontsize', 9)),
-        legend: Number(commonProp(legendGroup?.objects || firstTextGroup.objects, 'fontsize', 9)),
+        family: String(commonFontGroupProp(firstTextGroup.id, firstTextGroup.objects, 'fontfamily', 'Arial')),
+        title: Number(commonFontGroupProp(titleGroup?.id || firstTextGroup.id, titleGroup?.objects || firstTextGroup.objects, 'fontsize', 14)),
+        label: Number(commonFontGroupProp(labelGroup?.id || firstTextGroup.id, labelGroup?.objects || firstTextGroup.objects, 'fontsize', 11)),
+        tick: Number(commonFontGroupProp(tickGroup?.id || firstTextGroup.id, tickGroup?.objects || firstTextGroup.objects, 'fontsize', 9)),
+        legend: Number(commonFontGroupProp(legendGroup?.id || firstTextGroup.id, legendGroup?.objects || firstTextGroup.objects, 'fontsize', 9)),
       };
       const next = { ...customFontPresets, [name]: nextPreset };
       setCustomFontPresets(next);
@@ -1311,9 +1823,9 @@ export function RightSidebar({
           <p className="text-xs text-slate-400 mb-4">按真实 matplotlib 文本对象自动分组，统一修改标题、轴标签、刻度和图例字体。</p>
           <div className="space-y-4">
             {fontGroups.map(group => {
-              const family = String(commonProp(group.objects, 'fontfamily', 'Arial'));
-              const size = commonProp(group.objects, 'fontsize', undefined) as number | undefined;
-              const color = resolvePickerColor(commonProp(group.objects, 'color', '#000000'));
+              const family = String(commonFontGroupProp(group.id, group.objects, 'fontfamily', 'Arial'));
+              const size = commonFontGroupProp(group.id, group.objects, 'fontsize', undefined) as number | undefined;
+              const color = resolvePickerColor(commonFontGroupProp(group.id, group.objects, 'color', '#000000'));
               return (
                 <div key={group.id} className="p-3 rounded-lg border border-slate-100 bg-slate-50/50 space-y-3">
                   <div className="flex items-center justify-between">
@@ -1389,6 +1901,22 @@ export function RightSidebar({
   const renderPalettePanel = () => {
     const palettes = manifest.palettes || [];
     const bindings = manifest.bindings || [];
+    const paletteGroups = palettes.map((palette: any) => {
+      const binding = bindings.find((b: Binding) => b.paletteId === palette.id);
+      const gids = Array.isArray(binding?.gids) ? binding.gids : [];
+      const targetObjects = gids
+        .map((gid: string) => objects.find(obj => obj.id === gid))
+        .filter(Boolean) as ManifestObject[];
+      const selectedCount = gids.filter((gid: string) => selectedGids.includes(gid)).length;
+      return {
+        palette,
+        binding,
+        gids,
+        targetObjects,
+        selectedCount,
+        isActive: selectedCount > 0,
+      };
+    });
     
     if (palettes.length === 0) {
       return (
@@ -1435,31 +1963,113 @@ export function RightSidebar({
       <div className="space-y-6">
         <div>
           {renderPanelTitle('配色中心')}
-          <p className="text-xs text-slate-400 mb-4">修改脚本中的颜色常量，同步更新全图绑定元素。</p>
+          <p className="text-xs text-slate-400 mb-4">按脚本颜色常量/字典分组，先看命中的真实图元，再统一改色。</p>
           
           <div className="space-y-4">
-            {palettes.map((p: any) => {
-              const binding = bindings.find((b: Binding) => b.paletteId === p.id);
-              const count = binding ? binding.gids.length : 0;
+            {paletteGroups.map(({ palette: p, binding, gids, targetObjects, selectedCount, isActive }) => {
+              const count = targetObjects.length;
+              const source = typeof p.source === 'string' ? p.source : 'script';
+              const propText = binding?.props?.length ? binding.props.join(' / ') : '未绑定';
+              const previewObjects = targetObjects.slice(0, 6);
               return (
-                <div key={p.id} className="flex items-center gap-3 p-2.5 rounded-lg border border-slate-100 bg-slate-50/50 hover:bg-slate-50 transition-colors">
-                  <div className="w-8 h-8 rounded shrink-0 shadow-sm border border-slate-200 overflow-hidden relative cursor-pointer">
-                    <input
-                      type="color"
-                      className="absolute inset-0 w-[200%] h-[200%] -top-[50%] -left-[50%] cursor-pointer"
-                      value={p.color}
-                      onChange={(event) => handlePaletteColorChange(p.id, event.target.value)}
-                    />
+                <div
+                  key={p.id}
+                  className={`p-3 rounded-lg border space-y-3 transition-colors ${
+                    isActive
+                      ? 'border-blue-300 bg-blue-50/70 shadow-sm'
+                      : count > 0
+                        ? 'border-slate-100 bg-slate-50/50 hover:bg-slate-50'
+                        : 'border-amber-100 bg-amber-50/50'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => selectPaletteTargets(gids)}
+                        disabled={count === 0}
+                        className="w-9 h-9 rounded shrink-0 shadow-sm border border-white ring-1 ring-slate-200 disabled:opacity-60 disabled:cursor-not-allowed"
+                        style={{ backgroundColor: resolvePickerColor(p.color) }}
+                        title={count > 0 ? '选中这组颜色影响的对象' : '当前 Figure 未使用此颜色'}
+                      />
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-slate-800 truncate">{p.label}</div>
+                        <div className="text-[10px] text-slate-400 font-mono truncate">{p.id}</div>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                            count > 0 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'
+                          }`}>
+                            {count > 0 ? `命中 ${count} 个对象` : '当前图未使用'}
+                          </span>
+                          {selectedCount > 0 && (
+                            <span className="inline-flex px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-medium">
+                              已选 {selectedCount} 个
+                            </span>
+                          )}
+                          <span className="inline-flex px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-[10px] font-medium">
+                            {propText}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => selectPaletteTargets(gids)}
+                      disabled={count === 0}
+                      className="text-xs font-semibold text-blue-600 hover:text-blue-700 disabled:text-slate-300 disabled:cursor-not-allowed whitespace-nowrap"
+                    >
+                      选中整组
+                    </button>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold text-slate-700 truncate">{p.label}</div>
-                    <div className="text-[10px] text-slate-400 font-mono">{p.id}</div>
+
+                  <div className="grid grid-cols-[64px_1fr] gap-2 text-[11px] text-slate-500">
+                    <span className="font-medium text-slate-400">来源</span>
+                    <span className="font-mono truncate">{source}{p.line ? ` : line ${p.line}` : ''}</span>
                   </div>
-                  <div className="text-right">
-                    <span className="inline-block bg-blue-50 text-blue-600 text-[10px] px-1.5 py-0.5 rounded font-medium">
-                      引用 {count} 处
-                    </span>
-                  </div>
+
+                  {count > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-slate-100">
+                      {renderColorInput('组颜色', resolvePickerColor(p.color), (value) => handlePaletteColorChange(p.id, value), `palette:${p.id}`)}
+                      <div className="rounded-md bg-white/70 border border-slate-100 p-2">
+                        <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">影响对象</div>
+                        <div className="space-y-1">
+                          {previewObjects.map((obj) => (
+                            <button
+                              type="button"
+                              key={obj.id}
+                              onClick={() => {
+                                onSelectGids?.([obj.id]);
+                                onSelectObject(obj.id);
+                              }}
+                              className={`w-full flex items-center justify-between gap-2 rounded px-2 py-1 text-left text-[11px] transition-colors ${
+                                selectedGids.includes(obj.id)
+                                  ? 'bg-blue-100 text-blue-800'
+                                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                              }`}
+                            >
+                              <span className="truncate">{obj.label || obj.id}</span>
+                              <span className="shrink-0 text-slate-400">{getObjectTypeLabel(obj.kind)}</span>
+                            </button>
+                          ))}
+                          {targetObjects.length > previewObjects.length && (
+                            <button
+                              type="button"
+                              onClick={() => selectPaletteTargets(gids)}
+                              className="w-full rounded px-2 py-1 text-left text-[11px] text-blue-600 hover:bg-blue-50"
+                            >
+                              还有 {targetObjects.length - previewObjects.length} 个对象，点击选中整组查看
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {count === 0 && (
+                    <div className="rounded-md border border-amber-100 bg-white/70 p-2 text-[11px] leading-relaxed text-amber-700">
+                      当前 Figure 没有使用这个脚本颜色。修改它不会改变当前画布；请切换到使用该颜色的 Figure，或检查脚本里该颜色是否只用于其它图。
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1542,7 +2152,7 @@ export function RightSidebar({
           }`}
         >
           <Layout className="w-3.5 h-3.5" />
-          分组编辑
+          组件中心
         </button>
         <button
           type="button"
@@ -1592,7 +2202,7 @@ export function RightSidebar({
             </>
           )}
 
-          {activeTab === 'groups' && renderGroupsPanel()}
+          {activeTab === 'groups' && renderComponentsPanel()}
 
           {activeTab === 'palette' && renderPalettePanel()}
 

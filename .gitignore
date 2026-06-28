@@ -8,3 +8,12 @@ coverage/
 !.env.example
 __pycache__/
 *.pyc
+
+# Temp payload files from spawnPythonWithPayload
+scifigure-payload-*.json
+
+# Local runtime data and user uploads
+data/
+tmp/
+test.txt
+test_write.txt

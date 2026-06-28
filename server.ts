@@ -1,4 +1,10 @@
 import 'dotenv/config';
+process.on('uncaughtException', (err) => {
+  console.error('CRITICAL: Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+});
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
@@ -7,6 +13,7 @@ import { randomUUID } from 'crypto';
 import crypto from 'crypto';
 import multer from 'multer';
 import fs from 'fs';
+import os from 'os';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { 
@@ -28,13 +35,34 @@ import {
   listProjectFigures,
   deleteProjectFigures,
   replaceProjectFiguresAndSessions,
+  addExportAsset,
+  listExportAssets,
+  getExportAsset,
+  deleteExportAssets,
+  createUserAccount,
+  getUserByEmail,
+  getUserByAuthToken,
+  touchUserLogin,
+  createAuthSession,
+  revokeAuthToken,
+  verifyPassword,
+  upsertDevice,
+  getActiveDeviceCount,
+  getLicenseState,
+  redeemCodeForUser,
+  createRedeemCode,
+  logLicenseCheck,
   type FigSessionInput,
   type DatasetEntry,
-  type FigureEntry
+  type FigureEntry,
+  type ExportAsset,
+  type UserAccount
 } from './db';
 async function startServer() {
   const app = express();
   const PORT = 3000;
+  const processedRequestIdsMap = new Map<string, Set<string>>();
+  const responseCacheMap = new Map<string, Map<string, any>>();
 
   // --- Multer Storage Setup for Project Files ---
   const storage = multer.diskStorage({
@@ -121,16 +149,233 @@ async function startServer() {
     });
   }
 
-  async function validateAst(script: string): Promise<{ ok: boolean; message?: string; errors?: string[] }> {
+  function publicUserPayload(user: UserAccount) {
+    return {
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      createdAt: user.createdAt,
+      lastLoginAt: user.lastLoginAt,
+    };
+  }
+
+  function readBearerToken(req: express.Request): string | null {
+    const header = req.headers.authorization || '';
+    const match = String(header).match(/^Bearer\s+(.+)$/i);
+    return match?.[1]?.trim() || null;
+  }
+
+  function readDeviceFingerprint(req: express.Request): string | null {
+    const value = req.headers['x-device-fingerprint'];
+    return typeof value === 'string' && value.trim() ? value.trim().slice(0, 160) : null;
+  }
+
+  function requireAuth(req: express.Request): { user: UserAccount; token: string; deviceId: string | null } {
+    const token = readBearerToken(req);
+    if (!token) {
+      const err = new Error('未登录或登录已过期');
+      (err as any).statusCode = 401;
+      throw err;
+    }
+    const user = getUserByAuthToken(token);
+    if (!user) {
+      const err = new Error('登录已过期，请重新登录');
+      (err as any).statusCode = 401;
+      throw err;
+    }
+    const fingerprint = readDeviceFingerprint(req);
+    const deviceId = fingerprint ? upsertDevice(user.id, fingerprint, String(req.headers['x-device-name'] || '').slice(0, 80) || null) : null;
+    return { user, token, deviceId };
+  }
+
+  function isValidEmail(email: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim().toLowerCase());
+  }
+
+  function issueToken(): string {
+    return `sf_${crypto.randomBytes(32).toString('base64url')}`;
+  }
+
+  function safeExportName(name: string): string {
+    const trimmed = (name || 'figure').trim();
+    return trimmed
+      .replace(/[\\/:*?"<>|]+/g, '_')
+      .replace(/\s+/g, '_')
+      .slice(0, 96) || 'figure';
+  }
+
+  function exportMimeType(format: string): string {
+    const fmt = format.toLowerCase();
+    if (fmt === 'svg') return 'image/svg+xml';
+    if (fmt === 'pdf') return 'application/pdf';
+    if (fmt === 'png') return 'image/png';
+    if (fmt === 'tiff' || fmt === 'tif') return 'image/tiff';
+    if (fmt === 'eps') return 'application/postscript';
+    return 'application/octet-stream';
+  }
+
+  function projectExportsDir(projectId: string): string {
+    assertSafeProjectId(projectId);
+    const projectDir = path.resolve(process.cwd(), 'data', 'projects', projectId);
+    const exportsDir = path.resolve(projectDir, 'exports');
+    if (!exportsDir.startsWith(projectDir + path.sep)) {
+      throw new Error('导出路径逃逸');
+    }
+    fs.mkdirSync(exportsDir, { recursive: true });
+    return exportsDir;
+  }
+
+  function persistProjectExportAsset(args: {
+    projectId: string;
+    figureId: string | null;
+    name: string;
+    format: string;
+    dpi?: number | null;
+    svg?: string;
+    binaryB64?: string | null;
+    thumbnailSvg?: string | null;
+    metadata?: Record<string, unknown>;
+    tags?: string[];
+  }): ExportAsset {
+    const assetId = `exp_${randomUUID()}`;
+    const fmt = args.format.toLowerCase();
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `${stamp}_${safeExportName(args.figureId || args.name)}.${fmt}`;
+    const absPath = path.join(projectExportsDir(args.projectId), filename);
+    const relPath = path.relative(process.cwd(), absPath);
+    if (args.binaryB64) {
+      fs.writeFileSync(absPath, Buffer.from(args.binaryB64, 'base64'));
+    } else {
+      fs.writeFileSync(absPath, args.svg || '', 'utf8');
+    }
+    return addExportAsset({
+      id: assetId,
+      projectId: args.projectId,
+      figureId: args.figureId,
+      name: args.name,
+      format: fmt,
+      dpi: args.dpi ?? null,
+      filePath: relPath,
+      thumbnailSvg: args.thumbnailSvg ?? args.svg ?? null,
+      metadata: args.metadata ?? {},
+      tags: args.tags ?? [],
+    });
+  }
+
+  function parseSvgViewBox(svg: string): { x: number; y: number; width: number; height: number } {
+    const viewBox = svg.match(/viewBox=["']([^"']+)["']/i)?.[1];
+    if (viewBox) {
+      const parts = viewBox.trim().split(/[\s,]+/).map(Number);
+      if (parts.length === 4 && parts.every(Number.isFinite) && parts[2] > 0 && parts[3] > 0) {
+        return { x: parts[0], y: parts[1], width: parts[2], height: parts[3] };
+      }
+    }
+    const width = Number(svg.match(/\bwidth=["']([\d.]+)/i)?.[1]) || 800;
+    const height = Number(svg.match(/\bheight=["']([\d.]+)/i)?.[1]) || 600;
+    return { x: 0, y: 0, width, height };
+  }
+
+  function extractSvgInner(svg: string): string {
+    return svg
+      .replace(/^\s*<\?xml[\s\S]*?\?>/i, '')
+      .replace(/<!DOCTYPE[\s\S]*?>/gi, '')
+      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+      .replace(/^[\s\S]*?<svg\b[^>]*>/i, '')
+      .replace(/<\/svg>\s*$/i, '');
+  }
+
+  interface ComposePanelLayout {
+    assetId: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    label?: string;
+  }
+
+  interface ComposeLayout {
+    width: number;
+    height: number;
+    panels: ComposePanelLayout[];
+    labelFontSize?: number;
+    labelFontFamily?: string;
+    labelColor?: string;
+    applyInnerFont?: boolean;
+    innerFontSize?: number;
+    innerFontFamily?: string;
+    innerFontColor?: string;
+  }
+
+  function composeSvgAssets(assets: ExportAsset[], layout?: ComposeLayout): string {
+    const count = assets.length;
+    const cols = count <= 2 ? count : count <= 4 ? 2 : 3;
+    const rows = Math.ceil(count / cols);
+    const panelW = 420;
+    const panelH = 320;
+    const gapX = 36;
+    const gapY = 42;
+    const labelOffset = 22;
+    const width = layout?.width && Number.isFinite(layout.width) ? Math.max(200, Math.min(4000, layout.width)) : cols * panelW + (cols - 1) * gapX;
+    const height = layout?.height && Number.isFinite(layout.height) ? Math.max(200, Math.min(4000, layout.height)) : rows * panelH + (rows - 1) * gapY + labelOffset;
+    const labels = 'abcdefghijklmnopqrstuvwxyz'.split('');
+    const layoutMap = new Map((layout?.panels || []).map(panel => [panel.assetId, panel]));
+    const labelFontSize = layout?.labelFontSize && Number.isFinite(layout.labelFontSize) ? Math.max(6, Math.min(72, layout.labelFontSize)) : 18;
+    const labelFontFamily = String(layout?.labelFontFamily || 'Arial, sans-serif').replace(/[<>"']/g, '');
+    const labelColor = /^#[0-9A-Fa-f]{6}$/.test(String(layout?.labelColor || '')) ? String(layout?.labelColor) : '#0f172a';
+    const applyInnerFont = layout?.applyInnerFont === true;
+    const innerFontSize = layout?.innerFontSize && Number.isFinite(layout.innerFontSize) ? Math.max(4, Math.min(96, layout.innerFontSize)) : 10;
+    const innerFontFamily = String(layout?.innerFontFamily || 'Times New Roman, serif').replace(/[<>"'{}]/g, '');
+    const innerFontColor = /^#[0-9A-Fa-f]{6}$/.test(String(layout?.innerFontColor || '')) ? String(layout?.innerFontColor) : '#111827';
+    const innerFontStyle = applyInnerFont ? `
+  <style>
+    .composer-subfigure text {
+      font-family: ${innerFontFamily} !important;
+      font-size: ${innerFontSize}px !important;
+      fill: ${innerFontColor} !important;
+    }
+  </style>` : '';
+
+    const panels = assets.map((asset, idx) => {
+      const svg = asset.thumbnailSvg || '';
+      const vb = parseSvgViewBox(svg);
+      const custom = layoutMap.get(asset.assetId);
+      const col = idx % cols;
+      const row = Math.floor(idx / cols);
+      const targetW = custom?.width && Number.isFinite(custom.width) ? Math.max(80, Math.min(2000, custom.width)) : panelW;
+      const targetH = custom?.height && Number.isFinite(custom.height) ? Math.max(80, Math.min(2000, custom.height)) : panelH;
+      const x = custom?.x && Number.isFinite(custom.x) ? custom.x : col * (panelW + gapX);
+      const y = custom?.y && Number.isFinite(custom.y) ? custom.y : row * (panelH + gapY) + labelOffset;
+      const scale = Math.min(targetW / vb.width, targetH / vb.height);
+      const scaledW = vb.width * scale;
+      const scaledH = vb.height * scale;
+      const dx = x + (targetW - scaledW) / 2 - vb.x * scale;
+      const dy = y + (targetH - scaledH) / 2 - vb.y * scale;
+      const label = custom?.label || `(${labels[idx]})`;
+      return `
+        <g data-export-asset-id="${asset.assetId}">
+          <text x="${x}" y="${y - 8}" font-family="${labelFontFamily}" font-size="${labelFontSize}" font-weight="700" fill="${labelColor}">${label}</text>
+          <g class="composer-subfigure" transform="translate(${dx.toFixed(3)} ${dy.toFixed(3)}) scale(${scale.toFixed(6)})">
+            ${extractSvgInner(svg)}
+          </g>
+        </g>`;
+    }).join('\n');
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <rect width="100%" height="100%" fill="white"/>
+  ${innerFontStyle}
+  ${panels}
+</svg>`;
+  }
+
+  async function validateAst(script: string, req?: express.Request): Promise<{ ok: boolean; message?: string; errors?: string[] }> {
     try {
-      const resultStr = await spawnPythonWithPayload('ast_validator.py', { script });
-      const result = JSON.parse(resultStr);
+      const result = await spawnPythonWithPayload('ast_validator.py', { script });
       if (result.status !== 'success') {
         return { ok: false, message: result.message, errors: result.errors };
       }
       return { ok: true };
-    } catch {
-      return { ok: false, message: 'AST 校验执行失败' };
+    } catch (e: any) {
+      return { ok: false, message: e?.message || 'AST 校验执行失败' };
     }
   }
 
@@ -140,6 +385,141 @@ async function startServer() {
       return res.status(400).json({ status: 'error', message: 'Invalid JSON payload' });
     }
     next(err);
+  });
+
+  app.post('/api/auth/register', (req, res) => {
+    try {
+      const email = String(req.body?.email || '').trim().toLowerCase();
+      const password = String(req.body?.password || '');
+      const displayName = String(req.body?.displayName || '').trim();
+      if (!isValidEmail(email)) {
+        return res.status(400).json({ status: 'error', message: '请输入有效邮箱' });
+      }
+      if (password.length < 8) {
+        return res.status(400).json({ status: 'error', message: '密码至少需要 8 位' });
+      }
+      if (getUserByEmail(email)) {
+        return res.status(409).json({ status: 'error', message: '该邮箱已注册' });
+      }
+      const user = createUserAccount(email, password, displayName || email.split('@')[0]);
+      const token = issueToken();
+      const fingerprint = readDeviceFingerprint(req);
+      const deviceId = fingerprint ? upsertDevice(user.id, fingerprint, String(req.headers['x-device-name'] || '').slice(0, 80) || null) : null;
+      createAuthSession(user.id, token, deviceId);
+      touchUserLogin(user.id);
+      const license = getLicenseState(user.id);
+      res.json({ status: 'success', token, user: publicUserPayload(user), license });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/auth/login', (req, res) => {
+    try {
+      const email = String(req.body?.email || '').trim().toLowerCase();
+      const password = String(req.body?.password || '');
+      const row = getUserByEmail(email);
+      if (!row || !verifyPassword(password, row.password_salt, row.password_hash)) {
+        return res.status(401).json({ status: 'error', message: '邮箱或密码错误' });
+      }
+      const user = {
+        id: row.id,
+        email: row.email,
+        displayName: row.display_name,
+        createdAt: row.created_at,
+        lastLoginAt: row.last_login_at,
+      };
+      const token = issueToken();
+      const fingerprint = readDeviceFingerprint(req);
+      const deviceId = fingerprint ? upsertDevice(user.id, fingerprint, String(req.headers['x-device-name'] || '').slice(0, 80) || null) : null;
+      createAuthSession(user.id, token, deviceId);
+      touchUserLogin(user.id);
+      const license = getLicenseState(user.id);
+      res.json({ status: 'success', token, user: publicUserPayload(user), license, deviceCount: getActiveDeviceCount(user.id) });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.get('/api/auth/me', (req, res) => {
+    try {
+      const token = readBearerToken(req);
+      if (!token) {
+        return res.json({ status: 'anonymous', user: null, license: getLicenseState(null) });
+      }
+      const user = getUserByAuthToken(token);
+      if (!user) {
+        return res.status(401).json({ status: 'error', message: '登录已过期，请重新登录' });
+      }
+      const fingerprint = readDeviceFingerprint(req);
+      const deviceId = fingerprint ? upsertDevice(user.id, fingerprint, String(req.headers['x-device-name'] || '').slice(0, 80) || null) : null;
+      const license = getLicenseState(user.id);
+      logLicenseCheck(user.id, deviceId, license.isPro ? 'pro' : 'free', 'auth_me');
+      res.json({ status: 'success', user: publicUserPayload(user), license, deviceCount: getActiveDeviceCount(user.id) });
+    } catch (err: any) {
+      res.status((err as any).statusCode || 500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/auth/logout', (req, res) => {
+    try {
+      const token = readBearerToken(req);
+      const revoked = token ? revokeAuthToken(token) : 0;
+      res.json({ status: 'success', revoked });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/license/redeem', (req, res) => {
+    try {
+      const { user, deviceId } = requireAuth(req);
+      const code = String(req.body?.code || '').trim();
+      if (!code) {
+        return res.status(400).json({ status: 'error', message: '请输入兑换码' });
+      }
+      const license = redeemCodeForUser(user.id, code, deviceId);
+      logLicenseCheck(user.id, deviceId, license.isPro ? 'pro' : 'free', 'redeem_code');
+      res.json({ status: 'success', license });
+    } catch (err: any) {
+      res.status((err as any).statusCode || 400).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.get('/api/license/check', (req, res) => {
+    try {
+      const token = readBearerToken(req);
+      const user = token ? getUserByAuthToken(token) : null;
+      const fingerprint = readDeviceFingerprint(req);
+      const deviceId = user && fingerprint ? upsertDevice(user.id, fingerprint, String(req.headers['x-device-name'] || '').slice(0, 80) || null) : null;
+      const license = getLicenseState(user?.id ?? null);
+      logLicenseCheck(user?.id ?? null, deviceId, license.isPro ? 'pro' : 'free', 'explicit_check');
+      res.json({ status: 'success', user: user ? publicUserPayload(user) : null, license, deviceCount: user ? getActiveDeviceCount(user.id) : 0 });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/admin/redeem-codes', (req, res) => {
+    try {
+      const adminSecret = process.env.SCIFIGURE_ADMIN_SECRET;
+      if (!adminSecret || req.headers['x-admin-secret'] !== adminSecret) {
+        return res.status(403).json({ status: 'error', message: '未授权的管理操作' });
+      }
+      const count = Math.max(1, Math.min(200, Number(req.body?.count || 1)));
+      const durationDays = Math.max(1, Math.min(3650, Number(req.body?.durationDays || 31)));
+      const maxUses = Math.max(1, Math.min(1000, Number(req.body?.maxUses || 1)));
+      const label = String(req.body?.label || 'manual').slice(0, 80);
+      const codes: string[] = [];
+      for (let i = 0; i < count; i += 1) {
+        const code = `SF-${crypto.randomBytes(4).toString('hex').toUpperCase()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+        createRedeemCode({ code, label, plan: 'pro', durationDays, maxUses, expiresAt: req.body?.expiresAt || null });
+        codes.push(code);
+      }
+      res.json({ status: 'success', codes, durationDays, maxUses });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
   });
 
   // --- IFC v2 Introspection-based Render API ---
@@ -160,6 +540,23 @@ async function startServer() {
     revision: number;
     createdAt: number;
     updatedAt: number;
+  }
+
+  /** Compress editLog: keep only the latest value per (gid, prop).
+   *  Preserves full History Log for undo/redo — only the render/export
+   *  payload uses the compressed version. */
+  function compressEditLog(log: EditEntry[]): EditEntry[] {
+    const seen = new Set<string>();
+    const result: EditEntry[] = [];
+    for (let i = log.length - 1; i >= 0; i--) {
+      const entry = log[i];
+      const key = `${entry.gid}\0${entry.prop}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.unshift(entry);
+      }
+    }
+    return result;
   }
 
   // Clean expired sessions on startup (older than 2h)
@@ -183,38 +580,127 @@ async function startServer() {
     saveSession(s.sessionId, s.script, s.dataPayload, s.editLog, s.revision);
   }
 
+  function syncProjectFigureRevision(sessionId: string, revision: number): void {
+    getDb().prepare('UPDATE project_figures SET revision = ? WHERE session_id = ?').run(revision, sessionId);
+  }
+
+  function persistProjectScript(projectId: string, script: string): void {
+    const project = getProject(projectId);
+    if (!project) return;
+    let spec: any = {};
+    try {
+      spec = typeof project.spec === 'string' ? JSON.parse(project.spec) : (project.spec || {});
+    } catch {
+      spec = {};
+    }
+    spec.custom_script = script;
+    spec.script = script;
+    updateProject(projectId, project.name, spec, script);
+  }
+
   function resolvePythonBin(): string {
     if (process.env.PYTHON_BIN) {
       return process.env.PYTHON_BIN;
     }
+    const condaPython = 'C:\\Users\\SZC\\.conda\\envs\\Machine-learning\\python.exe';
+    if (process.platform === 'win32' && fs.existsSync(condaPython)) {
+      return condaPython;
+    }
     return /^win/.test(process.platform) ? 'python' : 'python3';
   }
 
-  function spawnPythonWithPayload(scriptName: string, payload: any): Promise<string> {
+  type SpawnPythonOptions = {
+    req?: express.Request;
+    timeoutMs?: number;
+    label?: string;
+  };
+
+  async function spawnPythonWithPayload(
+    scriptName: string,
+    payload: unknown,
+    options: SpawnPythonOptions = {}
+  ): Promise<any> {
+    const timeoutMs = options.timeoutMs ?? (scriptName === 'introspector.py' ? 45000 : 20000);
+    const label = options.label ?? scriptName;
+    const scriptLen = typeof (payload as any)?.script === 'string' ? (payload as any).script.length : 0;
+    const rowCount = Array.isArray((payload as any)?.dataPayload?.custom_data) ? (payload as any).dataPayload.custom_data.length : 0;
+
+    // Write payload to temp file (prevents stdin buffer deadlock for large payloads)
+    const payloadFile = path.join(os.tmpdir(), `scifigure-payload-${randomUUID()}.json`);
+    fs.writeFileSync(payloadFile, JSON.stringify(payload), 'utf-8');
+
     return new Promise((resolve, reject) => {
       const pythonBin = resolvePythonBin();
       const scriptPath = path.join(process.cwd(), 'renderer', scriptName);
-      const proc = spawn(pythonBin, [scriptPath]);
+      const child = spawn(pythonBin, [scriptPath, '--payload-file', payloadFile], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
       let stdout = '';
       let stderr = '';
-      const script = typeof payload?.script === 'string' ? payload.script : '';
-      const rowCount = Array.isArray(payload?.dataPayload?.custom_data) ? payload.dataPayload.custom_data.length : 0;
-      const timeoutMs = scriptName === 'introspector.py' ? 45000 : 20000;
+      let settled = false;
+      let sigkillTimer: NodeJS.Timeout | null = null;
+
+      const cleanupPayload = () => {
+        try { fs.unlinkSync(payloadFile); } catch { /* temp file already gone */ }
+      };
+
+      const killChild = (reason: string) => {
+        if (settled || child.killed) return;
+        child.kill('SIGTERM');
+        sigkillTimer = setTimeout(() => {
+          if (!child.killed) child.kill('SIGKILL');
+        }, 2000);
+      };
+
+      const onRequestAborted = () => killChild(`${label}: request aborted`);
+
+      if (options.req && !options.req.destroyed) {
+        // Do not listen to req.close here. In Express/Node it can fire for a
+        // normally completed request body, which previously killed short-lived
+        // validation workers and made every render fail at the AST gate.
+        options.req.on('aborted', onRequestAborted);
+      }
+
       const timer = setTimeout(() => {
-        proc.kill('SIGKILL');
-        reject(new Error(`Python process timed out (${Math.round(timeoutMs / 1000)}s) [script=${scriptName}, scriptLen=${script.length}, rows=${rowCount}]${stderr ? ` stderr=${stderr.slice(0, 400)}` : ''}`));
+        killChild(`${label}: timeout after ${timeoutMs}ms`);
+        settled = true;
+        cleanupPayload();
+        options.req?.removeListener('aborted', onRequestAborted);
+        reject(new Error(`Python process timed out (${Math.round(timeoutMs / 1000)}s) [script=${scriptName}, scriptLen=${scriptLen}, rows=${rowCount}]${stderr ? ` stderr=${stderr.slice(0, 400)}` : ''}`));
       }, timeoutMs);
 
-      proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-      proc.on('error', (err) => { clearTimeout(timer); reject(err); });
-      proc.on('close', (code) => {
+      child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+      child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+      child.on('error', (err) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
-        if (code !== 0) reject(new Error(`Python exited ${code}: ${stderr}`));
-        else resolve(stdout);
+        if (sigkillTimer) clearTimeout(sigkillTimer);
+        cleanupPayload();
+        options.req?.removeListener('aborted', onRequestAborted);
+        reject(err);
       });
-      proc.stdin.write(JSON.stringify(payload));
-      proc.stdin.end();
+
+      child.on('close', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (sigkillTimer) clearTimeout(sigkillTimer);
+        cleanupPayload();
+        options.req?.removeListener('aborted', onRequestAborted);
+
+        if (code !== 0) {
+          reject(new Error(`Python exited ${code}: ${stderr}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout));
+        } catch (e) {
+          reject(new Error(`Failed to parse Python JSON output: ${e}\nSTDERR:\n${stderr}`));
+        }
+      });
     });
   }
 
@@ -283,6 +769,25 @@ async function startServer() {
     if (!/^#[0-9A-Fa-f]{6}$/.test(patch.new_value)) {
       throw new Error(`无效的颜色值: ${patch.new_value}`);
     }
+    const inlineMatch = String(patch.target_id || '').match(/^inline_(\d+)_(\d+)_([0-9a-fA-F]{6})$/);
+    if (inlineMatch) {
+      const lineIndex = Number(inlineMatch[1]) - 1;
+      const occurrenceIndex = Number(inlineMatch[2]);
+      const originalHex = `#${inlineMatch[3]}`;
+      if (lineIndex < 0 || lineIndex >= lines.length) {
+        throw new Error(`内联颜色行号无效: ${patch.target_id}`);
+      }
+      let seen = 0;
+      lines[lineIndex] = lines[lineIndex].replace(/#[0-9A-Fa-f]{6}/g, (match) => {
+        if (match.toLowerCase() !== originalHex.toLowerCase()) return match;
+        seen += 1;
+        return seen === occurrenceIndex ? patch.new_value : match;
+      });
+      if (seen < occurrenceIndex) {
+        throw new Error(`未找到内联颜色: ${patch.target_id}`);
+      }
+      return lines.join('\n');
+    }
     const safeTarget = escapeRegExp(patch.target_id);
     const regexConstant = new RegExp(`^(${safeTarget})\\s*=\\s*["\'](#[0-9A-Fa-f]{6})["\']`);
     const cleanKey = patch.target_id.replace(/^dict_/, '');
@@ -313,9 +818,9 @@ async function startServer() {
       script = cleanScript(script);
 
       // AST gate
-      const astCheck = await validateAst(script);
+      const astCheck = await validateAst(script, req);
       if (!astCheck.ok) {
-        return res.status(400).json({ status: 'error', message: '脚本安全校验失败', details: astCheck.message, errors: astCheck.errors });
+        return res.status(400).json({ status: 'error', message: '脚本安全校验失败: ' + (astCheck.message || ''), details: astCheck.message, errors: astCheck.errors });
       }
       const existingSession = req.body.sessionId ? loadSession(req.body.sessionId) : null;
       const effectiveDataPayload = dataPayload !== undefined
@@ -324,26 +829,26 @@ async function startServer() {
       const result = await spawnPythonWithPayload('introspector.py', {
         script,
         dataPayload: effectiveDataPayload,
-        editLog: editLog || [],
+        editLog: compressEditLog(editLog || []),
         renderOptions: renderOptions || { dpi: 150 },
-      });
-      const parsed = JSON.parse(result);
-      if (parsed.status === 'success') {
-        const sessionId = parsed.sessionId || `fig_${Date.now()}`;
+      }, { req, label: 'render' });
+      if (result.status === 'success') {
+        const sessionId = result.sessionId || `fig_${Date.now()}`;
         const nextEditLog = editLog || [];
         persistSession({
           sessionId,
           script,
           dataPayload: effectiveDataPayload,
           editLog: nextEditLog,
-          revision: parsed.revision || 1,
+          revision: result.revision || 1,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         });
-        parsed.sessionId = sessionId;
-        parsed.editLog = nextEditLog;
+        result.sessionId = sessionId;
+        result.editLog = nextEditLog;
+        result.revision = result.revision || 1;
       }
-      res.json(parsed);
+      res.json(result);
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
@@ -357,6 +862,34 @@ async function startServer() {
       if (!session) {
         return res.status(404).json({ status: 'error', message: 'Session not found' });
       }
+
+      const requestId = typeof req.body.requestId === 'string'
+        ? req.body.requestId
+        : `server-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const baseRevision = typeof req.body.baseRevision === 'number'
+        ? req.body.baseRevision
+        : session.revision;
+
+      // Idempotency: return cached response if already processed
+      if (!processedRequestIdsMap.has(sessionId)) {
+        processedRequestIdsMap.set(sessionId, new Set());
+        responseCacheMap.set(sessionId, new Map());
+      }
+      const processedIds = processedRequestIdsMap.get(sessionId)!;
+      const cache = responseCacheMap.get(sessionId)!;
+      if (processedIds.has(requestId)) {
+        const cached = cache.get(requestId);
+        if (cached) return res.json(cached);
+      }
+
+      const revisionWarning = baseRevision !== session.revision
+        ? {
+            type: 'revision_mismatch',
+            message: 'Client revision was stale; patch was applied to the latest server session.',
+            expectedRevision: session.revision,
+            receivedRevision: baseRevision,
+          }
+        : null;
 
       const codePatches = (patches || []).filter((p: any) => p.type === 'code_patch');
       const regularPatches = (patches || []).filter((p: any) => p.type !== 'code_patch');
@@ -392,14 +925,20 @@ async function startServer() {
         session.editLog.push(...localPatches);
         session.revision++;
         persistSession(session);
-        return res.json({
+        syncProjectFigureRevision(session.sessionId, session.revision);
+        const response = {
           status: 'success',
           sessionId,
           applied: newEdits,
           revision: session.revision,
           editLog: session.editLog,
-          script: session.script
-        });
+          script: session.script,
+          requestId,
+          warnings: revisionWarning ? [revisionWarning] : undefined,
+        };
+        processedIds.add(requestId);
+        cache.set(requestId, response);
+        return res.json(response);
       }
 
       // Check if session is linked to a project figure to supply sandbox metadata
@@ -424,32 +963,42 @@ async function startServer() {
       const result = await spawnPythonWithPayload('introspector.py', {
         script: session.script,
         dataPayload: session.dataPayload || null,
-        editLog: mergedEditLog,
+        editLog: compressEditLog(mergedEditLog),
         renderOptions: { dpi: 150 },
         cwd,
         uploaded_file_paths,
-        editLogs: figRow ? { [`fig_${figRow.figure_index + 1}`]: mergedEditLog } : undefined
-      });
-      const parsed = JSON.parse(result);
-      if (parsed.status === 'success') {
+        editLogs: figRow ? { [`fig_${figRow.figure_index + 1}`]: compressEditLog(mergedEditLog) } : undefined
+      }, { req, label: 'patch' });
+      if (result.status === 'success') {
         session.editLog = mergedEditLog;
         session.revision++;
         persistSession(session);
-        parsed.sessionId = session.sessionId;
-        parsed.revision = session.revision;
-        parsed.editLog = session.editLog;
-        parsed.script = session.script;
+        syncProjectFigureRevision(session.sessionId, session.revision);
+        if (figRow && codePatches.length > 0) {
+          persistProjectScript(figRow.project_id, session.script);
+        }
+        result.sessionId = session.sessionId;
+        result.revision = session.revision;
+        result.editLog = session.editLog;
+        result.script = session.script;
 
         if (figRow) {
           const targetFigId = `fig_${figRow.figure_index + 1}`;
-          const matchedFig = parsed.figures?.find((f: any) => f.figureId === targetFigId);
+          const matchedFig = result.figures?.find((f: any) => f.figureId === targetFigId);
           if (matchedFig) {
-            parsed.svg = matchedFig.svg;
-            parsed.manifest = matchedFig.manifest;
+            result.svg = matchedFig.svg;
+            result.manifest = matchedFig.manifest;
+            result.codeSlice = matchedFig.codeSlice;
           }
         }
       }
-      res.json(parsed);
+      const response = { ...result, requestId };
+      if (revisionWarning) {
+        response.warnings = [...(response.warnings || []), revisionWarning];
+      }
+      processedIds.add(requestId);
+      cache.set(requestId, response);
+      res.json(response);
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
@@ -465,14 +1014,13 @@ async function startServer() {
       script = cleanScript(script);
 
       // 1. AST Quality Gate
-      const astResultStr = await spawnPythonWithPayload('ast_validator.py', { script });
-      const astResult = JSON.parse(astResultStr);
-      if (astResult.status !== 'success') {
+      const astCheck = await validateAst(script, req);
+      if (!astCheck.ok) {
         return res.status(400).json({
           status: 'error',
           message: 'AST 校验失败',
-          details: astResult.message,
-          errors: astResult.errors
+          details: astCheck.message,
+          errors: astCheck.errors
         });
       }
 
@@ -505,39 +1053,39 @@ async function startServer() {
       }
 
       // 2. Re-render via introspector with new script + old editLog
-      const resultStr = await spawnPythonWithPayload('introspector.py', {
+      const result = await spawnPythonWithPayload('introspector.py', {
         script,
         dataPayload,
-        editLog,
+        editLog: compressEditLog(editLog),
         renderOptions: { dpi: 150 },
         cwd,
         uploaded_file_paths,
-        editLogs: figRow ? { [`fig_${figRow.figure_index + 1}`]: editLog } : undefined
-      });
-      const parsed = JSON.parse(resultStr);
+        editLogs: figRow ? { [`fig_${figRow.figure_index + 1}`]: compressEditLog(editLog) } : undefined
+      }, { req, label: 'code-patch' });
 
-      if (parsed.status !== 'success') {
-        return res.json(parsed); // Returns python error directly
+      if (result.status !== 'success') {
+        return res.json(result); // Returns python error directly
       }
 
       if (figRow) {
         const targetFigId = `fig_${figRow.figure_index + 1}`;
-        const matchedFig = parsed.figures?.find((f: any) => f.figureId === targetFigId);
+        const matchedFig = result.figures?.find((f: any) => f.figureId === targetFigId);
         if (matchedFig) {
-          parsed.svg = matchedFig.svg;
-          parsed.manifest = matchedFig.manifest;
+          result.svg = matchedFig.svg;
+          result.manifest = matchedFig.manifest;
+          result.codeSlice = matchedFig.codeSlice;
         } else {
           return res.json({
             status: 'drift_warning',
             message: '目标 Figure 在重渲染后不存在',
             figureId: targetFigId,
-            availableFigures: (parsed.figures || []).map((f: any) => f.figureId)
+            availableFigures: (result.figures || []).map((f: any) => f.figureId)
           });
         }
       }
 
       // 3. Detect drift
-      const returnedGids = new Set(parsed.manifest.objects.map((o: any) => o.id));
+      const returnedGids = new Set(result.manifest.objects.map((o: any) => o.id));
       const requestedGids = new Set(editLog.map(e => e.gid));
       const orphanedGids = [...requestedGids].filter(gid => !returnedGids.has(gid));
 
@@ -559,25 +1107,29 @@ async function startServer() {
         session.revision++;
         session.updatedAt = Date.now();
         persistSession(session);
-        parsed.revision = session.revision;
-        parsed.sessionId = session.sessionId;
-        parsed.editLog = session.editLog;
+        syncProjectFigureRevision(session.sessionId, session.revision);
+        if (figRow) {
+          persistProjectScript(figRow.project_id, script);
+        }
+        result.revision = session.revision;
+        result.sessionId = session.sessionId;
+        result.editLog = session.editLog;
       } else {
-        const newSessionId = parsed.sessionId || `fig_${Date.now()}`;
+        const newSessionId = result.sessionId || `fig_${Date.now()}`;
         persistSession({
           sessionId: newSessionId,
           script,
           dataPayload,
           editLog: [],
-          revision: parsed.revision || 1,
+          revision: result.revision || 1,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         });
-        parsed.sessionId = newSessionId;
-        parsed.editLog = [];
+        result.sessionId = newSessionId;
+        result.editLog = [];
       }
 
-      res.json(parsed);
+      res.json(result);
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
@@ -595,26 +1147,25 @@ async function startServer() {
       const reqFormat = (format || 'svg').toLowerCase();
 
       // AST gate before executing script
-      const astCheck = await validateAst(session.script);
+      const astCheck = await validateAst(session.script, req);
       if (!astCheck.ok) {
-        return res.status(400).json({ status: 'error', message: '脚本安全校验失败', details: astCheck.message, errors: astCheck.errors });
+        return res.status(400).json({ status: 'error', message: '脚本安全校验失败: ' + (astCheck.message || ''), details: astCheck.message, errors: astCheck.errors });
       }
 
       // 1. Ensure we have the latest SVG and export if necessary
-      const resultStr = await spawnPythonWithPayload('introspector.py', {
+      const result = await spawnPythonWithPayload('introspector.py', {
         script: session.script,
         dataPayload: session.dataPayload || null,
-        editLog: session.editLog,
+        editLog: compressEditLog(session.editLog),
         renderOptions: { dpi: dpi || 300 },
         export_format: reqFormat !== 'svg' ? reqFormat : undefined,
-      });
-      const parsed = JSON.parse(resultStr);
-      if (parsed.status !== 'success') {
-        return res.json(parsed);
+      }, { req, label: 'export' });
+      if (result.status !== 'success') {
+        return res.json(result);
       }
       
-      const svg = parsed.svg;
-      let binary_b64 = parsed.binary_b64 || null;
+      const svg = result.svg;
+      let binary_b64 = result.binary_b64 || null;
       let format_note = '';
 
       // Fallback if binary_b64 wasn't produced
@@ -646,7 +1197,8 @@ async function startServer() {
         svg,
         binary_b64,
         bundle,
-        format_note
+        format_note,
+        warnings: result.warnings ?? []
       });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
@@ -774,6 +1326,51 @@ async function startServer() {
     }
   });
 
+  app.get('/api/projects/:id/files/:fileId/preview', (req, res) => {
+    try {
+      const projectId = req.params.id;
+      const fileId = req.params.fileId;
+      assertSafeProjectId(projectId);
+      const project = getProject(projectId);
+      if (!project) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
+
+      const datasets = listProjectFiles(projectId);
+      const dataset = datasets.find(d => d.datasetId === fileId);
+      if (!dataset) {
+        return res.status(404).json({
+          status: 'error',
+          message: `数据文件不存在: ${fileId}`,
+          availableFiles: datasets.map(d => ({ datasetId: d.datasetId, fileName: d.fileName }))
+        });
+      }
+
+      const requestedLimit = Number(req.query.limit || 500);
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.max(1, Math.min(2000, Math.floor(requestedLimit)))
+        : 500;
+      const rows = loadDatasetRows(dataset.filePath);
+
+      res.json({
+        status: 'success',
+        dataset: {
+          datasetId: dataset.datasetId,
+          fileName: dataset.fileName,
+          columns: dataset.columns,
+          rowCount: dataset.rowCount,
+          uploadedAt: dataset.uploadedAt,
+        },
+        rows: rows.slice(0, limit),
+        returnedRows: Math.min(rows.length, limit),
+        totalRows: rows.length,
+        limit,
+      });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
   app.post('/api/projects/:id/files', upload.single('file'), (req, res) => {
     try {
       const projectId = req.params.id;
@@ -865,9 +1462,9 @@ async function startServer() {
       script = cleanScript(script);
 
       // AST gate
-      const astCheck = await validateAst(script);
+      const astCheck = await validateAst(script, req);
       if (!astCheck.ok) {
-        return res.status(400).json({ status: 'error', message: '脚本安全校验失败', details: astCheck.message, errors: astCheck.errors });
+        return res.status(400).json({ status: 'error', message: '脚本安全校验失败: ' + (astCheck.message || ''), details: astCheck.message, errors: astCheck.errors });
       }
 
       // Update script in projects table
@@ -900,20 +1497,23 @@ async function startServer() {
         }
       }
       const effectiveEditLogs = { ...oldEditLogMap, ...(editLogs || {}) };
+      const compressedEditLogs: Record<string, EditEntry[]> = {};
+      for (const key of Object.keys(effectiveEditLogs)) {
+        compressedEditLogs[key] = compressEditLog(effectiveEditLogs[key]);
+      }
 
-      const resultStr = await spawnPythonWithPayload('introspector.py', {
+      const result = await spawnPythonWithPayload('introspector.py', {
         script,
         dataPayload: projectDataPayload,
         cwd: cwd.replace(/\\/g, '/'),
         uploaded_file_paths,
-        editLogs: effectiveEditLogs,
+        editLogs: compressedEditLogs,
         renderOptions: { dpi: 150 }
-      });
-      const parsed = JSON.parse(resultStr);
+      }, { req, label: 'project-render' });
 
-      if (parsed.status === 'success') {
+      if (result.status === 'success') {
         // Detect figure count drift
-        const newFigures = parsed.figures || [];
+        const newFigures = result.figures || [];
         const oldCount = oldFigRows.length;
         const newCount = newFigures.length;
         const figureCountChanged = oldCount > 0 && oldCount !== newCount;
@@ -934,6 +1534,8 @@ async function startServer() {
             editLog: preservedEditLog,
             revision: oldSessionMap[figKey]?.revision || 1
           });
+          fig.revision = oldSessionMap[figKey]?.revision || 1;
+          fig.editLog = preservedEditLog;
         }
 
         // Atomically replace figures and sessions using the database transaction helper
@@ -941,8 +1543,8 @@ async function startServer() {
 
         // Attach figure count drift warning
         if (figureCountChanged) {
-          parsed._warnings = parsed._warnings || [];
-          parsed._warnings.push({
+          result._warnings = result._warnings || [];
+          result._warnings.push({
             type: 'figure_count_changed',
             message: `Figure 数量从 ${oldCount} 变为 ${newCount}，部分编辑可能无法完全重放`,
             oldCount,
@@ -969,8 +1571,8 @@ async function startServer() {
             }
           }
           if (mismatchedFigs.length > 0) {
-            parsed._warnings = parsed._warnings || [];
-            parsed._warnings.push({
+            result._warnings = result._warnings || [];
+            result._warnings.push({
               type: 'figure_fingerprint_mismatch',
               message: `以下 Figure 内容结构变化，编辑可能不完全匹配: ${mismatchedFigs.join(', ')}`,
               mismatchedFigs
@@ -990,7 +1592,7 @@ async function startServer() {
         }
       }
 
-      res.json(parsed);
+      res.json(result);
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
@@ -1024,6 +1626,141 @@ async function startServer() {
     }
   });
 
+  app.get('/api/projects/:id/export-assets', (req, res) => {
+    try {
+      const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      if (!getProject(projectId)) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
+      res.json({ status: 'success', assets: listExportAssets(projectId) });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.get('/api/projects/:id/export-assets/:assetId/file', (req, res) => {
+    try {
+      const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      const asset = getExportAsset(req.params.assetId);
+      if (!asset || asset.projectId !== projectId) {
+        return res.status(404).json({ status: 'error', message: '导出资产不存在' });
+      }
+      const absPath = path.resolve(process.cwd(), asset.filePath);
+      const root = projectExportsDir(projectId);
+      if (!absPath.startsWith(root + path.sep) || !fs.existsSync(absPath)) {
+        return res.status(404).json({ status: 'error', message: '导出文件不存在' });
+      }
+      res.setHeader('Content-Type', exportMimeType(asset.format));
+      res.download(absPath, `${safeExportName(asset.name)}.${asset.format}`);
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.delete('/api/projects/:id/export-assets', (req, res) => {
+    try {
+      const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      const assetIds = Array.isArray(req.body?.assetIds) ? req.body.assetIds.map(String) : [];
+      const assets = listExportAssets(projectId).filter(asset => assetIds.includes(asset.assetId));
+      for (const asset of assets) {
+        const absPath = path.resolve(process.cwd(), asset.filePath);
+        const root = projectExportsDir(projectId);
+        if (absPath.startsWith(root + path.sep) && fs.existsSync(absPath)) {
+          fs.unlinkSync(absPath);
+        }
+      }
+      const deleted = deleteExportAssets(projectId, assetIds);
+      res.json({ status: 'success', deleted });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/projects/:id/export-assets/import', (req, res) => {
+    try {
+      const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      if (!getProject(projectId)) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
+      const format = String(req.body?.format || '').toLowerCase();
+      if (!['svg', 'png'].includes(format)) {
+        return res.status(400).json({ status: 'error', message: `不支持导入的导出格式: ${format}` });
+      }
+      const svg = typeof req.body?.svg === 'string' ? req.body.svg : undefined;
+      const binaryB64 = typeof req.body?.binary_b64 === 'string' ? req.body.binary_b64 : undefined;
+      if (format === 'svg' && !svg) {
+        return res.status(400).json({ status: 'error', message: 'SVG 内容不能为空' });
+      }
+      if (format === 'png' && !binaryB64) {
+        return res.status(400).json({ status: 'error', message: 'PNG 二进制内容不能为空' });
+      }
+      const asset = persistProjectExportAsset({
+        projectId,
+        figureId: req.body?.figureId || 'composite',
+        name: req.body?.name || '组合图',
+        format,
+        dpi: req.body?.dpi ?? null,
+        svg,
+        binaryB64,
+        thumbnailSvg: req.body?.thumbnailSvg || svg || null,
+        metadata: req.body?.metadata || { kind: 'client-imported-export' },
+        tags: Array.isArray(req.body?.tags) ? req.body.tags : ['composite'],
+      });
+      res.json({ status: 'success', asset });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/projects/:id/compose', (req, res) => {
+    void (async () => {
+    try {
+      const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      if (!getProject(projectId)) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
+      const assetIds = Array.isArray(req.body?.assetIds) ? req.body.assetIds.map(String) : [];
+      const assetMap = new Map(listExportAssets(projectId).map(asset => [asset.assetId, asset]));
+      const selected = assetIds.map(id => assetMap.get(id)).filter(Boolean) as ExportAsset[];
+      if (![2, 4, 6].includes(selected.length)) {
+        return res.status(400).json({ status: 'error', message: '组合排版 MVP 目前支持选择 2、4 或 6 张图' });
+      }
+      const missingSvg = selected.filter(asset => !asset.thumbnailSvg);
+      if (missingSvg.length > 0) {
+        return res.status(400).json({ status: 'error', message: '选中的资产缺少 SVG 预览，无法组合排版' });
+      }
+      const layout = req.body?.layout && typeof req.body.layout === 'object' ? req.body.layout as ComposeLayout : undefined;
+      const dpi = Number(req.body?.dpi || 300);
+      const svg = composeSvgAssets(selected, layout);
+      const asset = persistProjectExportAsset({
+        projectId,
+        figureId: 'composite',
+        name: req.body?.name || `组合图_${selected.length}张`,
+        format: 'svg',
+        dpi: null,
+        svg,
+        thumbnailSvg: svg,
+        metadata: {
+          kind: 'composite',
+          sourceAssetIds: selected.map(item => item.assetId),
+          sourceNames: selected.map(item => item.name),
+          layout: layout || null,
+          createdBy: 'figure-composer',
+        },
+        tags: ['composite'],
+      });
+      res.json({ status: 'success', svg, asset, assets: [asset] });
+    } catch (err: any) {
+      res.status(500).json({ status: 'error', message: err.message });
+    }
+    })();
+  });
+
   // POST /api/projects/:id/export — export single or all project figures
   app.post('/api/projects/:id/export', async (req, res) => {
     try {
@@ -1033,7 +1770,7 @@ async function startServer() {
       if (!project) {
         return res.status(404).json({ status: 'error', message: '项目不存在' });
       }
-      const { figureId, format, dpi } = req.body;
+      const { figureId, format, dpi, name, saveToLibrary = true } = req.body;
       const reqFormat = (format || 'svg').toLowerCase();
 
       const figRows = listProjectFigures(projectId);
@@ -1055,9 +1792,9 @@ async function startServer() {
 
       // AST gate
       if (script) {
-        const astCheck = await validateAst(script);
+        const astCheck = await validateAst(script, req);
         if (!astCheck.ok) {
-          return res.status(400).json({ status: 'error', message: '脚本安全校验失败', details: astCheck.message, errors: astCheck.errors });
+          return res.status(400).json({ status: 'error', message: '脚本安全校验失败: ' + (astCheck.message || ''), details: astCheck.message, errors: astCheck.errors });
         }
       }
       const datasets = listProjectFiles(projectId);
@@ -1075,24 +1812,39 @@ async function startServer() {
         if (!session) continue;
 
         const targetFigId = `fig_${fig.figure_index + 1}`;
-        const resultStr = await spawnPythonWithPayload('introspector.py', {
+        const result = await spawnPythonWithPayload('introspector.py', {
           script: session.script,
           dataPayload: projectDataPayload || session.dataPayload || null,
           cwd: cwd.replace(/\\/g, '/'),
           uploaded_file_paths,
-          editLogs: { [targetFigId]: session.editLog },
+          editLogs: { [targetFigId]: compressEditLog(session.editLog) },
           renderOptions: { dpi: dpi || 300 },
           export_format: reqFormat !== 'svg' ? reqFormat : undefined,
-        });
+        }, { req, label: 'project-export' });
 
-        const parsed = JSON.parse(resultStr);
-        if (parsed.status === 'success') {
-          const matchedFig = parsed.figures?.find((f: any) => f.figureId === targetFigId) || parsed;
+        if (result.status === 'success') {
+          const matchedFig = result.figures?.find((f: any) => f.figureId === targetFigId) || result;
+          const asset = saveToLibrary !== false ? persistProjectExportAsset({
+            projectId,
+            figureId: targetFigId,
+            name: name || targetFigId,
+            format: matchedFig.binary_b64 ? reqFormat : 'svg',
+            dpi: dpi || 300,
+            svg: matchedFig.svg,
+            binaryB64: matchedFig.binary_b64 || null,
+            thumbnailSvg: matchedFig.svg,
+            metadata: {
+              exportedFrom: targetFigId,
+              requestedFormat: reqFormat,
+            },
+            tags: ['figure'],
+          }) : null;
           results.push({
             figureId: targetFigId,
             svg: matchedFig.svg,
             binary_b64: matchedFig.binary_b64 || null,
-            format: reqFormat
+            format: matchedFig.binary_b64 ? reqFormat : 'svg',
+            asset
           });
         }
       }

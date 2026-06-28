@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 IFC v2 Introspector + Replay Engine
 =====================================
@@ -17,6 +19,7 @@ import json
 import re
 import hashlib
 import traceback
+import ast
 from typing import Any, Optional
 from contextlib import contextmanager
 
@@ -33,6 +36,8 @@ def _register_figure(fig):
 
 # Monkey patch Figure.__init__ to record all created figures
 from matplotlib.figure import Figure
+from matplotlib.axes import Axes
+
 original_fig_init = Figure.__init__
 
 def patched_fig_init(self, *args, **kwargs):
@@ -40,6 +45,70 @@ def patched_fig_init(self, *args, **kwargs):
     _register_figure(self)
 
 Figure.__init__ = patched_fig_init
+
+
+_intercepted_containers = []
+
+class BoxplotContainer:
+    def __init__(self, bp_dict, label=""):
+        self.bp_dict = bp_dict
+        self._label = label
+    def get_label(self):
+        return self._label
+    def set_label(self, val):
+        self._label = val
+    def get_children(self):
+        children = []
+        for val in self.bp_dict.values():
+            if isinstance(val, list):
+                children.extend(val)
+            elif val is not None:
+                children.append(val)
+        return children
+
+class ViolinplotContainer:
+    def __init__(self, vp_dict, label=""):
+        self.vp_dict = vp_dict
+        self._label = label
+    def get_label(self):
+        return self._label
+    def set_label(self, val):
+        self._label = val
+    def get_children(self):
+        children = []
+        for val in self.vp_dict.values():
+            if isinstance(val, list):
+                children.extend(val)
+            elif val is not None:
+                children.append(val)
+        return children
+
+# Monkey patch Axes.boxplot and Axes.violinplot
+original_boxplot = Axes.boxplot
+original_violinplot = Axes.violinplot
+
+def patched_boxplot(self, *args, **kwargs):
+    res = original_boxplot(self, *args, **kwargs)
+    container_obj = BoxplotContainer(res)
+    _intercepted_containers.append({
+        "axes": self,
+        "type": "boxplot",
+        "container": container_obj
+    })
+    return res
+
+def patched_violinplot(self, *args, **kwargs):
+    res = original_violinplot(self, *args, **kwargs)
+    container_obj = ViolinplotContainer(res)
+    _intercepted_containers.append({
+        "axes": self,
+        "type": "violinplot",
+        "container": container_obj
+    })
+    return res
+
+Axes.boxplot = patched_boxplot
+Axes.violinplot = patched_violinplot
 
 
 def _describe_uploaded_data(data: Optional[dict]) -> dict:
@@ -212,6 +281,26 @@ def iter_artists(fig):
             _freeze_ticklabels_preserving_style(ax)
 
         yield f"axes.{ax_idx}", "axes", ax
+        
+        # Yield containers
+        for c_idx, container in enumerate(ax.containers):
+            if isinstance(container, matplotlib.container.BarContainer):
+                kind = "bar_container"
+            elif isinstance(container, matplotlib.container.ErrorbarContainer):
+                kind = "errorbar_container"
+            elif isinstance(container, matplotlib.container.StemContainer):
+                kind = "stem_container"
+            else:
+                kind = "container"
+            yield f"container.{kind.replace('_container', '')}.{ax_idx}.{c_idx}", kind, container
+
+        # Yield intercepted boxplot/violinplot containers
+        ax_intercepted = [item for item in _intercepted_containers if item["axes"] == ax]
+        for c_idx, item in enumerate(ax_intercepted):
+            container_obj = item["container"]
+            kind = f"{item['type']}_container"
+            yield f"container.{item['type']}.{ax_idx}.{c_idx}", kind, container_obj
+
         yield f"grid.{ax_idx}", "grid", ax
         for i, line in enumerate(ax.xaxis.get_gridlines()):
             yield f"grid.{ax_idx}.line.x.{i}", "grid_line", line
@@ -311,6 +400,8 @@ def _restore_text_style(text, style: dict):
 
 def _freeze_ticklabels_preserving_style(ax):
     """Materialize tick labels without discarding prior UI-applied font edits."""
+    original_xlim = ax.get_xlim()
+    original_ylim = ax.get_ylim()
     try:
         ax.figure.canvas.draw()
     except Exception:
@@ -335,6 +426,16 @@ def _freeze_ticklabels_preserving_style(ax):
             next_labels = list(get_labels())
         for label, style in zip(next_labels, styles):
             _restore_text_style(label, style)
+
+    # Matplotlib intentionally expands view limits when set_ticks() receives
+    # ticks outside the current limits.  That breaks user-applied xlim/ylim
+    # patches during introspection, so restore the exact limits after freezing
+    # tick labels.
+    try:
+        ax.set_xlim(original_xlim)
+        ax.set_ylim(original_ylim)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -422,16 +523,38 @@ def _read_line_props(artist) -> dict:
         "linewidth": artist.get_linewidth(),
         "linestyle": artist.get_linestyle(),
         "alpha": artist.get_alpha(),
+        "marker": artist.get_marker(),
+        "markersize": artist.get_markersize(),
     }
 
 
 def _read_collection_props(artist) -> dict:
     fc = artist.get_facecolor()
     ec = artist.get_edgecolor()
+    linewidths = []
+    try:
+        linewidths = artist.get_linewidths()
+    except Exception:
+        linewidths = []
+    linewidth = None
+    try:
+        if len(linewidths) > 0:
+            linewidth = float(linewidths[0])
+    except Exception:
+        linewidth = None
+    size = None
+    try:
+        sizes = artist.get_sizes()
+        if len(sizes) > 0:
+            size = float(sizes[0])
+    except Exception:
+        size = None
     return {
         "facecolor": fc.tolist() if hasattr(fc, "tolist") else fc,
         "edgecolor": ec.tolist() if hasattr(ec, "tolist") else ec,
         "alpha": artist.get_alpha(),
+        "linewidth": linewidth,
+        "size": size,
     }
 
 
@@ -587,6 +710,103 @@ def _read_grid_props(artist) -> dict:
     }
 
 
+def _read_bar_container_props(container) -> dict:
+    children = container.get_children()
+    if not children:
+        return {}
+    first = children[0]
+    return _read_patch_props(first)
+
+
+def _read_errorbar_container_props(container) -> dict:
+    lines = container.lines
+    data_line = lines[0]
+    cap_lines = lines[1]
+    bar_cols = lines[2]
+    
+    props = {}
+    
+    # Color
+    color = None
+    if data_line is not None:
+        color = data_line.get_color()
+    elif bar_cols:
+        color = bar_cols[0].get_color()
+    if color is not None:
+        props["color"] = color
+        
+    # Linewidth
+    if data_line is not None:
+        props["linewidth"] = data_line.get_linewidth()
+        
+    # Elinewidth
+    if bar_cols:
+        try:
+            lws = bar_cols[0].get_linewidths()
+            if len(lws) > 0:
+                props["elinewidth"] = float(lws[0])
+        except Exception:
+            pass
+            
+    # Capthick
+    if cap_lines:
+        props["capthick"] = cap_lines[0].get_linewidth()
+        
+    # Alpha
+    if data_line is not None:
+        props["alpha"] = data_line.get_alpha()
+    elif bar_cols:
+        props["alpha"] = bar_cols[0].get_alpha()
+        
+    # Marker & Markersize
+    if data_line is not None:
+        props["marker"] = data_line.get_marker()
+        props["markersize"] = data_line.get_markersize()
+        
+    return props
+
+
+def _read_boxplot_container_props(container) -> dict:
+    bp = container.bp_dict
+    props = {}
+    
+    # Color
+    color = None
+    if bp.get("boxes"):
+        color = bp["boxes"][0].get_color()
+    elif bp.get("medians"):
+        color = bp["medians"][0].get_color()
+    if color is not None:
+        props["color"] = color
+        
+    # Linewidth
+    if bp.get("boxes"):
+        props["linewidth"] = bp["boxes"][0].get_linewidth()
+        
+    # Alpha
+    if bp.get("boxes"):
+        props["alpha"] = bp["boxes"][0].get_alpha()
+        
+    # Box Color
+    if bp.get("boxes"):
+        props["box_color"] = bp["boxes"][0].get_color()
+        
+    # Median Color
+    if bp.get("medians"):
+        props["median_color"] = bp["medians"][0].get_color()
+        
+    return props
+
+
+def _read_violinplot_container_props(container) -> dict:
+    vp = container.vp_dict
+    props = {}
+    bodies = vp.get("bodies", [])
+    if bodies:
+        props.update(_read_collection_props(bodies[0]))
+    return props
+
+
 _READERS = {
     "text": _read_text_props,
     "spine": _read_spine_props,
@@ -599,6 +819,10 @@ _READERS = {
     "grid": _read_grid_props,
     "axis_x": lambda artist: _read_axis_props(artist, "x"),
     "axis_y": lambda artist: _read_axis_props(artist, "y"),
+    "bar_container": _read_bar_container_props,
+    "errorbar_container": _read_errorbar_container_props,
+    "boxplot_container": _read_boxplot_container_props,
+    "violinplot_container": _read_violinplot_container_props,
 }
 
 
@@ -647,18 +871,114 @@ _EDITABLE = {
     "spine": ["visible", "color", "linewidth", "zorder"],
     "spine_group": ["visible", "color", "linewidth", "zorder"],
     "legend": ["visible", "fontsize", "frameon", "facecolor", "edgecolor", "linewidth", "alpha", "loc", "ncol", "markerscale", "title", "fontfamily", "zorder"],
-    "line": ["color", "linewidth", "linestyle", "alpha", "zorder"],
+    "line": ["color", "linewidth", "linestyle", "alpha", "marker", "markersize", "zorder"],
     "patch": ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
-    "collection": ["facecolor", "edgecolor", "alpha", "zorder"],
+    "collection": ["facecolor", "edgecolor", "alpha", "linewidth", "size", "zorder"],
     "axes": ["xlim", "ylim", "show_minor_ticks", "x_tick_rotation", "tick_direction", "zorder"],
     "grid": ["visible", "color", "linewidth", "linestyle", "alpha", "zorder"],
     "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "sci_notation", "use_math_text", "offset_text_size"],
     "axis_y": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "sci_notation", "use_math_text", "offset_text_size"],
+    "bar_container": ["color", "facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
+    "errorbar_container": ["color", "linewidth", "elinewidth", "capsize", "capthick", "alpha", "marker", "markersize", "zorder"],
+    "boxplot_container": ["color", "linewidth", "alpha", "box_color", "median_color", "zorder"],
+    "violinplot_container": ["color", "facecolor", "edgecolor", "linewidth", "alpha", "zorder"],
 }
 
 
 def _get_editable(kind: str) -> list:
     return _EDITABLE.get(kind, [])
+
+
+def _determine_role(gid: str, parent_kind: Optional[str] = None) -> Optional[str]:
+    if gid.startswith("fig_text."):
+        return "figure_title"
+    if gid.startswith("title.left.") or gid.startswith("title.right.") or gid.startswith("title."):
+        return "axes_title"
+    if gid.startswith("xlabel."):
+        return "x_axis_label"
+    if gid.startswith("ylabel."):
+        return "y_axis_label"
+    if gid.startswith("xtick."):
+        return "x_tick_label"
+    if gid.startswith("ytick."):
+        return "y_tick_label"
+    if gid.startswith("legend."):
+        return "legend"
+    if gid.startswith("legend_title.") or gid.startswith("legend_text."):
+        return "legend_text"
+    if gid.startswith("legend_line.") or gid.startswith("legend_patch."):
+        return "legend_marker"
+    if gid.startswith("spine."):
+        return "spine"
+    if gid.startswith("grid."):
+        return "grid"
+    if gid.startswith("container.bar."):
+        return "bar_series"
+    if gid.startswith("container.errorbar."):
+        return "errorbar_series"
+    if gid.startswith("container.boxplot."):
+        return "boxplot_group"
+    if gid.startswith("container.violinplot."):
+        return "violin_group"
+        
+    if parent_kind == "bar_container":
+        return "bar_series"
+    if parent_kind == "errorbar_container":
+        return "errorbar_series"
+    if parent_kind == "boxplot_container":
+        return "boxplot_group"
+    if parent_kind == "violinplot_container":
+        return "violin_group"
+        
+    if gid.startswith("line."):
+        return "line_series"
+    if gid.startswith("collection."):
+        return "scatter_series"
+    if gid.startswith("patch."):
+        return "bar_series"
+        
+    return None
+
+
+def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) -> tuple[str, str]:
+    kind = obj["kind"]
+    gid = obj["id"]
+    label = obj.get("label") or ""
+    
+    clean_label = ""
+    if label and not label.startswith("_") and not label.startswith("line.") and not label.startswith("patch.") and not label.startswith("collection."):
+        clean_label = label
+        
+    parts = [f"ax{ax_idx}", kind]
+    if clean_label:
+        parts.append(f"label.{clean_label}")
+    else:
+        match = re.search(r'\.(\d+)$', gid)
+        if match:
+            parts.append(f"idx.{match.group(1)}")
+            
+    stable_key = ".".join(parts)
+    
+    fp_parts = [stable_key]
+    if hasattr(artist, "get_xydata"):
+        try:
+            xy = artist.get_xydata()
+            if xy is not None and xy.size > 0:
+                fp_parts.append(f"data_shape.{xy.shape}")
+                fp_parts.append(f"data_mean.{xy.mean():.4f}")
+        except Exception:
+            pass
+            
+    fp_parts.append(type(artist).__name__)
+    for prop in ("color", "facecolor", "edgecolor", "linewidth", "linestyle", "fontsize"):
+        val = obj.get("currentProps", {}).get(prop)
+        if val is not None:
+            fp_parts.append(f"{prop}.{val}")
+            
+    fp_str = "|".join(fp_parts)
+    fingerprint = hashlib.sha256(fp_str.encode("utf-8")).hexdigest()
+    
+    return stable_key, fingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -675,12 +995,21 @@ def _get_editable(kind: str) -> list:
 def introspect_figure(fig, semantic_manifest=None) -> dict:
     """Accept a fully rendered Figure, return {svg, manifest}."""
 
-    # 1. Bind gids and read properties
-    objects = []
+    # 1. Bind gids and build initial artist-to-gid mapping
+    artist_to_gid = {}
+    raw_elements = []
+    
     for gid, kind, artist in iter_artists(fig):
         if artist is None:
             continue
-        artist.set_gid(gid)
+        if hasattr(artist, 'set_gid'):
+            artist.set_gid(gid)
+        artist_to_gid[artist] = gid
+        raw_elements.append((gid, kind, artist))
+
+    # Build objects manifest list
+    objects = []
+    for gid, kind, artist in raw_elements:
         if kind == "grid_line":
             continue
         objects.append({
@@ -690,6 +1019,80 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             "editable": _get_editable(kind),
             "currentProps": _read_props(artist, kind),
         })
+
+    # Build parent-child relationships
+    child_to_parent = {}
+    for gid, kind, artist in raw_elements:
+        if kind in ("bar_container", "errorbar_container", "boxplot_container", "violinplot_container", "stem_container", "container"):
+            children_gids = []
+            if kind == "bar_container":
+                for child in artist:
+                    if child in artist_to_gid:
+                        children_gids.append(artist_to_gid[child])
+            elif kind in ("errorbar_container", "boxplot_container", "violinplot_container"):
+                for child in artist.get_children():
+                    if child in artist_to_gid:
+                        children_gids.append(artist_to_gid[child])
+            
+            # Update container object in objects list
+            container_obj = next((o for o in objects if o["id"] == gid), None)
+            if container_obj:
+                container_obj["children"] = children_gids
+            
+            for child_gid in children_gids:
+                child_to_parent[child_gid] = (gid, kind)
+
+    # Populate parentId, role, source, stableKey, and fingerprint for each object
+    for obj in objects:
+        gid = obj["id"]
+        kind = obj["kind"]
+        
+        # Link parent ID
+        parent_info = child_to_parent.get(gid)
+        parent_id = None
+        parent_kind = None
+        if parent_info:
+            parent_id, parent_kind = parent_info
+            obj["parentId"] = parent_id
+            
+        # Determine semantic role
+        role = _determine_role(gid, parent_kind)
+        if role:
+            obj["role"] = role
+            
+        # Extract axes index from gid or container parts
+        ax_idx = 0
+        match = re.search(r'\.(\d+)(?:\.\d+)?$', gid)
+        if match:
+            try:
+                ax_idx = int(match.group(1))
+            except ValueError:
+                pass
+        if gid.startswith("container."):
+            parts = gid.split(".")
+            if len(parts) >= 4:
+                try:
+                    ax_idx = int(parts[2])
+                except ValueError:
+                    pass
+
+        # Add source metadata
+        artist_obj = next(art for g, k, art in raw_elements if g == gid)
+        source_meta = {
+            "artistClass": type(artist_obj).__name__,
+            "axesIndex": ax_idx,
+        }
+        if hasattr(artist_obj, "get_zorder"):
+            try:
+                source_meta["zorder"] = int(artist_obj.get_zorder())
+            except Exception:
+                pass
+        obj["source"] = source_meta
+        
+        # Add stableKey and fingerprint
+        stable_key, fingerprint = _generate_stable_key_and_fingerprint(obj, artist_obj, ax_idx)
+        obj["stableKey"] = stable_key
+        obj["fingerprint"] = fingerprint
 
     # 2. Build color groups (same-colored artists → batch editing)
     def _normalize_color(val):
@@ -746,7 +1149,6 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         buf,
         format="svg",
         metadata={"Date": None},
-        bbox_inches="tight",
     )
     svg = buf.getvalue().decode("utf-8")
 
@@ -764,7 +1166,57 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             import sys
             print(f"Error building bindings: {e}", file=sys.stderr)
 
-    # 3. Build manifest
+    # 4. Build dynamic coverage report
+    all_artists = fig.findobj()
+    recognized = set(art for g, k, art in raw_elements if art is not None)
+    
+    unsupported_map = {}
+    for art in all_artists:
+        if art in recognized:
+            continue
+        cls_name = type(art).__name__
+        if cls_name in ("Figure", "AxesSubplot", "Axes", "XAxis", "YAxis", "CompositeGenericTransform", "Bbox", "TransformedBbox", "GridSpec"):
+            continue
+        unsupported_map[cls_name] = unsupported_map.get(cls_name, 0) + 1
+
+    recognized_count = 0
+    editable_count = 0
+    readonly_count = 0
+    by_kind = {}
+    
+    for obj in objects:
+        recognized_count += 1
+        kind = obj["kind"]
+        editable_props = obj["editable"]
+        if editable_props:
+            editable_count += 1
+        else:
+            readonly_count += 1
+            
+        if kind not in by_kind:
+            by_kind[kind] = {
+                "count": 0,
+                "editableProps": editable_props
+            }
+        by_kind[kind]["count"] += 1
+        
+    unsupported_artists = [
+        {"class": cls, "count": count, "reason": f"Type {cls} is not currently supported for interactive editing"}
+        for cls, count in unsupported_map.items()
+    ]
+    
+    coverage_report = {
+        "summary": {
+            "recognized": recognized_count,
+            "editable": editable_count,
+            "readonly": readonly_count,
+            "unsupported": sum(unsupported_map.values())
+        },
+        "byKind": by_kind,
+        "unsupportedArtists": unsupported_artists
+    }
+
+    # 5. Build manifest
     manifest = {
         "generatedBy": "introspection",
         "globals": {
@@ -800,14 +1252,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             "backendPatch": True,
             "codePatch": True,
         },
-        "coverageReport": {
-            "title": "full",
-            "axisLabels": "full",
-            "spines": "full",
-            "legend": "full",
-            "dataSeries": "partial",
-            "annotations": "none",
-        },
+        "coverageReport": coverage_report,
         "unsupportedNotes": [
             "数据排序逻辑仅可通过 code_patch 修改",
             "自定义 annotation 位置规则不可 live 编辑",
@@ -815,6 +1260,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
     }
 
     return {"svg": svg, "manifest": manifest}
+
 
 
 # ---------------------------------------------------------------------------
@@ -855,6 +1301,8 @@ _PROP_TO_SETTER = {
     "alpha": "set_alpha",
     "facecolor": "set_facecolor",
     "edgecolor": "set_edgecolor",
+    "marker": "set_marker",
+    "markersize": "set_markersize",
     "zorder": "set_zorder",
     "ha": "set_horizontalalignment",
     "va": "set_verticalalignment",
@@ -862,7 +1310,140 @@ _PROP_TO_SETTER = {
 }
 
 
+def _apply_color_patch(artist, value):
+    """Apply a color change to an artist, dispatching based on artist type."""
+    from matplotlib.lines import Line2D
+    from matplotlib.text import Text
+    from matplotlib.patches import Patch, Rectangle
+    from matplotlib.collections import Collection
+    from matplotlib.spines import Spine
+
+    if isinstance(artist, (Line2D, Text, Spine)):
+        artist.set_color(value)
+        return None
+
+    if isinstance(artist, (Patch, Rectangle)):
+        artist.set_facecolor(value)
+        return None
+
+    if isinstance(artist, Collection):
+        try:
+            artist.set_color(value)
+        except Exception:
+            artist.set_facecolors([value])
+        return None
+
+    if hasattr(artist, "set_color"):
+        artist.set_color(value)
+        return None
+
+    if hasattr(artist, "set_facecolor"):
+        artist.set_facecolor(value)
+        return None
+
+    return "unsupported_color_patch"
+
+
 def _apply_single(artist, prop: str, value: Any, gid: str = ""):
+    if gid.startswith("container.bar."):
+        for child in artist:
+            if prop == "color" or prop == "facecolor":
+                child.set_facecolor(value)
+            elif prop == "edgecolor":
+                child.set_edgecolor(value)
+            elif prop == "linewidth":
+                child.set_linewidth(float(value))
+            elif prop == "alpha":
+                child.set_alpha(float(value))
+        return
+
+    if gid.startswith("container.errorbar."):
+        data_line = artist.lines[0]
+        cap_lines = artist.lines[1]
+        bar_cols = artist.lines[2]
+        
+        if prop == "color":
+            if data_line is not None:
+                data_line.set_color(value)
+            for cap in cap_lines:
+                cap.set_color(value)
+            for col in bar_cols:
+                col.set_color(value)
+        elif prop == "linewidth":
+            if data_line is not None:
+                data_line.set_linewidth(float(value))
+        elif prop == "elinewidth":
+            for col in bar_cols:
+                col.set_linewidth(float(value))
+        elif prop == "capthick":
+            for cap in cap_lines:
+                cap.set_linewidth(float(value))
+        elif prop == "alpha":
+            if data_line is not None:
+                data_line.set_alpha(float(value))
+            for cap in cap_lines:
+                cap.set_alpha(float(value))
+            for col in bar_cols:
+                col.set_alpha(float(value))
+        elif prop == "marker":
+            if data_line is not None:
+                data_line.set_marker(value)
+        elif prop == "markersize":
+            if data_line is not None:
+                data_line.set_markersize(float(value))
+        return
+
+    if gid.startswith("container.boxplot."):
+        bp = artist.bp_dict
+        if prop == "color":
+            for part in ("boxes", "whiskers", "caps", "medians", "fliers"):
+                for line in bp.get(part, []):
+                    line.set_color(value)
+        elif prop == "linewidth":
+            for part in ("boxes", "whiskers", "caps", "medians"):
+                for line in bp.get(part, []):
+                    line.set_linewidth(float(value))
+        elif prop == "alpha":
+            for part in ("boxes", "whiskers", "caps", "medians", "fliers"):
+                for line in bp.get(part, []):
+                    line.set_alpha(float(value))
+        elif prop == "box_color":
+            for line in bp.get("boxes", []):
+                line.set_color(value)
+        elif prop == "median_color":
+            for line in bp.get("medians", []):
+                line.set_color(value)
+        return
+
+    if gid.startswith("container.violinplot."):
+        vp = artist.vp_dict
+        bodies = vp.get("bodies", [])
+        c_lines = [vp.get("cbars"), vp.get("cmins"), vp.get("cmaxes"), vp.get("cmeans"), vp.get("cmedians")]
+        
+        if prop == "color" or prop == "facecolor":
+            for body in bodies:
+                body.set_facecolor(value)
+            if prop == "color":
+                for item in c_lines:
+                    if item is not None:
+                        item.set_color(value)
+        elif prop == "edgecolor":
+            for body in bodies:
+                body.set_edgecolor(value)
+        elif prop == "linewidth":
+            for body in bodies:
+                body.set_linewidth(float(value))
+            for item in c_lines:
+                if item is not None:
+                    item.set_linewidth(float(value))
+        elif prop == "alpha":
+            for body in bodies:
+                body.set_alpha(float(value))
+            for item in c_lines:
+                if item is not None:
+                    item.set_alpha(float(value))
+        return
+
     if gid.startswith("axes."):
         if prop == "xlim":
             artist.set_xlim(float(value[0]), float(value[1]))
@@ -930,9 +1511,13 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             return
         if prop == "tick_labelsize":
             parent_ax.tick_params(axis=axis_name, which="major", labelsize=float(value))
+            for label in artist.get_ticklabels():
+                label.set_fontsize(float(value))
             return
         if prop == "tick_labelcolor":
             parent_ax.tick_params(axis=axis_name, which="major", labelcolor=value, colors=value)
+            for label in artist.get_ticklabels():
+                label.set_color(value)
             return
         if prop == "tick_labelfamily":
             for label in artist.get_ticklabels():
@@ -1031,19 +1616,27 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         artist.set_position((x, y))
         return
 
+    if prop == "size" and hasattr(artist, "set_sizes"):
+        artist.set_sizes([float(value)])
+        return
+
+    # Fallback to _PROP_TO_SETTER for common props
     setter_name = _PROP_TO_SETTER.get(prop)
     if setter_name is None:
-        return
+        return "unsupported_prop"
     setter = getattr(artist, setter_name, None)
     if setter is None:
-        return
+        return "no_setter"
     try:
+        if prop == "color":
+            return _apply_color_patch(artist, value)
         if prop == "zorder":
             setter(float(value))
         else:
             setter(value)
-    except Exception:
-        pass  # silently skip incompatible values (e.g. color format mismatch)
+    except Exception as e:
+        return f"apply_error:{e}"
+    return None
 
 
 def _build_gid_map(fig) -> dict:
@@ -1089,18 +1682,22 @@ def _apply_virtual_font_center_patch(fig, gid: str, prop: str, value: Any) -> bo
     return True
 
 
-def apply_edit_log(fig, edit_log: list[dict]):
+def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
     """Apply an edit_log to a Figure in-place.
 
     Called AFTER the script has been executed but BEFORE introspection.
+
+    Returns a list of warnings for unsupported or failed patch entries.
     """
     gid_map = _build_gid_map(fig)
     needs_layout_refresh = False
+    warnings: list[dict] = []
 
     for entry in edit_log:
         gid = entry.get("gid")
         prop = entry.get("prop")
         value = entry.get("value")
+        mode = entry.get("mode", "unknown")
 
         if gid == "global":
             _apply_global(fig, prop, value)
@@ -1112,7 +1709,18 @@ def apply_edit_log(fig, edit_log: list[dict]):
         artist = gid_map.get(gid)
         if artist is None:
             continue
-        _apply_single(artist, prop, value, gid)
+
+        result = _apply_single(artist, prop, value, gid)
+        if result is not None:
+            warnings.append({
+                "type": result,
+                "mode": mode,
+                "gid": gid,
+                "prop": prop,
+                "value": value,
+                "artist": type(artist).__name__,
+            })
+
         if prop in {
             "fontsize",
             "fontfamily",
@@ -1133,10 +1741,187 @@ def apply_edit_log(fig, edit_log: list[dict]):
         except Exception:
             pass
 
+    return warnings
+
 
 # ---------------------------------------------------------------------------
 # Full replay pipeline
 # ---------------------------------------------------------------------------
+
+_FIGURE_CREATION_CALLS = {
+    "plt.figure",
+    "plt.subplots",
+    "plt.subplot",
+    "matplotlib.pyplot.figure",
+    "matplotlib.pyplot.subplots",
+    "matplotlib.pyplot.subplot",
+}
+
+_PLOTTING_CALL_NAMES = {
+    "plot",
+    "scatter",
+    "bar",
+    "barh",
+    "boxplot",
+    "violinplot",
+    "hist",
+    "imshow",
+    "pcolormesh",
+    "contour",
+    "contourf",
+    "errorbar",
+    "fill_between",
+    "text",
+    "annotate",
+    "legend",
+    "set_title",
+    "set_xlabel",
+    "set_ylabel",
+    "suptitle",
+    "supxlabel",
+    "supylabel",
+}
+
+
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _call_name(node.value)
+        return f"{base}.{node.attr}" if base else node.attr
+    return ""
+
+
+def _node_line_range(node: ast.AST) -> tuple[int, int]:
+    start = int(getattr(node, "lineno", 1) or 1)
+    end = int(getattr(node, "end_lineno", start) or start)
+    return start, end
+
+
+def _slice_lines(lines: list[str], start_line: int, end_line: int) -> str:
+    start = max(start_line, 1)
+    end = min(end_line, len(lines))
+    if end < start:
+        return ""
+    return "\n".join(lines[start - 1:end])
+
+
+def _contains_figure_creation(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and _call_name(child.func) in _FIGURE_CREATION_CALLS:
+            return True
+    return False
+
+
+def _plotting_score(node: ast.AST) -> int:
+    score = 0
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            name = _call_name(child.func)
+            tail = name.split(".")[-1]
+            if name in _FIGURE_CREATION_CALLS:
+                score += 4
+            elif tail in _PLOTTING_CALL_NAMES:
+                score += 1
+    return score
+
+
+def extract_figure_code_slices(script: str, figure_count: int) -> list[dict]:
+    """Best-effort static mapping from rendered Figure order to source code ranges."""
+    lines = script.splitlines()
+    fallback_end = max(len(lines), 1)
+
+    def fallback(reason: str, idx: int) -> dict:
+        return {
+            "figureId": f"fig_{idx + 1}",
+            "title": f"Figure {idx + 1} 关联代码",
+            "startLine": 1,
+            "endLine": fallback_end,
+            "code": script,
+            "confidence": "low",
+            "mode": "whole_script",
+            "reason": reason,
+            "relatedFunctions": [],
+        }
+
+    if figure_count <= 0:
+        return []
+
+    try:
+        tree = ast.parse(script)
+    except SyntaxError as exc:
+        return [fallback(f"脚本语法暂不可静态切块：{exc}", i) for i in range(figure_count)]
+
+    function_defs: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    top_level_statements = [
+        node for node in tree.body
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom))
+    ]
+    figure_creation_statements = [node for node in top_level_statements if _contains_figure_creation(node)]
+
+    if len(figure_creation_statements) >= figure_count:
+        slices = []
+        for idx in range(figure_count):
+            start, _ = _node_line_range(figure_creation_statements[idx])
+            if idx + 1 < len(figure_creation_statements):
+                next_start, _ = _node_line_range(figure_creation_statements[idx + 1])
+                end = max(next_start - 1, start)
+            else:
+                end = fallback_end
+            slices.append({
+                "figureId": f"fig_{idx + 1}",
+                "title": f"Figure {idx + 1} 顶层代码块",
+                "startLine": start,
+                "endLine": end,
+                "code": _slice_lines(lines, start, end),
+                "confidence": "high",
+                "mode": "exact_range",
+                "reason": "检测到顶层 Figure 创建语句，按相邻 Figure 创建点切分。",
+                "relatedFunctions": [],
+            })
+        return slices
+
+    called_function_names: list[str] = []
+    for stmt in top_level_statements:
+        for child in ast.walk(stmt):
+            if isinstance(child, ast.Call):
+                name = _call_name(child.func)
+                if name in function_defs and name not in called_function_names:
+                    called_function_names.append(name)
+
+    candidate_names = called_function_names or list(function_defs.keys())
+    scored_candidates = [
+        (name, _plotting_score(function_defs[name]), function_defs[name])
+        for name in candidate_names
+        if name in function_defs
+    ]
+    scored_candidates = [item for item in scored_candidates if item[1] > 0]
+    if scored_candidates:
+        name, _, func_node = sorted(scored_candidates, key=lambda item: item[1], reverse=True)[0]
+        start, end = _node_line_range(func_node)
+        code = _slice_lines(lines, start, end)
+        return [
+            {
+                "figureId": f"fig_{idx + 1}",
+                "title": f"Figure {idx + 1} 共享函数：{name}()",
+                "startLine": start,
+                "endLine": end,
+                "code": code,
+                "confidence": "medium",
+                "mode": "shared_function",
+                "reason": "多张 Figure 由同一个绘图函数生成，当前显示共享函数上下文。",
+                "relatedFunctions": [name],
+            }
+            for idx in range(figure_count)
+        ]
+
+    return [fallback("未检测到明确的 Figure 创建语句或绘图函数，显示完整脚本。", i) for i in range(figure_count)]
+
 
 def replay_render(
     script: str,
@@ -1162,6 +1947,7 @@ def replay_render(
     
     # Clear the figure registry for this run
     _figure_registry.clear()
+    _intercepted_containers.clear()
 
     # Parse AST / regex static scan
     semantic_manifest = None
@@ -1233,6 +2019,8 @@ def replay_render(
 
     # --- 4. Process each Figure ---
     figures_data = []
+    all_warnings: list[dict] = []
+    code_slices = extract_figure_code_slices(script, len(unique_figures))
     for idx, fig in enumerate(unique_figures):
         fig_id = f"fig_{idx + 1}"
         
@@ -1245,7 +2033,10 @@ def replay_render(
 
         # Apply edit log
         if fig_edit_log:
-            apply_edit_log(fig, fig_edit_log)
+            fig_warnings = apply_edit_log(fig, fig_edit_log)
+            for w in fig_warnings:
+                w["figureId"] = fig_id
+            all_warnings.extend(fig_warnings)
 
         # Introspect
         result = introspect_figure(fig, semantic_manifest=semantic_manifest)
@@ -1302,6 +2093,7 @@ def replay_render(
             "axesCount": axes_count,
             "objectCount": len(objects),
             "kindCounts": kind_counts,
+            "codeSlice": code_slices[idx] if idx < len(code_slices) else None,
         }
         if binary_b64:
             fig_entry["binary_b64"] = binary_b64
@@ -1330,6 +2122,10 @@ def replay_render(
         
     # Expose figures list
     ret["figures"] = figures_data
+    ret["codeSlices"] = code_slices
+    # Expose patch warnings
+    if all_warnings:
+        ret["warnings"] = all_warnings
     return ret
 
 
@@ -1359,9 +2155,18 @@ def validate_deterministic(svg_a: str, svg_b: str) -> bool:
 
 if __name__ == "__main__":
     import sys
+    import argparse
 
-    input_data = sys.stdin.read()
-    payload = json.loads(input_data)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--payload-file", help="Path to JSON payload file")
+    args = parser.parse_args()
+
+    if args.payload_file:
+        with open(args.payload_file, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    else:
+        input_data = sys.stdin.read()
+        payload = json.loads(input_data)
 
     script = payload.get("script", "")
     data = payload.get("dataPayload") or payload.get("data")

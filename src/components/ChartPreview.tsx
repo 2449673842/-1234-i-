@@ -164,7 +164,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     setZoomMode('fit');
     setManualScale(1);
     setPan({ x: 0, y: 0 });
-  }, [renderedSVG]);
+  }, [figSession?.sessionId]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -263,6 +263,36 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       }
     }
   }, [validGids, selectedGids, onSelectGids, onSelectObject]);
+
+  const handleSvgDoubleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    let current: HTMLElement | null = target;
+    let foundGid: string | null = null;
+    while (current) {
+      if (current.id && isTextGid(current.id) && validGids.has(current.id)) {
+        foundGid = current.id;
+        break;
+      }
+      current = current.parentElement;
+    }
+    if (!foundGid) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    onSelectGids?.([foundGid]);
+    onSelectObject(foundGid);
+
+    const currentText = (current?.textContent || '').trim();
+    const nextText = window.prompt('编辑文本内容', currentText);
+    if (nextText == null || nextText === currentText) return;
+    void onPatch?.([{
+      op: 'set',
+      mode: 'backend_patch',
+      gid: foundGid,
+      prop: 'text',
+      value: nextText,
+    }]);
+  }, [validGids, onSelectGids, onSelectObject, onPatch]);
 
   const handleSvgPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (spacePressed || event.button === 1) {
@@ -411,6 +441,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
             <div
               ref={svgContainerRef}
               onClick={handleSvgClick}
+              onDoubleClick={handleSvgDoubleClick}
               onPointerOver={handleSvgPointerOver}
               className="shadow-sm bg-white flex items-center justify-center [&>svg]:block [&>svg]:w-auto [&>svg]:h-auto [&>svg]:max-w-none [&>svg]:max-h-none"
               dangerouslySetInnerHTML={{ __html: sanitizeSvg(renderedSVG) }}
