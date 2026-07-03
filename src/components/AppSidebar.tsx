@@ -1,4 +1,4 @@
-import { Home, Folder, Database, Settings, Blocks } from 'lucide-react';
+import { Home, Folder, Database, Settings, Blocks, FileImage, Grid } from 'lucide-react';
 import { ViewState } from '../App';
 
 interface AppSidebarProps {
@@ -36,6 +36,20 @@ export function AppSidebar({ currentView, subView = '', onNavigate }: AppSidebar
         >
           <Database className="w-4 h-4" />
           当前项目数据
+        </button>
+        <button 
+          onClick={() => navigateTo('export_library', 'export_library')}
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${currentView === 'export_library' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'}`}
+        >
+          <FileImage className="w-4 h-4" />
+          历史导出资产
+        </button>
+        <button 
+          onClick={() => navigateTo('composer', 'composer')}
+          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${currentView === 'composer' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'}`}
+        >
+          <Grid className="w-4 h-4" />
+          组合图工作台
         </button>
       </div>
 

@@ -29,6 +29,7 @@ export interface TranslationPromptInput {
   groupField?: string;
   errField?: string;
   originalScript: string;
+  scriptLanguage?: 'python' | 'r';
 }
 
 export interface TranslationPromptDataset {
@@ -212,7 +213,87 @@ function buildDataSummary(input: TranslationPromptInput): string {
   ].join('\n\n');
 }
 
+function buildRTranslationPrompt(input: TranslationPromptInput): string {
+  return `## SciFigure 平台 — R / ggplot2 脚本转译契约 v1
+
+你是 SciFigure 的 R 脚本转译器。你的任务是把“用户原始 R/ggplot2 脚本”稳定转成“平台可执行、可复现、可继续编辑”的标准 R 脚本。只输出纯 R 代码，不要 markdown，不要解释文字。
+
+---
+
+### 一、运行环境
+- R + ggplot2，推荐 svglite 输出 SVG
+- 平台通过 Rscript 执行脚本，并自动捕获最后的 ggplot 对象
+- 推荐把最终图对象赋值给 \`p\`、\`plot_obj\`、\`figure\` 或 \`fig\`
+
+### 二、数据接入（硬约束）
+
+**1）单文件任务：** 数据注入到 \`uploaded_data\`，可直接转成 data.frame：
+\`\`\`r
+df <- as.data.frame(uploaded_data)
+\`\`\`
+
+**2）多文件任务：** 所有上传文件路径注入到 \`uploaded_file_paths\`，键包括原始文件名（含扩展名）和去扩展名文件名。
+\`\`\`r
+df_main <- read.csv(uploaded_file_paths[["main.csv"]], check.names = FALSE)
+df_extra <- read.csv(uploaded_file_paths[["extra.csv"]], check.names = FALSE)
+df_xlsx <- readxl::read_excel(uploaded_file_paths[["table.xlsx"]], sheet = 1)
+\`\`\`
+
+**严禁**：本地绝对路径、网络路径、未上传文件、\`ggsave\`、\`pdf()\`、\`png()\`、\`svg()\`、\`dev.off()\`、\`setwd()\`。
+
+### 三、输出结构（推荐）
+\`\`\`r
+library(ggplot2)
+
+PRIMARY_COLOR <- "#1F78B4"
+SECONDARY_COLOR <- "#D62728"
+
+load_data <- function() {
+  df <- as.data.frame(uploaded_data)
+  return(df)
+}
+
+build_figure <- function(df) {
+  p <- ggplot(df, aes(x = ..., y = ...)) +
+    geom_point() +
+    theme_classic() +
+    labs(title = "...", x = "...", y = "...")
+  return(p)
+}
+
+df <- load_data()
+p <- build_figure(df)
+p
+\`\`\`
+
+### 四、平台可识别能力
+- 标题、X/Y 轴标签、刻度文字、图例标题与字体样式
+- ggplot layer 整体样式：点、线、柱、误差线
+- \`scale_color_manual()\` / \`scale_fill_manual()\` 分组配色
+- \`facet_wrap()\` / \`facet_grid()\` 面板识别与统一 facet strip 标题样式
+
+### 五、转译要求
+1. 只返回完整 R 代码，不要解释文字
+2. 不要输出 Python 代码
+3. 列名必须与真实数据精确匹配，含中文列名时用反引号或 \`.data[["列名"]]\`
+4. 多文件脚本必须按文件名读取 \`uploaded_file_paths\`
+5. 不要写本地绝对路径，不要保存图片，最终让平台捕获 ggplot 对象
+6. 保留原图科研意图：图类型、分组、排序、统计、标题和配色语义
+7. 如果需要分组颜色，优先使用 \`scale_color_manual(values = c(...))\` 或 \`scale_fill_manual(values = c(...))\`
+
+---
+
+### 本次任务数据
+${buildDataSummary(input)}
+
+### 用户原始脚本
+${input.originalScript}`;
+}
+
 export function buildTranslationPrompt(input: TranslationPromptInput): string {
+  if (input.scriptLanguage === 'r') {
+    return buildRTranslationPrompt(input);
+  }
   return `## SciFigure 平台 — Matplotlib 脚本转译契约 v2
 
 你是 SciFigure 的脚本转译器。你的任务不是自由改写，而是把“用户原始 Matplotlib 脚本”稳定转成“平台可执行、可复现、可继续编辑”的标准脚本。输出必须满足固定结构，不能输出解释文字，不能遗漏任何必需段落。

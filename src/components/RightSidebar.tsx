@@ -46,6 +46,7 @@ const PROP_LABELS: Record<string, string> = {
   fontsize: '字号',
   fontfamily: '字体',
   fontweight: '字重',
+  fontstyle: '字形',
   rotation: '旋转角度',
   ha: '水平对齐',
   va: '垂直对齐',
@@ -88,6 +89,21 @@ const PROP_LABELS: Record<string, string> = {
   'figure.width_in': '画布宽度(in)',
   'figure.height_in': '画布高度(in)',
   'figure.dpi': '分辨率 DPI',
+  left: '左边距',
+  bottom: '下边距',
+  width: '宽度',
+  height: '高度',
+  aspect: '比例',
+  elinewidth: '误差线线宽',
+  capsize: '误差帽宽度',
+  capthick: '误差端点线宽',
+  ecolor: '误差棒颜色',
+  box_color: '箱体颜色',
+  median_color: '中位线颜色',
+  cmap: '色带',
+  vmin: '色阶最小值',
+  vmax: '色阶最大值',
+  tick_fontsize: '刻度字号',
 };
 
 const VALUE_LABELS: Record<string, Record<string, string>> = {
@@ -172,6 +188,7 @@ export function RightSidebar({
   const [customFontPresets, setCustomFontPresets] = useState<Record<string, FontPreset>>({});
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set());
   const [lastSelectedGroupId, setLastSelectedGroupId] = useState<string | null>(null);
+  const [componentSubplotScope, setComponentSubplotScope] = useState<string>('all');
 
   useEffect(() => {
     setSelectedGroupIds(new Set());
@@ -225,6 +242,9 @@ export function RightSidebar({
   const getDraftKey = (gid: string, prop: string) => `${gid}::${prop}`;
   const getPropLabel = (prop: string) => PROP_LABELS[prop] || prop.replace(/_/g, ' ');
   const getValueLabel = (prop: string, value: string) => VALUE_LABELS[prop]?.[value] || value;
+  const resolvePatchMode = (prop: string) => (
+    manifest.generatedBy === 'r_svg' || !LOCAL_PROPS.has(prop) ? 'backend_patch' as const : 'local_patch' as const
+  );
   const getSemanticObjectLabel = (obj: ManifestObject) => {
     const id = obj.id;
     if (id.startsWith('title.')) return '主标题';
@@ -271,7 +291,9 @@ export function RightSidebar({
       return;
     }
 
-    const mode = isLocalPatch(currentObject?.kind || '', prop) ? 'local_patch' : 'backend_patch';
+    const mode = manifest.generatedBy === 'r_svg'
+      ? 'backend_patch'
+      : isLocalPatch(currentObject?.kind || '', prop) ? 'local_patch' : 'backend_patch';
     void onPatch([{ op: 'set', mode, gid, prop, value }]);
   };
 
@@ -279,6 +301,17 @@ export function RightSidebar({
     const bindings = manifest.bindings || [];
     const binding = bindings.find((b: Binding) => b.paletteId === paletteId);
     const gids = binding ? binding.gids : [];
+    if (manifest.generatedBy === 'r_svg') {
+      const prop = binding?.props?.[0] || 'color';
+      void onPatch(gids.map((gid: string) => ({
+        op: 'set' as const,
+        mode: 'backend_patch' as const,
+        gid,
+        prop,
+        value: newColor,
+      })));
+      return;
+    }
     void onPatch([{
       type: 'code_patch' as const,
       target_id: paletteId,
@@ -297,10 +330,13 @@ export function RightSidebar({
       collection: '散点/集合',
       patch: '图形块',
       figure: '画布',
+      subplot: '子图',
       axes: '坐标轴',
       grid: '网格',
       axis_x: 'X轴',
       axis_y: 'Y轴',
+      boxplot_container: '箱线图',
+      violinplot_container: '小提琴图',
     };
     return labels[kind] || kind;
   };
@@ -652,9 +688,34 @@ export function RightSidebar({
     );
   };
 
+  const renderCmapSelect = (gid: string, prop: string, currentValue: string, onChange: (value: string) => void) => {
+    const cmaps = ['viridis', 'plasma', 'inferno', 'magma', 'cividis', 'coolwarm', 'seismic', 'bwr', 'rainbow', 'jet', 'gray', 'hot'];
+    return (
+      <div key={`${gid}-${prop}`} className="flex flex-col gap-1.5 text-sm">
+        <span className="text-slate-600 font-medium">{PROP_LABELS[prop] || prop}</span>
+        <select
+          className="border border-slate-200 rounded p-1.5 text-xs text-slate-700 bg-white focus:border-blue-500 outline-none w-full"
+          value={currentValue || 'viridis'}
+          onChange={(e) => onChange(e.target.value)}
+        >
+          {cmaps.map(c => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
+      </div>
+    );
+  };
+
   const renderField = (gid: string, prop: string, fieldType: string, currentValue: unknown) => {
     if (fieldType === 'number' || typeof currentValue === 'number') {
-      return renderNumberInput(gid, prop, currentValue as number, (v) => handlePatch(gid, prop, v), { step: prop.includes('size') || prop.includes('width') ? 0.5 : 0.1 });
+      let step = 0.1;
+      if (prop.includes('size') || prop.includes('width')) {
+        step = 0.5;
+      }
+      if ((gid.startsWith('colorbar.') || gid.startsWith('subplot.')) && ['left', 'bottom', 'width', 'height'].includes(prop)) {
+        step = 0.01;
+      }
+      return renderNumberInput(gid, prop, currentValue as number, (v) => handlePatch(gid, prop, v), { step });
     }
     if (fieldType === 'boolean' || typeof currentValue === 'boolean') {
       return renderBoolInput(prop, currentValue as boolean, (v) => handlePatch(gid, prop, v));
@@ -665,10 +726,46 @@ export function RightSidebar({
     if (prop === 'fontfamily') {
       return renderFontSelect(gid, prop, currentValue as string, (v) => handlePatch(gid, prop, v));
     }
+    if (prop === 'fontweight') {
+      return renderSelectInput('字重', String(currentValue || 'normal'), ['normal', 'bold', 'semibold', 'light'], (v) => handlePatch(gid, prop, v));
+    }
+    if (prop === 'fontstyle') {
+      return renderSelectInput('字形', String(currentValue || 'normal'), ['normal', 'italic', 'oblique'], (v) => handlePatch(gid, prop, v));
+    }
+    if (prop === 'aspect') {
+      return renderSelectInput('子图比例', String(currentValue || 'auto'), ['auto', 'equal', '1'], (v) => handlePatch(gid, prop, v));
+    }
+    if (prop === 'cmap') {
+      return renderCmapSelect(gid, prop, currentValue as string, (v) => handlePatch(gid, prop, v));
+    }
     if (fieldType === 'string' || typeof currentValue === 'string') {
       return renderTextInput(gid, prop, currentValue as string, (v) => handlePatch(gid, prop, v));
     }
     return null;
+  };
+
+  const renderSubplotPanel = (obj: ManifestObject) => {
+    const props = obj.currentProps as any;
+    return (
+      <div className="space-y-6">
+        {renderPanelTitle('子图位置与比例')}
+        <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 text-xs text-blue-700">
+          {props.label || obj.label || obj.id}
+        </div>
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-2">
+            {renderNumberInput(obj.id, 'left', props.left ?? 0, (v) => handlePatch(obj.id, 'left', v), { min: 0, max: 1, step: 0.01 })}
+            {renderNumberInput(obj.id, 'bottom', props.bottom ?? 0, (v) => handlePatch(obj.id, 'bottom', v), { min: 0, max: 1, step: 0.01 })}
+            {renderNumberInput(obj.id, 'width', props.width ?? 0.5, (v) => handlePatch(obj.id, 'width', v), { min: 0.005, max: 1, step: 0.01 })}
+            {renderNumberInput(obj.id, 'height', props.height ?? 0.5, (v) => handlePatch(obj.id, 'height', v), { min: 0.005, max: 1, step: 0.01 })}
+          </div>
+          {renderSelectInput('子图比例', String(props.aspect || 'auto'), ['auto', 'equal', '1'], (v) => handlePatch(obj.id, 'aspect', v))}
+          <div className="text-[11px] leading-relaxed text-slate-500">
+            这里修改的是 Matplotlib Axes 在整张图中的归一化位置。适合统一 2x2、2x4 等多子图的单个面板大小和比例。
+          </div>
+        </div>
+      </div>
+    );
   };
 
   // Specialized Panels for Phase 3 Axis, Grid, and detailed Legend
@@ -792,6 +889,9 @@ export function RightSidebar({
   };
 
   const renderObjectPanel = (obj: ManifestObject) => {
+    if (obj.id.startsWith('subplot.')) {
+      return renderSubplotPanel(obj);
+    }
     if (obj.id.startsWith('spine_group.')) {
       return renderSpineGroupPanel(obj);
     }
@@ -883,7 +983,7 @@ export function RightSidebar({
         }
         return {
           op: 'set',
-          mode: LOCAL_PROPS.has(actualProp) ? 'local_patch' : 'backend_patch',
+          mode: resolvePatchMode(actualProp),
           gid,
           prop: actualProp,
           value: val
@@ -918,7 +1018,7 @@ export function RightSidebar({
               }
               patches.push({
                 op: 'set',
-                mode: LOCAL_PROPS.has(actualProp) ? 'local_patch' : 'backend_patch',
+                mode: resolvePatchMode(actualProp),
                 gid,
                 prop: actualProp,
                 value: val
@@ -1203,6 +1303,15 @@ export function RightSidebar({
     if (prop === 'size') return obj.kind === 'collection';
     if (prop === 'fontsize') return obj.kind === 'text' || obj.kind === 'legend';
     if (prop === 'fontfamily') return obj.kind === 'text' || obj.kind === 'legend';
+    if (prop === 'fontweight' || prop === 'fontstyle') return obj.kind === 'text';
+    if (['left', 'bottom', 'width', 'height', 'aspect'].includes(prop)) return obj.kind === 'subplot';
+    if (['left', 'bottom', 'width', 'height', 'tick_fontsize', 'label'].includes(prop)) {
+      return obj.kind === 'colorbar';
+    }
+    if (prop === 'linestyle') return ['line', 'grid', 'spine'].includes(obj.kind);
+    if (['tick_direction', 'tick_length', 'tick_width', 'tick_color', 'show_minor_ticks'].includes(prop)) {
+      return ['axis_x', 'axis_y', 'axes'].includes(obj.kind);
+    }
     return false;
   };
 
@@ -1225,13 +1334,37 @@ export function RightSidebar({
       return obj.kind === 'collection'
         && (typeof obj.currentProps.size === 'number' || hasColorRows(obj.currentProps.facecolor));
     };
-    const lineObjects = objects.filter(obj => obj.kind === 'line' && !obj.id.startsWith('legend_') && !isMarkerLine(obj));
-    const pointObjects = objects.filter(obj => isMarkerLine(obj) || isScatterCollection(obj));
-    const errorbarObjects = objects.filter(obj => obj.kind === 'collection' && !isScatterCollection(obj));
-    const textObjects = objects.filter(obj => obj.kind === 'text');
-    const axisObjects = objects.filter(obj => ['axes', 'axis_x', 'axis_y'].includes(obj.kind));
-    const legendObjects = objects.filter(obj => obj.kind === 'legend');
+    const getObjectSubplotId = (obj: ManifestObject) => {
+      if (obj.kind === 'subplot') return obj.id;
+      if (typeof obj.subplotId === 'string') return obj.subplotId;
+      if (typeof obj.source?.axesIndex === 'number') return `subplot.${obj.source.axesIndex}`;
+      return null;
+    };
+    const subplotOptions = objects
+      .filter(obj => obj.kind === 'subplot')
+      .sort((a, b) => Number(a.currentProps.subplotIndex ?? a.source?.axesIndex ?? 0) - Number(b.currentProps.subplotIndex ?? b.source?.axesIndex ?? 0));
+    const scopedObjects = objects.filter(obj => {
+      if (componentSubplotScope === 'all') return true;
+      return getObjectSubplotId(obj) === componentSubplotScope;
+    });
+    const lineObjects = scopedObjects.filter(obj => obj.kind === 'line' && !obj.id.startsWith('legend_') && !isMarkerLine(obj));
+    const pointObjects = scopedObjects.filter(obj => isMarkerLine(obj) || isScatterCollection(obj));
+    const errorbarObjects = scopedObjects.filter(obj => obj.kind === 'collection' && !isScatterCollection(obj));
+    const textObjects = scopedObjects.filter(obj => obj.kind === 'text');
+    const axisObjects = scopedObjects.filter(obj => ['axes', 'axis_x', 'axis_y'].includes(obj.kind));
+    const subplotPanelObjects = scopedObjects.filter(obj => obj.kind === 'subplot');
+    const legendObjects = scopedObjects.filter(obj => obj.kind === 'legend');
+    const heatmapObjects = scopedObjects.filter(obj => obj.kind === 'heatmap');
+    const colorbarObjects = scopedObjects.filter(obj => obj.kind === 'colorbar');
     const componentGroups = [
+      {
+        id: 'subplots',
+        label: '子图面板 / 比例',
+        description: '每个 Axes 在整张 Figure 中的位置、宽高和比例。适合统一多面板布局。',
+        objects: subplotPanelObjects,
+        colorProp: null,
+        sizeProp: null,
+      },
       {
         id: 'texts',
         label: '文本 / 标签 / 刻度文字',
@@ -1298,6 +1431,22 @@ export function RightSidebar({
         colorProp: 'color',
         sizeProp: null,
       },
+      {
+        id: 'heatmaps',
+        label: '热图 (Heatmap)',
+        description: 'AxesImage 或 QuadMesh，可调整色阶与色带。',
+        objects: heatmapObjects,
+        colorProp: null,
+        sizeProp: null,
+      },
+      {
+        id: 'colorbars',
+        label: '色条 (Colorbar)',
+        description: 'Colorbar 容器，可调整标签文字、刻度字号与显示隐藏。',
+        objects: colorbarObjects,
+        colorProp: null,
+        sizeProp: null,
+      },
     ].filter(group => group.objects.length > 0);
 
     const commonComponentProp = (items: ManifestObject[], prop: string, fallback: unknown) => {
@@ -1310,7 +1459,7 @@ export function RightSidebar({
         if (!supportsBatchProp(obj, prop)) return null;
         return {
           op: 'set' as const,
-          mode: LOCAL_PROPS.has(prop) ? 'local_patch' as const : 'backend_patch' as const,
+          mode: resolvePatchMode(prop),
           gid: obj.id,
           prop,
           value,
@@ -1325,7 +1474,7 @@ export function RightSidebar({
         if (!prop || !supportsBatchProp(obj, prop)) return null;
         return {
           op: 'set' as const,
-          mode: LOCAL_PROPS.has(prop) ? 'local_patch' as const : 'backend_patch' as const,
+          mode: resolvePatchMode(prop),
           gid: obj.id,
           prop,
           value,
@@ -1347,6 +1496,28 @@ export function RightSidebar({
       <div className="space-y-5">
         {renderPanelTitle('组件中心')}
         <p className="text-xs text-slate-400">按真实 matplotlib 图元聚合，不依赖脚本 label。线、点、误差棒分开控制，避免改错对象。</p>
+        {subplotOptions.length > 0 && (
+          <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-blue-900">作用范围</div>
+                <div className="text-[11px] text-blue-700">选择某个子图后，下方所有批量控件只作用于该子图内部对象。</div>
+              </div>
+              <select
+                className="border border-blue-200 rounded-md bg-white px-2 py-1 text-xs text-blue-900 outline-none"
+                value={componentSubplotScope}
+                onChange={(event) => setComponentSubplotScope(event.target.value)}
+              >
+                <option value="all">全部子图</option>
+                {subplotOptions.map(subplot => (
+                  <option key={subplot.id} value={subplot.id}>
+                    {String(subplot.currentProps.label || subplot.label || subplot.id)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
         {componentGroups.map(group => {
           const selectedTargets = group.objects.filter(obj => selectedGids.includes(obj.id) || selectedObject === obj.id);
           const targetObjects = selectedTargets.length > 0 ? selectedTargets : group.objects;
@@ -1458,6 +1629,50 @@ export function RightSidebar({
                 {targetObjects.some(obj => supportsBatchProp(obj, 'size')) && (
                   renderNumberInput(`component-${group.id}`, 'size', pointSize, (value) => patchComponentGroup(targetObjects.filter(obj => obj.kind === 'collection'), 'size', value), { min: 1, max: 2000, step: 1 })
                 )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'fontweight')) && (
+                  renderSelectInput('字重', commonComponentProp(targetObjects, 'fontweight', 'normal') as string, ['normal', 'bold', 'semibold', 'light'], (value) => patchComponentGroup(targetObjects, 'fontweight', value))
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'fontstyle')) && (
+                  renderSelectInput('字形', commonComponentProp(targetObjects, 'fontstyle', 'normal') as string, ['normal', 'italic', 'oblique'], (value) => patchComponentGroup(targetObjects, 'fontstyle', value))
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'width')) && (
+                  <div className="space-y-2 rounded-md border border-slate-100 bg-white/80 p-2">
+                    <div className="text-[11px] font-semibold text-slate-500">子图位置与尺寸</div>
+                    {renderNumberInput(`component-${group.id}`, 'left', commonComponentProp(targetObjects, 'left', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'left', value), { min: 0, max: 1, step: 0.01 })}
+                    {renderNumberInput(`component-${group.id}`, 'bottom', commonComponentProp(targetObjects, 'bottom', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'bottom', value), { min: 0, max: 1, step: 0.01 })}
+                    {renderNumberInput(`component-${group.id}`, 'width', commonComponentProp(targetObjects, 'width', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'width', value), { min: 0.005, max: 1, step: 0.01 })}
+                    {renderNumberInput(`component-${group.id}`, 'height', commonComponentProp(targetObjects, 'height', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'height', value), { min: 0.005, max: 1, step: 0.01 })}
+                    {renderSelectInput('比例', commonComponentProp(targetObjects, 'aspect', 'auto') as string, ['auto', 'equal', '1'], (value) => patchComponentGroup(targetObjects, 'aspect', value))}
+                  </div>
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'linestyle')) && (
+                  renderSelectInput('线型', commonComponentProp(targetObjects, 'linestyle', '-') as string, ['-', '--', '-.', ':'], (value) => patchComponentGroup(targetObjects, 'linestyle', value))
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'tick_direction')) && (
+                  renderSelectInput('刻度方向', commonComponentProp(targetObjects, 'tick_direction', 'out') as string, ['out', 'in', 'inout'], (value) => patchComponentGroup(targetObjects, 'tick_direction', value))
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'tick_length')) && (
+                  renderNumberInput(`component-${group.id}`, 'tick_length', commonComponentProp(targetObjects, 'tick_length', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'tick_length', value), { min: 0, max: 20, step: 0.5 })
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'tick_width')) && (
+                  renderNumberInput(`component-${group.id}`, 'tick_width', commonComponentProp(targetObjects, 'tick_width', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'tick_width', value), { min: 0, max: 10, step: 0.1 })
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'tick_color')) && (
+                  renderColorInput('刻度线颜色', commonComponentProp(targetObjects, 'tick_color', '#000000') as string, (value) => patchComponentGroup(targetObjects, 'tick_color', value), `component:${group.id}:${targetKey}:tick_color`)
+                )}
+                {targetObjects.some(obj => supportsBatchProp(obj, 'show_minor_ticks')) && (
+                  renderBoolInput('显示副刻度', Boolean(commonComponentProp(targetObjects, 'show_minor_ticks', false)), (value) => patchComponentGroup(targetObjects, 'show_minor_ticks', value))
+                )}
+                {group.id === 'colorbars' && (
+                  <div className="space-y-2 rounded-md border border-slate-100 bg-white/80 p-2">
+                    <div className="text-[11px] font-semibold text-slate-500">色条位置与尺寸</div>
+                    {renderNumberInput(`component-${group.id}`, 'left', commonComponentProp(targetObjects, 'left', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'left', value), { min: 0, max: 1, step: 0.01 })}
+                    {renderNumberInput(`component-${group.id}`, 'bottom', commonComponentProp(targetObjects, 'bottom', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'bottom', value), { min: 0, max: 1, step: 0.01 })}
+                    {renderNumberInput(`component-${group.id}`, 'width', commonComponentProp(targetObjects, 'width', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'width', value), { min: 0.005, max: 1, step: 0.01 })}
+                    {renderNumberInput(`component-${group.id}`, 'height', commonComponentProp(targetObjects, 'height', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'height', value), { min: 0.005, max: 1, step: 0.01 })}
+                    {renderNumberInput(`component-${group.id}`, 'tick_fontsize', commonComponentProp(targetObjects, 'tick_fontsize', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'tick_fontsize', value), { min: 4, max: 48, step: 0.5 })}
+                  </div>
+                )}
                 {targetObjects.some(obj => supportsBatchProp(obj, 'alpha')) && (
                   <div className="grid grid-cols-[88px_1fr] items-center gap-2 text-sm">
                     <span className="text-xs text-slate-500 font-medium">透明度</span>
@@ -1502,7 +1717,12 @@ export function RightSidebar({
       const alphas = batchObjects.map(o => o.currentProps.alpha).filter(a => a !== undefined);
       return alphas.length > 0 && alphas.every(a => a === alphas[0]) ? alphas[0] : undefined;
     })();
-    const fontObjects = batchObjects.filter(o => supportsBatchProp(o, 'fontsize') || supportsBatchProp(o, 'fontfamily'));
+    const fontObjects = batchObjects.filter(o =>
+      supportsBatchProp(o, 'fontsize') ||
+      supportsBatchProp(o, 'fontfamily') ||
+      supportsBatchProp(o, 'fontweight') ||
+      supportsBatchProp(o, 'fontstyle')
+    );
     const commonFontSize = (() => {
       const sizes = fontObjects.map(o => o.currentProps.fontsize).filter(v => typeof v === 'number');
       return sizes.length > 0 && sizes.every(size => size === sizes[0]) ? sizes[0] as number : undefined;
@@ -1568,7 +1788,7 @@ export function RightSidebar({
         if (actualProp !== prop && !supportsBatchProp(obj, actualProp)) return null;
         return {
           op: 'set' as const,
-          mode: LOCAL_PROPS.has(actualProp) ? 'local_patch' as const : 'backend_patch' as const,
+          mode: manifest.generatedBy === 'r_svg' || !LOCAL_PROPS.has(actualProp) ? 'backend_patch' as const : 'local_patch' as const,
           gid,
           prop: actualProp,
           value
@@ -1598,6 +1818,8 @@ export function RightSidebar({
               <div className="text-[11px] font-semibold text-indigo-900">字体批量编辑（文本/标签 {fontObjects.length} 个）</div>
               {renderNumberInput('batch', 'fontsize', commonFontSize, (v) => handleBatchPatch('fontsize', v), { min: 4, max: 48, step: 0.5 })}
               {renderFontSelect('batch', 'fontfamily', commonFontFamily, (v) => handleBatchPatch('fontfamily', v))}
+              {renderSelectInput('字重', String(commonProp(fontObjects, 'fontweight', 'normal')), ['normal', 'bold', 'semibold', 'light'], (v) => handleBatchPatch('fontweight', v))}
+              {renderSelectInput('字形', String(commonProp(fontObjects, 'fontstyle', 'normal')), ['normal', 'italic', 'oblique'], (v) => handleBatchPatch('fontstyle', v))}
             </div>
           )}
           {renderColorInput('颜色', commonColor, (v) => handleBatchPatch('color', v), `batch:${selectedGids.join('|')}:color`)}
@@ -1706,11 +1928,13 @@ export function RightSidebar({
     return values.length > 0 && values.every(value => value === values[0]) ? values[0] : fallback;
   };
 
-  const fontGroupProp = (roleId: string, prop: 'fontsize' | 'fontfamily' | 'color') => {
+  type FontGroupPatchProp = 'fontsize' | 'fontfamily' | 'color' | 'fontweight' | 'fontstyle';
+
+  const fontGroupProp = (roleId: string, prop: FontGroupPatchProp) => {
     if (roleId === 'xticks' || roleId === 'yticks') {
       if (prop === 'fontsize') return 'tick_labelsize';
       if (prop === 'fontfamily') return 'tick_labelfamily';
-      return 'tick_labelcolor';
+      if (prop === 'color') return 'tick_labelcolor';
     }
     return prop;
   };
@@ -1718,14 +1942,14 @@ export function RightSidebar({
   const commonFontGroupProp = (
     roleId: string,
     items: ManifestObject[],
-    prop: 'fontsize' | 'fontfamily' | 'color',
+    prop: FontGroupPatchProp,
     fallback: unknown,
   ) => commonProp(items, fontGroupProp(roleId, prop), fallback);
 
   const buildFontGroupPatches = (
     roleId: string,
     items: ManifestObject[],
-    prop: 'fontsize' | 'fontfamily' | 'color',
+    prop: FontGroupPatchProp,
     value: unknown,
   ): PatchEntry[] => {
     const tickAxisMatch = roleId === 'xticks'
@@ -1735,6 +1959,17 @@ export function RightSidebar({
         : null;
 
     if (tickAxisMatch) {
+      if (prop === 'fontweight' || prop === 'fontstyle') {
+        return items
+          .filter(obj => obj.id.match(tickAxisMatch.textRegex))
+          .map(obj => ({
+            op: 'set' as const,
+            mode: 'backend_patch' as const,
+            gid: obj.id,
+            prop,
+            value,
+          }));
+      }
       const axisIndexes = Array.from(new Set(items.map(obj => {
         return obj.id.match(tickAxisMatch.axisRegex)?.[1] || obj.id.match(tickAxisMatch.textRegex)?.[1];
       }).filter(Boolean))) as string[];
@@ -1752,7 +1987,7 @@ export function RightSidebar({
       if (!supportsBatchProp(obj, prop)) return null;
       return {
         op: 'set' as const,
-        mode: prop === 'color' ? 'local_patch' as const : 'backend_patch' as const,
+        mode: prop === 'color' ? resolvePatchMode(prop) : 'backend_patch' as const,
         gid: obj.id,
         prop,
         value,
@@ -1760,7 +1995,7 @@ export function RightSidebar({
     }).filter(Boolean) as PatchEntry[];
   };
 
-  const handleFontGroupPatch = (roleId: string, items: ManifestObject[], prop: 'fontsize' | 'fontfamily' | 'color', value: unknown) => {
+  const handleFontGroupPatch = (roleId: string, items: ManifestObject[], prop: FontGroupPatchProp, value: unknown) => {
     const patches = buildFontGroupPatches(roleId, items, prop, value);
     if (patches.length > 0) void onPatch(patches);
   };
@@ -1826,6 +2061,8 @@ export function RightSidebar({
               const family = String(commonFontGroupProp(group.id, group.objects, 'fontfamily', 'Arial'));
               const size = commonFontGroupProp(group.id, group.objects, 'fontsize', undefined) as number | undefined;
               const color = resolvePickerColor(commonFontGroupProp(group.id, group.objects, 'color', '#000000'));
+              const weight = String(commonFontGroupProp(group.id, group.objects, 'fontweight', 'normal'));
+              const style = String(commonFontGroupProp(group.id, group.objects, 'fontstyle', 'normal'));
               return (
                 <div key={group.id} className="p-3 rounded-lg border border-slate-100 bg-slate-50/50 space-y-3">
                   <div className="flex items-center justify-between">
@@ -1844,6 +2081,8 @@ export function RightSidebar({
                   <div className="space-y-3 pt-2 border-t border-slate-100">
                     {renderNumberInput(`font-center-${group.id}`, 'fontsize', size, (v) => handleFontGroupPatch(group.id, group.objects, 'fontsize', v), { min: 4, max: 48, step: 0.5 })}
                     {renderFontSelect(`font-center-${group.id}`, 'fontfamily', family, (v) => handleFontGroupPatch(group.id, group.objects, 'fontfamily', v))}
+                    {renderSelectInput('字重', weight, ['normal', 'bold', 'semibold', 'light'], (v) => handleFontGroupPatch(group.id, group.objects, 'fontweight', v))}
+                    {renderSelectInput('字形', style, ['normal', 'italic', 'oblique'], (v) => handleFontGroupPatch(group.id, group.objects, 'fontstyle', v))}
                     {renderColorInput('文字颜色', color, (v) => handleFontGroupPatch(group.id, group.objects, 'color', v), `font-center:${group.id}:color`)}
                   </div>
                 </div>
@@ -1930,6 +2169,22 @@ export function RightSidebar({
     const handleApplyPreset = (presetName: string) => {
       const colors = presetMap[presetName];
       if (!colors) return;
+      if (manifest.generatedBy === 'r_svg') {
+        const patchArray = palettes.flatMap((p: any, idx: number) => {
+          const binding = bindings.find((b: Binding) => b.paletteId === p.id);
+          const prop = binding?.props?.[0] || 'color';
+          const gids = Array.isArray(binding?.gids) ? binding.gids : [];
+          return gids.map((gid: string) => ({
+            op: 'set' as const,
+            mode: 'backend_patch' as const,
+            gid,
+            prop,
+            value: colors[idx % colors.length],
+          }));
+        });
+        void onPatch(patchArray);
+        return;
+      }
       const patchArray = palettes.map((p: any, idx: number) => {
         const binding = bindings.find((b: Binding) => b.paletteId === p.id);
         return {
@@ -2029,7 +2284,47 @@ export function RightSidebar({
 
                   {count > 0 && (
                     <div className="space-y-2 pt-2 border-t border-slate-100">
-                      {renderColorInput('组颜色', resolvePickerColor(p.color), (value) => handlePaletteColorChange(p.id, value), `palette:${p.id}`)}
+                      {selectedCount > 0 ? (
+                        <>
+                          {renderColorInput(
+                            `仅修改已选的 ${selectedCount} 个图元`,
+                            '#1f77b4',
+                            (value) => {
+                              const selectedGidsOfPalette = gids.filter((gid: string) => selectedGids.includes(gid));
+                              const patches = selectedGidsOfPalette.map((gid: string) => {
+                                const obj = objects.find(o => o.id === gid);
+                                if (!obj) return null;
+                                let prop = 'color';
+                                if (obj.kind === 'patch' || obj.kind === 'collection') {
+                                  prop = 'facecolor';
+                                }
+                                return {
+                                  op: 'set' as const,
+                                  mode: resolvePatchMode(prop),
+                                  gid,
+                                  prop,
+                                  value,
+                                };
+                              }).filter(Boolean) as PatchEntry[];
+                              if (patches.length > 0) void onPatch(patches);
+                            },
+                            `palette-subset:${p.id}`
+                          )}
+                          {renderColorInput(
+                            '统一修改代码全局常量 (整组同步)',
+                            resolvePickerColor(p.color),
+                            (value) => handlePaletteColorChange(p.id, value),
+                            `palette:${p.id}`
+                          )}
+                        </>
+                      ) : (
+                        renderColorInput(
+                          '修改组颜色代码常量 (整组同步)',
+                          resolvePickerColor(p.color),
+                          (value) => handlePaletteColorChange(p.id, value),
+                          `palette:${p.id}`
+                        )
+                      )}
                       <div className="rounded-md bg-white/70 border border-slate-100 p-2">
                         <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">影响对象</div>
                         <div className="space-y-1">

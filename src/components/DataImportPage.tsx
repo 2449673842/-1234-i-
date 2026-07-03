@@ -10,6 +10,22 @@ import {
   type DataRow,
 } from '../utils/scriptTranslationContract';
 
+function inferScriptLanguage(fileName: string, fallback: 'python' | 'r' = 'python'): 'python' | 'r' {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.r')) return 'r';
+  if (lower.endsWith('.py')) return 'python';
+  return fallback;
+}
+
+function inferScriptLanguageFromText(script: string, fallback: 'python' | 'r' = 'python'): 'python' | 'r' {
+  const trimmed = script.trimStart();
+  if (/^#\s*language:\s*r\b/i.test(trimmed)) return 'r';
+  if (/^\s*library\s*\(\s*(ggplot2|tidyverse)\s*\)/m.test(script)) return 'r';
+  if (/\bggplot\s*\(/.test(script)) return 'r';
+  if (/\bmatplotlib\b|\bplt\.|import\s+pandas|from\s+__future__/.test(script)) return 'python';
+  return fallback;
+}
+
 export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate: (view: ViewState) => void, spec: FigureSpec, onSpecChange: (spec: FigureSpec) => void }) {
   const [step, setStep] = useState(1);
 
@@ -23,6 +39,7 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
           : '分组柱状图',
   );
   const [customScript, setCustomScript] = useState(spec.custom_script || "");
+  const [customScriptLanguage, setCustomScriptLanguage] = useState<'python' | 'r'>(spec.script_language || 'python');
   const [dragOver, setDragOver] = useState(false);
   const getAiPrompt = () => buildTranslationPrompt({
     headers,
@@ -34,6 +51,7 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
     groupField,
     errField,
     originalScript: customScript,
+    scriptLanguage: customScriptLanguage,
   });
 
   const [aiResult, setAiResult] = useState('');
@@ -208,9 +226,10 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
         },
         raw_data: { ranked_response: { items } },
         colors: nextColors,
-        custom_script: customScript,
-        source: sourceMeta,
-      });
+      custom_script: customScript,
+      script_language: customScriptLanguage,
+      source: sourceMeta,
+    });
     } else {
       const categories = Array.from(catSet);
       for (const row of rows) {
@@ -245,7 +264,7 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
       Object.keys(groups).forEach((g, i) => {
         if (!colors[g]) colors[g] = defaultPalette[i % defaultPalette.length];
       });
-      onSpecChange({ ...spec, plot_type: 'bar', raw_data: { categories, groups }, colors, custom_script: customScript, source: sourceMeta });
+      onSpecChange({ ...spec, plot_type: 'bar', raw_data: { categories, groups }, colors, custom_script: customScript, script_language: customScriptLanguage, source: sourceMeta });
     }
   };
 
@@ -254,6 +273,7 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
       ...spec,
       plot_type: 'custom',
       custom_script: customScript,
+      script_language: customScriptLanguage,
       raw_data: { custom_data: allData },
       source: file ? {
         file_name: file.name,
@@ -268,7 +288,7 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
   };
 
   const copyPrompt = () => {
-    const fullPrompt = getAiPrompt() + '\n\n用户原始脚本:\n' + customScript;
+    const fullPrompt = getAiPrompt();
     navigator.clipboard.writeText(fullPrompt).then(() => {
       alert('✅ 提示词 + 脚本已复制到剪贴板！\n\n粘贴到 ChatGPT / DeepSeek / Gemini 等 AI，将改写结果复制回来粘贴到下方。');
     }).catch(() => {
@@ -284,10 +304,13 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
       return;
     }
     setCustomScript(aiResult);
+    const nextLanguage = inferScriptLanguageFromText(aiResult, customScriptLanguage);
+    setCustomScriptLanguage(nextLanguage);
     onSpecChange({ 
       ...spec, 
       plot_type: 'custom', 
       custom_script: aiResult, 
+      script_language: nextLanguage,
       raw_data: { custom_data: allData },
       source: file ? {
         file_name: file.name,
@@ -489,7 +512,18 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
                 </div>
                 {chartType === '自定义脚本' && (
                   <div className="mt-4">
-                    <label className="block text-sm font-semibold text-slate-700 mb-2">粘贴或编写您的 Python 绘图脚本</label>
+                    <label className="block text-sm font-semibold text-slate-700 mb-2">粘贴或编写您的 Python / R 绘图脚本</label>
+                    <div className="mb-2 flex items-center gap-2 text-xs">
+                      <span className="text-slate-500">脚本类型</span>
+                      <select
+                        value={customScriptLanguage}
+                        onChange={(e) => setCustomScriptLanguage(e.target.value as 'python' | 'r')}
+                        className="rounded border border-slate-200 bg-white px-2 py-1 text-slate-700 outline-none"
+                      >
+                        <option value="python">Python / Matplotlib</option>
+                        <option value="r">R / ggplot2</option>
+                      </select>
+                    </div>
                     <div
                       className="relative"
                       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -498,37 +532,44 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
                         e.preventDefault();
                         setDragOver(false);
                         const file = e.dataTransfer.files?.[0];
-                        if (!file || !file.name.endsWith('.py')) return;
+                        if (!file || !file.name.toLowerCase().match(/\.(py|r)$/)) return;
+                        const nextLanguage = inferScriptLanguage(file.name, customScriptLanguage);
                         const reader = new FileReader();
                         reader.onload = (ev) => {
                           setCustomScript(ev.target?.result as string || '');
+                          setCustomScriptLanguage(nextLanguage);
                         };
                         reader.readAsText(file);
                       }}
                     >
                       {dragOver && (
                         <div className="absolute inset-0 z-10 bg-blue-500/20 border-2 border-dashed border-blue-500 rounded-lg flex items-center justify-center pointer-events-none">
-                          <span className="text-blue-700 font-semibold text-lg bg-white/80 px-4 py-2 rounded shadow">松开以上传 .py 文件</span>
+                          <span className="text-blue-700 font-semibold text-lg bg-white/80 px-4 py-2 rounded shadow">松开以上传 .py / .R 文件</span>
                         </div>
                       )}
                       <textarea 
                         className="w-full h-48 p-3 text-sm font-mono bg-slate-900 text-green-400 rounded-lg border border-slate-700 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-                        placeholder="# 平台通过 plt.gcf() 捕获 Figure，无需 savefig/show\nimport matplotlib.pyplot as plt\nimport pandas as pd\nimport numpy as np\n\n# 数据在 _uploaded_data (list[dict]) 中\n# df = pd.DataFrame(_uploaded_data)\n\nfig, ax = plt.subplots()\n# 您的代码..."
+                        placeholder={customScriptLanguage === 'r' ? 'library(ggplot2)\n\n# 数据在 uploaded_data 中\n# df <- as.data.frame(uploaded_data)\n\np <- ggplot(df, aes(x = ..., y = ...)) + geom_point()\np' : '# 平台通过 plt.gcf() 捕获 Figure，无需 savefig/show\nimport matplotlib.pyplot as plt\nimport pandas as pd\nimport numpy as np\n\n# 数据在 _uploaded_data (list[dict]) 中\n# df = pd.DataFrame(_uploaded_data)\n\nfig, ax = plt.subplots()\n# 您的代码...'}
                         value={customScript}
-                        onChange={(e) => setCustomScript(e.target.value)}
+                        onChange={(e) => {
+                          setCustomScript(e.target.value);
+                          setCustomScriptLanguage(inferScriptLanguageFromText(e.target.value, customScriptLanguage));
+                        }}
                       />
                       <div className="absolute bottom-4 right-4 flex items-center gap-2">
                         <input
                           type="file"
-                          accept=".py"
+                          accept=".py,.r,.R"
                           className="hidden"
                           id="py-upload-dataimport"
                           onChange={(e) => {
                             const file = e.target.files?.[0];
                             if (!file) return;
+                            const nextLanguage = inferScriptLanguage(file.name, customScriptLanguage);
                             const reader = new FileReader();
                             reader.onload = (ev) => {
                               setCustomScript(ev.target?.result as string || '');
+                              setCustomScriptLanguage(nextLanguage);
                             };
                             reader.readAsText(file);
                             e.target.value = '';
@@ -538,7 +579,7 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
                           htmlFor="py-upload-dataimport"
                           className="bg-slate-600 hover:bg-slate-500 text-white px-3 py-2 rounded shadow text-sm font-medium transition-colors cursor-pointer"
                         >
-                          上传 .py 文件
+                          上传 .py / .R 文件
                         </label>
                         <button 
                           className="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded shadow text-sm font-medium transition-colors"
@@ -570,7 +611,7 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
 
                     <textarea id="ai-prompt-display" readOnly rows={4}
                       className="w-full mb-3 p-3 text-xs font-mono bg-slate-100 text-slate-600 rounded-lg border border-slate-200 outline-none resize-none"
-                      value={getAiPrompt() + '\n\n用户原始脚本:\n' + customScript}
+                      value={getAiPrompt()}
                     />
 
                     <div className="flex gap-2 mb-4">

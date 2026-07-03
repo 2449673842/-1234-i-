@@ -537,6 +537,7 @@ export interface ExportAsset {
   metadata: Record<string, unknown>;
   tags: string[];
   createdAt: string;
+  sizeBytes?: number;
 }
 
 function countCjkChars(value: string): number {

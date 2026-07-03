@@ -34,7 +34,7 @@ interface MainWorkspaceProps {
   renderLog: string[];
   datasets?: DatasetEntry[];
   onRenderLog: (lines: string[]) => void;
-  onRender: (script: string, dataPayload?: any) => Promise<RenderResponse>;
+  onRender: (script: string, dataPayload?: any, initialEditLog?: EditEntry[], language?: 'python' | 'r') => Promise<RenderResponse>;
   onPatch: (patches: PatchEntry[]) => Promise<PatchResponse>;
   onCodePatch: (script: string, force?: boolean) => Promise<any>;
 
@@ -105,6 +105,7 @@ export function MainWorkspace({
   const [nameInput, setNameInput] = useState(projectName);
   const [scriptDragOver, setScriptDragOver] = useState(false);
   const [showHistoryMenu, setShowHistoryMenu] = useState(false);
+  const [dragEditMode, setDragEditMode] = useState(false);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [renderElapsedMs, setRenderElapsedMs] = useState(0);
   const [activeDataFileId, setActiveDataFileId] = useState<string | null>(null);
@@ -115,6 +116,12 @@ export function MainWorkspace({
     totalRows: 0,
     returnedRows: 0,
   });
+  const scriptLanguage = spec.script_language || 'python';
+  const isRScript = scriptLanguage === 'r';
+
+  const updateScriptLanguageFromFile = (fileName: string): 'python' | 'r' => (
+    fileName.toLowerCase().endsWith('.r') ? 'r' : 'python'
+  );
 
   useEffect(() => {
     if (!isRendering) {
@@ -346,7 +353,7 @@ export function MainWorkspace({
       '',
       '## AI 转义后 / 当前平台脚本',
       '',
-      '```python',
+      `\`\`\`${scriptLanguage === 'r' ? 'r' : 'python'}`,
       renderedOrTranslatedScript || '# 当前没有可导出的脚本',
       '```',
       '',
@@ -415,7 +422,7 @@ export function MainWorkspace({
       ? spec.custom_script 
       : generatePythonCode(spec);
 
-    if (spec.plot_type === 'custom') {
+    if (spec.plot_type === 'custom' && !isRScript) {
       const boundRows = currentDataPayload?.custom_data;
       if (!Array.isArray(boundRows) || boundRows.length === 0) {
         onRenderLog([
@@ -426,8 +433,8 @@ export function MainWorkspace({
       }
     }
       
-    onRenderLog([`> [开始] 调用 Python 引擎... ${startedAt.toLocaleTimeString()}`]);
-    const res = await onRender(script, currentDataPayload);
+    onRenderLog([`> [开始] 调用 ${isRScript ? 'R' : 'Python'} 引擎... ${startedAt.toLocaleTimeString()}`]);
+    const res = await onRender(script, currentDataPayload, undefined, scriptLanguage);
     const elapsed = Date.now() - startTime;
     if (res.status === 'success') {
       onRenderLog([
@@ -438,7 +445,7 @@ export function MainWorkspace({
     } else {
       onRenderLog([
         `> [错误] ${res.message || '渲染失败'}`,
-        res.traceback ? '> [调试] 已返回 Python traceback，见下方展开面板。' : '> [调试] 未返回 traceback。',
+        res.traceback ? `> [调试] 已返回 ${isRScript ? 'R' : 'Python'} traceback，见下方展开面板。` : '> [调试] 未返回 traceback。',
       ]);
     }
   };
@@ -448,7 +455,7 @@ export function MainWorkspace({
     const startTime = Date.now();
     const script = spec.custom_script || '';
 
-    if (!projectId && spec.plot_type === 'custom') {
+    if (!projectId && spec.plot_type === 'custom' && !isRScript) {
       const boundRows = currentDataPayload?.custom_data;
       if (!Array.isArray(boundRows) || boundRows.length === 0) {
         onRenderLog([
@@ -459,6 +466,24 @@ export function MainWorkspace({
       }
     }
     
+    if (isRScript) {
+      onRenderLog([`> [R 渲染] 开始执行 R 脚本并预览 SVG... ${startedAt.toLocaleTimeString()}`]);
+      const res = await onRender(script, currentDataPayload, [], 'r');
+      const elapsed = Date.now() - startTime;
+      if (res.status === 'success') {
+        onRenderLog([
+          `> [R 渲染] 渲染成功`,
+          `> [完成] 耗时 ${elapsed}ms ✔`,
+        ]);
+      } else {
+        onRenderLog([
+          `> [R 错误] ${res.message || '渲染失败'}`,
+          res.traceback ? '> [调试] 返回了 R traceback。' : '',
+        ].filter(Boolean));
+      }
+      return;
+    }
+
     onRenderLog([`> [代码补丁] 开始 AST 校验与渲染... ${startedAt.toLocaleTimeString()}`]);
     let res = await onCodePatch(script, false);
     
@@ -748,6 +773,20 @@ export function MainWorkspace({
                 真实 SVG 对象可直接编辑；全局参数改完后再重新渲染
               </div>
             )}
+            {figSession?.svg && (
+              <button
+                type="button"
+                onClick={() => setDragEditMode(prev => !prev)}
+                className={`text-xs font-semibold rounded-full border px-2 py-1 transition-colors ${
+                  dragEditMode
+                    ? 'border-blue-200 bg-blue-50 text-blue-700'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+                title="开启后，可拖动已选文本/标签；确认后再重渲染写回。"
+              >
+                拖拽微调 {dragEditMode ? '开' : '关'}
+              </button>
+            )}
             {isRendering && (
               <div className="flex items-center gap-2 text-xs text-blue-700 font-medium bg-blue-50 border border-blue-100 px-2 py-1 rounded-full">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -788,6 +827,7 @@ export function MainWorkspace({
                 renderedSVG={figSession?.svg ?? null}
                 onPatch={onPatch}
                 figSession={figSession}
+                dragMode={dragEditMode}
               />
               {isRendering && (
                 <div className="absolute left-1/2 top-20 z-40 w-[min(520px,calc(100%-48px))] -translate-x-1/2 overflow-hidden rounded-xl border border-blue-100 bg-white/95 shadow-xl backdrop-blur">
@@ -842,19 +882,34 @@ export function MainWorkspace({
                   e.preventDefault();
                   setScriptDragOver(false);
                   const file = e.dataTransfer.files?.[0];
-                  if (!file || !file.name.endsWith('.py')) return;
+                  if (!file || !/\.(py|r)$/i.test(file.name)) return;
                   const reader = new FileReader();
                   reader.onload = (ev) => {
-                    onSpecChange({ ...spec, custom_script: ev.target?.result as string || '' });
+                    onSpecChange({
+                      ...spec,
+                      script_language: updateScriptLanguageFromFile(file.name),
+                      custom_script: ev.target?.result as string || '',
+                    });
                   };
                   reader.readAsText(file);
                 }}
               >
                 {scriptDragOver && (
                   <div className="absolute inset-0 z-20 bg-blue-500/20 border-2 border-dashed border-blue-500 rounded-lg flex items-center justify-center pointer-events-none">
-                    <span className="text-blue-700 font-semibold text-lg bg-white/80 px-4 py-2 rounded shadow">松开以上传 .py 文件</span>
+                    <span className="text-blue-700 font-semibold text-lg bg-white/80 px-4 py-2 rounded shadow">松开以上传 .py / .R 文件</span>
                   </div>
                 )}
+                <div className="flex items-center justify-between gap-3 border-b border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200">
+                  <div className="font-semibold">脚本语言</div>
+                  <select
+                    value={scriptLanguage}
+                    onChange={(e) => onSpecChange({ ...spec, script_language: e.target.value as 'python' | 'r' })}
+                    className="rounded border border-slate-600 bg-slate-800 px-2 py-1 text-xs text-white outline-none"
+                  >
+                    <option value="python">Python / Matplotlib</option>
+                    <option value="r">R / ggplot2 或 base plot</option>
+                  </select>
+                </div>
                 {projectId && activeCodeSlice && (
                   <div className={`m-3 mb-0 rounded-lg border ${codeSliceConfidenceClass} shrink-0 overflow-hidden`}>
                     <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-white/10">
@@ -880,7 +935,8 @@ export function MainWorkspace({
                 <div className="flex-1 min-h-0">
                   <Editor
                     height="100%"
-                    defaultLanguage="python"
+                    defaultLanguage={isRScript ? 'r' : 'python'}
+                    language={isRScript ? 'r' : 'python'}
                     theme="vs-dark"
                     value={spec.custom_script || ''}
                     onChange={value => onSpecChange({ ...spec, custom_script: value || '' })}
@@ -890,7 +946,7 @@ export function MainWorkspace({
                 <div className="flex justify-end gap-2 p-3 bg-slate-800 border-t border-slate-700 shrink-0 z-10">
                   <input
                     type="file"
-                    accept=".py"
+                    accept=".py,.r,.R"
                     className="hidden"
                     id="py-upload-editor"
                     onChange={(e) => {
@@ -898,7 +954,11 @@ export function MainWorkspace({
                       if (!file) return;
                       const reader = new FileReader();
                       reader.onload = (ev) => {
-                        onSpecChange({ ...spec, custom_script: ev.target?.result as string || '' });
+                        onSpecChange({
+                          ...spec,
+                          script_language: updateScriptLanguageFromFile(file.name),
+                          custom_script: ev.target?.result as string || '',
+                        });
                       };
                       reader.readAsText(file);
                       e.target.value = '';
@@ -908,7 +968,7 @@ export function MainWorkspace({
                     htmlFor="py-upload-editor"
                     className="px-3 py-1.5 bg-slate-600 text-white rounded text-sm font-medium hover:bg-slate-500 transition-colors cursor-pointer"
                   >
-                    上传 .py 文件
+                    上传 .py / .R 文件
                   </label>
                   <button
                     type="button"

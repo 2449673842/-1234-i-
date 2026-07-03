@@ -42,6 +42,34 @@ ax.legend()
 plt.tight_layout()
 `;
 
+const DEFAULT_R_TEMPLATE = `library(ggplot2)
+
+df <- as.data.frame(uploaded_data)
+
+p <- ggplot(df, aes(x = 1:nrow(df), y = 1:nrow(df))) +
+  geom_point(color = "#1F78B4") +
+  theme_classic() +
+  labs(title = "My Plot", x = "X Axis", y = "Y Axis")
+
+p
+`;
+
+function inferScriptLanguage(fileName: string, fallback: 'python' | 'r' = 'python'): 'python' | 'r' {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.r')) return 'r';
+  if (lower.endsWith('.py')) return 'python';
+  return fallback;
+}
+
+function inferScriptLanguageFromText(script: string, fallback: 'python' | 'r' = 'python'): 'python' | 'r' {
+  const trimmed = script.trimStart();
+  if (/^#\s*language:\s*r\b/i.test(trimmed)) return 'r';
+  if (/^\s*library\s*\(\s*(ggplot2|tidyverse)\s*\)/m.test(script)) return 'r';
+  if (/\bggplot\s*\(/.test(script)) return 'r';
+  if (/\bmatplotlib\b|\bplt\.|import\s+pandas|from\s+__future__/.test(script)) return 'python';
+  return fallback;
+}
+
 interface PendingDataset {
   id: string;
   file: File;
@@ -123,6 +151,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
 }) {
   const [name, setName] = useState('未命名项目');
   const [script, setScript] = useState(DEFAULT_TEMPLATE);
+  const [scriptLanguage, setScriptLanguage] = useState<'python' | 'r'>('python');
   const [aiResult, setAiResult] = useState('');
   const [pendingDatasets, setPendingDatasets] = useState<PendingDataset[]>([]);
   const [parsedDatasets, setParsedDatasets] = useState<Record<string, ParsedDataset>>({});
@@ -253,8 +282,9 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
       groupField,
       errField,
       originalScript: script,
+      scriptLanguage,
     });
-  }, [additionalPromptDatasets, allData, errField, groupField, headers, previewData, primaryDataset, script, xField, yField]);
+  }, [additionalPromptDatasets, allData, errField, groupField, headers, previewData, primaryDataset, script, scriptLanguage, xField, yField]);
 
   const steps = [
     { num: 1, label: '上传数据' },
@@ -316,19 +346,23 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
   const handleScriptFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const nextLanguage = inferScriptLanguage(file.name, scriptLanguage);
     const reader = new FileReader();
     reader.onload = ev => {
       setScript((ev.target?.result as string) || '');
+      setScriptLanguage(nextLanguage);
     };
     reader.readAsText(file);
     e.target.value = '';
   };
 
   const readScriptFile = (file: File) => {
-    if (!file.name.endsWith('.py')) return;
+    const nextLanguage = inferScriptLanguage(file.name, scriptLanguage);
+    if (!file.name.toLowerCase().match(/\.(py|r)$/)) return;
     const reader = new FileReader();
     reader.onload = ev => {
       setScript((ev.target?.result as string) || '');
+      setScriptLanguage(nextLanguage);
     };
     reader.readAsText(file);
   };
@@ -346,12 +380,14 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
       alert('请先粘贴 AI 改写后的脚本');
       return;
     }
+    const nextLanguage = inferScriptLanguageFromText(aiResult, scriptLanguage);
     setScript(aiResult);
+    setScriptLanguage(nextLanguage);
     setAiResult('');
   };
 
   const handleClear = () => {
-    setScript(DEFAULT_TEMPLATE);
+    setScript(scriptLanguage === 'r' ? DEFAULT_R_TEMPLATE : DEFAULT_TEMPLATE);
   };
 
   const renderStepStatus = (stepNum: number) => {
@@ -388,7 +424,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
       return;
     }
     if (!hasScript) {
-      alert('请先准备可运行的 Python 脚本');
+      alert('请先准备可运行的绘图脚本');
       return;
     }
 
@@ -413,6 +449,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
             figure: { width: 100, height: 80, unit: 'mm', dpi: 150 },
             colors: {},
             custom_script: script,
+            script_language: scriptLanguage,
             raw_data: { custom_data: allData },
             source: sourceMeta,
             data: {
@@ -457,6 +494,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
             figure: { width: 100, height: 80, unit: 'mm', dpi: 150 },
             colors: {},
             custom_script: script,
+            script_language: scriptLanguage,
             raw_data: { custom_data: allData },
             source: sourceMeta,
             data: {
@@ -774,9 +812,9 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
           <section className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-lg font-bold text-slate-800 mb-2">2. 准备 Python 脚本</h2>
+                <h2 className="text-lg font-bold text-slate-800 mb-2">2. 准备绘图脚本</h2>
                 <p className="text-sm text-slate-500 leading-6">
-                  现在脚本有真实数据上下文。你可以直接粘贴现有脚本、拖入 `.py` 文件，或者先走网页 AI 改写。
+                  现在脚本有真实数据上下文。你可以直接粘贴现有脚本、拖入 `.py / .R` 文件，或者先走网页 AI 改写。
                 </p>
               </div>
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
@@ -806,15 +844,35 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                   {scriptDragOver && (
                     <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
                       <div className="bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm font-semibold">
-                        松开以上传 .py 文件
+                        松开以上传 .py / .R 文件
                       </div>
                     </div>
                   )}
+                  <div className="absolute top-3 right-3 z-10 flex items-center gap-2 rounded-lg border border-slate-200 bg-white/90 px-2 py-1 text-xs shadow-sm">
+                    <span className="text-slate-500">脚本类型</span>
+                    <select
+                      value={scriptLanguage}
+                      onChange={e => {
+                        const next = e.target.value as 'python' | 'r';
+                        setScriptLanguage(next);
+                        if (!script.trim() || script === DEFAULT_TEMPLATE || script === DEFAULT_R_TEMPLATE) {
+                          setScript(next === 'r' ? DEFAULT_R_TEMPLATE : DEFAULT_TEMPLATE);
+                        }
+                      }}
+                      className="rounded border border-slate-200 bg-white px-1 py-0.5 text-xs text-slate-700 outline-none"
+                    >
+                      <option value="python">Python / Matplotlib</option>
+                      <option value="r">R / ggplot2</option>
+                    </select>
+                  </div>
                   <textarea
                     value={script}
-                    onChange={e => setScript(e.target.value)}
-                    className="w-full h-[360px] p-5 text-sm font-mono leading-relaxed border-0 resize-none focus:outline-none bg-transparent text-slate-800"
-                    placeholder="粘贴或编写 Python 脚本，或拖入 .py 文件"
+                    onChange={e => {
+                      setScript(e.target.value);
+                      setScriptLanguage(inferScriptLanguageFromText(e.target.value, scriptLanguage));
+                    }}
+                    className="w-full h-[360px] p-5 pt-14 text-sm font-mono leading-relaxed border-0 resize-none focus:outline-none bg-transparent text-slate-800"
+                    placeholder="粘贴或编写 Python/R 脚本，或拖入 .py / .R 文件"
                     spellCheck={false}
                   />
                 </div>
@@ -823,7 +881,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".py"
+                    accept=".py,.r,.R"
                     className="hidden"
                     onChange={handleScriptFileUpload}
                   />
@@ -833,7 +891,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                     type="button"
                   >
                     <Upload className="w-4 h-4" />
-                    上传 .py
+                    上传 .py / .R
                   </button>
                   <button
                     onClick={handleClear}
@@ -874,7 +932,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                     value={aiResult}
                     onChange={e => setAiResult(e.target.value)}
                     className="w-full h-[220px] p-4 text-sm font-mono leading-relaxed border-0 resize-none focus:outline-none bg-white text-slate-800"
-                    placeholder="把 AI 返回的 Python 代码粘贴到这里，然后点击下方按钮覆盖左侧脚本"
+                    placeholder={`把 AI 返回的${scriptLanguage === 'r' ? ' R' : ' Python'}代码粘贴到这里，然后点击下方按钮覆盖左侧脚本`}
                     spellCheck={false}
                   />
                   <div className="px-4 py-3 border-t border-slate-200 bg-white">

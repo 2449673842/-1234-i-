@@ -23,25 +23,46 @@
 
 ---
 
-### 二、数据接入（最重要）
+### 二、数据接入
 
-用户上传的数据文件分为两类，读取方式完全不同：
+用户上传的数据文件分为两类，读取方式完全不同。**单文件脚本**可以使用 `_uploaded_data`；**多文件脚本必须按文件名显式读取每个数据表**，不要猜测 `_uploaded_data` 代表哪一张表。
 
-**1）主数据文件（带标记的第一个文件）：** 数据直接注入到 `_uploaded_data`（list[dict]）
+**1）单文件 / 主数据文件：** 数据直接注入到 `_uploaded_data`（list[dict]）
 ```python
-df = pd.DataFrame(_uploaded_data)   # ✅ 唯一读取方式，不准对主文件用 read_csv
+df = pd.DataFrame(_uploaded_data)   # ✅ 仅适合单文件或用户明确指定主表的场景
 ```
 
-**2）辅助数据文件（其他上传的文件）：** 路径注入到 `_uploaded_file_paths`（dict[str, str]），键 = 原始文件名
+**2）多文件 / 辅助数据文件：** 路径注入到 `_uploaded_file_paths`（dict[str, str]），键 = 原始文件名
 ```python
-df_aux = pd.read_csv(_uploaded_file_paths["文件名.csv"])   # ✅ 必须这样读辅助文件
+df_matrix = pd.read_csv(_uploaded_file_paths["机制输入矩阵.csv"])
+df_stats = pd.read_csv(_uploaded_file_paths["变量统计表.csv"])
+df_pred = pd.read_excel(_uploaded_file_paths["二维交互预测.xlsx"], sheet_name="输入数据与预测")
 ```
 
-| 文件类型 | 数据在哪 | 如何读取 |
-|---------|---------|---------|
-| 主文件 | `_uploaded_data` 已注入 | `pd.DataFrame(_uploaded_data)` |
-| 辅助文件 | 只有路径在 `_uploaded_file_paths` | `pd.read_csv(_uploaded_file_paths["文件名"])` |
-| 未上传的文件 | ❌ 无法访问 | — |
+**多文件硬性要求：**
+- 每一张表都必须用 `_uploaded_file_paths["原始文件名"]` 显式读取。
+- 不允许把 `pd.DataFrame(_uploaded_data)` 当成统计表、映射表、预测表或任意辅助表使用。
+- `load_data()` 必须返回语义清晰的数据对象，例如 `return df_matrix, df_stats, df_pred`。
+- `build_figure(...)` 的参数名必须和真实表含义一致，例如 `build_figure(df_matrix, df_stats, df_pred)`。
+- 每次读取后必须做列名自检，缺列时抛出带文件名和缺失列的清晰错误。
+
+推荐结构：
+```python
+def require_columns(df: pd.DataFrame, required: list[str], file_label: str) -> None:
+    missing = [col for col in required if col not in df.columns]
+    if missing:
+        raise KeyError(f"{file_label} 缺失列: {', '.join(missing)}; 当前列: {', '.join(map(str, df.columns))}")
+
+
+def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    df_matrix = pd.read_csv(_uploaded_file_paths["机制输入矩阵.csv"])
+    df_stats = pd.read_csv(_uploaded_file_paths["变量统计表.csv"])
+    df_pred = pd.read_excel(_uploaded_file_paths["二维交互预测.xlsx"], sheet_name="输入数据与预测")
+    require_columns(df_matrix, ["LNRR", "Response_Group"], "机制输入矩阵.csv")
+    require_columns(df_stats, ["feature", "spearman_rho_with_LNRR", "spearman_p"], "变量统计表.csv")
+    require_columns(df_pred, ["OPR", "FeP", "LNRR"], "二维交互预测.xlsx")
+    return df_matrix, df_stats, df_pred
+```
 
 **严禁**（会被 AST 安全门拦截）：
 - `open()` / `pathlib.Path().read_text()` / 任何磁盘文件读写
@@ -51,163 +72,82 @@ df_aux = pd.read_csv(_uploaded_file_paths["文件名.csv"])   # ✅ 必须这样
 
 ### 三、Figure 捕获机制（多图支持）
 
-平台通过**双重机制**自动捕获脚本生成的所有 Figure，不需要手动注册：
-
-1. **`Figure.__init__` 猴子补丁**：拦截所有 Figure 创建，注册到 `_figure_registry`
-2. **`plt.get_fignums()` 回退**：执行结束后扫描所有存活 Figure
-
-脚本可以生成**任意数量**的 Figure，每张 Figure：
-- 分配唯一 ID（`fig_1`, `fig_2`, ...）
-- 拥有独立的 Manifest / EditLog / Revision / SVG
-- 在前端以独立 Tab 展示，可单独编辑
-
-**推荐的模板结构：**
-
-```python
-import matplotlib.pyplot as plt
-import pandas as pd
-import numpy as np
-
-df = pd.DataFrame(_uploaded_data)
-
-# Figure 1
-fig1, ax1 = plt.subplots(figsize=(100/25.4, 80/25.4), dpi=150)
-ax1.plot(...)
-ax1.set_title('Figure 1')
-
-# Figure 2（如果需要，可以用不同数据列）
-fig2, ax2 = plt.subplots(figsize=(100/25.4, 80/25.4), dpi=150)
-ax2.scatter(...)
-ax2.set_title('Figure 2')
-
-# 无需 plt.gcf()、plt.savefig() 或 plt.show()
-# 平台自动捕获所有 Figure
-```
-
-如果脚本只生成一张图，就保持单图即可，不要无故拆成多图。
+脚本可以生成**任意数量**的 Figure，平台会自动捕获它们，无需手动注册或指定返回值：
+- 推荐使用 `fig, ax = plt.subplots(...)` 形式创建
+- 不需要写 `plt.gcf()`、`plt.savefig()` 或 `plt.show()`
+- 单张图保持单图即可，不要无故拆成多图
 
 ---
 
 ### 四、平台可识别图元（内省清单）
 
-脚本生成的 Figure 中，以下图元会被自动识别为**可交互编辑对象**：
+平台支持对以下 matplotlib 原生图元进行只读解析或属性交互编辑，请**优先使用原生高阶 API 绘制**：
 
-| 图元种类 | GID 格式 | 可编辑属性 |
-|---------|----------|-----------|
-| 标题 | `title.{ax_idx}` | `text`, `fontsize`, `color`, `fontfamily` |
-| X 轴标签 | `xlabel.{ax_idx}` | `text`, `fontsize`, `color`, `fontfamily` |
-| Y 轴标签 | `ylabel.{ax_idx}` | `text`, `fontsize`, `color`, `fontfamily` |
-| X 轴刻度 | `xtick.{ax_idx}.{i}` | `text`, `fontsize`, `color`, `rotation` |
-| Y 轴刻度 | `ytick.{ax_idx}.{i}` | `text`, `fontsize`, `color`, `rotation` |
-| 上脊柱 | `spine.top.{ax_idx}` | `visible`, `color`, `linewidth` |
-| 下脊柱 | `spine.bottom.{ax_idx}` | `visible`, `color`, `linewidth` |
-| 左脊柱 | `spine.left.{ax_idx}` | `visible`, `color`, `linewidth` |
-| 右脊柱 | `spine.right.{ax_idx}` | `visible`, `color`, `linewidth` |
-| 折线 | `line.{ax_idx}.{i}` | `color`, `linewidth`, `linestyle`, `alpha` |
-| 散点/填充集 | `collection.{ax_idx}.{i}` | `facecolor`, `edgecolor`, `alpha`, `linewidth` |
-| 图例 | `legend.{ax_idx}` | `visible`, `fontsize`, `facecolor` |
-
-**说明：**
-- `ax_idx` 从 0 开始，对应 Figure 中 axes 的索引顺序
-- `i` 从 0 开始，对应 axes.lines 或 axes.collections 中的索引
-- `side` 取值 `left` / `right` / `top` / `bottom`
+| 图元种类 | GID 格式 | 对应 Matplotlib API / 识别规则 | 支持的可编辑属性 |
+|:---|:---|:---|:---|
+| **标题** | `title.{ax_idx}` | `ax.set_title()` | `text`, `fontsize`, `color`, `fontfamily` |
+| **X/Y 轴标签** | `xlabel.{ax_idx}`, `ylabel.{ax_idx}` | `ax.set_xlabel()`, `ax.set_ylabel()` | `text`, `fontsize`, `color`, `fontfamily` |
+| **X/Y 轴刻度** | `xtick.{ax_idx}.{i}`, `ytick.{ax_idx}.{i}` | `ax.get_xticklabels()`, `ax.get_yticklabels()` | `text`, `fontsize`, `color`, `rotation` |
+| **边框脊柱** | `spine.{side}.{ax_idx}` | `ax.spines['left']` (left/right/top/bottom) | `visible`, `color`, `linewidth` |
+| **网格线** | `grid.{ax_idx}` | `ax.grid()` | `visible`, `color`, `linewidth`, `linestyle`, `alpha` |
+| **折线** | `line.{ax_idx}.{i}` | `ax.plot()` | `color`, `linewidth`, `linestyle`, `alpha`, `marker`, `markersize` |
+| **散点/集合** | `collection.{ax_idx}.{i}` | `ax.scatter()` | `facecolor`, `edgecolor`, `alpha`, `linewidth` |
+| **柱状图** | `container.bar.{ax_idx}.{c_idx}` | `ax.bar()` | `color`, `facecolor`, `edgecolor`, `alpha`, `linewidth` |
+| **误差棒** | `container.errorbar.{ax_idx}.{c_idx}` | `ax.errorbar()` | `color`, `linewidth`, `elinewidth`, `capsize`, `capthick`, `alpha` |
+| **箱线图** | `container.boxplot.{ax_idx}.{c_idx}` | `ax.boxplot()` | `color`, `linewidth`, `alpha`, `box_color`, `median_color` |
+| **小提琴图** | `container.violinplot.{ax_idx}.{c_idx}`| `ax.violinplot()` | `color`, `facecolor`, `edgecolor`, `linewidth`, `alpha` |
+| **热图** | `heatmap.image.{ax_idx}.{i}` 或 `.mesh.`| `ax.imshow()`, `ax.pcolormesh()` | `cmap`, `vmin`, `vmax`, `alpha` (目前为只读/patch) |
+| **色条** | `colorbar.{ax_idx}` | `fig.colorbar()` | `label`, `tick_fontsize`, `visible`, `left`, `bottom`, `width`, `height` (目前为只读/patch) |
+| **图例** | `legend.{ax_idx}` | `ax.legend()` | `visible`, `fontsize`, `facecolor`, `frameon`, `edgecolor`, `loc` |
 
 ---
 
-### 五、编辑与重放模型
+### 五、编写规范与样式约定（大模型必读）
 
-理解平台的编辑模型有助于生成更适合编辑的脚本：
+遵循以下规则可大幅提升脚本在平台中的识别精准度与用户的修图体验：
 
-```
-脚本执行 → 内省 artist tree → 生成 Manifest + SVG
-                                      ↓
-用户在前端编辑属性 → 写入 EditLog → 下次渲染时重放
-                                      ↓
-可同时存在多个 EditLog 条目，支持撤销/重做
-```
+1. **绝对禁止“手写图元”**：
+   - ❌ 禁止通过 `for` 循环与手动创建 `matplotlib.patches.Rectangle` / `Polygon` 来手写绘制柱状图或直方图，必须调用 `ax.bar()` 或 `ax.barh()`。
+   - ❌ 禁止通过循环绘制单个像素小方块来画热图，必须使用 `ax.imshow()` 或 `ax.pcolormesh()`。
+   - ❌ 禁止手写线段（多条 `ax.plot`）来拼接成误差棒，必须使用 `ax.errorbar()`。
+   - 否则内省引擎将无法将其合并为正确的 Container，用户无法进行组属性统一修改。
 
-**对脚本编写的影响：**
-- 标题/标签的文本内容**可在前端直接修改**，无需改脚本
-- 字体大小、颜色、线宽等**可在右侧面板调整**
-- 但**数据逻辑、统计计算、排序**等仍需通过脚本（CodePatch）修改
-- GID 集合在脚本修改后会发生**漂移**（missing[] + new[]），平台会自动检测
+2. **使用命名颜色常量**：
+   - 推荐在脚本开头使用清晰的变量指定颜色常数，例如：
+     ```python
+     COLOR_GROUP_A = "#1f77b4"
+     COLOR_GROUP_B = "#ff7f0e"
+     ```
+     配色中心可以识别这些常量定义并在右侧一键更新代码变量值。
 
----
+3. **Colorbar 的绑定规范**：
+   - 绘制色条时，务必将绘图 API 返回的 mappable 对象传递给 colorbar 函数：
+     ```python
+     im = ax.imshow(data, cmap="viridis")
+     fig.colorbar(im, ax=ax)  # ✅ 推荐：显式绑定 mappable 和 axes
+     ```
 
-### 六、样式约定
-
-遵循以下约定可让生成的图表在平台中获得最佳编辑体验：
-
-**推荐：**
-- ✅ 白色背景，无网格线
-- ✅ 四边脊柱全显示（`spines` 默认即可）
-- ✅ 字体用 `sans-serif`（自动 CJK 回退）
-- ✅ 标题位置默认居中
-- ✅ 使用 `ax.plot()` / `ax.bar()` / `ax.scatter()` / `ax.barh()` 等标准绘图 API
-- ✅ 图例用 `ax.legend()`，不传 `bbox_to_anchor` 以便前端调整位置
-- ✅ 对多组数据用不同颜色区分，配色用十六进制码（如 `#1F78B4`）
-
-**不推荐：**
-- ❌ 手写 SVG 或使用 `svg` 库
-- ❌ 使用 `seaborn` / `plotly` / `pyecharts` 等非 matplotlib 库
-- ❌ 在脚本内硬编码刻度标签角度（前端可调）
-- ❌ `plt.tight_layout()` 可保留，不影响编辑
-- ❌ 在脚本中调用 `ax.set_aspect('equal')` 可能导致布局异常
+4. **剔除展示与导出操作**：
+   - ❌ 绝对不要包含 `plt.show()`（会阻塞无头后端）。
+   - ❌ 绝对不要包含 `plt.savefig()`（平台会自动在内存中捕获高 DPI 的 SVG/PDF 进行持久化与库导出）。
 
 ---
 
-### 七、安全限制（以下操作会被拦截）
+### 六、安全与限制
 
-| 类别 | 被禁止的操作 |
-|------|------------|
-| 文件 I/O | `open()`, `pd.read_csv()`, `pd.read_excel()`, `pickle.load()`, `json.load()` 等 |
-| 系统调用 | `os.system()`, `subprocess.*`, `sys.exit()` |
-| 网络 | `urllib.*`, `requests.*`, `socket.*` |
-| 动态执行 | `eval()`, `exec()`, `compile()`, `__import__`, `globals()`, `locals()` |
-| 危险模块 | `os`, `sys`, `subprocess`, `builtins`, `shutil`, `socket`, `urllib`, `requests` |
+* **禁止模块**：`os`, `sys`, `subprocess`, `builtins`, `socket`, `urllib`, `requests`，以及任何形式的 `eval()` / `exec()`，脚本必须是安全的科学绘图纯逻辑。
 
 ---
 
-### 八、CodePatch 与 GID 漂移
+### 七、输出格式要求
 
-如果后续用户修改脚本，平台会：
-1. 执行新脚本，获取新的 GID 集合
-2. 与旧 GID 集合对比 → 输出 `driftedGids: { missing[], new[] }`
-3. 用户确认后，保留能匹配的 EditLog 条目，丢弃失效条目
-
-**对初版脚本的影响：** 建议使用稳定的 GID 命名（不要动态生成 GID），确保后续编辑时漂移最小。
+1. **只返回纯 Python 代码**，不要用 ```python 或 ``` 包裹。
+2. 不要添加任何说明文字或前导解释。
+3. 确保代码结构缩进完全正确，可在 `exec()` 中直接执行。
 
 ---
 
-### 九、输出要求
-
-1. **只返回纯 Python 代码**，不要用 markdown 代码块包裹
-2. 不要添加任何说明文字或注释
-3. 确保代码可在 `exec()` 中直接运行（无缩进问题、无语法错误）
-4. **列名必须和用户提供的真实数据一致**，根据数据预览和统计信息修正用户脚本中的列名拼写、类型误判、缺失值处理等问题
-5. 如果脚本里用了 `.str` 访问器，请先确认目标列确实是字符串列；对数值列不要用 `.str`
-6. `set_xticks()` / `set_xticklabels()` 的数量必须严格一致
-
----
-
-### 十、自查清单
-
-改写完成后，逐一确认：
-
-- [ ] 数据读取用的是 `pd.DataFrame(_uploaded_data)`
-- [ ] 没有 `pd.read_csv()` / `pd.read_excel()` / `open()`
-- [ ] 没有 `plt.savefig()` / `plt.show()`
-- [ ] 列名与用户提供的列名精确匹配
-- [ ] `plt.subplots()` 创建了显式的 `fig, ax` 变量
-- [ ] 脚本是纯 Python，没有 markdown 包裹
-- [ ] 不含禁止模块/函数
-- [ ] 没有硬编码的文件路径
-- [ ] 多组数据用不同颜色区分
-- [ ] 中文文本可正常渲染（sans-serif 字体链）
-
----
-
-### 十一、本次任务数据
+### 八、本次任务数据
 
 ```
 数据集列名：{列名 JSON}

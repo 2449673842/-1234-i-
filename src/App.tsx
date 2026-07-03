@@ -10,6 +10,7 @@ import { AppSidebar } from './components/AppSidebar';
 import { DataImportPage } from './components/DataImportPage';
 import { ExportSettingsPage } from './components/ExportSettingsPage';
 import { ComposerPage } from './components/ComposerPage';
+import { ExportLibraryPage } from './components/ExportLibraryPage';
 import { ProjectsPage } from './components/ProjectsPage';
 import { DataFilesPage } from './components/DataFilesPage';
 import { SettingsPage } from './components/SettingsPage';
@@ -50,7 +51,7 @@ class EditorErrorBoundary extends React.Component<
   }
 }
 
-export type ViewState = 'home' | 'templates' | 'data_import' | 'editor' | 'workspace' | 'export_settings' | 'composer' | 'projects' | 'data' | 'settings' | 'project_create' | 'landing';
+export type ViewState = 'home' | 'templates' | 'data_import' | 'editor' | 'workspace' | 'export_settings' | 'composer' | 'projects' | 'data' | 'settings' | 'project_create' | 'landing' | 'export_library';
 
 const SPEC_STORAGE_KEY = 'scifigure:app-state:v2';
 
@@ -79,9 +80,10 @@ function cloneEditLog(editLog: EditEntry[]): EditEntry[] {
   return JSON.parse(JSON.stringify(editLog || [])) as EditEntry[];
 }
 
-function makeHistorySnapshot(editLog: EditEntry[], label: string): HistorySnapshot {
+function makeHistorySnapshot(editLog: EditEntry[], label: string, script?: string): HistorySnapshot {
   return {
     editLog: cloneEditLog(editLog),
+    script,
     label,
     timestamp: Date.now(),
   };
@@ -95,6 +97,7 @@ function normalizeHistorySnapshot(value: unknown, fallbackLabel: string): Histor
   if (candidate && Array.isArray(candidate.editLog)) {
     return {
       editLog: cloneEditLog(candidate.editLog),
+      script: typeof candidate.script === 'string' ? candidate.script : undefined,
       label: typeof candidate.label === 'string' && candidate.label ? candidate.label : fallbackLabel,
       timestamp: typeof candidate.timestamp === 'number' ? candidate.timestamp : Date.now(),
     };
@@ -249,6 +252,7 @@ export default function App() {
     ? (activeFig ? {
         sessionId: `${projectId}_${activeFigureId}`,
         script: spec.custom_script || '',
+        language: spec.script_language || 'python',
         dataPayload: { datasets } as any,
         editLog: activeFig.editLog,
         revision: activeFig.revision,
@@ -333,7 +337,7 @@ export default function App() {
           const renderRes = await fetch(`/api/projects/${projectId}/figures/render`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ script: renderScript, editLogs })
+            body: JSON.stringify({ script: renderScript, editLogs, language: spec.script_language || 'python' })
           });
           const data = await renderRes.json();
           if (data.status === 'success') {
@@ -430,6 +434,8 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sessionId: `${projectId}_${activeFigureId}`,
+            projectId,
+            figureId: activeFigureId,
             patches,
             requestId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
             baseRevision: projectFigures[activeFigureId]?.revision || 1,
@@ -563,6 +569,8 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             sessionId: `${projectId}_${activeFigureId}`,
+            projectId,
+            figureId: activeFigureId,
             script,
             force
           })
@@ -626,19 +634,25 @@ export default function App() {
     }
   };
 
-  const rerenderProjectWithEditLogs = async (editLogs: Record<string, any[]>): Promise<void> => {
+  const rerenderProjectWithEditLogs = async (editLogs: Record<string, any[]>, scriptOverride?: string): Promise<void> => {
     if (!projectId) return;
     try {
+      const scriptToReplay = scriptOverride ?? spec.custom_script ?? '';
       setProjectIsRendering(true);
       setRenderProgressText('正在撤销/重做：重放当前项目编辑历史并刷新 SVG...');
       setRenderLog(prev => [...prev, `> [历史] 正在重放项目编辑历史...`]);
       const res = await fetch(`/api/projects/${projectId}/figures/render`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ script: spec.custom_script || '', editLogs })
+        body: JSON.stringify({ script: scriptToReplay, editLogs, language: spec.script_language || 'python' })
       });
       const data = await res.json();
       if (data.status === 'success') {
+        if (scriptOverride !== undefined && scriptOverride !== spec.custom_script) {
+          const nextSpec = cloneSpec(spec);
+          nextSpec.custom_script = scriptOverride;
+          applySpecChange(nextSpec, { recordHistory: false });
+        }
         setProjectFigures(prev => {
           const next = { ...prev };
           for (const f of data.figures || []) {
@@ -667,7 +681,8 @@ export default function App() {
   const handleProjectUndo = async (figureId: string) => {
     const history = projectHistory[figureId];
     const currentEditLog = projectFigures[figureId]?.editLog || [];
-    if (currentEditLog.length === 0) return;
+    const currentScript = spec.custom_script || '';
+    if (currentEditLog.length === 0 && !history?.past?.length) return;
 
     let prevSnapshot: HistorySnapshot;
     let nextPast: HistorySnapshot[];
@@ -676,15 +691,15 @@ export default function App() {
     if (history?.past?.length) {
       prevSnapshot = history.past[history.past.length - 1];
       nextPast = history.past.slice(0, -1);
-      nextFuture = [makeHistorySnapshot(currentEditLog, '撤销前状态'), ...history.future];
+      nextFuture = [makeHistorySnapshot(currentEditLog, '撤销前状态', currentScript), ...history.future];
     } else {
       const lastTimestamp = currentEditLog[currentEditLog.length - 1]?.timestamp;
       const fallbackIndex = lastTimestamp == null
         ? currentEditLog.length - 1
         : currentEditLog.findIndex(entry => entry.timestamp === lastTimestamp);
-      prevSnapshot = makeHistorySnapshot(currentEditLog.slice(0, Math.max(0, fallbackIndex)), '撤销上一步');
+      prevSnapshot = makeHistorySnapshot(currentEditLog.slice(0, Math.max(0, fallbackIndex)), '撤销上一步', currentScript);
       nextPast = [];
-      nextFuture = [makeHistorySnapshot(currentEditLog, '撤销前状态')];
+      nextFuture = [makeHistorySnapshot(currentEditLog, '撤销前状态', currentScript)];
     }
 
     setProjectHistory(prev => ({ ...prev, [figureId]: { past: nextPast, future: nextFuture } }));
@@ -697,15 +712,16 @@ export default function App() {
     Object.keys(projectFigures).forEach(fid => {
       editLogs[fid] = fid === figureId ? prevSnapshot.editLog : projectFigures[fid].editLog;
     });
-    await rerenderProjectWithEditLogs(editLogs);
+    await rerenderProjectWithEditLogs(editLogs, prevSnapshot.script);
   };
 
   const handleProjectRedo = async (figureId: string) => {
     const history = projectHistory[figureId];
     if (!history || history.future.length === 0) return;
     const currentEditLog = projectFigures[figureId]?.editLog || [];
+    const currentScript = spec.custom_script || '';
     const nextSnapshot = history.future[0];
-    const nextPast = [...history.past, makeHistorySnapshot(currentEditLog, '重做前状态')];
+    const nextPast = [...history.past, makeHistorySnapshot(currentEditLog, '重做前状态', currentScript)];
     const nextFuture = history.future.slice(1);
     setProjectHistory(prev => ({ ...prev, [figureId]: { past: nextPast, future: nextFuture } }));
     setProjectFigures(prev => {
@@ -717,7 +733,7 @@ export default function App() {
     Object.keys(projectFigures).forEach(fid => {
       editLogs[fid] = fid === figureId ? nextSnapshot.editLog : projectFigures[fid].editLog;
     });
-    await rerenderProjectWithEditLogs(editLogs);
+    await rerenderProjectWithEditLogs(editLogs, nextSnapshot.script);
   };
 
   // Call after each successful patch in project mode to record history
@@ -727,7 +743,8 @@ export default function App() {
       const entry = prev[figureId] || { past: [], future: [] };
       const snapshot = makeHistorySnapshot(
         prevEditLog,
-        entry.past.length === 0 && prevEditLog.length === 0 ? '初始图' : label
+        entry.past.length === 0 && prevEditLog.length === 0 ? '初始图' : label,
+        spec.custom_script || ''
       );
       return {
         ...prev,
@@ -742,7 +759,7 @@ export default function App() {
   const handleProjectHistoryJump = async (figureId: string, targetIndex: number) => {
     const history = projectHistory[figureId] || { past: [], future: [] };
     const currentEditLog = projectFigures[figureId]?.editLog || [];
-    const currentSnapshot = makeHistorySnapshot(currentEditLog, '当前状态');
+    const currentSnapshot = makeHistorySnapshot(currentEditLog, '当前状态', spec.custom_script || '');
     const currentIndex = history.past.length;
     const timeline = [...history.past, currentSnapshot, ...history.future];
     const targetSnapshot = timeline[targetIndex];
@@ -760,7 +777,7 @@ export default function App() {
     Object.keys(projectFigures).forEach(fid => {
       editLogs[fid] = fid === figureId ? targetSnapshot.editLog : projectFigures[fid].editLog;
     });
-    await rerenderProjectWithEditLogs(editLogs);
+    await rerenderProjectWithEditLogs(editLogs, targetSnapshot.script);
   };
 
   const handleUndo = async () => {
@@ -778,7 +795,7 @@ export default function App() {
         : null;
 
       if (prevSpec.plot_type === 'custom' && prevSpec.custom_script) {
-        void render(prevSpec.custom_script, payload);
+        void render(prevSpec.custom_script, payload, undefined, prevSpec.script_language || 'python');
       }
     } else {
       await undoFigureEdit();
@@ -800,7 +817,7 @@ export default function App() {
         : null;
 
       if (nextSpec.plot_type === 'custom' && nextSpec.custom_script) {
-        void render(nextSpec.custom_script, payload);
+        void render(nextSpec.custom_script, payload, undefined, nextSpec.script_language || 'python');
       }
     } else {
       await redoFigureEdit();
@@ -865,7 +882,7 @@ export default function App() {
           fetch(`/api/projects/${id}/figures/render`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ script: renderScript, editLogs: initialEditLogs })
+            body: JSON.stringify({ script: renderScript, editLogs: initialEditLogs, language: cleanSpec.script_language || 'python' })
           }).then(r => r.json()).then(data => {
             if (data.status === 'success') {
               const nextFigs: Record<string, FigureEntry> = {};
@@ -952,7 +969,8 @@ export default function App() {
   const handleProjectRender = async (customScriptToUse?: string) => {
     if (!projectId) return;
     setProjectIsRendering(true);
-    setRenderProgressText('正在调用 Python 引擎：执行脚本、捕获 Figure、生成 SVG...');
+    const engineName = (spec.script_language || 'python') === 'r' ? 'R 引擎' : 'Python 引擎';
+    setRenderProgressText(`正在调用 ${engineName}：执行脚本、捕获 Figure、生成 SVG...`);
     setSpec(prev => {
       const next = cloneSpec(prev);
       if (customScriptToUse !== undefined) {
@@ -962,7 +980,7 @@ export default function App() {
     });
     
     const startedAt = new Date();
-    setRenderLog(prev => [...prev, `> [开始] 调用 Python 引擎进行多图渲染... ${startedAt.toLocaleTimeString()}`]);
+    setRenderLog(prev => [...prev, `> [开始] 调用 ${engineName}进行多图渲染... ${startedAt.toLocaleTimeString()}`]);
     
     let scriptToRender: string;
     try {
@@ -988,7 +1006,7 @@ export default function App() {
       const res = await fetch(`/api/projects/${projectId}/figures/render`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ script: scriptToRender, editLogs })
+        body: JSON.stringify({ script: scriptToRender, editLogs, language: spec.script_language || 'python' })
       });
       const data = await res.json();
       if (data.status === 'success') {
@@ -1048,6 +1066,22 @@ export default function App() {
 
   const handleRenderLog = (lines: string[]) => {
     setRenderLog(prev => [...prev, ...lines]);
+  };
+
+  const handleEditSourceFigureFromComposer = (figureId: string) => {
+    if (!figureId || figureId === 'composite' || !projectFigures[figureId]) {
+      return false;
+    }
+    setActiveFigureId(figureId);
+    setSelectedGids([]);
+    setSelectedObject('Figure');
+    handleNavigate('editor');
+    setRenderLog(prev => [...prev, `> [组合图] 已切换到源图 ${figureId}，可在单图编辑器中修改图元。`]);
+    return true;
+  };
+
+  const canEditSourceFigureFromComposer = (figureId: string) => {
+    return Boolean(figureId && figureId !== 'composite' && projectFigures[figureId]);
   };
 
   return (
@@ -1192,7 +1226,19 @@ export default function App() {
         )}
 
         {currentView === 'composer' && (
-          <ComposerPage
+          <>
+            <AppSidebar currentView="composer" subView={subView} onNavigate={handleNavigate} />
+            <ComposerPage
+              projectId={projectId}
+              onNavigate={(v) => handleNavigate(v)}
+              onEditSourceFigure={handleEditSourceFigureFromComposer}
+              canEditSourceFigure={canEditSourceFigureFromComposer}
+            />
+          </>
+        )}
+
+        {currentView === 'export_library' && (
+          <ExportLibraryPage
             projectId={projectId}
             onNavigate={(v) => handleNavigate(v)}
           />

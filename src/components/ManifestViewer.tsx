@@ -4,6 +4,46 @@ interface ManifestViewerProps {
   manifest: Manifest | null;
 }
 
+function isCoverageSummary(value: unknown): value is { recognized: number; editable: number; readonly: number; unsupported: number } {
+  return Boolean(
+    value &&
+    typeof value === 'object' &&
+    'recognized' in value &&
+    'editable' in value &&
+    'readonly' in value &&
+    'unsupported' in value
+  );
+}
+
+function renderCoverageValue(value: unknown) {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return `${value.length} items`;
+  }
+  if (isCoverageSummary(value)) {
+    return `recognized ${value.recognized} · editable ${value.editable} · readonly ${value.readonly} · unsupported ${value.unsupported}`;
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => `${key}: ${typeof item === 'object' && item !== null ? JSON.stringify(item) : String(item)}`)
+      .join(' · ');
+  }
+  return 'none';
+}
+
+function coverageBadgeClass(value: unknown) {
+  if (value === 'full') return 'bg-emerald-900/50 text-emerald-300';
+  if (value === 'partial') return 'bg-amber-900/50 text-amber-300';
+  if (isCoverageSummary(value)) {
+    return value.unsupported === 0
+      ? 'bg-emerald-900/50 text-emerald-300'
+      : 'bg-amber-900/50 text-amber-300';
+  }
+  return 'bg-slate-800 text-slate-300';
+}
+
 export function ManifestViewer({ manifest }: ManifestViewerProps) {
   if (!manifest) {
     return (
@@ -39,17 +79,27 @@ export function ManifestViewer({ manifest }: ManifestViewerProps) {
       {manifest.coverageReport && (
         <div className="mb-4">
           <div className="text-blue-400 text-xs uppercase tracking-wider mb-2">Coverage</div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 mb-2">
             {Object.entries(manifest.coverageReport).map(([key, val]) => (
-              <span key={key} className={`px-2 py-0.5 rounded text-[11px] ${
-                val === 'full' ? 'bg-emerald-900/50 text-emerald-300' :
-                val === 'partial' ? 'bg-amber-900/50 text-amber-300' :
-                'bg-red-900/50 text-red-300'
-              }`}>
-                {key}: {val}
+              <span key={key} className={`px-2 py-0.5 rounded text-[11px] ${coverageBadgeClass(val)}`}>
+                {key}: {renderCoverageValue(val)}
               </span>
             ))}
           </div>
+          {'byKind' in manifest.coverageReport && manifest.coverageReport.byKind && (
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(manifest.coverageReport.byKind).map(([kind, detail]) => (
+                <span key={kind} className="bg-slate-800/70 text-slate-300 px-2 py-0.5 rounded text-[11px]">
+                  {kind}: {detail.count} / {detail.editableProps.length} props
+                </span>
+              ))}
+            </div>
+          )}
+          {'unsupportedArtists' in manifest.coverageReport && manifest.coverageReport.unsupportedArtists?.length > 0 && (
+            <div className="mt-2 text-[11px] text-amber-300/80">
+              Unsupported: {manifest.coverageReport.unsupportedArtists.map(item => `${item.class}(${item.count})`).join(', ')}
+            </div>
+          )}
         </div>
       )}
 

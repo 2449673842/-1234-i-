@@ -8,6 +8,7 @@ export interface SavedEditEntry {
 
 export interface FigureSpec {
   plot_type: string;
+  script_language?: 'python' | 'r';
   source?: {
     file_name?: string;
     file_type?: string;

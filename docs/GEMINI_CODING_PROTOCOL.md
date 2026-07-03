@@ -428,7 +428,58 @@ npm run lint
 
 ---
 
-## 8. Completion Definition
+## 8. UI Feature Verification
+
+单元测试通过不等于 UI 功能完成。
+
+只要任务涉及前端交互、右侧面板、组件中心、字体中心、配色中心、导出页、组合图页、导航入口或画布操作，Gemini 必须额外输出：
+
+```md
+## UI 功能强制验收
+
+### 用户入口路径
+例如：编辑器 -> 右侧栏 -> 组件中心 -> 色条 -> width
+
+### 控件可见性证据
+说明控件在哪个组件渲染，依赖哪个 condition，当前对象 kind/gid 是什么。
+
+### 前端事件链
+onChange/onBlur -> handlePatch -> onPatch -> API endpoint
+
+### 后端回放链
+API -> editLog -> apply_edit_log -> introspect -> new SVG/manifest
+
+### 用户可见结果
+说明哪个 SVG/画布元素应该变化。
+
+### 浏览器验证
+必须说明是否实际在浏览器中点过。
+如果没有浏览器验证，只能写“代码路径验证通过”，不能写“用户操作已完成”。
+
+### 旧 session 风险
+如果 manifest 结构、editable 字段、gid、kind 或 currentProps 发生变化，必须提醒用户重新渲染当前图。
+```
+
+最低要求：
+
+- UI 入口必须可见。
+- 控件必须可见。
+- 用户操作必须能触发前端事件。
+- 前端必须真的发出 patch/render/export 请求。
+- 后端必须返回新状态或明确错误。
+- 画布或列表必须有用户可见变化。
+- 刷新、重新渲染、导出后行为必须一致，或明确列为未验证。
+
+禁止：
+
+- 只跑 `npx tsc --noEmit`、`npm run build`、Python 单元测试后就宣称 UI 功能完成。
+- 只验证后端 patch 后宣称前端按钮可用。
+- 只新增 manifest 字段后宣称右侧面板可操作。
+- 忘记检查服务是否重启、旧 session 是否需要重新渲染。
+
+---
+
+## 9. Completion Definition
 
 只有满足以下条件才能说“完成”：
 
@@ -442,6 +493,7 @@ npm run lint
 8. 已列出未验证项。
 9. 已列出遗留风险。
 10. 已明确是否可以进入下一步。
+11. 如果涉及 UI，已完成第 8 节的 UI 功能强制验收，或明确标为“未浏览器验证”。
 
 否则只能说：
 
@@ -451,7 +503,7 @@ npm run lint
 
 ---
 
-## 9. Gemini Output Template
+## 10. Gemini Output Template
 
 Gemini 每次交付必须使用：
 
@@ -470,6 +522,8 @@ Gemini 每次交付必须使用：
 
 ## F. 实现与验证
 
+## F2. UI 功能强制验收
+
 ## G. 遗留风险
 
 ## H. 下一步建议
@@ -479,7 +533,7 @@ Gemini 每次交付必须使用：
 
 ---
 
-## 10. Current Mainline Guardrails
+## 11. Current Mainline Guardrails
 
 当前安全主线：
 
@@ -504,7 +558,7 @@ backup path: E:\ai绘图修改编辑_事故备份_copy_20260628_233804
 
 ---
 
-## 11. Gemini Task Prefix
+## 12. Gemini Task Prefix
 
 每次给 Gemini 发任务时，建议先贴这段：
 
@@ -512,4 +566,6 @@ backup path: E:\ai绘图修改编辑_事故备份_copy_20260628_233804
 你正在修改 SciFigure Studio。开始前必须先阅读 docs/GEMINI_CODING_PROTOCOL.md，并严格执行其中的 Preflight、A-F 阶段、证据等级、影响面分析和验证要求。
 
 本次只解决我指定的问题。不要顺手重构，不要修改无关模块，不要把推断写成事实。没有源码证据时必须标为 Suspected 或 Gap。没有验证时不能说完成。
+
+如果任务涉及 UI 交互，必须执行“UI 功能强制验收”：写清用户入口路径、控件可见性、前端事件链、后端回放链、用户可见结果、是否实际浏览器点击验证，以及旧 session 是否需要重新渲染。单元测试通过不等于 UI 功能完成。
 ```

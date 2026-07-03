@@ -26,6 +26,9 @@ interface LeftSidebarProps {
 interface TreeNode {
   id: string;
   label: string;
+  subtitle?: string;
+  badge?: string;
+  swatch?: string;
   icon?: ReactNode;
   children?: TreeNode[];
 }
@@ -157,7 +160,27 @@ function TreeItem({
             <span className="w-4 h-4 shrink-0"></span>
           )}
           {node.icon && <span className="text-slate-400 shrink-0">{node.icon}</span>}
-          <span className="text-sm truncate select-none">{node.label}</span>
+          <span className="min-w-0 flex flex-col">
+            <span className="flex items-center gap-1.5 min-w-0">
+              {node.swatch && (
+                <span
+                  className="w-2.5 h-2.5 rounded-full border border-white shadow-sm shrink-0"
+                  style={{ backgroundColor: node.swatch }}
+                />
+              )}
+              <span className="text-sm truncate select-none">{node.label}</span>
+              {node.badge && (
+                <span className="px-1.5 py-0.5 rounded bg-slate-100 text-[10px] leading-none text-slate-500 shrink-0">
+                  {node.badge}
+                </span>
+              )}
+            </span>
+            {node.subtitle && (
+              <span className="text-[10px] leading-tight text-slate-400 truncate select-none">
+                {node.subtitle}
+              </span>
+            )}
+          </span>
         </div>
         
         {!isVirtualNode && (
@@ -233,109 +256,126 @@ export function LeftSidebar({
   const tree = useMemo<TreeNode[]>(() => {
     const objects = figSession?.manifest?.objects || [];
 
-    // 1. Canvas / Figure level objects
+    const truncateText = (value: unknown, max = 36) => {
+      const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+      if (!text) return '';
+      return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+    };
+
+    const roleLabel = (o: ManifestObject) => {
+      if (o.role === 'axes_title' || o.id.startsWith('title.')) return '标题';
+      if (o.role === 'x_axis_label' || o.id.startsWith('xlabel.')) return 'X标签';
+      if (o.role === 'y_axis_label' || o.id.startsWith('ylabel.')) return 'Y标签';
+      if (o.role === 'x_tick_label' || o.id.startsWith('xtick.')) return 'X刻度';
+      if (o.role === 'y_tick_label' || o.id.startsWith('ytick.')) return 'Y刻度';
+      if (o.id.startsWith('legend_text.')) return '图例文字';
+      if (o.id.startsWith('legend_title.')) return '图例标题';
+      if (o.id.startsWith('fig_text.')) return '全局文字';
+      if (o.kind === 'text') return '文本';
+      if (o.kind === 'subplot') return '子图';
+      return undefined;
+    };
+
+    const nodeForObject = (o: ManifestObject, icon?: ReactNode): TreeNode => {
+      const isText = o.kind === 'text';
+      const textValue = isText ? truncateText(o.currentProps.text, 42) : '';
+      const fontSize = typeof o.currentProps.fontsize === 'number' ? `${Number(o.currentProps.fontsize).toFixed(1)}pt` : '';
+      const fontWeight = typeof o.currentProps.fontweight === 'string' && o.currentProps.fontweight !== 'normal' ? o.currentProps.fontweight : '';
+      const fontStyle = typeof o.currentProps.fontstyle === 'string' && o.currentProps.fontstyle !== 'normal' ? o.currentProps.fontstyle : '';
+      const color = typeof o.currentProps.color === 'string' ? o.currentProps.color : undefined;
+      const badge = roleLabel(o);
+      return {
+        id: o.id,
+        label: isText ? (textValue || o.label || o.id) : (o.label || o.id),
+        subtitle: isText ? [fontSize, fontWeight, fontStyle, o.id].filter(Boolean).join(' · ') : undefined,
+        badge,
+        swatch: isText ? color : undefined,
+        icon: icon || (isText ? <Type className="w-3.5 h-3.5" /> : <Box className="w-3.5 h-3.5" />),
+      };
+    };
+
+    const getAxesIndex = (o: ManifestObject): number | null => {
+      if (typeof o.source?.axesIndex === 'number') return o.source.axesIndex;
+      const match = o.id.match(/(?:subplot|axes|grid|spine_group|axis\.[xy]|title|xlabel|ylabel|xtick|ytick|legend|legend_text|legend_title|line|collection|patch|heatmap|colorbar)\.(?:[a-z]+\.)?(\d+)/);
+      return match ? Number(match[1]) : null;
+    };
+
+    const getSubplotId = (o: ManifestObject): string | null => {
+      if (o.kind === 'subplot') return o.id;
+      if (typeof o.subplotId === 'string') return o.subplotId;
+      const idx = getAxesIndex(o);
+      return idx === null ? null : `subplot.${idx}`;
+    };
+
     const canvasObjects = objects.filter(o =>
       o.id === 'Background' ||
       o.id === 'Export Boundary' ||
       o.id.startsWith('fig_text.') ||
       o.id === 'patch_1'
     );
-    const canvasNodes = canvasObjects.map(o => ({
-      id: o.id,
-      label: o.label || o.id,
-      icon: o.id.startsWith('fig_text.') ? <Type className="w-3.5 h-3.5" /> : <Box className="w-3.5 h-3.5" />,
-    }));
+    const canvasNodes = canvasObjects.map(o => nodeForObject(o, o.id.startsWith('fig_text.') ? <Type className="w-3.5 h-3.5" /> : undefined));
 
-    const axesObjects = objects.filter(o =>
-      o.id.startsWith('axes.') ||
-      o.id.startsWith('grid.') ||
-      o.id.startsWith('spine.') ||
-      o.id.startsWith('spine_group.') ||
-      o.id.startsWith('axis.x.') ||
-      o.id.startsWith('axis.y.') ||
+    const subplotObjects = objects
+      .filter(o => o.kind === 'subplot')
+      .sort((a, b) => Number(a.currentProps.subplotIndex ?? getAxesIndex(a) ?? 0) - Number(b.currentProps.subplotIndex ?? getAxesIndex(b) ?? 0));
+
+    const axisLike = (o: ManifestObject) => (
+      o.kind === 'axes' ||
+      o.kind === 'axis_x' ||
+      o.kind === 'axis_y' ||
+      o.kind === 'spine' ||
+      o.kind === 'spine_group' ||
+      o.kind === 'grid' ||
       o.id.startsWith('xtick.') ||
       o.id.startsWith('ytick.') ||
       o.id.startsWith('xlabel.') ||
       o.id.startsWith('ylabel.') ||
       o.id.startsWith('title.')
     );
-    const axesNodes = axesObjects.map(o => {
-      let icon = <Box className="w-3.5 h-3.5" />;
-      if (o.id.startsWith('title.') || o.id.startsWith('xlabel.') || o.id.startsWith('ylabel.')) {
-        icon = <Type className="w-3.5 h-3.5" />;
-      }
-      let label = o.label || o.id;
-      if (o.id.startsWith('axis.x.')) {
-        label = `X 轴细节 (${o.id.split('.').pop()})`;
-      } else if (o.id.startsWith('axis.y.')) {
-        label = `Y 轴细节 (${o.id.split('.').pop()})`;
-      } else if (o.id.startsWith('spine_group.')) {
-        label = `统一边框 (${o.id.split('.').pop()})`;
-      }
-      return {
-        id: o.id,
-        label,
-        icon,
-      };
-    });
-
-    // 3. Legend objects
-    const legendObjects = objects.filter(o =>
-      o.id.startsWith('legend')
-    );
-    const legendNodes = legendObjects.map(o => ({
-      id: o.id,
-      label: o.label || o.id,
-      icon: o.id.startsWith('legend_text') ? <Type className="w-3.5 h-3.5" /> : <Box className="w-3.5 h-3.5" />,
-    }));
-
-    // 4. Data Layer objects grouped by semantic groups
-    const groups = figSession?.manifest?.groups || [];
-    const bindings = figSession?.manifest?.bindings || [];
-    
-    // Find all GIDs that are part of any semantic group
-    const groupedGids = new Set<string>();
-    bindings.forEach((b: Binding) => {
-      if (Array.isArray(b.gids)) {
-        b.gids.forEach((gid: string) => groupedGids.add(gid));
-      }
-    });
-
-    // Data objects that are not in canvas, axes, or legend, and not grouped
-    const otherDataObjects = objects.filter(o =>
+    const legendLike = (o: ManifestObject) => o.id.startsWith('legend');
+    const textLike = (o: ManifestObject) => o.kind === 'text' && !legendLike(o) && !axisLike(o);
+    const dataLike = (o: ManifestObject) => (
       !canvasObjects.some(co => co.id === o.id) &&
-      !axesObjects.some(ao => ao.id === o.id) &&
-      !legendObjects.some(lo => lo.id === o.id) &&
-      !groupedGids.has(o.id) &&
-      o.kind !== 'figure'
+      o.kind !== 'figure' &&
+      o.kind !== 'subplot' &&
+      !axisLike(o) &&
+      !legendLike(o) &&
+      !textLike(o)
     );
 
-    const groupNodes = groups.map((g: any) => {
-      const binding = bindings.find((b: Binding) => b.groupId === g.groupId);
-      const memberGids = binding ? binding.gids : [];
-      const memberObjects = objects.filter(o => memberGids.includes(o.id));
-      
+    const subplotNodes = subplotObjects.map((subplot) => {
+      const subplotId = subplot.id;
+      const inSubplot = (o: ManifestObject) => getSubplotId(o) === subplotId;
+      const axisNodes = objects.filter(o => inSubplot(o) && axisLike(o)).map(o => nodeForObject(o));
+      const textNodes = objects.filter(o => inSubplot(o) && textLike(o)).map(o => nodeForObject(o, <Type className="w-3.5 h-3.5" />));
+      const dataNodes = objects.filter(o => inSubplot(o) && dataLike(o)).map(o => nodeForObject(o, <BarChart className="w-3.5 h-3.5 text-indigo-400" />));
+      const legendNodes = objects.filter(o => inSubplot(o) && legendLike(o)).map(o => nodeForObject(o, o.kind === 'text' ? <Type className="w-3.5 h-3.5" /> : undefined));
       return {
-        id: g.groupId,
-        label: `分组: ${g.label}`,
+        id: `${subplotId}_Section`,
+        label: String(subplot.currentProps.label || subplot.label || subplotId),
         icon: <Layout className="w-3.5 h-3.5 text-blue-500" />,
-        children: memberObjects.map(o => ({
-          id: o.id,
-          label: o.label || o.id,
-          icon: <BarChart className="w-3.5 h-3.5 text-indigo-400" />,
-        })),
+        children: [
+          nodeForObject(subplot, <Layout className="w-3.5 h-3.5 text-blue-500" />),
+          { id: `${subplotId}_Text`, label: '文字 / 标题 / 注释', children: textNodes.length ? textNodes : [{ id: `${subplotId}_text_empty`, label: '无独立注释' }] },
+          { id: `${subplotId}_Axes`, label: '坐标轴 / 框线 / 刻度', children: axisNodes.length ? axisNodes : [{ id: `${subplotId}_axes_empty`, label: '无坐标轴对象' }] },
+          { id: `${subplotId}_Data`, label: '数据图层', children: dataNodes.length ? dataNodes : [{ id: `${subplotId}_data_empty`, label: '无数据对象' }] },
+          { id: `${subplotId}_Legend`, label: '图例', children: legendNodes.length ? legendNodes : [{ id: `${subplotId}_legend_empty`, label: '无图例' }] },
+        ],
       };
     });
 
-    const unassignedDataNodes = otherDataObjects.map(o => ({
-      id: o.id,
-      label: o.label || o.id,
-      icon: <Box className="w-3.5 h-3.5 text-slate-400" />,
-    }));
+    const assignedGids = new Set<string>();
+    subplotNodes.forEach(node => {
+      const collect = (items?: TreeNode[]) => items?.forEach(item => {
+        assignedGids.add(item.id);
+        collect(item.children);
+      });
+      collect(node.children);
+    });
+    const unassignedNodes = objects
+      .filter(o => !assignedGids.has(o.id) && !canvasObjects.some(co => co.id === o.id) && o.kind !== 'figure')
+      .map(o => nodeForObject(o));
 
-    const dataNodes = [...groupNodes, ...unassignedDataNodes];
-
-    // Assemble dynamic hierarchy tree
     return [
       {
         id: 'Figure',
@@ -347,19 +387,14 @@ export function LeftSidebar({
             children: canvasNodes.length > 0 ? canvasNodes : [{ id: 'canvas_empty', label: '无画布元素' }],
           },
           {
-            id: 'Axes_Section',
-            label: '坐标系与网格 (Axes)',
-            children: axesNodes.length > 0 ? axesNodes : [{ id: 'axes_empty', label: '无坐标系元素' }],
+            id: 'Subplots_Section',
+            label: '子图结构 (Subplots)',
+            children: subplotNodes.length > 0 ? subplotNodes : [{ id: 'subplot_empty', label: '无子图对象' }],
           },
           {
-            id: 'Data_Section',
-            label: '数据图层 (Data Layers)',
-            children: dataNodes.length > 0 ? dataNodes : [{ id: 'data_empty', label: '无数据元素' }],
-          },
-          {
-            id: 'Legend_Section',
-            label: '图例图层 (Legend)',
-            children: legendNodes.length > 0 ? legendNodes : [{ id: 'legend_empty', label: '无图例元素' }],
+            id: 'Unassigned_Section',
+            label: '未归类对象',
+            children: unassignedNodes.length > 0 ? unassignedNodes : [{ id: 'unassigned_empty', label: '无未归类对象' }],
           },
         ]
       }

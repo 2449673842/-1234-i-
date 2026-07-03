@@ -1,4 +1,4 @@
-import { ArrowRight, FilePlus2, FolderOpen, Info } from 'lucide-react';
+import { ArrowRight, FilePlus2, FolderOpen, Info, Grid } from 'lucide-react';
 import { ViewState } from '../App';
 
 export function HomeDashboard({ onNavigate }: { onNavigate: (view: ViewState, subView?: string) => void }) {
@@ -42,7 +42,7 @@ export function HomeDashboard({ onNavigate }: { onNavigate: (view: ViewState, su
 
             <button
               onClick={() => onNavigate('projects', 'my_projects')}
-              className="text-left p-8 hover:bg-slate-50 transition-colors"
+              className="text-left p-8 border-b md:border-b-0 md:border-r border-slate-100 hover:bg-slate-50 transition-colors"
             >
               <div className="w-12 h-12 rounded-xl bg-slate-900 text-white flex items-center justify-center mb-5 shadow-sm">
                 <FolderOpen className="w-6 h-6" />
@@ -52,6 +52,24 @@ export function HomeDashboard({ onNavigate }: { onNavigate: (view: ViewState, su
                   <h2 className="text-lg font-semibold text-slate-900 mb-2">打开已有项目</h2>
                   <p className="text-sm text-slate-600 leading-6">
                     从本地 SQLite 项目库里打开、继续编辑或检查之前保存的 figure spec。
+                  </p>
+                </div>
+                <ArrowRight className="w-5 h-5 text-slate-400 shrink-0" />
+              </div>
+            </button>
+
+            <button
+              onClick={() => onNavigate('composer')}
+              className="text-left p-8 hover:bg-slate-50 transition-colors"
+            >
+              <div className="w-12 h-12 rounded-xl bg-indigo-600 text-white flex items-center justify-center mb-5 shadow-sm">
+                <Grid className="w-6 h-6" />
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-900 mb-2">组合拼图</h2>
+                  <p className="text-sm text-slate-600 leading-6">
+                    将已导出的高清图表资产进行排版、对齐、加标签，生成最终学术论文组合图。
                   </p>
                 </div>
                 <ArrowRight className="w-5 h-5 text-slate-400 shrink-0" />

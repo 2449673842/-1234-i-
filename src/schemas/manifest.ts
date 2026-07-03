@@ -51,6 +51,7 @@ export type ManifestObjectKind =
   | "collection"
   | "patch"
   | "figure"
+  | "subplot"
   | "axes"
   | "grid"
   | "axis_x"
@@ -60,7 +61,9 @@ export type ManifestObjectKind =
   | "stem_container"
   | "boxplot_container"
   | "violinplot_container"
-  | "container";
+  | "container"
+  | "heatmap"
+  | "colorbar";
 
 export interface ManifestObject {
   id: string;
@@ -69,6 +72,7 @@ export interface ManifestObject {
   editable: string[];
   currentProps: Record<string, unknown>;
   role?: string;
+  subplotId?: string;
   parentId?: string;
   children?: string[];
   stableKey?: string;
@@ -137,7 +141,7 @@ export interface SemanticGroup {
 }
 
 export interface Manifest {
-  generatedBy: "introspection";
+  generatedBy: "introspection" | "r_svg";
   globals: Record<string, ManifestField>;
   objects: ManifestObject[];
   colorGroups?: ColorGroup[];
@@ -167,6 +171,7 @@ export interface EditEntry {
 
 export interface HistorySnapshot {
   editLog: EditEntry[];
+  script?: string;
   label: string;
   timestamp: number;
 }
@@ -181,6 +186,7 @@ export interface ProjectHistoryState {
 export interface FigureSession {
   sessionId: string;
   script: string;
+  language?: "python" | "r";
   dataPayload: Record<string, unknown> | null;
   editLog: EditEntry[];
   revision: number;
@@ -194,6 +200,7 @@ export interface FigureSession {
 
 export interface RenderRequest {
   script: string;
+  language?: "python" | "r";
   dataRef?: string;
   dataPayload?: Record<string, unknown>;
   editLog: EditEntry[];
@@ -206,6 +213,7 @@ export interface RenderRequest {
 export interface RenderResponse {
   status: "success" | "error";
   sessionId: string;
+  language?: "python" | "r";
   svg: string;
   manifest: Manifest;
   revision: number;

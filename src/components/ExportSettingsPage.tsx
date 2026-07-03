@@ -23,6 +23,7 @@ interface ExportAsset {
   thumbnailSvg: string | null;
   tags: string[];
   createdAt: string;
+  sizeBytes?: number;
 }
 
 interface ComposerPanel {
@@ -174,8 +175,30 @@ export function ExportSettingsPage({
     document.body.removeChild(anchor);
   };
 
-  const downloadSelectedAssets = () => {
-    selectedAssets.forEach(asset => downloadAsset(asset));
+  const downloadSelectedAssets = async () => {
+    if (selectedAssetIds.length === 0) return;
+    try {
+      const res = await fetch(`/api/projects/${projectId}/export-assets/zip`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetIds: selectedAssetIds }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.message || '打包下载失败');
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `exports_${projectId?.slice(0, 8) || 'archive'}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert(e.message || '打包下载失败');
+    }
   };
 
   const deleteSelectedAssets = async () => {
@@ -397,9 +420,14 @@ export function ExportSettingsPage({
             </h1>
             <p className="text-slate-500 text-sm">配置最终论文图片导出参数，检查图形是否满足目标期刊要求。</p>
           </div>
-          <button onClick={() => onNavigate('editor')} className="px-4 py-2 border border-slate-300 bg-white rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors shadow-sm">
-            返回编辑器
-          </button>
+          <div className="flex gap-2">
+            <button onClick={() => onNavigate('export_library')} className="px-4 py-2 border border-slate-300 bg-white rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors shadow-sm text-slate-700">
+              历史导出资产
+            </button>
+            <button onClick={() => onNavigate('editor')} className="px-4 py-2 border border-slate-300 bg-white rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors shadow-sm">
+              返回编辑器
+            </button>
+          </div>
         </div>
 
         <div className="flex gap-6 items-start">

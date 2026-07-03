@@ -4,7 +4,7 @@ import { FigureSpec } from '../types';
 import { sanitizeSvg } from '../utils/svgEditor';
 import { PatchEntry, FigureSession } from '../schemas/manifest';
 
-const TEXT_GID_RE = /^(text|title|xlabel|ylabel|legend_text|legend_title|fig_text)\./;
+const TEXT_GID_RE = /^(r\.text|text|title|xlabel|ylabel|legend_text|legend_title|fig_text)\./;
 
 function isTextGid(gid: string): boolean {
   return TEXT_GID_RE.test(gid);
@@ -20,6 +20,20 @@ interface ChartPreviewProps {
   renderedSVG?: string | null;
   onPatch?: (patches: PatchEntry[]) => void;
   figSession?: FigureSession | null;
+  dragMode?: boolean;
+}
+
+interface DragSession {
+  pointerId: number;
+  startClient: { x: number; y: number };
+  startSvg: { x: number; y: number };
+  gids: string[];
+  originalTransforms: Map<string, string>;
+}
+
+interface DragDelta {
+  dx: number;
+  dy: number;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -52,7 +66,7 @@ function parseSvgDimensions(svg: string | null | undefined) {
   return { width: 900, height: 700, viewBox: { x: 0, y: 0, width: 900, height: 700 } };
 }
 
-export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObject, selectedGids = [], onSelectGids, renderedSVG, onPatch, figSession }: ChartPreviewProps) {
+export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObject, selectedGids = [], onSelectGids, renderedSVG, onPatch, figSession, dragMode = false }: ChartPreviewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgContainerRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -60,6 +74,14 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const didPanRef = useRef(false);
   const marqueeStartRef = useRef<{ x: number; y: number } | null>(null);
   const marqueeRectRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const dragPendingRef = useRef(false);
+  const dragStartRef = useRef<DragSession | null>(null);
+  const dragRestoreRef = useRef<DragSession | null>(null);
+  const dragCaptureTargetRef = useRef<HTMLElement | null>(null);
+  const dragPreviewRef = useRef<{ dx: number; dy: number; gids: string[] } | null>(null);
+  const pendingDragDeltasRef = useRef<Map<string, DragDelta>>(new Map());
+  const pendingPatchMapRef = useRef<Map<string, PatchEntry>>(new Map());
+  const pendingOriginalTransformsRef = useRef<Map<string, string>>(new Map());
 
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [zoomMode, setZoomMode] = useState<'fit' | 'manual'>('fit');
@@ -70,8 +92,9 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const [marqueeRect, setMarqueeRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [overlayBoxes, setOverlayBoxes] = useState<{ gid: string; x: number; y: number; w: number; h: number }[]>([]);
   const [overlayFrame, setOverlayFrame] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [dragPreview, setDragPreview] = useState<{ dx: number; dy: number; gids: string[] } | null>(null);
+  const [pendingPositionPatches, setPendingPositionPatches] = useState<PatchEntry[]>([]);
   const svgSize = useMemo(() => parseSvgDimensions(renderedSVG), [renderedSVG]);
-  const escId = (id: string) => CSS.escape(id);
   const fitScale = useMemo(() => {
     if (!viewport.width || !viewport.height) return 1;
     const availableWidth = Math.max(viewport.width - 64, 200);
@@ -81,6 +104,43 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const scale = zoomMode === 'fit' ? fitScale : manualScale;
   const zoomPercent = Math.round(scale * 100);
   const validGids = useMemo(() => new Set((figSession?.manifest?.objects || []).map(o => o.id)), [figSession?.manifest?.objects]);
+  const manifestObjectMap = useMemo(() => {
+    const map = new Map<string, any>();
+    (figSession?.manifest?.objects || []).forEach(obj => map.set(obj.id, obj));
+    return map;
+  }, [figSession?.manifest?.objects]);
+
+  const querySvgElementById = useCallback((svgEl: SVGSVGElement | null, id: string): SVGGraphicsElement | null => {
+    if (!svgEl || !id) return null;
+    const escaped = CSS.escape(id);
+    return (
+      svgEl.querySelector(`#${escaped}`)
+      || svgEl.querySelector(`[data-fig-id="${escaped}"]`)
+    ) as SVGGraphicsElement | null;
+  }, []);
+
+  const getSelectableSvgElement = useCallback((svgEl: SVGSVGElement | null, gid: string): SVGGraphicsElement | null => {
+    const direct = querySvgElementById(svgEl, gid);
+    if (direct) return direct;
+
+    // subplot.* is a logical manifest object. Matplotlib writes the physical axes group as axes.*.
+    const subplotMatch = gid.match(/^subplot\.(\d+)$/);
+    if (subplotMatch) {
+      return querySvgElementById(svgEl, `axes.${subplotMatch[1]}`);
+    }
+    return null;
+  }, [querySvgElementById]);
+
+  const isDraggableTextObject = useCallback((gid: string) => {
+    const obj = manifestObjectMap.get(gid);
+    const props = obj?.currentProps || {};
+    return obj?.kind === 'text'
+      && Array.isArray(obj?.editable)
+      && obj.editable.includes('position')
+      && typeof props.x === 'number'
+      && typeof props.y === 'number'
+      && (props.coord_system === 'axes' || props.coord_system === 'figure');
+  }, [manifestObjectMap]);
 
   const getSvgPoint = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
     const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
@@ -114,6 +174,244 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
   }, [getSvgPoint]);
 
+  const findElementGid = useCallback((target: HTMLElement | null) => {
+    let current: HTMLElement | null = target;
+    while (current) {
+      if (current.id) {
+        if (validGids.has(current.id)) return current.id;
+        const gridMatch = current.id.match(/^grid\.(\d+)\.line\./);
+        if (gridMatch && validGids.has(`grid.${gridMatch[1]}`)) {
+          return `grid.${gridMatch[1]}`;
+        }
+      }
+      const dataFigId = current.getAttribute('data-fig-id');
+      if (dataFigId && validGids.has(dataFigId)) return dataFigId;
+      current = current.parentElement;
+    }
+    return null;
+  }, [validGids]);
+
+  const inferAxesIndexFromGid = useCallback((gid: string): number | null => {
+    const obj = manifestObjectMap.get(gid);
+    if (typeof obj?.source?.axesIndex === 'number') return obj.source.axesIndex;
+    if (typeof obj?.subplotId === 'string') {
+      const subplotMatch = obj.subplotId.match(/^subplot\.(\d+)$/);
+      if (subplotMatch) return Number(subplotMatch[1]);
+    }
+
+    // Common gid forms: title.0, title.left.0, xlabel.0, legend_text.0.1, xtick.0.3.
+    const match = gid.match(/\.(\d+)(?:\.\d+)?$/);
+    if (match) return Number(match[1]);
+    return null;
+  }, [manifestObjectMap]);
+
+  const getAxesBoxForObject = useCallback((gid: string, svgEl: SVGSVGElement) => {
+    const obj = manifestObjectMap.get(gid);
+    const subplotId = obj?.subplotId;
+    const axesIndex = inferAxesIndexFromGid(gid);
+    const candidateIds = [
+      axesIndex !== null && Number.isFinite(axesIndex) ? `axes.patch.${axesIndex}` : null,
+      axesIndex !== null && Number.isFinite(axesIndex) ? `patch_${axesIndex + 2}` : null,
+      axesIndex !== null && Number.isFinite(axesIndex) ? `axes.${axesIndex}` : null,
+      typeof subplotId === 'string' ? subplotId : null,
+    ].filter(Boolean) as string[];
+    for (const id of candidateIds) {
+      const el = getSelectableSvgElement(svgEl, id);
+      if (!el) continue;
+      const box = getElementSvgBox(el, svgEl);
+      if (box && box.w > 0 && box.h > 0) return box;
+    }
+    return null;
+  }, [getElementSvgBox, getSelectableSvgElement, inferAxesIndexFromGid, manifestObjectMap]);
+
+  const buildPositionPatch = useCallback((gid: string, dx: number, dy: number): PatchEntry | null => {
+    const obj = manifestObjectMap.get(gid);
+    const props = obj?.currentProps || {};
+    const coordSystem = props.coord_system;
+    if (obj?.kind !== 'text' || typeof props.x !== 'number' || typeof props.y !== 'number') return null;
+    const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
+    if (!svgEl) return null;
+
+    let nextX = props.x;
+    let nextY = props.y;
+    if (coordSystem === 'axes') {
+      const axesBox = getAxesBoxForObject(gid, svgEl);
+      const fallbackViewBox = svgEl.viewBox.baseVal;
+      const width = axesBox?.w || fallbackViewBox?.width || svgSize.viewBox.width;
+      const height = axesBox?.h || fallbackViewBox?.height || svgSize.viewBox.height;
+      if (!width || !height) return null;
+      nextX = props.x + dx / width;
+      nextY = props.y - dy / height;
+    } else if (coordSystem === 'figure') {
+      const viewBox = svgEl.viewBox.baseVal;
+      const width = viewBox?.width || svgSize.viewBox.width;
+      const height = viewBox?.height || svgSize.viewBox.height;
+      nextX = props.x + dx / width;
+      nextY = props.y - dy / height;
+    } else {
+      return null;
+    }
+
+    return {
+      op: 'set',
+      mode: 'backend_patch',
+      gid,
+      prop: 'position',
+      value: {
+        x: Number(nextX.toFixed(6)),
+        y: Number(nextY.toFixed(6)),
+        coord_system: coordSystem,
+      },
+    };
+  }, [getAxesBoxForObject, manifestObjectMap, svgSize.viewBox.height, svgSize.viewBox.width]);
+
+  const releaseDragCapture = useCallback((pointerId?: number) => {
+    const target = dragCaptureTargetRef.current;
+    if (target && typeof pointerId === 'number') {
+      try {
+        target.releasePointerCapture(pointerId);
+      } catch { /* pointer may already be released */ }
+    }
+    dragCaptureTargetRef.current = null;
+  }, []);
+
+  const clearDragPreview = useCallback(() => {
+    const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
+    const session = dragStartRef.current || dragRestoreRef.current;
+    pendingOriginalTransformsRef.current.forEach((transform, gid) => {
+      const el = querySvgElementById(svgEl, gid);
+      if (!el) return;
+      if (transform) {
+        el.setAttribute('transform', transform);
+      } else {
+        el.removeAttribute('transform');
+      }
+      el.style.cursor = '';
+    });
+    session?.originalTransforms.forEach((transform, gid) => {
+      if (pendingOriginalTransformsRef.current.has(gid)) return;
+      const el = querySvgElementById(svgEl, gid);
+      if (!el) return;
+      if (transform) {
+        el.setAttribute('transform', transform);
+      } else {
+        el.removeAttribute('transform');
+      }
+      el.style.cursor = '';
+    });
+    releaseDragCapture(session?.pointerId);
+    dragStartRef.current = null;
+    dragRestoreRef.current = null;
+    dragPreviewRef.current = null;
+    dragPendingRef.current = false;
+    pendingDragDeltasRef.current.clear();
+    pendingPatchMapRef.current.clear();
+    pendingOriginalTransformsRef.current.clear();
+    setDragPreview(null);
+  }, [querySvgElementById, releaseDragCapture]);
+
+  const applyDragPreviewTransform = useCallback((drag: { dx: number; dy: number; gids: string[] }) => {
+    const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
+    const session = dragStartRef.current || dragRestoreRef.current;
+    drag.gids.forEach(gid => {
+      const el = querySvgElementById(svgEl, gid);
+      if (!el) return;
+      const original = pendingOriginalTransformsRef.current.get(gid)
+        ?? session?.originalTransforms.get(gid)
+        ?? '';
+      const previousDelta = pendingDragDeltasRef.current.get(gid) ?? { dx: 0, dy: 0 };
+      const totalDx = previousDelta.dx + drag.dx;
+      const totalDy = previousDelta.dy + drag.dy;
+      const nextTransform = `${original} translate(${totalDx.toFixed(3)} ${totalDy.toFixed(3)})`.trim();
+      el.setAttribute('transform', nextTransform);
+    });
+  }, [querySvgElementById]);
+
+  const applyPendingDragTransforms = useCallback(() => {
+    const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
+    pendingDragDeltasRef.current.forEach((delta, gid) => {
+      const el = querySvgElementById(svgEl, gid);
+      if (!el) return;
+      const original = pendingOriginalTransformsRef.current.get(gid) ?? '';
+      const nextTransform = `${original} translate(${delta.dx.toFixed(3)} ${delta.dy.toFixed(3)})`.trim();
+      el.setAttribute('transform', nextTransform);
+    });
+  }, [querySvgElementById]);
+
+  const finalizeDragFromPointer = useCallback((clientX: number, clientY: number) => {
+    if (!dragStartRef.current) return false;
+    const currentSvg = getSvgPoint(clientX, clientY);
+    if (!currentSvg) {
+      clearDragPreview();
+      dragStartRef.current = null;
+      return true;
+    }
+    const currentDrag = {
+      dx: currentSvg.x - dragStartRef.current.startSvg.x,
+      dy: currentSvg.y - dragStartRef.current.startSvg.y,
+      gids: dragStartRef.current.gids,
+    };
+    dragPreviewRef.current = currentDrag;
+    setDragPreview(currentDrag);
+    applyDragPreviewTransform(currentDrag);
+    const movedEnough = Math.hypot(currentDrag.dx, currentDrag.dy) >= 0.5;
+    const nextPatches: PatchEntry[] = [];
+    if (movedEnough) {
+      currentDrag.gids.forEach(gid => {
+        const sessionOriginal = dragStartRef.current?.originalTransforms.get(gid) || '';
+        if (!pendingOriginalTransformsRef.current.has(gid)) {
+          pendingOriginalTransformsRef.current.set(gid, sessionOriginal);
+        }
+        const previousDelta = pendingDragDeltasRef.current.get(gid) ?? { dx: 0, dy: 0 };
+        const nextDelta = {
+          dx: previousDelta.dx + currentDrag.dx,
+          dy: previousDelta.dy + currentDrag.dy,
+        };
+        pendingDragDeltasRef.current.set(gid, nextDelta);
+        const patch = buildPositionPatch(gid, nextDelta.dx, nextDelta.dy);
+        if (patch) {
+          pendingPatchMapRef.current.set(gid, patch);
+          nextPatches.push(patch);
+        }
+      });
+    }
+    if (nextPatches.length > 0) {
+      dragPendingRef.current = true;
+      dragRestoreRef.current = dragStartRef.current;
+      releaseDragCapture(dragStartRef.current.pointerId);
+      dragStartRef.current = null;
+      applyPendingDragTransforms();
+      setPendingPositionPatches(Array.from(pendingPatchMapRef.current.values()));
+    } else {
+      clearDragPreview();
+      dragStartRef.current = null;
+    }
+    return true;
+  }, [applyDragPreviewTransform, applyPendingDragTransforms, buildPositionPatch, clearDragPreview, getSvgPoint, releaseDragCapture]);
+
+  useEffect(() => {
+    if (!dragPendingRef.current) return;
+    applyPendingDragTransforms();
+  }, [applyPendingDragTransforms, dragPreview, pendingPositionPatches.length]);
+
+  const finalizeDragPreviewKeepingTransform = useCallback(() => {
+    const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
+    const session = dragStartRef.current || dragRestoreRef.current;
+    session?.gids.forEach(gid => {
+      const el = querySvgElementById(svgEl, gid);
+      if (el) el.style.cursor = '';
+    });
+    releaseDragCapture(session?.pointerId);
+    dragStartRef.current = null;
+    dragRestoreRef.current = null;
+    dragPreviewRef.current = null;
+    dragPendingRef.current = false;
+    pendingDragDeltasRef.current.clear();
+    pendingPatchMapRef.current.clear();
+    pendingOriginalTransformsRef.current.clear();
+    setDragPreview(null);
+  }, [querySvgElementById, releaseDragCapture]);
+
   const updateOverlayGeometry = useCallback(() => {
     const stageEl = stageRef.current;
     const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
@@ -139,7 +437,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
     const boxes: { gid: string; x: number; y: number; w: number; h: number }[] = [];
     selectedGids.forEach(gid => {
-      const el = svgEl.querySelector(`[id="${escId(gid)}"]`);
+      const el = getSelectableSvgElement(svgEl, gid);
       if (!el) return;
       try {
         const box = getElementSvgBox(el, svgEl);
@@ -147,7 +445,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       } catch { /* skip */ }
     });
     setOverlayBoxes(boxes);
-  }, [getElementSvgBox, scale, selectedGids]);
+  }, [getElementSvgBox, getSelectableSvgElement, scale, selectedGids]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -165,6 +463,11 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     setManualScale(1);
     setPan({ x: 0, y: 0 });
   }, [figSession?.sessionId]);
+
+  useEffect(() => {
+    clearDragPreview();
+    setPendingPositionPatches([]);
+  }, [clearDragPreview, renderedSVG]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -185,9 +488,10 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   }, []);
 
   useEffect(() => {
-    const handlePointerUp = () => {
+    const handlePointerUp = (event: PointerEvent) => {
       setIsPanning(false);
       panStartRef.current = null;
+      finalizeDragFromPointer(event.clientX, event.clientY);
       if (marqueeStartRef.current) {
         marqueeStartRef.current = null;
         marqueeRectRef.current = null;
@@ -197,7 +501,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     };
     window.addEventListener('pointerup', handlePointerUp);
     return () => window.removeEventListener('pointerup', handlePointerUp);
-  }, []);
+  }, [finalizeDragFromPointer]);
 
   const setManualZoom = (nextScale: number) => {
     setZoomMode('manual');
@@ -223,26 +527,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const handleSvgClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (didPanRef.current || marqueeStartRef.current) return;
     const target = event.target as HTMLElement;
-    
-    let current: HTMLElement | null = target;
-    let foundGid: string | null = null;
-    while (current) {
-      if (current.id) {
-        if (validGids.has(current.id) || current.id === 'Figure') {
-          foundGid = current.id;
-          break;
-        }
-        const gridMatch = current.id.match(/^grid\.(\d+)\.line\./);
-        if (gridMatch) {
-          const resolvedGridId = `grid.${gridMatch[1]}`;
-          if (validGids.has(resolvedGridId)) {
-            foundGid = resolvedGridId;
-            break;
-          }
-        }
-      }
-      current = current.parentElement;
-    }
+    const foundGid = findElementGid(target);
 
     if (foundGid) {
       if (event.ctrlKey || event.metaKey) {
@@ -262,7 +547,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         onSelectObject('Figure');
       }
     }
-  }, [validGids, selectedGids, onSelectGids, onSelectObject]);
+  }, [findElementGid, selectedGids, onSelectGids, onSelectObject]);
 
   const handleSvgDoubleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
@@ -295,6 +580,47 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   }, [validGids, onSelectGids, onSelectObject, onPatch]);
 
   const handleSvgPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (dragMode && event.button === 0) {
+      const foundGid = findElementGid(event.target as HTMLElement);
+      if (foundGid && isDraggableTextObject(foundGid)) {
+        const dragGids = (selectedGids.includes(foundGid) ? selectedGids : [foundGid]).filter(isDraggableTextObject);
+        if (!selectedGids.includes(foundGid)) {
+          onSelectGids?.([foundGid]);
+          onSelectObject(foundGid);
+        }
+        if (dragGids.length > 0) {
+          event.preventDefault();
+          event.stopPropagation();
+          const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
+          const startSvg = getSvgPoint(event.clientX, event.clientY);
+          if (!startSvg) return;
+          const originalTransforms = new Map<string, string>();
+          dragGids.forEach(gid => {
+            const el = querySvgElementById(svgEl, gid);
+            originalTransforms.set(gid, el?.getAttribute('transform') || '');
+            if (el) el.style.cursor = 'grabbing';
+          });
+          dragStartRef.current = {
+            pointerId: event.pointerId,
+            startClient: { x: event.clientX, y: event.clientY },
+            startSvg,
+            gids: dragGids,
+            originalTransforms,
+          };
+          dragPreviewRef.current = { dx: 0, dy: 0, gids: dragGids };
+          dragPendingRef.current = pendingPatchMapRef.current.size > 0;
+          dragRestoreRef.current = null;
+          setDragPreview(dragPreviewRef.current);
+          try {
+            const captureTarget = event.currentTarget as HTMLElement;
+            dragCaptureTargetRef.current = captureTarget;
+            captureTarget.setPointerCapture(event.pointerId);
+          } catch { /* ignore */ }
+          return;
+        }
+      }
+    }
+
     if (spacePressed || event.button === 1) {
       event.preventDefault();
       setIsPanning(true);
@@ -316,9 +642,21 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     if (!hitElement && target.closest('svg')) {
       marqueeStartRef.current = { x: event.clientX, y: event.clientY };
     }
-  }, [spacePressed, pan.x, pan.y, validGids]);
+  }, [dragMode, findElementGid, getSvgPoint, isDraggableTextObject, onSelectGids, onSelectObject, pan.x, pan.y, querySvgElementById, selectedGids, spacePressed, validGids]);
 
   const handleSvgPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (dragStartRef.current) {
+      const currentSvg = getSvgPoint(event.clientX, event.clientY);
+      if (!currentSvg) return;
+      const dx = currentSvg.x - dragStartRef.current.startSvg.x;
+      const dy = currentSvg.y - dragStartRef.current.startSvg.y;
+      dragPreviewRef.current = { dx, dy, gids: dragStartRef.current.gids };
+      applyDragPreviewTransform(dragPreviewRef.current);
+      setDragPreview(dragPreviewRef.current);
+      updateOverlayGeometry();
+      return;
+    }
+
     if (panStartRef.current) {
       const dx = event.clientX - panStartRef.current.x;
       const dy = event.clientY - panStartRef.current.y;
@@ -342,9 +680,15 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       marqueeRectRef.current = rect;
       setMarqueeRect(rect);
     }
-  }, [getSvgPoint]);
+  }, [applyDragPreviewTransform, getSvgPoint, updateOverlayGeometry]);
 
   const handleSvgPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (finalizeDragFromPointer(event.clientX, event.clientY)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     // Resolve marquee
     if (marqueeStartRef.current && marqueeRectRef.current) {
       const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
@@ -352,7 +696,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         const mr = marqueeRectRef.current;
         const hitGids: string[] = [];
         validGids.forEach(gid => {
-          const el = svgEl.querySelector(`[id="${escId(gid)}"]`);
+          const el = getSelectableSvgElement(svgEl, gid);
           if (!el) return;
           try {
             const bbox = getElementSvgBox(el, svgEl);
@@ -374,7 +718,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     marqueeStartRef.current = null;
     marqueeRectRef.current = null;
     setMarqueeRect(null);
-  }, [validGids, selectedGids, onSelectGids, getElementSvgBox]);
+  }, [validGids, selectedGids, onSelectGids, getElementSvgBox, getSelectableSvgElement, finalizeDragFromPointer]);
 
   // Hover effect: show pointer cursor generally, grab if selected
   const handleSvgPointerOver = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -382,12 +726,26 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     let current: HTMLElement | null = target;
     while (current) {
       if (current.id && isTextGid(current.id) && validGids.has(current.id)) {
-        current.style.cursor = 'pointer';
+        current.style.cursor = dragMode && isDraggableTextObject(current.id)
+          ? 'grab'
+          : 'pointer';
         break;
       }
       current = current.parentElement;
     }
-  }, [validGids]);
+  }, [dragMode, isDraggableTextObject, validGids]);
+
+  const confirmPendingDrag = useCallback(() => {
+    if (pendingPositionPatches.length === 0) return;
+    finalizeDragPreviewKeepingTransform();
+    void onPatch?.(pendingPositionPatches);
+    setPendingPositionPatches([]);
+  }, [finalizeDragPreviewKeepingTransform, onPatch, pendingPositionPatches]);
+
+  const cancelPendingDrag = useCallback(() => {
+    clearDragPreview();
+    setPendingPositionPatches([]);
+  }, [clearDragPreview]);
 
   if (!renderedSVG) {
     return (
@@ -420,7 +778,40 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
           <ScanSearch className="w-3.5 h-3.5" /><span>滚轮缩放</span>
           <span className="text-slate-300">|</span>
           <span>拖动框选</span>
+          {dragMode && (
+            <>
+              <span className="text-slate-300">|</span>
+              <span className="font-semibold text-blue-700">拖拽模式：直接拖文字，确认后写回</span>
+            </>
+          )}
         </div>
+
+        {dragMode && pendingPositionPatches.length > 0 && (
+          <div
+            className="absolute left-1/2 top-14 z-30 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-blue-100 bg-white/95 px-4 py-2 text-xs shadow-xl backdrop-blur"
+            onPointerDown={(event) => event.stopPropagation()}
+            onPointerUp={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <span className="font-medium text-slate-700">
+              已累计移动 {pendingPositionPatches.length} 个文本对象，确认后一次性写入 Python 坐标并重渲染。
+            </span>
+            <button
+              type="button"
+              onClick={confirmPendingDrag}
+              className="rounded-md bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700"
+            >
+              确认位置
+            </button>
+            <button
+              type="button"
+              onClick={cancelPendingDrag}
+              className="rounded-md border border-slate-200 px-3 py-1.5 font-semibold text-slate-600 hover:bg-slate-50"
+            >
+              取消
+            </button>
+          </div>
+        )}
 
         <div
           ref={containerRef}

@@ -281,6 +281,12 @@ def iter_artists(fig):
             _freeze_ticklabels_preserving_style(ax)
 
         yield f"axes.{ax_idx}", "axes", ax
+        try:
+            ax.patch.set_gid(f"axes.patch.{ax_idx}")
+        except Exception:
+            pass
+        if not _is_colorbar_axes(ax):
+            yield f"subplot.{ax_idx}", "subplot", ax
         
         # Yield containers
         for c_idx, container in enumerate(ax.containers):
@@ -352,7 +358,20 @@ def iter_artists(fig):
             yield f"line.{ax_idx}.{i}", "line", line
 
         for i, coll in enumerate(ax.collections):
-            yield f"collection.{ax_idx}.{i}", "collection", coll
+            import matplotlib.collections as mcoll
+            if isinstance(coll, mcoll.QuadMesh):
+                yield f"heatmap.mesh.{ax_idx}.{i}", "heatmap", coll
+            else:
+                yield f"collection.{ax_idx}.{i}", "collection", coll
+
+        import matplotlib.image as mimage
+        for i, img in enumerate(ax.images):
+            if isinstance(img, mimage.AxesImage):
+                yield f"heatmap.image.{ax_idx}.{i}", "heatmap", img
+
+        cbar = getattr(ax, "_colorbar", None)
+        if cbar is not None:
+            yield f"colorbar.{ax_idx}", "colorbar", cbar
 
         # Build patch-to-container-label map
         patch_labels = {}
@@ -471,6 +490,8 @@ def _read_text_props(artist) -> dict:
         "fontsize": artist.get_fontsize(),
         "color": to_hex_safe(artist.get_color()),
         "fontfamily": artist.get_fontname(),
+        "fontweight": artist.get_fontweight(),
+        "fontstyle": artist.get_fontstyle(),
         "x": float(x),
         "y": float(y),
         "coord_system": _get_text_coord_system(artist),
@@ -592,6 +613,79 @@ def _read_axes_props(artist) -> dict:
         "x_tick_rotation": rotation,
         "tick_direction": tick_dir,
     }
+
+
+def _is_colorbar_axes(ax) -> bool:
+    """Matplotlib stores colorbars as Axes; don't expose them as data subplots."""
+    return bool(getattr(ax, "_colorbar", None) is not None or getattr(ax, "_colorbar_info", None) is not None)
+
+
+def _read_subplot_props(artist) -> dict:
+    bounds = artist.get_position().bounds
+    try:
+        aspect = artist.get_aspect()
+    except Exception:
+        aspect = "auto"
+    if isinstance(aspect, (int, float)) and abs(float(aspect) - 1.0) < 1e-9:
+        aspect = "1"
+    return {
+        "left": float(bounds[0]),
+        "bottom": float(bounds[1]),
+        "width": float(bounds[2]),
+        "height": float(bounds[3]),
+        "aspect": str(aspect),
+    }
+
+
+def _build_subplot_layout_meta(raw_elements: list[tuple[str, str, Any]]) -> dict[str, dict[str, Any]]:
+    subplot_items = []
+    for gid, kind, ax in raw_elements:
+        if kind != "subplot":
+            continue
+        bounds = ax.get_position().bounds
+        subplot_items.append({
+            "gid": gid,
+            "left": float(bounds[0]),
+            "bottom": float(bounds[1]),
+            "width": float(bounds[2]),
+            "height": float(bounds[3]),
+            "center_x": float(bounds[0] + bounds[2] / 2),
+            "center_y": float(bounds[1] + bounds[3] / 2),
+        })
+    if not subplot_items:
+        return {}
+
+    def assign_groups(values: list[float], tolerance: float = 0.035, reverse: bool = False) -> dict[float, int]:
+        ordered = sorted(values, reverse=reverse)
+        groups: list[float] = []
+        result: dict[float, int] = {}
+        for value in ordered:
+            matched = None
+            for idx, center in enumerate(groups):
+                if abs(value - center) <= tolerance:
+                    matched = idx
+                    break
+            if matched is None:
+                groups.append(value)
+                matched = len(groups) - 1
+            result[value] = matched
+        return result
+
+    row_by_y = assign_groups([item["center_y"] for item in subplot_items], reverse=True)
+    col_by_x = assign_groups([item["center_x"] for item in subplot_items], reverse=False)
+    ordered = sorted(subplot_items, key=lambda item: (row_by_y[item["center_y"]], col_by_x[item["center_x"]], item["left"]))
+
+    meta: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(ordered):
+        row = row_by_y[item["center_y"]]
+        col = col_by_x[item["center_x"]]
+        meta[item["gid"]] = {
+            "subplotIndex": index,
+            "row": row,
+            "col": col,
+            "label": f"子图 {index + 1} (第 {row + 1} 行，第 {col + 1} 列)",
+        }
+    return meta
 
 
 def _get_tick_metric(tick, metric: str, fallback: Any) -> Any:
@@ -829,8 +923,141 @@ def _read_violinplot_container_props(container) -> dict:
     return props
 
 
+def _read_heatmap_props(artist) -> dict:
+    from matplotlib.collections import QuadMesh
+    props = {}
+    
+    # Check if this is an RGB/RGBA image
+    is_rgb = False
+    if hasattr(artist, "get_array"):
+        try:
+            arr = artist.get_array()
+            if arr is not None and len(arr.shape) == 3:
+                is_rgb = True
+        except Exception:
+            pass
+
+    try:
+        props["cmap"] = (artist.cmap.name if hasattr(artist, "cmap") and artist.cmap else None) if not is_rgb else None
+    except Exception:
+        props["cmap"] = None
+
+    try:
+        clim = artist.get_clim() if hasattr(artist, "get_clim") else (None, None)
+        props["vmin"] = (float(clim[0]) if clim[0] is not None else None) if not is_rgb else None
+        props["vmax"] = (float(clim[1]) if clim[1] is not None else None) if not is_rgb else None
+    except Exception:
+        props["vmin"] = None
+        props["vmax"] = None
+
+    try:
+        props["alpha"] = float(artist.get_alpha()) if hasattr(artist, "get_alpha") and artist.get_alpha() is not None else None
+    except Exception:
+        props["alpha"] = None
+
+    # Shape
+    try:
+        if isinstance(artist, QuadMesh):
+            coords = artist.get_coordinates()
+            props["shape"] = [coords.shape[0] - 1, coords.shape[1] - 1]
+        elif hasattr(artist, "get_array"):
+            props["shape"] = list(artist.get_array().shape)
+        else:
+            props["shape"] = None
+    except Exception:
+        try:
+            props["shape"] = list(artist.get_array().shape) if hasattr(artist, "get_array") else None
+        except Exception:
+            props["shape"] = None
+
+    # Extent
+    if hasattr(artist, "get_extent"):
+        try:
+            props["extent"] = [float(x) for x in artist.get_extent()]
+        except Exception:
+            props["extent"] = None
+    else:
+        props["extent"] = None
+
+    # Interpolation
+    if hasattr(artist, "get_interpolation"):
+        try:
+            props["interpolation"] = artist.get_interpolation()
+        except Exception:
+            props["interpolation"] = None
+    else:
+        props["interpolation"] = None
+
+    return props
+
+
+def _read_colorbar_props(cbar) -> dict:
+    orientation = getattr(cbar, "orientation", "vertical")
+    
+    # Label
+    label = ""
+    try:
+        if orientation == "vertical":
+            label = cbar.ax.yaxis.get_label().get_text()
+        else:
+            label = cbar.ax.xaxis.get_label().get_text()
+    except Exception:
+        pass
+
+    # Tick Fontsize
+    tick_fontsize = 10
+    try:
+        ticks = cbar.ax.yaxis.get_ticklabels() if orientation == "vertical" else cbar.ax.xaxis.get_ticklabels()
+        if ticks:
+            tick_fontsize = float(ticks[0].get_size())
+    except Exception:
+        pass
+
+    # VMin, VMax, CMap from mappable
+    vmin, vmax, cmap = None, None, None
+    if getattr(cbar, "mappable", None) is not None:
+        try:
+            clim = cbar.mappable.get_clim()
+            vmin = float(clim[0]) if clim[0] is not None else None
+            vmax = float(clim[1]) if clim[1] is not None else None
+            cmap = cbar.mappable.cmap.name
+        except Exception:
+            pass
+
+    visible = True
+    try:
+        visible = bool(cbar.ax.get_visible())
+    except Exception:
+        pass
+
+    left, bottom, width, height = 0.0, 0.0, 0.0, 0.0
+    try:
+        bounds = cbar.ax.get_position().bounds  # [x0, y0, w, h]
+        left = float(bounds[0])
+        bottom = float(bounds[1])
+        width = float(bounds[2])
+        height = float(bounds[3])
+    except Exception:
+        pass
+
+    return {
+        "label": label,
+        "tick_fontsize": tick_fontsize,
+        "orientation": orientation,
+        "vmin": vmin,
+        "vmax": vmax,
+        "cmap": cmap,
+        "visible": visible,
+        "left": left,
+        "bottom": bottom,
+        "width": width,
+        "height": height,
+    }
+
+
 _READERS = {
     "text": _read_text_props,
+    "subplot": _read_subplot_props,
     "spine": _read_spine_props,
     "spine_group": _read_spine_group_props,
     "legend": _read_legend_props,
@@ -845,6 +1072,8 @@ _READERS = {
     "errorbar_container": _read_errorbar_container_props,
     "boxplot_container": _read_boxplot_container_props,
     "violinplot_container": _read_violinplot_container_props,
+    "heatmap": _read_heatmap_props,
+    "colorbar": _read_colorbar_props,
 }
 
 
@@ -889,7 +1118,8 @@ def _safe_artist_label(artist, fallback: str) -> str:
 # ---------------------------------------------------------------------------
 
 _EDITABLE = {
-    "text": ["text", "fontsize", "fontfamily", "color", "ha", "va", "rotation", "position", "zorder"],
+    "text": ["text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "ha", "va", "rotation", "position", "zorder"],
+    "subplot": ["left", "bottom", "width", "height", "aspect", "zorder"],
     "spine": ["visible", "color", "linewidth", "zorder"],
     "spine_group": ["visible", "color", "linewidth", "zorder"],
     "legend": ["visible", "fontsize", "frameon", "facecolor", "edgecolor", "linewidth", "alpha", "loc", "ncol", "markerscale", "title", "fontfamily", "zorder"],
@@ -904,6 +1134,8 @@ _EDITABLE = {
     "errorbar_container": ["color", "linewidth", "elinewidth", "capsize", "capthick", "alpha", "marker", "markersize", "zorder"],
     "boxplot_container": ["color", "linewidth", "alpha", "box_color", "median_color", "zorder"],
     "violinplot_container": ["color", "facecolor", "edgecolor", "linewidth", "alpha", "zorder"],
+    "heatmap": ["cmap", "vmin", "vmax", "alpha"],
+    "colorbar": ["label", "tick_fontsize", "visible", "left", "bottom", "width", "height"],
 }
 
 
@@ -912,6 +1144,8 @@ def _get_editable(kind: str) -> list:
 
 
 def _determine_role(gid: str, parent_kind: Optional[str] = None) -> Optional[str]:
+    if gid.startswith("subplot."):
+        return "subplot_panel"
     if gid.startswith("fig_text."):
         return "figure_title"
     if gid.startswith("title.left.") or gid.startswith("title.right.") or gid.startswith("title."):
@@ -958,6 +1192,10 @@ def _determine_role(gid: str, parent_kind: Optional[str] = None) -> Optional[str
         return "scatter_series"
     if gid.startswith("patch."):
         return "bar_series"
+    if gid.startswith("heatmap."):
+        return "heatmap_series"
+    if gid.startswith("colorbar."):
+        return "colorbar"
         
     return None
 
@@ -1029,17 +1267,31 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         artist_to_gid[artist] = gid
         raw_elements.append((gid, kind, artist))
 
+    subplot_meta = _build_subplot_layout_meta(raw_elements)
+
     # Build objects manifest list
     objects = []
     for gid, kind, artist in raw_elements:
         if kind == "grid_line":
             continue
+        current_props = _read_props(artist, kind)
+        label = _safe_artist_label(artist, gid)
+        if kind == "subplot":
+            meta = subplot_meta.get(gid, {})
+            label = meta.get("label", label)
+            current_props = {
+                **current_props,
+                "subplotIndex": meta.get("subplotIndex", 0),
+                "row": meta.get("row", 0),
+                "col": meta.get("col", 0),
+                "label": label,
+            }
         objects.append({
             "id": gid,
             "kind": kind,
-            "label": _safe_artist_label(artist, gid),
+            "label": label,
             "editable": _get_editable(kind),
-            "currentProps": _read_props(artist, kind),
+            "currentProps": current_props,
         })
 
     # Build parent-child relationships
@@ -1097,6 +1349,9 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                     ax_idx = int(parts[2])
                 except ValueError:
                     pass
+
+        if kind != "figure" and not gid.startswith("fig_text."):
+            obj["subplotId"] = f"subplot.{ax_idx}"
 
         # Add source metadata
         artist_obj = next(art for g, k, art in raw_elements if g == gid)
@@ -1316,6 +1571,8 @@ _PROP_TO_SETTER = {
     "text": "set_text",
     "fontsize": "set_fontsize",
     "fontfamily": "set_fontname",
+    "fontweight": "set_fontweight",
+    "fontstyle": "set_fontstyle",
     "color": "set_color",
     "visible": "set_visible",
     "linewidth": "set_linewidth",
@@ -1367,6 +1624,68 @@ def _apply_color_patch(artist, value):
 
 
 def _apply_single(artist, prop: str, value: Any, gid: str = ""):
+    if gid.startswith("heatmap."):
+        if prop == "cmap":
+            artist.set_cmap(value)
+            cbar = getattr(artist, "colorbar", None)
+            if cbar is not None:
+                try:
+                    cbar.update_normal(artist)
+                except Exception:
+                    pass
+        elif prop == "vmin":
+            current_clim = artist.get_clim()
+            artist.set_clim(vmin=float(value), vmax=current_clim[1])
+            cbar = getattr(artist, "colorbar", None)
+            if cbar is not None:
+                try:
+                    cbar.update_normal(artist)
+                except Exception:
+                    pass
+        elif prop == "vmax":
+            current_clim = artist.get_clim()
+            artist.set_clim(vmin=current_clim[0], vmax=float(value))
+            cbar = getattr(artist, "colorbar", None)
+            if cbar is not None:
+                try:
+                    cbar.update_normal(artist)
+                except Exception:
+                    pass
+        elif prop == "alpha":
+            artist.set_alpha(float(value))
+        return
+
+    if gid.startswith("colorbar."):
+        # artist is the Colorbar wrapper object
+        if prop == "label":
+            artist.set_label(str(value))
+        elif prop == "tick_fontsize":
+            artist.ax.tick_params(labelsize=float(value))
+        elif prop == "visible":
+            artist.ax.set_visible(bool(value))
+        elif prop in ("left", "bottom", "width", "height"):
+            try:
+                if hasattr(artist.ax, "set_axes_locator"):
+                    artist.ax.set_axes_locator(None)
+                if hasattr(artist.ax, "set_box_aspect"):
+                    artist.ax.set_box_aspect(None)
+                if hasattr(artist.ax, "set_aspect"):
+                    artist.ax.set_aspect("auto")
+
+                bounds = list(artist.ax.get_position().bounds)
+                if prop == "left":
+                    bounds[0] = float(value)
+                elif prop == "bottom":
+                    bounds[1] = float(value)
+                elif prop == "width":
+                    bounds[2] = float(value)
+                elif prop == "height":
+                    bounds[3] = float(value)
+                artist.ax.set_position(bounds)
+            except Exception:
+                pass
+        return
+
     if gid.startswith("container.bar."):
         for child in artist:
             if prop == "color" or prop == "facecolor":
@@ -1488,6 +1807,29 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         elif prop == "show_ticks":
             artist.tick_params(axis='both', which='major', bottom=bool(value), top=bool(value), left=bool(value), right=bool(value))
         return
+
+    if gid.startswith("subplot."):
+        if prop in {"left", "bottom", "width", "height"}:
+            bounds = list(artist.get_position().bounds)
+            idx = {"left": 0, "bottom": 1, "width": 2, "height": 3}[prop]
+            bounds[idx] = float(value)
+            bounds[0] = max(0.0, min(1.0, bounds[0]))
+            bounds[1] = max(0.0, min(1.0, bounds[1]))
+            bounds[2] = max(0.005, min(1.0, bounds[2]))
+            bounds[3] = max(0.005, min(1.0, bounds[3]))
+            artist.set_position(bounds)
+            return
+        if prop == "aspect":
+            if str(value) == "auto":
+                artist.set_aspect("auto")
+            elif str(value) == "equal":
+                artist.set_aspect("equal", adjustable="box")
+            else:
+                artist.set_aspect(float(value), adjustable="box")
+            return
+        if prop == "zorder":
+            artist.set_zorder(float(value))
+            return
 
     if gid.startswith("grid."):
         if prop == "visible":
@@ -1713,6 +2055,7 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
     """
     gid_map = _build_gid_map(fig)
     needs_layout_refresh = False
+    has_manual_positioning = False
     warnings: list[dict] = []
 
     for entry in edit_log:
@@ -1731,6 +2074,13 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
         artist = gid_map.get(gid)
         if artist is None:
             continue
+
+        if (
+            gid.startswith("colorbar.") and prop in {"left", "bottom", "width", "height"}
+        ) or (
+            gid.startswith("subplot.") and prop in {"left", "bottom", "width", "height", "aspect"}
+        ):
+            has_manual_positioning = True
 
         result = _apply_single(artist, prop, value, gid)
         if result is not None:
@@ -1757,7 +2107,7 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
         }:
             needs_layout_refresh = True
 
-    if needs_layout_refresh:
+    if needs_layout_refresh and not has_manual_positioning:
         try:
             fig.tight_layout()
         except Exception:

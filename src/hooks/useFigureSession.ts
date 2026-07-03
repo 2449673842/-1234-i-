@@ -22,7 +22,7 @@ interface UseFigureSessionReturn {
   renderTraceback: string | null;
   canUndoFigure: boolean;
   canRedoFigure: boolean;
-  render: (script: string, dataPayload?: Record<string, unknown> | null, initialEditLog?: EditEntry[]) => Promise<RenderResponse>;
+  render: (script: string, dataPayload?: Record<string, unknown> | null, initialEditLog?: EditEntry[], language?: 'python' | 'r') => Promise<RenderResponse>;
   patch: (patches: PatchEntry[]) => Promise<PatchResponse>;
   codePatch: (script: string, force?: boolean) => Promise<CodePatchResponse>;
   undoFigureEdit: () => Promise<boolean>;
@@ -83,6 +83,7 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           script: session.script,
+          language: session.language || 'python',
           dataPayload: session.dataPayload,
           editLog: targetEditLog,
         }),
@@ -99,6 +100,7 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
         return {
           ...prev,
           sessionId: data.sessionId || prev.sessionId,
+          language: data.language || prev.language || 'python',
           editLog: data.editLog || targetEditLog,
           manifest: data.manifest,
           svg: data.svg,
@@ -115,7 +117,7 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
     }
   }, [session]);
 
-  const render = useCallback(async (script: string, dataPayload?: Record<string, unknown> | null, initialEditLog?: EditEntry[]): Promise<RenderResponse> => {
+  const render = useCallback(async (script: string, dataPayload?: Record<string, unknown> | null, initialEditLog?: EditEntry[], language?: 'python' | 'r'): Promise<RenderResponse> => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -131,6 +133,7 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           script,
+          language,
           dataPayload: effectiveDataPayload,
           editLog: pendingEditLog,
         }),
@@ -141,6 +144,7 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
         setSession((prev) => prev ? {
           ...prev,
           sessionId: data.sessionId,
+          language: data.language || language || prev.language || 'python',
           script,
           dataPayload: effectiveDataPayload,
           editLog: data.editLog || pendingEditLog,
@@ -150,6 +154,7 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
           updatedAt: Date.now(),
         } : {
           sessionId: data.sessionId,
+          language: data.language || language || 'python',
           script,
           dataPayload: effectiveDataPayload,
           editLog: data.editLog || pendingEditLog,
@@ -356,6 +361,20 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
       return { status: 'error', message: 'No active session' } as CodePatchResponse;
     }
 
+    if (session.language === 'r') {
+      const data = await render(script, session.dataPayload, [], 'r');
+      return {
+        status: data.status,
+        sessionId: data.sessionId,
+        svg: data.svg,
+        manifest: data.manifest,
+        revision: data.revision,
+        editLog: data.editLog || [],
+        message: data.message,
+        traceback: data.traceback,
+      } as CodePatchResponse;
+    }
+
     setIsRendering(true);
     setRenderError(null);
     setRenderTraceback(null);
@@ -401,7 +420,7 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
     } finally {
       setIsRendering(false);
     }
-  }, [session]);
+  }, [render, session]);
 
   const undoFigureEdit = useCallback(async () => {
     if (!session || history.past.length === 0) {
