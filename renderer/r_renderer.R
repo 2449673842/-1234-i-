@@ -1204,7 +1204,7 @@ is_svg_data_candidate <- function(chunk) {
     grepl("^<(path|polyline|line)\\b", chunk, perl = TRUE) &&
     grepl("fill:\\s*none", chunk, ignore.case = TRUE, perl = TRUE) &&
     grepl("stroke:\\s*#000000", chunk, ignore.case = TRUE, perl = TRUE) &&
-    grepl("stroke-width:\\s*0\.5", chunk, ignore.case = TRUE, perl = TRUE)
+    grepl("stroke-width:\\s*0\\.5", chunk, ignore.case = TRUE, perl = TRUE)
   ) {
     return(FALSE)
   }
