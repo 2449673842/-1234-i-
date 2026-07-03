@@ -128,6 +128,14 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     if (subplotMatch) {
       return querySvgElementById(svgEl, `axes.${subplotMatch[1]}`);
     }
+
+    // R layer gids (r.layer.*): the id is stamped as data-fig-id on individual SVG elements.
+    // When no single element owns the id, query all elements with that data-fig-id and return the first.
+    if (gid.startsWith('r.layer.') && svgEl) {
+      const escaped = CSS.escape(gid);
+      const first = svgEl.querySelector(`[data-fig-id="${escaped}"]`) as SVGGraphicsElement | null;
+      if (first) return first;
+    }
     return null;
   }, [querySvgElementById]);
 
@@ -159,6 +167,29 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   }, []);
 
   const getElementSvgBox = useCallback((el: Element, svgEl: SVGSVGElement) => {
+    // For R layer groups: compute union bbox from all data-fig-id siblings with the same gid
+    const gid = el.getAttribute('data-fig-id');
+    if (gid && gid.startsWith('r.layer.')) {
+      const escaped = CSS.escape(gid);
+      const allEls = Array.from(svgEl.querySelectorAll(`[data-fig-id="${escaped}"]`));
+      if (allEls.length > 1) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        let valid = false;
+        allEls.forEach(child => {
+          const childRect = child.getBoundingClientRect();
+          const tl = getSvgPoint(childRect.left, childRect.top);
+          const br = getSvgPoint(childRect.right, childRect.bottom);
+          if (tl && br) {
+            minX = Math.min(minX, tl.x); minY = Math.min(minY, tl.y);
+            maxX = Math.max(maxX, br.x); maxY = Math.max(maxY, br.y);
+            valid = true;
+          }
+        });
+        if (valid && maxX > minX && maxY > minY) {
+          return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+        }
+      }
+    }
     const rect = el.getBoundingClientRect();
     const corners = [
       getSvgPoint(rect.left, rect.top),

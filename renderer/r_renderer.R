@@ -1167,7 +1167,7 @@ layer_svg_plan <- function(plot_obj) {
     count <- switch(
       kind,
       line = max(1L, length(unique(data$group %||% 1L))),
-      errorbar_container = max(1L, nrow(data) * 3L),
+      errorbar_container = max(1L, nrow(data)),
       max(1L, nrow(data))
     )
     plans[[length(plans) + 1]] <- list(
@@ -1182,11 +1182,29 @@ layer_svg_plan <- function(plot_obj) {
 
 is_svg_data_candidate <- function(chunk) {
   if (grepl("\\bdata-fig-id\\s*=", chunk, perl = TRUE)) return(FALSE)
-  # Skip panel/background rectangles; data bars/tiles normally carry non-white fills.
+  # Skip panel/background rectangles: white fill with no stroke
   if (
     grepl("^<rect\\b", chunk, perl = TRUE) &&
     grepl("fill:\\s*#FFFFFF", chunk, ignore.case = TRUE, perl = TRUE) &&
     grepl("stroke:\\s*none", chunk, ignore.case = TRUE, perl = TRUE)
+  ) {
+    return(FALSE)
+  }
+  # Skip clip-path defining rects (panel borders)
+  if (
+    grepl("^<rect\\b", chunk, perl = TRUE) &&
+    grepl("stroke:\\s*none", chunk, ignore.case = TRUE, perl = TRUE) &&
+    !grepl("fill:\\s*none", chunk, ignore.case = TRUE, perl = TRUE) &&
+    grepl("clip-path", chunk, ignore.case = TRUE, perl = TRUE)
+  ) {
+    return(FALSE)
+  }
+  # Skip axis spine lines (stroke-only paths with no fill, typically used as frame borders)
+  if (
+    grepl("^<(path|polyline|line)\\b", chunk, perl = TRUE) &&
+    grepl("fill:\\s*none", chunk, ignore.case = TRUE, perl = TRUE) &&
+    grepl("stroke:\\s*#000000", chunk, ignore.case = TRUE, perl = TRUE) &&
+    grepl("stroke-width:\\s*0\.5", chunk, ignore.case = TRUE, perl = TRUE)
   ) {
     return(FALSE)
   }

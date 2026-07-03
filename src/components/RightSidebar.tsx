@@ -1758,6 +1758,7 @@ export function RightSidebar({
       }
       const allXTicks = selectedObjects.length > 0 && selectedObjects.every(obj => obj.id.startsWith('xtick.'));
       const allYTicks = selectedObjects.length > 0 && selectedObjects.every(obj => obj.id.startsWith('ytick.'));
+      const hasAxisTick = selectedObjects.some(obj => obj.id.startsWith('xtick.') || obj.id.startsWith('ytick.'));
       if ((allXTicks || allYTicks) && (prop === 'fontsize' || prop === 'fontfamily' || prop === 'color')) {
         const regex = allXTicks ? /^xtick\.(\d+)\./ : /^ytick\.(\d+)\./;
         const axisPrefix = allXTicks ? 'axis.x.' : 'axis.y.';
@@ -1777,9 +1778,30 @@ export function RightSidebar({
         if (patches.length > 0) void onPatch(patches);
         return;
       }
+      // Mixed selection: route tick objects to axis, patch non-tick objects below
+      if (hasAxisTick && (prop === 'fontsize' || prop === 'fontfamily' || prop === 'color')) {
+        const xTickRegex = /^xtick\.(\d+)\./;
+        const yTickRegex = /^ytick\.(\d+)\./;
+        const axisProp = prop === 'fontsize' ? 'tick_labelsize' : prop === 'fontfamily' ? 'tick_labelfamily' : 'tick_labelcolor';
+        const xIndexes = Array.from(new Set(
+          selectedObjects.filter(o => o.id.startsWith('xtick.')).map(o => o.id.match(xTickRegex)?.[1]).filter(Boolean)
+        )) as string[];
+        const yIndexes = Array.from(new Set(
+          selectedObjects.filter(o => o.id.startsWith('ytick.')).map(o => o.id.match(yTickRegex)?.[1]).filter(Boolean)
+        )) as string[];
+        const axisPatches = [
+          ...xIndexes.map(i => ({ op: 'set' as const, mode: 'backend_patch' as const, gid: `axis.x.${i}`, prop: axisProp, value })),
+          ...yIndexes.map(i => ({ op: 'set' as const, mode: 'backend_patch' as const, gid: `axis.y.${i}`, prop: axisProp, value })),
+        ];
+        if (axisPatches.length > 0) void onPatch(axisPatches);
+        // fall through: non-tick objects handled by the loop below
+      }
 
       const patches: PatchEntry[] = selectedGids.map(gid => {
         const obj = objects.find(o => o.id === gid);
+        // Skip tick objects that were already routed to axis.x/axis.y above
+        if (hasAxisTick && (prop === 'fontsize' || prop === 'fontfamily' || prop === 'color')
+          && (gid.startsWith('xtick.') || gid.startsWith('ytick.'))) return null;
         if (!supportsBatchProp(obj, prop)) return null;
         let actualProp = prop;
         if (prop === 'color' && obj && (obj.kind === 'patch' || obj.kind === 'collection')) {
@@ -1817,12 +1839,44 @@ export function RightSidebar({
             <div className="rounded-md border border-indigo-100 bg-white/70 p-3 space-y-3">
               <div className="text-[11px] font-semibold text-indigo-900">字体批量编辑（文本/标签 {fontObjects.length} 个）</div>
               {renderNumberInput('batch', 'fontsize', commonFontSize, (v) => handleBatchPatch('fontsize', v), { min: 4, max: 48, step: 0.5 })}
-              {renderFontSelect('batch', 'fontfamily', commonFontFamily, (v) => handleBatchPatch('fontfamily', v))}
+              {/* key based on selected gids forces select to remount on selection change, so onChange always fires */}
+              <div className="grid grid-cols-[88px_1fr] items-center gap-2 text-sm" key={`batch-ff-${selectedGids.join('|')}`}>
+                <span className="text-slate-600">字体家族</span>
+                <select
+                  className="border border-slate-200 rounded p-1.5 w-full outline-none bg-white appearance-none text-slate-700 text-xs"
+                  defaultValue={FONT_OPTIONS.includes(commonFontFamily) ? commonFontFamily : '__mixed__'}
+                  onChange={(e) => {
+                    if (e.target.value && e.target.value !== '__mixed__') {
+                      handleBatchPatch('fontfamily', e.target.value);
+                    }
+                  }}
+                >
+                  {!FONT_OPTIONS.includes(commonFontFamily) && <option value="__mixed__" disabled>（多种字体）</option>}
+                  {FONT_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
+              </div>
               {renderSelectInput('字重', String(commonProp(fontObjects, 'fontweight', 'normal')), ['normal', 'bold', 'semibold', 'light'], (v) => handleBatchPatch('fontweight', v))}
               {renderSelectInput('字形', String(commonProp(fontObjects, 'fontstyle', 'normal')), ['normal', 'italic', 'oblique'], (v) => handleBatchPatch('fontstyle', v))}
             </div>
           )}
           {renderColorInput('颜色', commonColor, (v) => handleBatchPatch('color', v), `batch:${selectedGids.join('|')}:color`)}
+          {/* Bug 3: edgecolor picker for multi-selected patch/collection objects */}
+          {batchObjects.some(o => supportsBatchProp(o, 'edgecolor')) && (
+            renderColorInput(
+              '边框色',
+              (() => {
+                const edgeColors = batchObjects
+                  .filter(o => supportsBatchProp(o, 'edgecolor'))
+                  .map(o => o.currentProps.edgecolor as string)
+                  .filter(Boolean);
+                return edgeColors.length > 0 && edgeColors.every(c => c === edgeColors[0])
+                  ? resolvePickerColor(edgeColors[0])
+                  : '#000000';
+              })(),
+              (v) => handleBatchPatch('edgecolor', v),
+              `batch:${selectedGids.join('|')}:edgecolor`
+            )
+          )}
           <div className="grid grid-cols-[80px_1fr] items-center gap-3 text-xs">
             <span className="text-slate-600 font-medium">不透明度</span>
             <input
