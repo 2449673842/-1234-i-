@@ -1,0 +1,108 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]:
+        - generic [ref=e8]: S
+        - generic [ref=e9]: SciFigure Studio
+      - generic [ref=e10]:
+        - button "项目与资源" [ref=e11]: 项目与资源
+        - button "当前项目数据" [ref=e13]
+        - button "★ 升级 Pro (¥10/月)" [ref=e14]
+        - button "帮助" [ref=e15]:
+          - text: 帮助
+          - img [ref=e16]
+    - generic [ref=e18]:
+      - button "导入数据" [ref=e19]:
+        - img [ref=e20]
+        - text: 导入数据
+      - button "新建图形项目" [ref=e23]:
+        - img [ref=e24]
+        - text: 新建图形项目
+      - generic [ref=e25] [cursor=pointer]:
+        - img "Avatar"
+  - generic [ref=e26]:
+    - generic [ref=e27]:
+      - generic [ref=e28]:
+        - generic [ref=e29]: 项目
+        - button "首页" [ref=e30]:
+          - img [ref=e31]
+          - text: 首页
+        - button "我的项目" [ref=e34]:
+          - img [ref=e35]
+          - text: 我的项目
+        - button "当前项目数据" [ref=e37]:
+          - img [ref=e38]
+          - text: 当前项目数据
+        - button "历史导出资产" [ref=e42]:
+          - img [ref=e43]
+          - text: 历史导出资产
+        - button "组合图工作台" [ref=e48]:
+          - img [ref=e49]
+          - text: 组合图工作台
+      - generic [ref=e51]:
+        - button "设置" [ref=e52]:
+          - img [ref=e53]
+          - text: 设置
+        - button "集成" [ref=e56]:
+          - img [ref=e57]
+          - text: 集成
+      - generic [ref=e61]:
+        - generic [ref=e62]:
+          - generic [ref=e63]: 当前计划
+          - generic [ref=e64]: 专业版
+        - generic [ref=e65]: 有效期：永久有效
+        - generic [ref=e67]:
+          - generic [ref=e68]: 68.4 GB / 200 GB
+          - generic [ref=e69]: 34%
+        - button "管理存储 ›" [ref=e72]:
+          - text: 管理存储
+          - generic [ref=e73]: ›
+    - generic [ref=e75]:
+      - generic [ref=e76]:
+        - generic [ref=e78]:
+          - generic [ref=e79]:
+            - img [ref=e80]
+            - text: 本地科研绘图工具
+          - heading "从真实数据开始，不展示伪统计和伪项目。" [level=1] [ref=e82]
+          - paragraph [ref=e83]: 当前版本只保留可执行的本地工作流入口。新项目先上传主数据并确认字段，再准备 Python 脚本；已有项目从本地数据库打开，不再展示样板活动、虚构协作者或占位模板。
+        - generic [ref=e84]:
+          - button "新建项目 先上传主数据并确认字段，再准备 Python 脚本，最后渲染多 Figure 结果。" [ref=e85]:
+            - img [ref=e87]
+            - generic [ref=e90]:
+              - generic [ref=e91]:
+                - heading "新建项目" [level=2] [ref=e92]
+                - paragraph [ref=e93]: 先上传主数据并确认字段，再准备 Python 脚本，最后渲染多 Figure 结果。
+              - img [ref=e94]
+          - button "打开已有项目 从本地 SQLite 项目库里打开、继续编辑或检查之前保存的 figure spec。" [ref=e96]:
+            - img [ref=e98]
+            - generic [ref=e100]:
+              - generic [ref=e101]:
+                - heading "打开已有项目" [level=2] [ref=e102]
+                - paragraph [ref=e103]: 从本地 SQLite 项目库里打开、继续编辑或检查之前保存的 figure spec。
+              - img [ref=e104]
+          - button "组合拼图 将已导出的高清图表资产进行排版、对齐、加标签，生成最终学术论文组合图。" [ref=e106]:
+            - img [ref=e108]
+            - generic [ref=e110]:
+              - generic [ref=e111]:
+                - heading "组合拼图" [level=2] [ref=e112]
+                - paragraph [ref=e113]: 将已导出的高清图表资产进行排版、对齐、加标签，生成最终学术论文组合图。
+              - img [ref=e114]
+      - generic [ref=e116] [cursor=pointer]:
+        - generic [ref=e117]:
+          - heading "★ SciFigure Studio Pro 专业版已发布" [level=3] [ref=e118]:
+            - generic [ref=e119]: ★
+            - text: SciFigure Studio Pro 专业版已发布
+          - paragraph [ref=e120]: 解决 AI 绘图代码报错、图元微调困难、拼图布局复杂的问题。支持真 SVG 直选编辑、配色中心和高 DPI 导出，早期专业版按 ¥10 / 月 规划验证。
+        - generic [ref=e121]:
+          - text: 了解详情并订阅
+          - img [ref=e122]
+      - generic [ref=e124]:
+        - generic [ref=e125]:
+          - heading "数据入口" [level=3] [ref=e126]
+          - paragraph [ref=e127]: 唯一推荐入口是“导入数据”，避免模板页和样板文件分散注意力。
+        - generic [ref=e128]:
+          - heading "状态说明" [level=3] [ref=e129]
+          - paragraph [ref=e130]: 项目、数据源和渲染结果都以本地状态为准，不再展示虚构指标。
+        - generic [ref=e131]:
+          - heading "当前限制" [level=3] [ref=e132]
+          - paragraph [ref=e133]: 模板库和外部资源库未接入真实内容前，不应继续作为主入口暴露。
