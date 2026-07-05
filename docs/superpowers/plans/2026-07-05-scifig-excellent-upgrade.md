@@ -91,6 +91,45 @@ Every edit must be classified before rendering:
 | `code_patch` | Script logic may affect registry | Recompute registry, compare fingerprints |
 | `data_patch` | Dataset changed | Invalidate figures depending on that dataset |
 
+### 2.4 Draft Patch Batch
+
+Parameter editing must not trigger backend rendering after every single control change. Real scientific figure styling is usually a batch operation:
+
+```text
+Set X axis label font family -> Times New Roman
+Set Y axis label font family -> Times New Roman
+Set tick label font size -> 8
+Set legend font size -> 7
+Render once
+```
+
+Use a draft batch model:
+
+```ts
+interface DraftPatchBatch {
+  batchId: string;
+  figureIds: string[];
+  patches: Array<{
+    gid: string;
+    prop: string;
+    value: unknown;
+    mode: 'backend_patch' | 'local_patch';
+  }>;
+  status: 'draft' | 'applying' | 'applied' | 'cancelled';
+  createdAt: number;
+  updatedAt: number;
+}
+```
+
+Rules:
+
+- Slider/input changes update draft state, not backend render.
+- Safe frontend-only changes may preview locally, but the committed state still waits for apply.
+- Backend render happens only when the user clicks apply.
+- Applying a draft creates one editLog batch and one render job per affected figure.
+- Cancel discards draft values and restores committed manifest values.
+- Undo/redo should show the applied draft as one user action, not many micro-actions.
+
 ---
 
 ## 3. Phase A — Protocol Foundation
@@ -338,9 +377,126 @@ Verification:
 
 ---
 
-## 6. Phase D — Backend Targeted Render
+## 6. Phase D — Draft Patch Batch and Apply-Once Editing
 
-### Task D1: API Contract for Targeted Project Render
+### Task D1: Add Draft Patch Types
+
+**Files:**
+- Create: `src/schemas/draftPatchBatch.ts`
+- Modify: `src/schemas/renderScheduler.ts` if Task C1 already exists.
+
+Add:
+
+```ts
+export type DraftPatchMode = 'local_patch' | 'backend_patch';
+
+export interface DraftPatch {
+  gid: string;
+  prop: string;
+  value: unknown;
+  mode: DraftPatchMode;
+}
+
+export interface DraftPatchBatch {
+  batchId: string;
+  figureIds: string[];
+  patches: DraftPatch[];
+  status: 'draft' | 'applying' | 'applied' | 'cancelled';
+  createdAt: number;
+  updatedAt: number;
+}
+```
+
+Run:
+
+```powershell
+npx tsc --noEmit
+```
+
+### Task D2: Add Draft State to RightSidebar
+
+**Files:**
+- Modify: `src/components/RightSidebar.tsx`
+
+Rules:
+
+- Font center, palette center, component center, and grouped controls must support draft edits.
+- Existing immediate single-object editing can remain only for explicitly marked instant controls.
+- Batch-capable controls must not call `onPatch` immediately.
+- Batch-capable controls update `draftValues` keyed by:
+
+```ts
+`${figureId}:${gid}:${prop}`
+```
+
+Required UI:
+
+```text
+已暂存 6 项修改
+[应用到当前图] [应用到选中图] [应用到全部图] [取消]
+```
+
+Verification:
+
+- Change X label font family.
+- Change Y label font family.
+- Change tick label font size.
+- Confirm no backend render starts before clicking apply.
+- Click apply.
+- Confirm one render job starts for the current figure.
+
+### Task D3: Apply Draft as One Patch Batch
+
+**Files:**
+- Modify: `src/components/RightSidebar.tsx`
+- Modify: `src/hooks/useFigureSession.ts`
+- Modify: `src/App.tsx`
+
+Rules:
+
+- Apply sends all draft patches in one request.
+- Target scope is explicit:
+  - current figure
+  - selected figures
+  - all project figures
+- For current figure, only current `figureId` enters render queue.
+- For selected/all figures, create one render job per affected figure.
+- Undo/redo should treat the applied draft as one batch action.
+
+Verification:
+
+- Batch edit 5 font properties.
+- Confirm edit history shows one batch action.
+- Undo once reverts all 5 properties.
+- Redo once reapplies all 5 properties.
+
+### Task D4: Debounced Preview for Continuous Controls
+
+**Files:**
+- Modify: `src/components/RightSidebar.tsx`
+- Modify: `src/utils/svgEditor.ts` only for safe local SVG preview helpers.
+
+Rules:
+
+- Text color, visibility, and simple SVG-safe color edits may preview locally.
+- Font size, axis limits, subplot bounds, line width, and backend-only properties must not backend-render on every input event.
+- Dragging a slider updates draft preview only.
+- `pointerup` may update draft final value but must not backend-render.
+- Backend render only happens on apply.
+
+Verification:
+
+- Drag font-size slider.
+- Confirm no repeated backend calls during drag.
+- Confirm draft count changes.
+- Click apply.
+- Confirm one backend call.
+
+---
+
+## 7. Phase E — Backend Targeted Render
+
+### Task E1: API Contract for Targeted Project Render
 
 **Files:**
 - Modify: `server.ts`
@@ -364,7 +520,7 @@ Rules:
 - `scope: 'figure'` with `figureId` returns only that figure payload.
 - Old frontend calls must still work.
 
-### Task D2: Backend Cache and Fingerprint Check
+### Task E2: Backend Cache and Fingerprint Check
 
 **Files:**
 - Modify: `server.ts`
@@ -395,7 +551,7 @@ Verification:
 - Changing editLog invalidates cache.
 - Changing script invalidates cache.
 
-### Task D3: CodePatch Affected Figure Detection
+### Task E3: CodePatch Affected Figure Detection
 
 **Files:**
 - Modify: `server.ts`
@@ -428,9 +584,9 @@ Browser verification:
 
 ---
 
-## 7. Phase E — Drag Mode Built on Single-Figure Scheduler
+## 8. Phase F — Drag Mode Built on Single-Figure Scheduler
 
-### Task E1: Drag Mode Is Opt-In and Single-Figure Scoped
+### Task F1: Drag Mode Is Opt-In and Single-Figure Scoped
 
 **Files:**
 - Modify: `src/components/ChartPreview.tsx`
@@ -453,7 +609,7 @@ Verification:
 - Confirm rerender updates only active figure.
 - Undo reverts the drag patches through existing figure history.
 
-### Task E2: Position Patch Mapping
+### Task F2: Position Patch Mapping
 
 **Files:**
 - Modify: `src/utils/dragPatch.ts`
@@ -477,9 +633,9 @@ Verification:
 
 ---
 
-## 8. Phase F — Export Consistency
+## 9. Phase G — Export Consistency
 
-### Task F1: Export Uses Target Figure Revision
+### Task G1: Export Uses Target Figure Revision
 
 **Files:**
 - Modify: `src/components/ExportSettingsPage.tsx`
@@ -498,7 +654,7 @@ Verification:
 - Confirm exported SVG matches Figure 2 latest revision.
 - Confirm Figure 1 export is unchanged.
 
-### Task F2: Composition Uses Asset Revisions
+### Task G2: Composition Uses Asset Revisions
 
 **Files:**
 - Modify: `src/components/ComposerPage.tsx`
@@ -519,7 +675,7 @@ Verification:
 
 ---
 
-## 9. Final Verification Matrix
+## 10. Final Verification Matrix
 
 Run after all phases:
 
@@ -540,12 +696,13 @@ Browser verification:
 - Font center batch edit.
 - Palette center subset edit and undo.
 - Drag mode confirm/cancel.
+- Draft batch editing: change multiple font/style properties and apply once.
 - Export after pending render.
 - Composition export after source figure edits.
 
 ---
 
-## 10. Stop Conditions
+## 11. Stop Conditions
 
 Stop and report instead of continuing if:
 
@@ -553,19 +710,21 @@ Stop and report instead of continuing if:
 - A one-figure patch refreshes all figures.
 - Existing Python edit flow regresses.
 - Existing R edit flow regresses.
+- A batch-capable control triggers backend render before the user clicks apply.
+- Undo requires multiple clicks to revert one applied draft batch.
 - UI behavior is claimed complete without browser evidence.
 - A renderer change is proposed before proving the problem is not in frontend scheduling.
 
 ---
 
-## 11. Recommended Execution Order
+## 12. Recommended Execution Order
 
 1. Phase A: protocol tests and read-only debug.
 2. Phase B: UI read migration.
 3. Phase C: frontend scheduler and stale response guard.
-4. Phase D: backend targeted render/cache.
-5. Phase E: drag mode on top of the scheduler.
-6. Phase F: export consistency.
+4. Phase D: draft patch batch and apply-once editing.
+5. Phase E: backend targeted render/cache.
+6. Phase F: drag mode on top of the scheduler.
+7. Phase G: export consistency.
 
-Do not start Phase E drag work before Phase C is stable. Dragging creates fast repeated UI state changes; without per-figure scheduler and stale response guards it will reproduce flicker, jump-back, and wrong-position bugs.
-
+Do not start Phase F drag work before Phase C and Phase D are stable. Dragging creates fast repeated UI state changes; without per-figure scheduler, stale response guards, and draft-batch semantics it will reproduce flicker, jump-back, wrong-position bugs, and excessive backend renders.
