@@ -15,5 +15,10 @@ scifigure-payload-*.json
 # Local runtime data and user uploads
 data/
 tmp/
+.playwright-mcp/
+Rplots.pdf
+tmp_*.js
+tmp_*.R
+tmp_*.png
 test.txt
 test_write.txt

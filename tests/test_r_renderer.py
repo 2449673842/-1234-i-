@@ -284,6 +284,119 @@ p
             self.assertIn("Type I", result["svg"])
             self.assertEqual(result["status"], "success")
 
+    def test_aligned_theme_details_patch(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+p <- ggplot(df, aes(x, y)) + geom_point() + theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            # Ticks/Axes limits/rotation/direction/width/color/pad
+            {"gid": "axis.x.0", "prop": "tick_rotation", "value": 45, "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_direction", "value": "in", "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_length", "value": 8.0, "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_width", "value": 2.0, "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_color", "value": "#FF0000", "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_pad", "value": 10.0, "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "limits", "value": [0, 10], "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_fontweight", "value": "bold", "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_fontstyle", "value": "italic", "mode": "backend_patch"},
+
+            # Legend visible/loc/facecolor/edgecolor/linewidth
+            {"gid": "legend.0", "prop": "visible", "value": True, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "loc", "value": "bottom", "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "facecolor", "value": "#00FF00", "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "edgecolor", "value": "#0000FF", "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "linewidth", "value": 1.5, "mode": "backend_patch"},
+
+            # Spine visibility/color/linewidth
+            {"gid": "spine.bottom.0", "prop": "visible", "value": True, "mode": "backend_patch"},
+            {"gid": "spine.bottom.0", "prop": "color", "value": "#FF00FF", "mode": "backend_patch"},
+            {"gid": "spine.bottom.0", "prop": "linewidth", "value": 2.5, "mode": "backend_patch"},
+
+            # Grid visibility/color/linewidth/linestyle
+            {"gid": "grid.0", "prop": "visible", "value": True, "mode": "backend_patch"},
+            {"gid": "grid.0", "prop": "color", "value": "#FFFF00", "mode": "backend_patch"},
+            {"gid": "grid.0", "prop": "linewidth", "value": 1.2, "mode": "backend_patch"},
+            {"gid": "grid.0", "prop": "linestyle", "value": "dashed", "mode": "backend_patch"},
+        ])
+        
+        # Verify currentProps in manifest
+        axis_x = _object(result, "axis.x.0")
+        self.assertEqual(axis_x["currentProps"]["tick_rotation"], 45)
+        self.assertEqual(axis_x["currentProps"]["tick_direction"], "in")
+        self.assertEqual(axis_x["currentProps"]["tick_length"], 8.0)
+        self.assertEqual(axis_x["currentProps"]["tick_width"], 2.0)
+        self.assertEqual(axis_x["currentProps"]["tick_color"], "#FF0000")
+        self.assertEqual(axis_x["currentProps"]["tick_pad"], 10.0)
+        self.assertEqual(axis_x["currentProps"]["limits"], [0, 10])
+        self.assertEqual(axis_x["currentProps"]["tick_fontweight"], "bold")
+        self.assertEqual(axis_x["currentProps"]["tick_fontstyle"], "italic")
+
+        legend = _object(result, "legend.0")
+        self.assertEqual(legend["currentProps"]["visible"], True)
+        self.assertEqual(legend["currentProps"]["loc"], "bottom")
+        self.assertEqual(legend["currentProps"]["facecolor"], "#00FF00")
+        self.assertEqual(legend["currentProps"]["edgecolor"], "#0000FF")
+        self.assertEqual(legend["currentProps"]["linewidth"], 1.5)
+
+        spine_b = _object(result, "spine.bottom.0")
+        self.assertEqual(spine_b["currentProps"]["visible"], True)
+        self.assertEqual(spine_b["currentProps"]["color"], "#FF00FF")
+        self.assertEqual(spine_b["currentProps"]["linewidth"], 2.5)
+
+        grid = _object(result, "grid.0")
+        self.assertEqual(grid["currentProps"]["visible"], True)
+        self.assertEqual(grid["currentProps"]["color"], "#FFFF00")
+        self.assertEqual(grid["currentProps"]["linewidth"], 1.2)
+        self.assertEqual(grid["currentProps"]["linestyle"], "dashed")
+
+    def test_r_axis_manifest_reports_initial_limits(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=c(2, 4, 8), y=c(10, 20, 40))
+p <- ggplot(df, aes(x, y)) + geom_point() + theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        x_limits = _object(result, "axis.x.0")["currentProps"]["limits"]
+        y_limits = _object(result, "axis.y.0")["currentProps"]["limits"]
+
+        self.assertIsInstance(x_limits, list)
+        self.assertIsInstance(y_limits, list)
+        self.assertEqual(len(x_limits), 2)
+        self.assertEqual(len(y_limits), 2)
+        self.assertLessEqual(x_limits[0], 2)
+        self.assertGreaterEqual(x_limits[1], 8)
+        self.assertLessEqual(y_limits[0], 10)
+        self.assertGreaterEqual(y_limits[1], 40)
+
+    def test_r_grid_and_legend_alpha_patch_changes_svg_output(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5), group=c("A", "A", "B", "B"))
+p <- ggplot(df, aes(x, y, color=group)) +
+  geom_point(size=3) +
+  theme_bw()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "grid.0", "prop": "visible", "value": True, "mode": "backend_patch"},
+            {"gid": "grid.0", "prop": "color", "value": "#FF0000", "mode": "backend_patch"},
+            {"gid": "grid.0", "prop": "alpha", "value": 0.25, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "visible", "value": True, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "facecolor", "value": "#00FF00", "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "edgecolor", "value": "#0000FF", "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "alpha", "value": 0.35, "mode": "backend_patch"},
+        ])
+        svg = result["svg"].lower()
+        self.assertIn("#ff0000", svg)
+        self.assertIn("#00ff00", svg)
+        self.assertIn("#0000ff", svg)
+        self.assertTrue("stroke-opacity: 0.25" in svg or "stroke-opacity=\"0.25\"" in svg)
+        self.assertTrue("fill-opacity: 0.35" in svg or "fill-opacity=\"0.35\"" in svg)
+
 
 if __name__ == "__main__":
     unittest.main()

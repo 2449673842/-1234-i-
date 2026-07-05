@@ -755,6 +755,8 @@ def _read_axis_props(axis, axis_name: str) -> dict:
         "tick_labelsize": labels[0].get_fontsize() if labels else 10,
         "tick_labelcolor": _get_tick_metric(major_tick, "color", "#000000"),
         "tick_labelfamily": labels[0].get_fontname() if labels else "",
+        "tick_fontweight": labels[0].get_fontweight() if labels else "normal",
+        "tick_fontstyle": labels[0].get_fontstyle() if labels else "normal",
         "sci_notation": sci_notation,
         "use_math_text": use_math_text,
         "offset_text_size": axis.get_offset_text().get_fontsize(),
@@ -1128,8 +1130,8 @@ _EDITABLE = {
     "collection": ["facecolor", "edgecolor", "alpha", "linewidth", "size", "zorder"],
     "axes": ["xlim", "ylim", "show_minor_ticks", "x_tick_rotation", "tick_direction", "zorder"],
     "grid": ["visible", "color", "linewidth", "linestyle", "alpha", "zorder"],
-    "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "sci_notation", "use_math_text", "offset_text_size"],
-    "axis_y": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "sci_notation", "use_math_text", "offset_text_size"],
+    "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "sci_notation", "use_math_text", "offset_text_size"],
+    "axis_y": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "sci_notation", "use_math_text", "offset_text_size"],
     "bar_container": ["color", "facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
     "errorbar_container": ["color", "linewidth", "elinewidth", "capsize", "capthick", "alpha", "marker", "markersize", "zorder"],
     "boxplot_container": ["color", "linewidth", "alpha", "box_color", "median_color", "zorder"],
@@ -1887,6 +1889,14 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             for label in artist.get_ticklabels():
                 label.set_fontname(str(value))
             return
+        if prop == "tick_fontweight":
+            for label in artist.get_ticklabels():
+                label.set_fontweight(str(value))
+            return
+        if prop == "tick_fontstyle":
+            for label in artist.get_ticklabels():
+                label.set_fontstyle(str(value))
+            return
         if prop == "tick_direction":
             parent_ax.tick_params(axis=axis_name, which="both", direction=str(value))
             return
@@ -1963,6 +1973,18 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             title = artist.get_title()
             if title is not None:
                 title.set_fontname(str(value))
+        elif prop == "fontweight":
+            for text in artist.get_texts():
+                text.set_fontweight(str(value))
+            title = artist.get_title()
+            if title is not None:
+                title.set_fontweight(str(value))
+        elif prop == "fontstyle":
+            for text in artist.get_texts():
+                text.set_fontstyle(str(value))
+            title = artist.get_title()
+            if title is not None:
+                title.set_fontstyle(str(value))
         return
 
     if prop == "position":
@@ -2037,6 +2059,10 @@ def _apply_virtual_font_center_patch(fig, gid: str, prop: str, value: Any) -> bo
         axis_prop = "tick_labelfamily"
     elif prop == "color":
         axis_prop = "tick_labelcolor"
+    elif prop == "fontweight":
+        axis_prop = "tick_fontweight"
+    elif prop == "fontstyle":
+        axis_prop = "tick_fontstyle"
     else:
         return True
 

@@ -1303,7 +1303,7 @@ export function RightSidebar({
     if (prop === 'size') return obj.kind === 'collection';
     if (prop === 'fontsize') return obj.kind === 'text' || obj.kind === 'legend';
     if (prop === 'fontfamily') return obj.kind === 'text' || obj.kind === 'legend';
-    if (prop === 'fontweight' || prop === 'fontstyle') return obj.kind === 'text';
+    if (prop === 'fontweight' || prop === 'fontstyle') return obj.kind === 'text' || obj.kind === 'legend' || obj.kind === 'axis_x' || obj.kind === 'axis_y';
     if (['left', 'bottom', 'width', 'height', 'aspect'].includes(prop)) return obj.kind === 'subplot';
     if (['left', 'bottom', 'width', 'height', 'tick_fontsize', 'label'].includes(prop)) {
       return obj.kind === 'colorbar';
@@ -1989,6 +1989,8 @@ export function RightSidebar({
       if (prop === 'fontsize') return 'tick_labelsize';
       if (prop === 'fontfamily') return 'tick_labelfamily';
       if (prop === 'color') return 'tick_labelcolor';
+      if (prop === 'fontweight') return 'tick_fontweight';
+      if (prop === 'fontstyle') return 'tick_fontstyle';
     }
     return prop;
   };
@@ -2013,17 +2015,6 @@ export function RightSidebar({
         : null;
 
     if (tickAxisMatch) {
-      if (prop === 'fontweight' || prop === 'fontstyle') {
-        return items
-          .filter(obj => obj.id.match(tickAxisMatch.textRegex))
-          .map(obj => ({
-            op: 'set' as const,
-            mode: 'backend_patch' as const,
-            gid: obj.id,
-            prop,
-            value,
-          }));
-      }
       const axisIndexes = Array.from(new Set(items.map(obj => {
         return obj.id.match(tickAxisMatch.axisRegex)?.[1] || obj.id.match(tickAxisMatch.textRegex)?.[1];
       }).filter(Boolean))) as string[];

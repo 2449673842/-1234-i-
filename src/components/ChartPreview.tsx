@@ -42,9 +42,9 @@ function clamp(value: number, min: number, max: number) {
 
 function parseSvgDimensions(svg: string | null | undefined) {
   if (!svg) return { width: 900, height: 700, viewBox: { x: 0, y: 0, width: 900, height: 700 } };
-  const widthMatch = svg.match(/width="([\d.]+)(pt|px|mm)?"/i);
-  const heightMatch = svg.match(/height="([\d.]+)(pt|px|mm)?"/i);
-  const viewBoxMatch = svg.match(/viewBox="([\d.\s-]+)"/i);
+  const widthMatch = svg.match(/width=['"]([\d.]+)(pt|px|mm)?['"]/i);
+  const heightMatch = svg.match(/height=['"]([\d.]+)(pt|px|mm)?['"]/i);
+  const viewBoxMatch = svg.match(/viewBox=['"]([\d.\s-]+)['"]/i);
   const unitScale = (unit?: string) => {
     if (unit === 'mm') return 3.7795275591;
     if (unit === 'pt') return 1.3333333333;
@@ -129,9 +129,9 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       return querySvgElementById(svgEl, `axes.${subplotMatch[1]}`);
     }
 
-    // R layer gids (r.layer.*): the id is stamped as data-fig-id on individual SVG elements.
+    // R layer/group/text gids: the id is stamped as data-fig-id on individual SVG elements.
     // When no single element owns the id, query all elements with that data-fig-id and return the first.
-    if (gid.startsWith('r.layer.') && svgEl) {
+    if (svgEl) {
       const escaped = CSS.escape(gid);
       const first = svgEl.querySelector(`[data-fig-id="${escaped}"]`) as SVGGraphicsElement | null;
       if (first) return first;
