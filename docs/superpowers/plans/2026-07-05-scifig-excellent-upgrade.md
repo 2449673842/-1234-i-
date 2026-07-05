@@ -19,6 +19,7 @@
 - Do not allow stale render responses to overwrite newer figure state.
 - Do not claim UI behavior complete without real browser verification.
 - Keep changes phase-gated. Each task must be independently testable and revertible.
+- Prioritize stale-response protection before broad UI migration. Current patch flow already creates request IDs in places, but a response that is not checked can still overwrite newer state.
 
 ## 1. Baseline
 
@@ -124,11 +125,31 @@ interface DraftPatchBatch {
 Rules:
 
 - Slider/input changes update draft state, not backend render.
+- Draft patches are last-write-wins by `${figureId}:${gid}:${prop}`. If the user changes X tick fontsize from 10 to 12 before applying, the draft contains one final patch, not two historical patches.
+- Drafts are bucketed by `figureId`. Switching figures preserves the previous figure draft and shows a non-blocking notice such as `Figure 1 有 3 项未应用的修改`.
 - Safe frontend-only changes may preview locally, but the committed state still waits for apply.
 - Backend render happens only when the user clicks apply.
 - Applying a draft creates one editLog batch and one render job per affected figure.
 - Cancel discards draft values and restores committed manifest values.
 - Undo/redo should show the applied draft as one user action, not many micro-actions.
+
+Control behavior:
+
+| Control type | Behavior | Reason |
+|---|---|---|
+| Font family / fontsize / bold / italic / underline | Draft | Usually edited as a coordinated set |
+| Text color / line color / fill color | Draft with safe preview where possible | Avoid repeated backend renders |
+| Axis limits | Draft | Requires backend recomputation |
+| Line width / line style / marker size | Draft | Often backend-only or imprecise in SVG preview |
+| Visibility | Immediate local patch when supported | Users expect instant show/hide feedback |
+| Drag position | Dedicated drag confirm flow | Uses Phase F pending position patches |
+| Code patch | Immediate explicit action | User intentionally edits script logic |
+
+Safe preview boundaries:
+
+- Safe preview: SVG `fill`, `stroke`, `visibility`, `display`, and `font-family` when the SVG node is directly addressable.
+- Risky preview: `font-size` and `stroke-width`; may be shown as approximate preview but must still rerender on apply.
+- No preview: axis limits, tick generation, layout bounds, subplot geometry, and code patches.
 
 ---
 
@@ -240,6 +261,8 @@ annotation/text -> other_text
 
 ## 5. Phase C — Per-Figure Render Scheduler
 
+Phase C is a stability prerequisite, not only a performance optimization. It prevents slow old responses from replacing newer user edits.
+
 ### Task C1: Define Figure Render Job Types
 
 **Files:**
@@ -296,11 +319,21 @@ export function stableJson(value: unknown): string {
 }
 
 export async function sha256Text(input: string): Promise<string> {
+  if (!globalThis.crypto?.subtle) {
+    let hash = 2166136261;
+    for (let i = 0; i < input.length; i += 1) {
+      hash ^= input.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `fnv1a:${(hash >>> 0).toString(16)}`;
+  }
   const data = new TextEncoder().encode(input);
   const digest = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 ```
+
+The fallback is required because `crypto.subtle` can be unavailable outside secure contexts. A stable fallback is better than disabling cache keys.
 
 Add:
 
@@ -355,6 +388,8 @@ Browser verification:
 - Edit Figure 4.
 - Confirm only Figure 4 shows loading and updates.
 - Confirm Figures 1/2/3/5 SVGs are not replaced.
+
+This task must be completed before Phase B broad UI migration if the current code path already emits `requestId` without checking returned `requestId`. Treat it as a hotfix-level stability task.
 
 ### Task C4: Patch Current Figure Only
 
@@ -436,6 +471,14 @@ Required UI:
 [应用到当前图] [应用到选中图] [应用到全部图] [取消]
 ```
 
+UI requirements:
+
+- The draft bar is fixed at the bottom of `RightSidebar` and remains visible while scrolling.
+- Modified controls show a small dirty marker.
+- A collapsible draft detail list shows `label / prop / value`.
+- Cancel asks for confirmation when more than one draft patch would be discarded.
+- Switching figures does not discard drafts; it only changes which figure bucket is visible.
+
 Verification:
 
 - Change X label font family.
@@ -461,7 +504,10 @@ Rules:
   - all project figures
 - For current figure, only current `figureId` enters render queue.
 - For selected/all figures, create one render job per affected figure.
+- Multi-figure apply uses a request pool with default concurrency `3`; do not fire 20 renderer jobs at once.
+- Partial failures are reported per figure. Successful figures keep their applied result; failed figures keep draft/apply error state and can be retried.
 - Undo/redo should treat the applied draft as one batch action.
+- Move `pushProjectHistory` or equivalent history recording to the apply boundary. Draft changes must not enter history; one applied draft batch should create one undoable action.
 
 Verification:
 
@@ -469,6 +515,7 @@ Verification:
 - Confirm edit history shows one batch action.
 - Undo once reverts all 5 properties.
 - Redo once reapplies all 5 properties.
+- Apply to all on a project with more than 3 figures and confirm only 3 render jobs run concurrently.
 
 ### Task D4: Debounced Preview for Continuous Controls
 
@@ -557,7 +604,15 @@ Verification:
 - Modify: `server.ts`
 - Use existing `codeSlice` / `fingerprint` fields.
 
-Algorithm:
+V1 algorithm:
+
+1. Treat `code_patch` as project-wide invalidation.
+2. Re-render all figures.
+3. Return a warning that target-only code patch is not yet guaranteed.
+
+This is correct-first and avoids false confidence when user scripts are not cleanly sliceable.
+
+V2 optimization:
 
 1. Apply code patch to script.
 2. Re-run registry/fingerprint discovery.
@@ -578,9 +633,8 @@ Response should include:
 
 Browser verification:
 
-- Modify code for one figure slice.
-- Confirm only affected figure refreshes.
-- Confirm warning appears if script structure prevents targeted detection.
+- V1: modify code and confirm all figures rerender with a clear project-wide warning.
+- V2 only after separate approval: modify code for one reliable figure slice, confirm only affected figure refreshes, and confirm warning appears if script structure prevents targeted detection.
 
 ---
 
@@ -720,11 +774,12 @@ Stop and report instead of continuing if:
 ## 12. Recommended Execution Order
 
 1. Phase A: protocol tests and read-only debug.
-2. Phase B: UI read migration.
-3. Phase C: frontend scheduler and stale response guard.
-4. Phase D: draft patch batch and apply-once editing.
-5. Phase E: backend targeted render/cache.
-6. Phase F: drag mode on top of the scheduler.
-7. Phase G: export consistency.
+2. Phase C3 hotfix: stale response guard for current patch/render paths.
+3. Phase B: UI read migration.
+4. Phase C remaining scheduler and cache-key tasks.
+5. Phase D: draft patch batch and apply-once editing.
+6. Phase E: backend targeted render/cache.
+7. Phase F: drag mode on top of the scheduler.
+8. Phase G: export consistency.
 
 Do not start Phase F drag work before Phase C and Phase D are stable. Dragging creates fast repeated UI state changes; without per-figure scheduler, stale response guards, and draft-batch semantics it will reproduce flicker, jump-back, wrong-position bugs, and excessive backend renders.
