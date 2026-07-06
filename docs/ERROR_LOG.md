@@ -305,3 +305,80 @@ build_figure(fl9_data, stats_df, opr_fep_df)
   - `npx tsc --noEmit`：通过。
   - `npm run lint`：通过。
   - `npm run build`：通过；仍存在项目既有警告。
+
+---
+
+## 2026-07-06 跨图“应用全部图”从单图应用到多子图时只改左上角
+
+**现象**
+
+- 一段代码生成 3 张 Figure，其中 `fig_3` 是 2x2 多子图。
+- 用户在 `fig_2` 单图里修改框线/刻度等样式后点击“应用全部图”。
+- 结果 `fig_3` 只有左上角第一个子图生效，其余子图没有同步。
+
+**根因**
+
+- `src/utils/semanticPatchMapping.ts` 的跨 Figure 映射每条 patch 只返回一个目标 gid。
+- 当源 Figure 是单子图，目标 Figure 是多子图时，`spine_group.0`、`axis.x.0` 等 gid 会优先命中目标的 `subplot.0` 相关对象。
+- 对于样式类操作，用户语义是“把这个样式应用到目标 Figure 的所有同类子图”；旧逻辑错误地按“找一个最佳匹配对象”处理。
+- 进一步验证发现组件中心“边框 / 网格”实际会发送 `grid.*` 和四边 `spine.left/right/top/bottom.*` patch；旧 fanout 如果不保留 spine 边方向，会把 left/right/top/bottom 都映射到目标 left 边，造成重复和漏改。
+
+**修复**
+
+- 为跨 Figure 语义映射增加样式类 fanout：
+  - 仅当源 Figure 为单子图、目标 Figure 为多子图时触发。
+  - 仅对样式类属性触发，例如 `linewidth`、`color`、`tick_labelsize`、`tick_width`、`visible` 等。
+  - 文本内容、坐标范围、位置、布局类 patch 仍保持一对一，避免误改。
+- 为单边 `spine` 增加同边约束：
+  - `spine.left.0` 只映射到目标 `spine.left.*`。
+  - `spine.right/top/bottom` 同理。
+- 扩展 `tests/playwright/cross_figure_apply_smoke.mjs`：
+  - fixture 改为 3 张图，`fig_3` 为 2x2 多子图。
+  - 新增 `X3-single-to-multisubplot-style-fanout`，验证从 `fig_2` 单图修改“边框 / 网格”线宽后，`fig_3` 收到 `grid.0-3` 和四边 `spine.left/right/top/bottom.0-3` patch。
+
+**验证**
+
+- `npm test`：通过，5 files / 42 tests。
+- `npx tsc --noEmit`：通过。
+- `npm run test:cross-figure-smoke`：通过。
+- 最新报告：
+  - `output/playwright/cross-figure-apply-2026-07-06T13-16-03-214Z/report.md`
+  - `Conclusion: PASS, PASS=5, FAIL=0, BLOCKED=0`
+
+---
+
+## 2026-07-06 拖拽模式连续移动第二个文本时仍停留在第一个对象
+
+**现象**
+
+- 用户开启拖拽模式后，先拖动第一个文本对象，不点击“确认位置”。
+- 再尝试拖动第二个文本对象时，第二个对象没有进入待确认队列；表现为只能记录第一次拖拽，继续选第二个时状态仍像停留在第一个对象。
+- 该路径不等同于“预先多选两个对象后拖动一次”，旧自动化只覆盖了后者。
+
+**根因**
+
+- 待确认浮层位于画布上方，文案容器使用默认 `pointer-events:auto`。
+- 当待确认浮层覆盖在第二个文本对象上方时，浏览器命中的是浮层 `div`，不是 SVG 文本节点，`handleSvgPointerDown` 无法进入文本拖拽分支。
+- 前端拖拽协议之前没有明确区分“待确认 UI”与“画布交互层”的指针事件边界，也缺少“先拖 A 待确认，再拖 B 待确认”的 sequential regression test。
+
+**修复**
+
+- 将待确认浮层和拖拽提示浮层改为 `pointer-events:none`，避免遮挡画布拖拽命中。
+- 将“确认位置 / 取消”按钮单独保留 `pointer-events:auto`，确保按钮仍可点击。
+- 增加坐标级拖拽命中兜底：拖拽模式下优先使用 `event.target`，若目标不是可拖文本，则按鼠标坐标扫描可拖文本 bbox，降低 SVG path / overlay / target retargeting 导致的误命中。
+- 拖拽结束后抑制紧随其后的 click 事件，避免 click 事件把已拖动对象又改回旧选中态。
+- active drag 期间重放已有 pending transform，但不让 pending replay 覆盖正在拖动的新对象。
+
+**验证**
+
+- 新增 `tests/playwright/drag_extended_smoke.mjs` 的 `D1-sequential-drag`：
+  - 拖动 `text.0.0` 后不确认，确认条显示累计 1 个文本对象。
+  - 继续拖动 `text.0.1` 后不确认，确认条显示累计 2 个文本对象。
+  - 点击确认后只发送 1 个 `/api/figure/patch` 请求，包含 `text.0.0` 与 `text.0.1` 两条不同 `position` patch。
+- `npm run test:drag-extended-smoke`：通过。
+- 最新报告：
+  - `output/playwright/drag-extended-2026-07-06T13-37-15-217Z/report.md`
+  - `Conclusion: PASS, PASS=7, FAIL=0, BLOCKED=0`
+- `npx tsc --noEmit`：通过。
+- `npm test`：通过，5 files / 42 tests。
+- `npm run build`：通过；仍存在既有 chunk size warning 与 `server.ts` 的 `import.meta` CJS warning。

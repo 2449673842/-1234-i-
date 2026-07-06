@@ -1797,7 +1797,7 @@ build_ggplot_manifest <- function(plot_obj) {
             id = id,
             kind = "xtick",
             label = "xtick",
-            editable = list("fontsize", "fontfamily", "color"),
+            editable = list(),
             currentProps = list(
               fontsize = x_tick_style$fontsize,
               fontfamily = x_tick_style$fontfamily,
@@ -1817,7 +1817,7 @@ build_ggplot_manifest <- function(plot_obj) {
             id = id,
             kind = "ytick",
             label = "ytick",
-            editable = list("fontsize", "fontfamily", "color"),
+            editable = list(),
             currentProps = list(
               fontsize = y_tick_style$fontsize,
               fontfamily = y_tick_style$fontfamily,

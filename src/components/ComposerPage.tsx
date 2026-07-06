@@ -28,6 +28,15 @@ interface ComposerPanel {
   label: string;
 }
 
+interface CompositionSourceSnapshot {
+  assetId: string;
+  figureId?: string | null;
+  name?: string;
+  format?: string;
+  revision?: number;
+  createdAt?: string;
+}
+
 interface DragState {
   assetId: string;
   pointerId: number;
@@ -252,6 +261,7 @@ export function ComposerPage({
   const [journalPreset, setJournalPreset] = useState<string>('custom');
   const [projectsList, setProjectsList] = useState<{ id: string; name: string }[]>([]);
   const [activeProjectId, setActiveProjectId] = useState<string>(projectId || '');
+  const [projectFigures, setProjectFigures] = useState<any[]>([]);
   const hasInitializedHistoryRef = useRef(false);
   const canvasViewportRef = useRef<HTMLDivElement | null>(null);
 
@@ -294,6 +304,25 @@ export function ComposerPage({
       height: rows * panelHeight + (rows - 1) * gapY + labelFontSize + 8,
     };
   }, [gapX, gapY, labelFontSize, panelHeight, panelWidth, panels.length, selectedAssetIds.length]);
+
+  const getAssetSourceRevision = (asset: ExportAsset | undefined): number => {
+    if (!asset) return 1;
+    const directRevision = asset.metadata?.revision;
+    return typeof directRevision === 'number' ? directRevision : 1;
+  };
+
+  const isSourceAssetStale = (asset: ExportAsset | undefined): boolean => {
+    if (!asset || !asset.figureId || asset.figureId === 'composite') return false;
+    const fig = projectFigures.find(f => f.figureId === asset.figureId);
+    if (!fig) return false;
+    return Number(fig.revision || 1) > getAssetSourceRevision(asset);
+  };
+
+  const describeSourceAssetStale = (asset: ExportAsset | undefined): string => {
+    if (!asset?.figureId) return '';
+    const fig = projectFigures.find(f => f.figureId === asset.figureId);
+    return `源子图 ${asset.figureId} 发生过修改（当前版本 v${fig?.revision || 1}，导出资产版本 v${getAssetSourceRevision(asset)}）。为了保持排版排布一致性，建议你在「导出」选项卡中重新导出该子图后，再刷新或重新拖入排版。`;
+  };
 
   const getSnapshot = (currentPanels: ComposerPanel[], selectedIds: string[], overrides: Record<string, unknown> = {}) => {
     return {
@@ -512,7 +541,9 @@ export function ComposerPage({
     setTickLineWidth(layout.tickLineWidth !== undefined ? layout.tickLineWidth : 0.8);
     setTickLineColor(layout.tickLineColor || '#000000');
 
-    setSelectedAssetIds(layout.sourceAssetIds || layout.panels.map((p: any) => p.assetId));
+    const sourceAssetSnapshots = (layout.sourceAssetSnapshots || asset.metadata?.sourceAssetSnapshots || []) as CompositionSourceSnapshot[];
+    const sourceAssetIds = layout.sourceAssetIds || sourceAssetSnapshots.map(item => item.assetId) || layout.panels.map((p: any) => p.assetId);
+    setSelectedAssetIds(sourceAssetIds);
     setPanels(layout.panels);
     setActiveAssetId(layout.panels[0]?.assetId || null);
 
@@ -534,7 +565,8 @@ export function ComposerPage({
       sourceTickFontSize: layout.sourceTickFontSize !== undefined ? layout.sourceTickFontSize : 8,
       sourceLegendFontSize: layout.sourceLegendFontSize !== undefined ? layout.sourceLegendFontSize : 8,
       sourceTextColor: layout.sourceTextColor || '#111827',
-      selectedAssetIds: layout.sourceAssetIds || layout.panels.map((p: any) => p.assetId),
+      selectedAssetIds: sourceAssetIds,
+      sourceAssetSnapshots,
       panelBorderWidth: layout.panelBorderWidth !== undefined ? layout.panelBorderWidth : 1,
       panelBorderColor: layout.panelBorderColor || '#cbd5e1',
       panelBorderRadius: layout.panelBorderRadius !== undefined ? layout.panelBorderRadius : 0,
@@ -613,10 +645,19 @@ export function ComposerPage({
     if (!projId) return;
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/projects/${projId}/export-assets`);
-      const data = await res.json();
-      if (data.status !== 'success') throw new Error(data.message || '导出图库加载失败');
-      setAssets(data.assets || []);
+      const [assetsRes, figuresRes] = await Promise.all([
+        fetch(`/api/projects/${projId}/export-assets`),
+        fetch(`/api/projects/${projId}/figures`)
+      ]);
+      const assetsData = await assetsRes.json();
+      const figuresData = await figuresRes.json();
+      
+      if (assetsData.status === 'success') {
+        setAssets(assetsData.assets || []);
+      }
+      if (figuresData.status === 'success') {
+        setProjectFigures(figuresData.figures || []);
+      }
     } catch (e: any) {
       console.error(e.message);
     } finally {
@@ -922,6 +963,44 @@ export function ComposerPage({
         const pngBlob = await svgToPngBlob(data.svg, canvas.width, canvas.height, dpi);
         downloadBlobFile(`${data.asset?.name || 'composite'}.png`, pngBlob);
         const binaryB64 = await blobToBase64(pngBlob);
+        const compositeMetadata = data.asset?.metadata || {
+          kind: 'composite',
+          createdBy: 'browser-svg-canvas',
+          sourceAssetIds: panels.map(panel => panel.assetId),
+          layout: {
+            width: canvas.width,
+            height: canvas.height,
+            panelWidth,
+            panelHeight,
+            gapX,
+            gapY,
+            labelFontSize,
+            globalFontFamily,
+            labelColor,
+            applyInnerFont,
+            innerFontSize,
+            innerFontColor,
+            applySemanticTextStyle,
+            sourceTitleFontSize,
+            sourceAxisLabelFontSize,
+            sourceTickFontSize,
+            sourceLegendFontSize,
+            sourceTextColor,
+            panelBorderWidth,
+            panelBorderColor,
+            panelBorderRadius,
+            applyInnerLine,
+            innerLineWidth,
+            innerLineColor,
+            applyAxisElementStyle,
+            axisLineWidth,
+            axisLineColor,
+            tickLineWidth,
+            tickLineColor,
+            panels,
+            sourceAssetIds: panels.map(panel => panel.assetId),
+          },
+        };
         const importRes = await fetch(`/api/projects/${projId}/export-assets/import`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -933,42 +1012,10 @@ export function ComposerPage({
             binary_b64: binaryB64,
             thumbnailSvg: data.svg,
             metadata: {
-              kind: 'composite',
+              ...compositeMetadata,
               createdBy: 'browser-svg-canvas',
-              sourceAssetIds: panels.map(panel => panel.assetId),
-              layout: {
-                width: canvas.width,
-                height: canvas.height,
-                panelWidth,
-                panelHeight,
-                gapX,
-                gapY,
-                labelFontSize,
-                globalFontFamily,
-                labelColor,
-                applyInnerFont,
-                innerFontSize,
-                innerFontColor,
-                applySemanticTextStyle,
-                sourceTitleFontSize,
-                sourceAxisLabelFontSize,
-                sourceTickFontSize,
-                sourceLegendFontSize,
-                sourceTextColor,
-                panelBorderWidth,
-                panelBorderColor,
-                panelBorderRadius,
-                applyInnerLine,
-                innerLineWidth,
-                innerLineColor,
-                applyAxisElementStyle,
-                axisLineWidth,
-                axisLineColor,
-                tickLineWidth,
-                tickLineColor,
-                panels,
-                sourceAssetIds: panels.map(panel => panel.assetId),
-              },
+              derivedFromAssetId: data.asset?.assetId,
+              outputFormat: 'png',
             },
             tags: ['composite'],
           }),
@@ -1338,6 +1385,7 @@ export function ComposerPage({
                     '--composer-axis-line-width': `${compensateForPanelScale(Math.max(0.1, Math.min(20, axisLineWidth)), panelScale).toFixed(3)}px`,
                     '--composer-tick-line-width': `${compensateForPanelScale(Math.max(0.1, Math.min(20, tickLineWidth)), panelScale).toFixed(3)}px`,
                   } as CSSProperties;
+                  const isStale = isSourceAssetStale(asset);
                   return (
                     <div
                       key={panel.assetId}
@@ -1364,6 +1412,23 @@ export function ComposerPage({
                           />
                         ) : null}
                       </div>
+                      {isStale && (
+                        <div 
+                          data-testid="composer-stale-badge"
+                          className="absolute left-1 top-1 z-20 flex items-center gap-1 bg-amber-500/90 text-white px-2 py-0.5 rounded text-[10px] font-bold shadow-sm backdrop-blur pointer-events-auto cursor-help"
+                          title={`源子图 ${asset?.figureId} 已在编辑器中修改过。请前往导出选项卡重新生成导出资产。`}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            alert(describeSourceAssetStale(asset));
+                          }}
+                        >
+                          <RefreshCw className="w-3 h-3 animate-spin" style={{ animationDuration: '3s' }} />
+                          <span>源图已更新</span>
+                        </div>
+                      )}
                       <span className="absolute right-1 top-1 px-1.5 py-0.5 rounded bg-blue-600 text-white text-[10px] font-semibold">{index + 1}</span>
                     </div>
                   );
@@ -1896,6 +1961,7 @@ export function ComposerPage({
                   <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
                     {panels.map((panel, index) => {
                       const asset = assets.find(item => item.assetId === panel.assetId);
+                      const isStale = isSourceAssetStale(asset);
                       return (
                         <div
                           key={panel.assetId}
@@ -1903,7 +1969,15 @@ export function ComposerPage({
                           className={`rounded-lg border p-2 cursor-pointer transition-all ${activeAssetId === panel.assetId ? 'border-blue-500 bg-blue-50/50 shadow-sm' : 'border-slate-200 hover:bg-slate-50'}`}
                         >
                           <div className="text-xs font-semibold truncate flex items-center justify-between">
-                            <span>{panel.label} {asset?.name || '图元'}</span>
+                            <span className="flex items-center gap-1">
+                              {panel.label} {asset?.name || '图元'}
+                              {isStale && (
+                                <span 
+                                  className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" 
+                                  title="源子图已在编辑器中修改过，与当前排版不一致"
+                                />
+                              )}
+                            </span>
                             <span className="text-[10px] text-slate-400 bg-slate-100 px-1 rounded">No. {index + 1}</span>
                           </div>
                           <div className="grid grid-cols-2 gap-2 mt-2">

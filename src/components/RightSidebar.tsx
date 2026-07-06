@@ -1,15 +1,29 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Baseline, Lock, Layout, Palette, Sliders } from 'lucide-react';
 import { FigureSession, PatchEntry, ManifestObject, ManifestField, Binding } from '../schemas/manifest';
+import { normalizeFigureModel } from '../utils/standardFigureModel';
+import { resolveFigureId } from '../utils/figureIdentity';
+import type { StandardFigureModel, StandardFigureObject } from '../schemas/standardFigureModel';
+
+import type { DraftPatch } from '../schemas/draftPatchBatch';
 
 interface RightSidebarProps {
   figSession: FigureSession | null;
+  activeFigureId?: string;
+  selectedFigureIds?: string[];
   selectedObject?: string;
   onSelectObject: (obj: string) => void;
   selectedGids?: string[];
   onSelectGids?: (gids: string[]) => void;
   onPatch: (patches: PatchEntry[]) => void;
   lockedObjects?: Set<string>;
+  
+  // Draft props
+  projectDrafts: Record<string, Record<string, DraftPatch>>;
+  onUpdateDraft: (figId: string, patch: DraftPatch) => void;
+  onUpdateDraftsBatch: (figId: string, patches: DraftPatch[]) => void;
+  onDiscardDraft: (figId: string) => void;
+  onApplyDraft: (figId: string, scope: 'current' | 'all' | 'selected') => void;
 }
 
 const LOCAL_PROPS = new Set(['text', 'color', 'visible', 'facecolor', 'edgecolor', 'alpha']);
@@ -22,6 +36,7 @@ const DEFAULT_PRESETS: Record<string, string[]> = {
 };
 const PRESET_STORAGE_KEY = 'scifigure:palette-presets:v1';
 const FONT_PRESET_STORAGE_KEY = 'scifigure:font-presets:v1';
+const STYLE_PRESET_STORAGE_KEY = 'scifigure:style-presets:v1';
 const LEGEND_LOCATIONS = ['best', 'upper right', 'upper left', 'lower left', 'lower right', 'right', 'center left', 'center right', 'lower center', 'upper center', 'center'];
 const TICK_DIRECTIONS = ['out', 'in', 'inout'];
 const DEFAULT_FONT_PRESETS: Record<string, { family: string; title: number; label: number; tick: number; legend: number }> = {
@@ -31,6 +46,57 @@ const DEFAULT_FONT_PRESETS: Record<string, { family: string; title: number; labe
 };
 
 type FontPreset = { family: string; title: number; label: number; tick: number; legend: number };
+type FigureStylePreset = {
+  family: string;
+  title: number;
+  label: number;
+  tick: number;
+  legend: number;
+  fontWeight: string;
+  fontStyle: string;
+  textColor: string;
+  tickDirection: string;
+  tickLength: number;
+  tickWidth: number;
+  tickColor: string;
+  spineWidth: number;
+  spineColor: string;
+};
+
+const DEFAULT_STYLE_PRESETS: Record<string, FigureStylePreset> = {
+  'Nature 紧凑': {
+    family: 'Arial',
+    title: 12,
+    label: 10,
+    tick: 8,
+    legend: 8,
+    fontWeight: 'normal',
+    fontStyle: 'normal',
+    textColor: '#111827',
+    tickDirection: 'out',
+    tickLength: 3,
+    tickWidth: 0.8,
+    tickColor: '#000000',
+    spineWidth: 0.8,
+    spineColor: '#000000',
+  },
+  'Times 投稿': {
+    family: 'Times New Roman',
+    title: 13,
+    label: 11,
+    tick: 9,
+    legend: 9,
+    fontWeight: 'normal',
+    fontStyle: 'normal',
+    textColor: '#000000',
+    tickDirection: 'out',
+    tickLength: 3.5,
+    tickWidth: 0.9,
+    tickColor: '#000000',
+    spineWidth: 1,
+    spineColor: '#000000',
+  },
+};
 
 const PROP_LABELS: Record<string, string> = {
   text: '文字内容',
@@ -174,21 +240,31 @@ function normalizeTickTextPatch(gid: string, prop: string) {
 
 export function RightSidebar({
   figSession,
+  activeFigureId,
+  selectedFigureIds = [],
   selectedObject,
   onSelectObject,
   selectedGids = [],
   onSelectGids,
   onPatch,
   lockedObjects,
+  projectDrafts,
+  onUpdateDraft,
+  onUpdateDraftsBatch,
+  onDiscardDraft,
+  onApplyDraft,
 }: RightSidebarProps) {
   const [activeTab, setActiveTab] = useState<'properties' | 'groups' | 'palette' | 'fonts'>('properties');
+  const [showDraftDetails, setShowDraftDetails] = useState(false);
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
   const [colorDraftValues, setColorDraftValues] = useState<Record<string, string>>({});
   const [customPresets, setCustomPresets] = useState<Record<string, string[]>>({});
   const [customFontPresets, setCustomFontPresets] = useState<Record<string, FontPreset>>({});
+  const [customStylePresets, setCustomStylePresets] = useState<Record<string, FigureStylePreset>>({});
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set());
   const [lastSelectedGroupId, setLastSelectedGroupId] = useState<string | null>(null);
   const [componentSubplotScope, setComponentSubplotScope] = useState<string>('all');
+  const [fontSubplotScope, setFontSubplotScope] = useState<string>('all');
 
   useEffect(() => {
     setSelectedGroupIds(new Set());
@@ -197,6 +273,7 @@ export function RightSidebar({
 
   useEffect(() => {
     setDraftValues({});
+    setColorDraftValues({});
   }, [figSession?.revision, selectedObject]);
 
   useEffect(() => {
@@ -218,13 +295,113 @@ export function RightSidebar({
     } catch {
       setCustomFontPresets({});
     }
+    try {
+      const raw = window.localStorage.getItem(STYLE_PRESET_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, FigureStylePreset>;
+        setCustomStylePresets(parsed);
+      }
+    } catch {
+      setCustomStylePresets({});
+    }
   }, []);
 
-  const objects = figSession?.manifest?.objects || [];
+  const debugModel = useMemo(() => {
+    if (!figSession?.manifest) return null;
+    return normalizeFigureModel({
+      figureId: activeFigureId || 'fig_1',
+      language: figSession.language,
+      svg: figSession.svg || '',
+      manifest: figSession.manifest,
+      revision: figSession.revision ?? 0,
+      editLog: figSession.editLog ?? []
+    });
+  }, [figSession, activeFigureId]);
+
+  const currentFigureId = resolveFigureId(activeFigureId);
+
+  const isDirty = (gid: string, prop: string) => {
+    return Boolean(projectDrafts[currentFigureId]?.[`${gid}:${prop}`]);
+  };
+
+  const isColorDirty = (gidVal: string, scopeVal: string) => {
+    if (scopeVal.startsWith('palette:')) {
+      const palId = scopeVal.split(':')[1];
+      return isDirty('code_patch', palId);
+    }
+    const parts = scopeVal.split(':');
+    if (parts.length === 2) {
+      return isDirty(parts[0], parts[1]);
+    }
+    return isDirty(gidVal, scopeVal);
+  };
+
+  const objects = useMemo(() => {
+    const rawObjects = debugModel?.objects || [];
+    const figDrafts = projectDrafts[currentFigureId] || {};
+    
+    return rawObjects.map(obj => {
+      const currentPropsProxy = new Proxy(obj.currentProps || {}, {
+        get(target, propKey) {
+          if (typeof propKey === 'string') {
+            const draftKey = `${obj.id}:${propKey}`;
+            if (figDrafts[draftKey]) {
+              return figDrafts[draftKey].value;
+            }
+          }
+          return Reflect.get(target, propKey);
+        }
+      });
+      return {
+        ...obj,
+        currentProps: currentPropsProxy
+      };
+    });
+  }, [debugModel, projectDrafts, currentFigureId]);
+
   const selectedObj = useMemo(
     () => objects.find(o => o.id === selectedObject) || objects[0],
     [objects, selectedObject]
   );
+
+  const getObjectSubplotId = (obj: Pick<StandardFigureObject, 'id' | 'kind' | 'subplotId' | 'source'>) => {
+    if (obj.kind === 'subplot') return obj.id;
+    if (typeof obj.subplotId === 'string') return obj.subplotId;
+    if (typeof obj.source?.axesIndex === 'number') return `subplot.${obj.source.axesIndex}`;
+    return null;
+  };
+
+  const subplotOptions = useMemo(() => objects
+    .filter(obj => obj.kind === 'subplot')
+    .sort((a, b) => Number(a.currentProps.subplotIndex ?? a.source?.axesIndex ?? 0) - Number(b.currentProps.subplotIndex ?? b.source?.axesIndex ?? 0)), [objects]);
+
+  const proxiedPalettes = useMemo(() => {
+    const rawPalettes = debugModel?.palettes || [];
+    const bindings = debugModel?.bindings || [];
+    const figDrafts = projectDrafts[currentFigureId] || {};
+    return rawPalettes.map(p => {
+      const draftKey = `code_patch:${p.id}`;
+      if (figDrafts[draftKey]) {
+        return {
+          ...p,
+          color: figDrafts[draftKey].value as string
+        };
+      }
+      const binding = bindings.find((b: Binding) => b.paletteId === p.id);
+      const gid = Array.isArray(binding?.gids) ? binding.gids[0] : null;
+      const prop = Array.isArray(binding?.props) ? binding.props[0] : null;
+      if (gid && prop) {
+        const objectDraftKey = `${gid}::${prop}`;
+        if (figDrafts[objectDraftKey]) {
+          return {
+            ...p,
+            color: figDrafts[objectDraftKey].value as string
+          };
+        }
+      }
+      return p;
+    });
+  }, [debugModel, projectDrafts, currentFigureId]);
 
   if (!figSession || !figSession.manifest) {
     return (
@@ -238,6 +415,7 @@ export function RightSidebar({
   const isLocked = Boolean(selectedObject && lockedObjects?.has(selectedObject));
   const presetMap = { ...DEFAULT_PRESETS, ...customPresets };
   const fontPresetMap: Record<string, FontPreset> = { ...DEFAULT_FONT_PRESETS, ...customFontPresets };
+  const stylePresetMap: Record<string, FigureStylePreset> = { ...DEFAULT_STYLE_PRESETS, ...customStylePresets };
 
   const getDraftKey = (gid: string, prop: string) => `${gid}::${prop}`;
   const getPropLabel = (prop: string) => PROP_LABELS[prop] || prop.replace(/_/g, ' ');
@@ -279,45 +457,42 @@ export function RightSidebar({
 
   const handlePatch = (gid: string, prop: string, value: unknown) => {
     const currentObject = manifest.objects.find((item) => item.id === gid);
-    const tickPatch = normalizeTickTextPatch(gid, prop);
-    if (tickPatch) {
-      void onPatch([{
-        op: 'set',
-        mode: 'backend_patch',
-        gid: tickPatch.gid,
-        prop: tickPatch.prop,
-        value,
-      }]);
-      return;
-    }
+    const figureId = currentFigureId;
 
     const mode = manifest.generatedBy === 'r_svg'
       ? 'backend_patch'
       : isLocalPatch(currentObject?.kind || '', prop) ? 'local_patch' : 'backend_patch';
-    void onPatch([{ op: 'set', mode, gid, prop, value }]);
+    onUpdateDraft(figureId, { gid, prop, value, mode });
   };
 
   const handlePaletteColorChange = (paletteId: string, newColor: string) => {
     const bindings = manifest.bindings || [];
     const binding = bindings.find((b: Binding) => b.paletteId === paletteId);
     const gids = binding ? binding.gids : [];
+    const figureId = currentFigureId;
+
     if (manifest.generatedBy === 'r_svg') {
       const prop = binding?.props?.[0] || 'color';
-      void onPatch(gids.map((gid: string) => ({
-        op: 'set' as const,
-        mode: 'backend_patch' as const,
+      const draftPatchesList = gids.map((gid: string) => ({
         gid,
         prop,
         value: newColor,
-      })));
+        mode: 'backend_patch' as const,
+      }));
+      onUpdateDraftsBatch(figureId, draftPatchesList);
       return;
     }
-    void onPatch([{
-      type: 'code_patch' as const,
+    
+    onUpdateDraft(figureId, {
+      gid: 'code_patch',
+      prop: paletteId,
+      value: newColor,
+      mode: 'backend_patch',
+      type: 'code_patch',
       target_id: paletteId,
       new_value: newColor,
       gids
-    }]);
+    });
   };
 
   const getObjectTypeLabel = (kind: string) => {
@@ -432,11 +607,19 @@ export function RightSidebar({
   ) => {
     const key = getDraftKey(gid, label);
     const inputValue = draftValues[key] ?? (value ?? '').toString();
+    const dirty = isDirty(gid, label);
     return (
       <div className="grid grid-cols-[88px_1fr] items-center gap-2 text-sm" key={label}>
-        <span className="text-slate-600">{getPropLabel(label)}</span>
+        <span className="text-slate-600 flex items-center gap-1 select-none">
+          {getPropLabel(label)}
+          {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="已修改（未保存至引擎）" />}
+        </span>
         <input
           type="number"
+          aria-label={getPropLabel(label)}
+          data-param-role="number"
+          data-param-gid={gid}
+          data-param-prop={label}
           min={options?.min}
           max={options?.max}
           step={options?.step ?? 1}
@@ -461,9 +644,13 @@ export function RightSidebar({
   const renderTextInput = (gid: string, label: string, value: string, onValue: (nextValue: string) => void) => {
     const key = getDraftKey(gid, label);
     const inputValue = draftValues[key] ?? value;
+    const dirty = isDirty(gid, label);
     return (
       <div className="text-sm space-y-1.5" key={label}>
-        <span className="text-slate-600 block">{getPropLabel(label)}</span>
+        <span className="text-slate-600 flex items-center gap-1 select-none">
+          {getPropLabel(label)}
+          {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="已修改（未保存至引擎）" />}
+        </span>
         <input
           type="text"
           className="border border-slate-200 rounded p-1.5 outline-none focus:border-blue-500 w-full bg-white text-slate-700"
@@ -494,28 +681,32 @@ export function RightSidebar({
     );
   };
 
-  const renderColorInput = (label: string, value: string, onValue: (nextValue: string) => void, draftScope = label) => {
+  const renderColorInput = (label: string, value: string, onValue: (nextValue: string) => void, draftScope = label, gid = '', prop = label) => {
     const hexColor = resolvePickerColor(value);
     const draftKey = `color::${draftScope}`;
     const textValue = colorDraftValues[draftKey] ?? (typeof value === 'string' ? value : hexColor);
+    const dirty = isColorDirty(gid, draftScope);
     const commitColor = (raw: string) => {
       const trimmed = raw.trim();
       if (/^#[0-9A-Fa-f]{6}$/.test(trimmed)) {
         onValue(trimmed);
-        setColorDraftValues(prev => {
-          const next = { ...prev };
-          delete next[draftKey];
-          return next;
-        });
+        setColorDraftValues(prev => ({ ...prev, [draftKey]: trimmed }));
       }
     };
 
     return (
       <div className="grid grid-cols-[80px_auto_1fr] items-center gap-3 text-sm" key={label}>
-        <span className="text-slate-600">{getPropLabel(label)}</span>
+        <span className="text-slate-600 flex items-center gap-1 select-none">
+          {getPropLabel(label)}
+          {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="已修改（未保存至引擎）" />}
+        </span>
         <div className="w-8 h-8 rounded shrink-0 shadow-sm border border-slate-200 overflow-hidden relative cursor-pointer">
           <input
             type="color"
+            aria-label={label}
+            data-color-role="picker"
+            data-color-scope={draftScope}
+            data-color-label={label}
             className="absolute inset-0 w-[200%] h-[200%] -top-[50%] -left-[50%] cursor-pointer"
             value={hexColor}
             onChange={(event) => {
@@ -526,6 +717,10 @@ export function RightSidebar({
         </div>
         <input
           type="text"
+          aria-label={label}
+          data-color-role="text"
+          data-color-scope={draftScope}
+          data-color-label={label}
           className="border border-slate-200 rounded p-1.5 uppercase text-slate-600 outline-none w-full text-xs font-mono"
           value={textValue.toUpperCase()}
           onChange={(event) => {
@@ -554,20 +749,26 @@ export function RightSidebar({
     );
   };
 
-  const renderBoolInput = (label: string, value: boolean, onValue: (nextValue: boolean) => void) => (
-    <div className="flex items-center justify-between mb-3 text-sm" key={label}>
-      <span className="text-slate-600">{getPropLabel(label)}</span>
-      <label className="relative inline-flex items-center cursor-pointer">
-        <input
-          type="checkbox"
-          className="sr-only peer"
-          checked={value}
-          onChange={(event) => onValue(event.target.checked)}
-        />
-        <div className="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
-      </label>
-    </div>
-  );
+  const renderBoolInput = (label: string, value: boolean, onValue: (nextValue: boolean) => void, gid = '', prop = label) => {
+    const dirty = gid && isDirty(gid, prop);
+    return (
+      <div className="flex items-center justify-between mb-3 text-sm" key={label}>
+        <span className="text-slate-600 flex items-center gap-1 select-none">
+          {getPropLabel(label)}
+          {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="已修改（未保存至引擎）" />}
+        </span>
+        <label className="relative inline-flex items-center cursor-pointer">
+          <input
+            type="checkbox"
+            className="sr-only peer"
+            checked={value}
+            onChange={(event) => onValue(event.target.checked)}
+          />
+          <div className="w-8 h-4 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
+        </label>
+      </div>
+    );
+  };
 
   const FONT_OPTIONS = [
     'sans-serif', 'serif', 'monospace', 'DejaVu Sans', 'Arial',
@@ -577,9 +778,13 @@ export function RightSidebar({
   const renderFontSelect = (gid: string, label: string, value: string, onValue: (nextValue: string) => void) => {
     const key = getDraftKey(gid, label);
     const inputValue = draftValues[key] ?? value;
+    const dirty = isDirty(gid, label);
     return (
       <div className="grid grid-cols-[88px_1fr] items-center gap-2 text-sm" key={label}>
-        <span className="text-slate-600">字体家族</span>
+        <span className="text-slate-600 flex items-center gap-1 select-none">
+          字体家族
+          {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="已修改（未保存至引擎）" />}
+        </span>
         <div className="relative">
           <select
             className="border border-slate-200 rounded p-1.5 w-full outline-none bg-white appearance-none text-slate-700 text-xs"
@@ -626,20 +831,26 @@ export function RightSidebar({
     );
   };
 
-  const renderSelectInput = (label: string, value: string, options: string[], onValue: (nextValue: string) => void) => (
-    <div className="grid grid-cols-[80px_1fr] items-center gap-2 text-sm" key={label}>
-      <span className="text-slate-600">{getPropLabel(label)}</span>
-      <select
-        className="border border-slate-200 rounded p-1.5 w-full outline-none bg-white text-slate-700 text-xs"
-        value={value}
-        onChange={(event) => onValue(event.target.value)}
-      >
-        {options.map((opt) => (
-          <option key={opt} value={opt}>{getValueLabel(label, opt)}</option>
-        ))}
-      </select>
-    </div>
-  );
+  const renderSelectInput = (label: string, value: string, options: string[], onValue: (nextValue: string) => void, gid = '', prop = label) => {
+    const dirty = gid && isDirty(gid, prop);
+    return (
+      <div className="grid grid-cols-[80px_1fr] items-center gap-2 text-sm" key={label}>
+        <span className="text-slate-600 flex items-center gap-1 select-none">
+          {getPropLabel(label)}
+          {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="已修改（未保存至引擎）" />}
+        </span>
+        <select
+          className="border border-slate-200 rounded p-1.5 w-full outline-none bg-white text-slate-700 text-xs"
+          value={value}
+          onChange={(event) => onValue(event.target.value)}
+        >
+          {options.map((opt) => (
+            <option key={opt} value={opt}>{getValueLabel(label, opt)}</option>
+          ))}
+        </select>
+      </div>
+    );
+  };
 
   const renderRangePair = (objId: string, label: string, values: number[], prop: string) => {
     const safeValues = Array.isArray(values) && values.length >= 2 ? values : [0, 1];
@@ -718,22 +929,22 @@ export function RightSidebar({
       return renderNumberInput(gid, prop, currentValue as number, (v) => handlePatch(gid, prop, v), { step });
     }
     if (fieldType === 'boolean' || typeof currentValue === 'boolean') {
-      return renderBoolInput(prop, currentValue as boolean, (v) => handlePatch(gid, prop, v));
+      return renderBoolInput(prop, currentValue as boolean, (v) => handlePatch(gid, prop, v), gid, prop);
     }
     if (fieldType === 'color' || prop.includes('color')) {
-      return renderColorInput(prop, currentValue as string, (v) => handlePatch(gid, prop, v), `${gid}:${prop}`);
+      return renderColorInput(prop, currentValue as string, (v) => handlePatch(gid, prop, v), `${gid}:${prop}`, gid, prop);
     }
     if (prop === 'fontfamily') {
       return renderFontSelect(gid, prop, currentValue as string, (v) => handlePatch(gid, prop, v));
     }
     if (prop === 'fontweight') {
-      return renderSelectInput('字重', String(currentValue || 'normal'), ['normal', 'bold', 'semibold', 'light'], (v) => handlePatch(gid, prop, v));
+      return renderSelectInput('字重', String(currentValue || 'normal'), ['normal', 'bold', 'semibold', 'light'], (v) => handlePatch(gid, prop, v), gid, prop);
     }
     if (prop === 'fontstyle') {
-      return renderSelectInput('字形', String(currentValue || 'normal'), ['normal', 'italic', 'oblique'], (v) => handlePatch(gid, prop, v));
+      return renderSelectInput('字形', String(currentValue || 'normal'), ['normal', 'italic', 'oblique'], (v) => handlePatch(gid, prop, v), gid, prop);
     }
     if (prop === 'aspect') {
-      return renderSelectInput('子图比例', String(currentValue || 'auto'), ['auto', 'equal', '1'], (v) => handlePatch(gid, prop, v));
+      return renderSelectInput('子图比例', String(currentValue || 'auto'), ['auto', 'equal', '1'], (v) => handlePatch(gid, prop, v), gid, prop);
     }
     if (prop === 'cmap') {
       return renderCmapSelect(gid, prop, currentValue as string, (v) => handlePatch(gid, prop, v));
@@ -759,7 +970,7 @@ export function RightSidebar({
             {renderNumberInput(obj.id, 'width', props.width ?? 0.5, (v) => handlePatch(obj.id, 'width', v), { min: 0.005, max: 1, step: 0.01 })}
             {renderNumberInput(obj.id, 'height', props.height ?? 0.5, (v) => handlePatch(obj.id, 'height', v), { min: 0.005, max: 1, step: 0.01 })}
           </div>
-          {renderSelectInput('子图比例', String(props.aspect || 'auto'), ['auto', 'equal', '1'], (v) => handlePatch(obj.id, 'aspect', v))}
+          {renderSelectInput('子图比例', String(props.aspect || 'auto'), ['auto', 'equal', '1'], (v) => handlePatch(obj.id, 'aspect', v), obj.id, 'aspect')}
           <div className="text-[11px] leading-relaxed text-slate-500">
             这里修改的是 Matplotlib Axes 在整张图中的归一化位置。适合统一 2x2、2x4 等多子图的单个面板大小和比例。
           </div>
@@ -835,19 +1046,19 @@ export function RightSidebar({
           {renderRangePair(obj.id, `${axisName} 范围`, limits, 'limits')}
           {renderTextInput(obj.id, 'label', props.label || '', (v) => handlePatch(obj.id, 'label', v))}
           {renderNumberInput(obj.id, 'label_fontsize', props.label_fontsize || 12, (v) => handlePatch(obj.id, 'label_fontsize', v), { min: 4, max: 40, step: 0.5 })}
-          {renderColorInput('label_color', props.label_color || '#000000', (v) => handlePatch(obj.id, 'label_color', v), `${obj.id}:label_color`)}
+          {renderColorInput(`${axisName} 轴标题颜色`, props.label_color || '#000000', (v) => handlePatch(obj.id, 'label_color', v), `${obj.id}:label_color`)}
           {renderNumberInput(obj.id, 'tick_rotation', props.tick_rotation || 0, (v) => handlePatch(obj.id, 'tick_rotation', v), { min: -180, max: 180, step: 1 })}
           {renderSelectInput('tick_direction', props.tick_direction || 'out', TICK_DIRECTIONS, (v) => handlePatch(obj.id, 'tick_direction', v))}
           {renderNumberInput(obj.id, 'tick_length', props.tick_length || 3.5, (v) => handlePatch(obj.id, 'tick_length', v), { min: 0, max: 20, step: 0.5 })}
           {renderNumberInput(obj.id, 'tick_width', props.tick_width || 0.8, (v) => handlePatch(obj.id, 'tick_width', v), { min: 0, max: 10, step: 0.1 })}
-          {renderColorInput('tick_color', props.tick_color || '#000000', (v) => handlePatch(obj.id, 'tick_color', v), `${obj.id}:tick_color`)}
+          {renderColorInput(`${axisName} 刻度线颜色`, props.tick_color || '#000000', (v) => handlePatch(obj.id, 'tick_color', v), `${obj.id}:tick_color`)}
           {renderNumberInput(obj.id, 'tick_pad', props.tick_pad || 3.5, (v) => handlePatch(obj.id, 'tick_pad', v), { min: 0, max: 20, step: 0.5 })}
           {renderBoolInput('show_minor_ticks', Boolean(props.show_minor_ticks), (v) => handlePatch(obj.id, 'show_minor_ticks', v))}
           {renderNumberInput(obj.id, 'minor_tick_length', props.minor_tick_length || 2, (v) => handlePatch(obj.id, 'minor_tick_length', v), { min: 0, max: 20, step: 0.5 })}
           {renderNumberInput(obj.id, 'minor_tick_width', props.minor_tick_width || 0.6, (v) => handlePatch(obj.id, 'minor_tick_width', v), { min: 0, max: 10, step: 0.1 })}
-          {renderColorInput('minor_tick_color', props.minor_tick_color || '#000000', (v) => handlePatch(obj.id, 'minor_tick_color', v), `${obj.id}:minor_tick_color`)}
+          {renderColorInput(`${axisName} 副刻度线颜色`, props.minor_tick_color || '#000000', (v) => handlePatch(obj.id, 'minor_tick_color', v), `${obj.id}:minor_tick_color`)}
           {renderNumberInput(obj.id, 'tick_labelsize', props.tick_labelsize || 10, (v) => handlePatch(obj.id, 'tick_labelsize', v), { min: 4, max: 30, step: 0.5 })}
-          {renderColorInput('tick_labelcolor', props.tick_labelcolor || '#000000', (v) => handlePatch(obj.id, 'tick_labelcolor', v), `${obj.id}:tick_labelcolor`)}
+          {renderColorInput(`${axisName} 刻度文字颜色`, props.tick_labelcolor || '#000000', (v) => handlePatch(obj.id, 'tick_labelcolor', v), `${obj.id}:tick_labelcolor`)}
           {renderFontSelect(obj.id, 'tick_labelfamily', props.tick_labelfamily || 'Arial', (v) => handlePatch(obj.id, 'tick_labelfamily', v))}
           {renderBoolInput('sci_notation', Boolean(props.sci_notation), (v) => handlePatch(obj.id, 'sci_notation', v))}
           {renderBoolInput('use_math_text', Boolean(props.use_math_text), (v) => handlePatch(obj.id, 'use_math_text', v))}
@@ -1334,15 +1545,6 @@ export function RightSidebar({
       return obj.kind === 'collection'
         && (typeof obj.currentProps.size === 'number' || hasColorRows(obj.currentProps.facecolor));
     };
-    const getObjectSubplotId = (obj: ManifestObject) => {
-      if (obj.kind === 'subplot') return obj.id;
-      if (typeof obj.subplotId === 'string') return obj.subplotId;
-      if (typeof obj.source?.axesIndex === 'number') return `subplot.${obj.source.axesIndex}`;
-      return null;
-    };
-    const subplotOptions = objects
-      .filter(obj => obj.kind === 'subplot')
-      .sort((a, b) => Number(a.currentProps.subplotIndex ?? a.source?.axesIndex ?? 0) - Number(b.currentProps.subplotIndex ?? b.source?.axesIndex ?? 0));
     const scopedObjects = objects.filter(obj => {
       if (componentSubplotScope === 'all') return true;
       return getObjectSubplotId(obj) === componentSubplotScope;
@@ -1927,7 +2129,31 @@ export function RightSidebar({
     );
   };
 
-  const getFontRole = (obj: ManifestObject): { id: string; label: string; presetKey: 'title' | 'label' | 'tick' | 'legend' } | null => {
+  const getFontRole = (obj: StandardFigureObject): { id: string; label: string; presetKey: 'title' | 'label' | 'tick' | 'legend' } | null => {
+    if (obj.role) {
+      if (obj.role === 'figure_title' || obj.role === 'axes_title') {
+        return { id: 'titles', label: '标题 / 图内主文本', presetKey: 'title' };
+      }
+      if (obj.role === 'x_axis_label') {
+        return { id: 'xlabels', label: 'X 轴标签', presetKey: 'label' };
+      }
+      if (obj.role === 'y_axis_label') {
+        return { id: 'ylabels', label: 'Y 轴标签', presetKey: 'label' };
+      }
+      if (obj.role === 'x_tick_label' || obj.role === 'x_axis') {
+        return { id: 'xticks', label: 'X 轴刻度文字', presetKey: 'tick' };
+      }
+      if (obj.role === 'y_tick_label' || obj.role === 'y_axis') {
+        return { id: 'yticks', label: 'Y 轴刻度文字', presetKey: 'tick' };
+      }
+      if (obj.role === 'legend_text' || obj.role === 'legend') {
+        return { id: 'legend_text', label: '图例文字', presetKey: 'legend' };
+      }
+      if (obj.role === 'annotation' || obj.role === 'text') {
+        return { id: 'other_text', label: '其它文本标注', presetKey: 'label' };
+      }
+    }
+
     if (obj.kind === 'axis_x') {
       return { id: 'xticks', label: 'X 轴刻度文字', presetKey: 'tick' };
     }
@@ -1961,9 +2187,13 @@ export function RightSidebar({
 
   const getFontGroups = () => {
     const groups = new Map<string, { id: string; label: string; presetKey: 'title' | 'label' | 'tick' | 'legend'; objects: ManifestObject[] }>();
-    const hasAxisX = objects.some(obj => obj.kind === 'axis_x');
-    const hasAxisY = objects.some(obj => obj.kind === 'axis_y');
-    objects.forEach((obj) => {
+    const scopedFontObjects = objects.filter(obj => {
+      if (fontSubplotScope === 'all') return true;
+      return getObjectSubplotId(obj) === fontSubplotScope;
+    });
+    const hasAxisX = scopedFontObjects.some(obj => obj.kind === 'axis_x');
+    const hasAxisY = scopedFontObjects.some(obj => obj.kind === 'axis_y');
+    scopedFontObjects.forEach((obj) => {
       // Tick Text artists are regenerated by matplotlib. Prefer the stable
       // virtual Axis objects so font edits survive backend rerenders.
       if (hasAxisX && obj.id.startsWith('xtick.')) return;
@@ -2096,11 +2326,110 @@ export function RightSidebar({
       window.localStorage.setItem(FONT_PRESET_STORAGE_KEY, JSON.stringify(next));
     };
 
+    const axisObjects = objects.filter(obj => obj.kind === 'axis_x' || obj.kind === 'axis_y') as ManifestObject[];
+    const spineObjects = objects.filter(obj => obj.kind === 'spine_group' || obj.kind === 'spine') as ManifestObject[];
+    const firstAxis = axisObjects[0];
+    const firstSpine = spineObjects[0];
+
+    const buildStylePresetPatches = (preset: FigureStylePreset): PatchEntry[] => {
+      const patches: PatchEntry[] = [];
+      fontGroups.forEach(group => {
+        patches.push(...buildFontGroupPatches(group.id, group.objects, 'fontfamily', preset.family));
+        patches.push(...buildFontGroupPatches(group.id, group.objects, 'fontsize', preset[group.presetKey]));
+        patches.push(...buildFontGroupPatches(group.id, group.objects, 'fontweight', preset.fontWeight));
+        patches.push(...buildFontGroupPatches(group.id, group.objects, 'fontstyle', preset.fontStyle));
+        patches.push(...buildFontGroupPatches(group.id, group.objects, 'color', preset.textColor));
+      });
+      axisObjects.forEach(axis => {
+        patches.push(
+          { op: 'set', mode: 'backend_patch', gid: axis.id, prop: 'tick_direction', value: preset.tickDirection },
+          { op: 'set', mode: 'backend_patch', gid: axis.id, prop: 'tick_length', value: preset.tickLength },
+          { op: 'set', mode: 'backend_patch', gid: axis.id, prop: 'tick_width', value: preset.tickWidth },
+          { op: 'set', mode: 'backend_patch', gid: axis.id, prop: 'tick_color', value: preset.tickColor },
+        );
+      });
+      spineObjects.forEach(spine => {
+        patches.push(
+          { op: 'set', mode: 'backend_patch', gid: spine.id, prop: 'linewidth', value: preset.spineWidth },
+          { op: 'set', mode: 'backend_patch', gid: spine.id, prop: 'color', value: preset.spineColor },
+        );
+      });
+      return patches;
+    };
+
+    const applyStylePreset = (name: string) => {
+      const preset = stylePresetMap[name];
+      if (!preset) return;
+      const patches = buildStylePresetPatches(preset);
+      if (patches.length > 0) void onPatch(patches);
+    };
+
+    const saveStylePreset = () => {
+      const name = window.prompt('输入图形风格预设名称');
+      if (!name) return;
+      const titleGroup = fontGroups.find(group => group.presetKey === 'title');
+      const labelGroup = fontGroups.find(group => group.presetKey === 'label');
+      const tickGroup = fontGroups.find(group => group.presetKey === 'tick');
+      const legendGroup = fontGroups.find(group => group.presetKey === 'legend');
+      const firstTextGroup = fontGroups[0];
+      const axisProps = (firstAxis?.currentProps || {}) as Record<string, any>;
+      const spineProps = (firstSpine?.currentProps || {}) as Record<string, any>;
+      const nextPreset: FigureStylePreset = {
+        family: String(commonFontGroupProp(firstTextGroup.id, firstTextGroup.objects, 'fontfamily', 'Arial')),
+        title: Number(commonFontGroupProp(titleGroup?.id || firstTextGroup.id, titleGroup?.objects || firstTextGroup.objects, 'fontsize', 14)),
+        label: Number(commonFontGroupProp(labelGroup?.id || firstTextGroup.id, labelGroup?.objects || firstTextGroup.objects, 'fontsize', 11)),
+        tick: Number(commonFontGroupProp(tickGroup?.id || firstTextGroup.id, tickGroup?.objects || firstTextGroup.objects, 'fontsize', 9)),
+        legend: Number(commonFontGroupProp(legendGroup?.id || firstTextGroup.id, legendGroup?.objects || firstTextGroup.objects, 'fontsize', 9)),
+        fontWeight: String(commonFontGroupProp(firstTextGroup.id, firstTextGroup.objects, 'fontweight', 'normal')),
+        fontStyle: String(commonFontGroupProp(firstTextGroup.id, firstTextGroup.objects, 'fontstyle', 'normal')),
+        textColor: resolvePickerColor(commonFontGroupProp(firstTextGroup.id, firstTextGroup.objects, 'color', '#000000')),
+        tickDirection: String(axisProps.tick_direction || 'out'),
+        tickLength: Number(axisProps.tick_length ?? 3.5),
+        tickWidth: Number(axisProps.tick_width ?? 0.8),
+        tickColor: resolvePickerColor(axisProps.tick_color || '#000000'),
+        spineWidth: Number(spineProps.linewidth ?? 1),
+        spineColor: resolvePickerColor(spineProps.color || '#000000'),
+      };
+      const next = { ...customStylePresets, [name]: nextPreset };
+      setCustomStylePresets(next);
+      window.localStorage.setItem(STYLE_PRESET_STORAGE_KEY, JSON.stringify(next));
+    };
+
+    const deleteStylePreset = (name: string) => {
+      if (!window.confirm(`确定删除图形风格预设"${name}"？`)) return;
+      const next = { ...customStylePresets };
+      delete next[name];
+      setCustomStylePresets(next);
+      window.localStorage.setItem(STYLE_PRESET_STORAGE_KEY, JSON.stringify(next));
+    };
+
     return (
       <div className="space-y-6">
         <div>
           {renderPanelTitle('字体中心')}
           <p className="text-xs text-slate-400 mb-4">按真实 matplotlib 文本对象自动分组，统一修改标题、轴标签、刻度和图例字体。</p>
+          {subplotOptions.length > 0 && (
+            <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 space-y-2 mb-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold text-blue-900">作用范围</div>
+                  <div className="text-[11px] text-blue-700">选择某个子图后，下方字体控件只作用于该子图的标题、轴标签、刻度和图例文字。</div>
+                </div>
+                <select
+                  className="border border-blue-200 rounded-md bg-white px-2 py-1 text-xs text-blue-900 outline-none"
+                  value={fontSubplotScope}
+                  onChange={(event) => setFontSubplotScope(event.target.value)}
+                >
+                  <option value="all">全部子图</option>
+                  {subplotOptions.map(subplot => (
+                    <option key={subplot.id} value={subplot.id}>
+                      {String(subplot.currentProps.label || subplot.label || subplot.id)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
           <div className="space-y-4">
             {fontGroups.map(group => {
               const family = String(commonFontGroupProp(group.id, group.objects, 'fontfamily', 'Arial'));
@@ -2178,19 +2507,67 @@ export function RightSidebar({
             })}
           </div>
         </div>
+
+        <div className="pt-5 border-t border-slate-200">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">图形风格预设</h4>
+              <p className="text-[10px] text-slate-400 mt-0.5">保存字体、字号、字重、刻度线和边框偏好；应用后先进入暂存，不会立即多次重绘。</p>
+            </div>
+            <button
+              type="button"
+              onClick={saveStylePreset}
+              className="text-[11px] font-medium text-blue-600 hover:text-blue-700"
+            >
+              保存当前风格
+            </button>
+          </div>
+          <div className="space-y-2">
+            {Object.entries(stylePresetMap).map(([name, preset]) => {
+              const isCustom = Object.hasOwn(customStylePresets, name);
+              return (
+                <div key={name} className="relative group">
+                  <button
+                    type="button"
+                    onClick={() => applyStylePreset(name)}
+                    className="w-full rounded border border-slate-200 bg-white p-2 text-left hover:bg-slate-50 transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-semibold text-slate-700">{name}</div>
+                      <Sliders className="w-4 h-4 text-slate-400 shrink-0" />
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-0.5">
+                      {preset.family} · 标题 {preset.title} / 标签 {preset.label} / 刻度 {preset.tick} · 框线 {preset.spineWidth} · 刻度线 {preset.tickWidth}
+                    </div>
+                  </button>
+                  {isCustom && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); deleteStylePreset(name); }}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+                      title="删除此预设"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     );
   };
 
   const renderPalettePanel = () => {
-    const palettes = manifest.palettes || [];
-    const bindings = manifest.bindings || [];
+    const palettes = proxiedPalettes;
+    const bindings = debugModel?.bindings || [];
     const paletteGroups = palettes.map((palette: any) => {
-      const binding = bindings.find((b: Binding) => b.paletteId === palette.id);
+      const binding = bindings.find((b: any) => b.paletteId === palette.id);
       const gids = Array.isArray(binding?.gids) ? binding.gids : [];
       const targetObjects = gids
         .map((gid: string) => objects.find(obj => obj.id === gid))
-        .filter(Boolean) as ManifestObject[];
+        .filter(Boolean) as any[];
       const selectedCount = gids.filter((gid: string) => selectedGids.includes(gid)).length;
       return {
         palette,
@@ -2216,7 +2593,7 @@ export function RightSidebar({
       if (!colors) return;
       if (manifest.generatedBy === 'r_svg') {
         const patchArray = palettes.flatMap((p: any, idx: number) => {
-          const binding = bindings.find((b: Binding) => b.paletteId === p.id);
+          const binding = bindings.find((b: any) => b.paletteId === p.id);
           const prop = binding?.props?.[0] || 'color';
           const gids = Array.isArray(binding?.gids) ? binding.gids : [];
           return gids.map((gid: string) => ({
@@ -2231,7 +2608,7 @@ export function RightSidebar({
         return;
       }
       const patchArray = palettes.map((p: any, idx: number) => {
-        const binding = bindings.find((b: Binding) => b.paletteId === p.id);
+        const binding = bindings.find((b: any) => b.paletteId === p.id);
         return {
           type: 'code_patch' as const,
           target_id: p.id,
@@ -2271,6 +2648,19 @@ export function RightSidebar({
               const source = typeof p.source === 'string' ? p.source : 'script';
               const propText = binding?.props?.length ? binding.props.join(' / ') : '未绑定';
               const previewObjects = targetObjects.slice(0, 6);
+              const getPalettePatchProp = (obj: StandardFigureObject) => {
+                const boundProp = Array.isArray(binding?.props) && binding.props.length > 0 ? binding.props[0] : '';
+                if (boundProp && ['color', 'facecolor', 'edgecolor'].includes(boundProp)) return boundProp;
+                if (obj.kind === 'patch' || obj.kind === 'collection') return 'facecolor';
+                return 'color';
+              };
+              const selectedGidsOfPalette = gids.filter((gid: string) => selectedGids.includes(gid));
+              const selectedObjectsOfPalette = selectedGidsOfPalette
+                .map((gid: string) => objects.find(obj => obj.id === gid))
+                .filter(Boolean) as StandardFigureObject[];
+              const subsetPreviewObject = selectedObjectsOfPalette[0];
+              const subsetPreviewProp = subsetPreviewObject ? getPalettePatchProp(subsetPreviewObject) : 'color';
+              const subsetPreviewColor = subsetPreviewObject?.currentProps?.[subsetPreviewProp] || p.color;
               return (
                 <div
                   key={p.id}
@@ -2333,16 +2723,12 @@ export function RightSidebar({
                         <>
                           {renderColorInput(
                             `仅修改已选的 ${selectedCount} 个图元`,
-                            '#1f77b4',
+                            resolvePickerColor(String(subsetPreviewColor || p.color)),
                             (value) => {
-                              const selectedGidsOfPalette = gids.filter((gid: string) => selectedGids.includes(gid));
                               const patches = selectedGidsOfPalette.map((gid: string) => {
                                 const obj = objects.find(o => o.id === gid);
                                 if (!obj) return null;
-                                let prop = 'color';
-                                if (obj.kind === 'patch' || obj.kind === 'collection') {
-                                  prop = 'facecolor';
-                                }
+                                const prop = getPalettePatchProp(obj);
                                 return {
                                   op: 'set' as const,
                                   mode: resolvePatchMode(prop),
@@ -2356,7 +2742,7 @@ export function RightSidebar({
                             `palette-subset:${p.id}`
                           )}
                           {renderColorInput(
-                            '统一修改代码全局常量 (整组同步)',
+                            `统一修改代码全局常量 (整组同步: ${count} 个图元)`,
                             resolvePickerColor(p.color),
                             (value) => handlePaletteColorChange(p.id, value),
                             `palette:${p.id}`
@@ -2364,7 +2750,7 @@ export function RightSidebar({
                         </>
                       ) : (
                         renderColorInput(
-                          '修改组颜色代码常量 (整组同步)',
+                          `修改组颜色代码常量 (整组同步: ${count} 个图元)`,
                           resolvePickerColor(p.color),
                           (value) => handlePaletteColorChange(p.id, value),
                           `palette:${p.id}`
@@ -2549,6 +2935,90 @@ export function RightSidebar({
           {activeTab === 'fonts' && renderFontCenterPanel()}
         </div>
       </div>
+
+      {(() => {
+        const figureId = currentFigureId;
+        const figDrafts = projectDrafts[figureId] || {};
+        const draftKeys = Object.keys(figDrafts);
+        const totalDraftCount = draftKeys.length;
+
+        if (totalDraftCount === 0) return null;
+
+        return (
+          <div className="border-t border-slate-200 bg-slate-50 p-3 space-y-2 shrink-0 shadow-[0_-2px_10px_rgba(0,0,0,0.05)] z-20">
+            <div className="flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setShowDraftDetails(!showDraftDetails)}
+                className="text-xs font-semibold text-slate-700 hover:text-slate-900 flex items-center gap-1 select-none"
+              >
+                <span>已暂存 {totalDraftCount} 项修改</span>
+                <span className="text-[10px] text-slate-400">{showDraftDetails ? '▲' : '▼'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (totalDraftCount > 1) {
+                    if (!window.confirm(`确定要放弃这 ${totalDraftCount} 项修改吗？`)) return;
+                  }
+                  onDiscardDraft(figureId);
+                }}
+                className="text-xs text-red-600 hover:text-red-700 font-medium"
+              >
+                取消
+              </button>
+            </div>
+
+            {showDraftDetails && (
+              <div className="max-h-32 overflow-y-auto border border-slate-200 rounded bg-white p-2 text-xs divide-y divide-slate-100 custom-scrollbar">
+                {draftKeys.map((key) => {
+                  const item = figDrafts[key];
+                  return (
+                    <div key={key} className="py-1 flex items-center justify-between gap-2">
+                      <span className="text-slate-500 font-mono truncate max-w-[120px]" title={item.gid}>
+                        {item.gid === 'code_patch' ? '代码常量' : item.gid}
+                      </span>
+                      <span className="text-slate-400 font-mono truncate max-w-[80px]" title={item.prop}>
+                        {item.prop}
+                      </span>
+                      <span className="text-slate-700 truncate max-w-[80px] font-semibold" title={String(item.value)}>
+                        {String(item.value)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="grid grid-cols-3 gap-1">
+              <button
+                type="button"
+                onClick={() => onApplyDraft(figureId, 'current')}
+                className="bg-blue-600 hover:bg-blue-700 text-white rounded text-[11px] font-semibold py-1.5 transition-colors shadow-sm"
+              >
+                应用当前图
+              </button>
+              <button
+                type="button"
+                onClick={() => onApplyDraft(figureId, 'selected')}
+                disabled={selectedFigureIds.length === 0}
+                title={selectedFigureIds.length > 0 ? `应用到已勾选的 ${selectedFigureIds.length} 张 Figure` : '请先在 Figure 切换条勾选目标图'}
+                className={`${selectedFigureIds.length > 0 ? 'bg-amber-600 hover:bg-amber-700 text-white' : 'bg-slate-300 text-slate-500 cursor-not-allowed'} rounded text-[11px] font-semibold py-1.5 transition-colors shadow-sm`}
+              >
+                应用选中图{selectedFigureIds.length > 0 ? ` (${selectedFigureIds.length})` : ''}
+              </button>
+              <button
+                type="button"
+                onClick={() => onApplyDraft(figureId, 'all')}
+                title="按语义映射应用到全部 Figure；无法安全匹配的图元和 code_patch 会跳过"
+                className="bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[11px] font-semibold py-1.5 transition-colors shadow-sm"
+              >
+                应用全部图
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

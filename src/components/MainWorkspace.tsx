@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import Editor from '@monaco-editor/react';
 import { ChartPreview } from './ChartPreview';
 import { ManifestViewer } from './ManifestViewer';
@@ -8,6 +8,8 @@ import { ViewState } from '../App';
 import { buildReproduciblePython } from '../utils/reproduciblePython';
 import { sanitizeSvg } from '../utils/svgEditor';
 import { FigureSession, RenderResponse, PatchEntry, PatchResponse, EditEntry, ProjectHistoryState } from '../schemas/manifest';
+import { normalizeFigureModel } from '../utils/standardFigureModel';
+import type { StandardFigureModel } from '../schemas/standardFigureModel';
 
 interface MainWorkspaceProps {
   spec: FigureSpec;
@@ -36,12 +38,15 @@ interface MainWorkspaceProps {
   onRenderLog: (lines: string[]) => void;
   onRender: (script: string, dataPayload?: any, initialEditLog?: EditEntry[], language?: 'python' | 'r') => Promise<RenderResponse>;
   onPatch: (patches: PatchEntry[]) => Promise<PatchResponse>;
+  onImmediatePatch?: (patches: PatchEntry[]) => Promise<any>;
   onCodePatch: (script: string, force?: boolean) => Promise<any>;
 
   // V3.2A Project Layer
   projectFigures?: Record<string, any>;
   activeFigureId?: string;
   onSelectFigure?: (figureId: string) => void;
+  selectedFigureIds?: string[];
+  onSelectedFigureIdsChange?: (figureIds: string[]) => void;
   onProjectRender?: (script?: string) => Promise<void>;
 
   // V3.2B Selection & Undo
@@ -86,10 +91,13 @@ export function MainWorkspace({
   onRenderLog,
   onRender,
   onPatch,
+  onImmediatePatch,
   onCodePatch,
   projectFigures = {},
   activeFigureId = 'fig_1',
   onSelectFigure,
+  selectedFigureIds = [],
+  onSelectedFigureIdsChange,
   onProjectRender,
   projectHistory,
   onProjectUndo,
@@ -119,6 +127,28 @@ export function MainWorkspace({
   const scriptLanguage = spec.script_language || 'python';
   const isRScript = scriptLanguage === 'r';
 
+  // Task A2: Derive StandardFigureModel for debug display (read-only)
+  const debugModel: StandardFigureModel | null = useMemo(() => {
+    // In project mode, use the active figure's manifest
+    const activeFig = projectFigures[activeFigureId];
+    const manifest = activeFig?.manifest ?? figSession?.manifest ?? null;
+    if (!manifest) return null;
+    try {
+      return normalizeFigureModel({
+        figureId: activeFigureId,
+        language: scriptLanguage as 'python' | 'r',
+        svg: activeFig?.svg ?? figSession?.svg ?? '',
+        manifest,
+        revision: activeFig?.revision ?? figSession?.revision ?? 0,
+        editLog: activeFig?.editLog ?? figSession?.editLog ?? [],
+        fingerprint: activeFig?.fingerprint,
+        codeSlice: activeFig?.codeSlice ?? null,
+      });
+    } catch {
+      return null;
+    }
+  }, [projectFigures, activeFigureId, figSession, scriptLanguage]);
+
   const updateScriptLanguageFromFile = (fileName: string): 'python' | 'r' => (
     fileName.toLowerCase().endsWith('.r') ? 'r' : 'python'
   );
@@ -142,6 +172,14 @@ export function MainWorkspace({
 
   const generatePythonCode = (nextSpec: FigureSpec) => buildReproduciblePython(nextSpec);
   const activeProjectFigure = projectFigures?.[activeFigureId];
+  const toggleSelectedFigure = (figureId: string) => {
+    if (!onSelectedFigureIdsChange) return;
+    const selected = selectedFigureIds.includes(figureId);
+    onSelectedFigureIdsChange(selected
+      ? selectedFigureIds.filter(id => id !== figureId)
+      : [...selectedFigureIds, figureId]
+    );
+  };
   const activeCodeSlice = activeProjectFigure?.codeSlice ?? null;
   const activeScript = spec.custom_script || figSession?.script || generatePythonCode(spec);
   const codeSliceConfidenceClass =
@@ -807,13 +845,26 @@ export function MainWorkspace({
               {projectId && projectFigures && Object.keys(projectFigures).length > 0 && (
                 <div className="flex items-center gap-1.5 self-start bg-white border border-slate-200 rounded-lg p-1 mb-4 shadow-sm z-10">
                   {Object.keys(projectFigures).map(figId => (
-                    <button
+                    <div
                       key={figId}
-                      onClick={() => onSelectFigure?.(figId)}
-                      className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${activeFigureId === figId ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100' : 'text-slate-500 hover:text-slate-700'}`}
+                      className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold transition-colors ${activeFigureId === figId ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100' : 'text-slate-500 hover:text-slate-700'}`}
                     >
-                      Figure {figId.split('_')[1]}
-                    </button>
+                      <input
+                        type="checkbox"
+                        aria-label={`选择 Figure ${figId.split('_')[1]} 作为批量应用目标`}
+                        checked={selectedFigureIds.includes(figId)}
+                        onChange={() => toggleSelectedFigure(figId)}
+                        onClick={(event) => event.stopPropagation()}
+                        className="h-3.5 w-3.5 accent-blue-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => onSelectFigure?.(figId)}
+                        className="font-semibold"
+                      >
+                        Figure {figId.split('_')[1]}
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
@@ -826,6 +877,7 @@ export function MainWorkspace({
                 onSelectGids={onSelectGids}
                 renderedSVG={figSession?.svg ?? null}
                 onPatch={onPatch}
+                onImmediatePatch={onImmediatePatch}
                 figSession={figSession}
                 dragMode={dragEditMode}
               />
@@ -855,7 +907,7 @@ export function MainWorkspace({
                 </div>
               )}
               {selectedObject !== 'Figure' && (
-                <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-slate-800 text-white px-3 py-1.5 rounded-lg shadow-xl flex items-center gap-3 text-xs z-50">
+                <div className="absolute left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg bg-slate-800 px-3 py-1.5 text-xs text-white shadow-xl">
                   <span className="font-semibold text-blue-300 truncate max-w-[120px]" title={selectedObject}>{selectedObject}</span>
                   <div className="w-px h-3 bg-slate-600"></div>
                   <button type="button" className="hover:text-blue-400 transition-colors" title="快速设置样式">
@@ -1231,7 +1283,7 @@ export function MainWorkspace({
               </div>
             )}
             {bottomTab === 'manifest' && (
-              <ManifestViewer manifest={figSession?.manifest ?? null} />
+              <ManifestViewer manifest={figSession?.manifest ?? null} debugModel={debugModel} />
             )}
           </div>
         </div>

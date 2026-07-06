@@ -69,6 +69,7 @@ export function ExportSettingsPage({
   figSession,
   projectId,
   activeFigureId,
+  isRendering = false,
 }: {
   spec: FigureSpec;
   onNavigate: (view: ViewState) => void;
@@ -76,6 +77,7 @@ export function ExportSettingsPage({
   figSession: FigureSession | null;
   projectId?: string | null;
   activeFigureId?: string;
+  isRendering?: boolean;
 }) {
   const exportConfig = spec.export ?? { format: 'PDF', dpi: 600, color_mode: 'RGB', embed_fonts: true };
   const figureConfig = spec.figure ?? { width: 100, height: 80, unit: 'mm', dpi: exportConfig.dpi };
@@ -333,6 +335,10 @@ export function ExportSettingsPage({
   };
 
   const handleExport = async (formatOverride?: string) => {
+    if (isRendering) {
+      alert('后台引擎正在渲染中，请等待渲染完成后再进行导出。');
+      return;
+    }
     try {
       const selectedFormat = formatOverride || exportConfig.format || 'PDF';
       const selectedDpi = exportConfig.dpi || 600;
@@ -345,8 +351,8 @@ export function ExportSettingsPage({
 
       const endpoint = isProjectExport ? `/api/projects/${projectId}/export` : '/api/figure/export';
       const payload = isProjectExport
-        ? { figureId: activeFigureId, format: selectedFormat, dpi: selectedDpi }
-        : { sessionId: figSession?.sessionId, format: selectedFormat, dpi: selectedDpi };
+        ? { figureId: activeFigureId, format: selectedFormat, dpi: selectedDpi, revision: figSession?.revision }
+        : { sessionId: figSession?.sessionId, format: selectedFormat, dpi: selectedDpi, revision: figSession?.revision };
 
       const res = await fetch(endpoint, {
         method: 'POST',

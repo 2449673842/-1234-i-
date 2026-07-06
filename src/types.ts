@@ -116,6 +116,8 @@ export interface FigureEntry {
   svg?: string;
   fingerprint?: string;
   codeSlice?: FigureCodeSlice | null;
+  renderStatus?: 'idle' | 'queued' | 'rendering' | 'success' | 'error';
+  error?: string;
 }
 
 export interface SciFigureProject {

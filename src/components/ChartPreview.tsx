@@ -19,6 +19,7 @@ interface ChartPreviewProps {
   onSelectGids?: (gids: string[]) => void;
   renderedSVG?: string | null;
   onPatch?: (patches: PatchEntry[]) => void;
+  onImmediatePatch?: (patches: PatchEntry[]) => void;
   figSession?: FigureSession | null;
   dragMode?: boolean;
 }
@@ -66,7 +67,7 @@ function parseSvgDimensions(svg: string | null | undefined) {
   return { width: 900, height: 700, viewBox: { x: 0, y: 0, width: 900, height: 700 } };
 }
 
-export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObject, selectedGids = [], onSelectGids, renderedSVG, onPatch, figSession, dragMode = false }: ChartPreviewProps) {
+export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObject, selectedGids = [], onSelectGids, renderedSVG, onPatch, onImmediatePatch, figSession, dragMode = false }: ChartPreviewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgContainerRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -79,6 +80,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const dragRestoreRef = useRef<DragSession | null>(null);
   const dragCaptureTargetRef = useRef<HTMLElement | null>(null);
   const dragPreviewRef = useRef<{ dx: number; dy: number; gids: string[] } | null>(null);
+  const suppressNextClickRef = useRef(false);
   const pendingDragDeltasRef = useRef<Map<string, DragDelta>>(new Map());
   const pendingPatchMapRef = useRef<Map<string, PatchEntry>>(new Map());
   const pendingOriginalTransformsRef = useRef<Map<string, string>>(new Map());
@@ -94,6 +96,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const [overlayFrame, setOverlayFrame] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [dragPreview, setDragPreview] = useState<{ dx: number; dy: number; gids: string[] } | null>(null);
   const [pendingPositionPatches, setPendingPositionPatches] = useState<PatchEntry[]>([]);
+  const [dragHint, setDragHint] = useState<string | null>(null);
   const svgSize = useMemo(() => parseSvgDimensions(renderedSVG), [renderedSVG]);
   const fitScale = useMemo(() => {
     if (!viewport.width || !viewport.height) return 1;
@@ -222,6 +225,36 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     return null;
   }, [validGids]);
 
+  const findDraggableTextGidAtPoint = useCallback((target: HTMLElement | null, clientX: number, clientY: number) => {
+    const targetGid = findElementGid(target);
+    if (targetGid && isDraggableTextObject(targetGid)) return targetGid;
+
+    const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
+    if (!svgEl) return targetGid;
+
+    let best: { gid: string; score: number } | null = null;
+    validGids.forEach(gid => {
+      if (!isDraggableTextObject(gid)) return;
+      const el = querySvgElementById(svgEl, gid);
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const padding = 6;
+      if (
+        clientX < rect.left - padding ||
+        clientX > rect.right + padding ||
+        clientY < rect.top - padding ||
+        clientY > rect.bottom + padding
+      ) {
+        return;
+      }
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const score = Math.hypot(clientX - cx, clientY - cy);
+      if (!best || score < best.score) best = { gid, score };
+    });
+    return best?.gid ?? targetGid;
+  }, [findElementGid, isDraggableTextObject, querySvgElementById, validGids]);
+
   const inferAxesIndexFromGid = useCallback((gid: string): number | null => {
     const obj = manifestObjectMap.get(gid);
     if (typeof obj?.source?.axesIndex === 'number') return obj.source.axesIndex;
@@ -344,6 +377,15 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const applyDragPreviewTransform = useCallback((drag: { dx: number; dy: number; gids: string[] }) => {
     const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
     const session = dragStartRef.current || dragRestoreRef.current;
+    const activeGids = new Set(drag.gids);
+    pendingDragDeltasRef.current.forEach((delta, gid) => {
+      if (activeGids.has(gid)) return;
+      const el = querySvgElementById(svgEl, gid);
+      if (!el) return;
+      const original = pendingOriginalTransformsRef.current.get(gid) ?? '';
+      const nextTransform = `${original} translate(${delta.dx.toFixed(3)} ${delta.dy.toFixed(3)})`.trim();
+      el.setAttribute('transform', nextTransform);
+    });
     drag.gids.forEach(gid => {
       const el = querySvgElementById(svgEl, gid);
       if (!el) return;
@@ -407,6 +449,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       });
     }
     if (nextPatches.length > 0) {
+      suppressNextClickRef.current = true;
       dragPendingRef.current = true;
       dragRestoreRef.current = dragStartRef.current;
       releaseDragCapture(dragStartRef.current.pointerId);
@@ -422,6 +465,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
   useEffect(() => {
     if (!dragPendingRef.current) return;
+    if (dragStartRef.current) return;
     applyPendingDragTransforms();
   }, [applyPendingDragTransforms, dragPreview, pendingPositionPatches.length]);
 
@@ -498,7 +542,14 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   useEffect(() => {
     clearDragPreview();
     setPendingPositionPatches([]);
+    setDragHint(null);
   }, [clearDragPreview, renderedSVG]);
+
+  useEffect(() => {
+    if (!dragHint) return;
+    const timer = window.setTimeout(() => setDragHint(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [dragHint]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -556,6 +607,10 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   }, [updateOverlayGeometry, renderedSVG, pan.x, pan.y, scale]);
 
   const handleSvgClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (suppressNextClickRef.current) {
+      suppressNextClickRef.current = false;
+      return;
+    }
     if (didPanRef.current || marqueeStartRef.current) return;
     const target = event.target as HTMLElement;
     const foundGid = findElementGid(target);
@@ -612,7 +667,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
   const handleSvgPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (dragMode && event.button === 0) {
-      const foundGid = findElementGid(event.target as HTMLElement);
+      const foundGid = findDraggableTextGidAtPoint(event.target as HTMLElement, event.clientX, event.clientY);
       if (foundGid && isDraggableTextObject(foundGid)) {
         const dragGids = (selectedGids.includes(foundGid) ? selectedGids : [foundGid]).filter(isDraggableTextObject);
         if (!selectedGids.includes(foundGid)) {
@@ -622,6 +677,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         if (dragGids.length > 0) {
           event.preventDefault();
           event.stopPropagation();
+          setDragHint(null);
           const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
           const startSvg = getSvgPoint(event.clientX, event.clientY);
           if (!startSvg) return;
@@ -649,6 +705,13 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
           } catch { /* ignore */ }
           return;
         }
+      } else if (foundGid) {
+        event.preventDefault();
+        event.stopPropagation();
+        onSelectGids?.([foundGid]);
+        onSelectObject(foundGid);
+        setDragHint('当前对象不支持拖拽；仅支持可编辑 position 的文本对象，R/复杂坐标对象会被保护。');
+        return;
       }
     }
 
@@ -673,7 +736,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     if (!hitElement && target.closest('svg')) {
       marqueeStartRef.current = { x: event.clientX, y: event.clientY };
     }
-  }, [dragMode, findElementGid, getSvgPoint, isDraggableTextObject, onSelectGids, onSelectObject, pan.x, pan.y, querySvgElementById, selectedGids, spacePressed, validGids]);
+  }, [dragMode, findDraggableTextGidAtPoint, getSvgPoint, isDraggableTextObject, onSelectGids, onSelectObject, pan.x, pan.y, querySvgElementById, selectedGids, spacePressed, validGids]);
 
   const handleSvgPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (dragStartRef.current) {
@@ -769,13 +832,15 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const confirmPendingDrag = useCallback(() => {
     if (pendingPositionPatches.length === 0) return;
     finalizeDragPreviewKeepingTransform();
-    void onPatch?.(pendingPositionPatches);
+    void (onImmediatePatch || onPatch)?.(pendingPositionPatches);
     setPendingPositionPatches([]);
-  }, [finalizeDragPreviewKeepingTransform, onPatch, pendingPositionPatches]);
+    setDragHint(null);
+  }, [finalizeDragPreviewKeepingTransform, onImmediatePatch, onPatch, pendingPositionPatches]);
 
   const cancelPendingDrag = useCallback(() => {
     clearDragPreview();
     setPendingPositionPatches([]);
+    setDragHint(null);
   }, [clearDragPreview]);
 
   if (!renderedSVG) {
@@ -819,7 +884,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
         {dragMode && pendingPositionPatches.length > 0 && (
           <div
-            className="absolute left-1/2 top-14 z-30 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-blue-100 bg-white/95 px-4 py-2 text-xs shadow-xl backdrop-blur"
+            className="pointer-events-none absolute left-1/2 top-14 z-30 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-blue-100 bg-white/95 px-4 py-2 text-xs shadow-xl backdrop-blur"
             onPointerDown={(event) => event.stopPropagation()}
             onPointerUp={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
@@ -830,17 +895,23 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
             <button
               type="button"
               onClick={confirmPendingDrag}
-              className="rounded-md bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700"
+              className="pointer-events-auto rounded-md bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700"
             >
               确认位置
             </button>
             <button
               type="button"
               onClick={cancelPendingDrag}
-              className="rounded-md border border-slate-200 px-3 py-1.5 font-semibold text-slate-600 hover:bg-slate-50"
+              className="pointer-events-auto rounded-md border border-slate-200 px-3 py-1.5 font-semibold text-slate-600 hover:bg-slate-50"
             >
               取消
             </button>
+          </div>
+        )}
+
+        {dragMode && dragHint && (
+          <div className="pointer-events-none absolute left-1/2 top-14 z-30 -translate-x-1/2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800 shadow-lg">
+            {dragHint}
           </div>
         )}
 

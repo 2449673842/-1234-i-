@@ -9,7 +9,20 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "node -e \"fs.rmSync('dist', {recursive:true, force:true})\"",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:behavior-smoke": "node tests/playwright/scifigure_behavior_smoke.mjs",
+    "test:semantic-smoke": "node tests/playwright/semantic_centers_smoke.mjs",
+    "test:multisubplot-smoke": "node tests/playwright/multisubplot_semantics_smoke.mjs",
+    "test:cross-figure-smoke": "node tests/playwright/cross_figure_apply_smoke.mjs",
+    "test:drag-extended-smoke": "node tests/playwright/drag_extended_smoke.mjs",
+    "test:export-matrix-smoke": "node tests/playwright/export_matrix_smoke.mjs",
+    "test:r-semantic-smoke": "node tests/playwright/r_semantic_centers_smoke.mjs",
+    "test:cache-smoke": "node tests/api/render_cache_smoke.mjs",
+    "test:component-kind-matrix": "node tests/api/component_kind_matrix_smoke.mjs",
+    "test:cross-figure-concurrency": "node tests/api/cross_figure_concurrency_smoke.mjs",
+    "test:composer-smoke": "node tests/api/composer_consistency_smoke.mjs",
+    "test:composer-stale-smoke": "node tests/playwright/composer_stale_ui_smoke.mjs"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -40,9 +53,11 @@
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
+    "playwright": "^1.61.1",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "vitest": "^4.1.9"
   }
 }

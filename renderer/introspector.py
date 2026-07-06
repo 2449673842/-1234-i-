@@ -872,19 +872,36 @@ def _read_errorbar_container_props(container) -> dict:
 def _read_boxplot_container_props(container) -> dict:
     bp = container.bp_dict
     props = {}
+
+    def _artist_color_hex(artist, preferred: str = "color", fallback: str = "#000000") -> str:
+        from matplotlib import colors as mcolors
+        getters = []
+        if preferred == "facecolor":
+            getters = ["get_facecolor", "get_color", "get_edgecolor"]
+        elif preferred == "edgecolor":
+            getters = ["get_edgecolor", "get_color", "get_facecolor"]
+        else:
+            getters = ["get_color", "get_edgecolor", "get_facecolor"]
+        for getter_name in getters:
+            getter = getattr(artist, getter_name, None)
+            if getter is None:
+                continue
+            try:
+                value = getter()
+                if hasattr(value, "ndim") and value.ndim > 1 and len(value) > 0:
+                    value = value[0]
+                return mcolors.to_hex(value, keep_alpha=False)
+            except Exception:
+                continue
+        return fallback
     
     # Color
     color = None
     if bp.get("boxes"):
-        color = bp["boxes"][0].get_color()
+        color = _artist_color_hex(bp["boxes"][0], "edgecolor")
     elif bp.get("medians"):
-        color = bp["medians"][0].get_color()
+        color = _artist_color_hex(bp["medians"][0], "color")
     if color is not None:
-        try:
-            from matplotlib import colors as mcolors
-            color = mcolors.to_hex(color, keep_alpha=False)
-        except Exception:
-            pass
         props["color"] = color
         
     # Linewidth
@@ -897,21 +914,11 @@ def _read_boxplot_container_props(container) -> dict:
         
     # Box Color
     if bp.get("boxes"):
-        try:
-            from matplotlib import colors as mcolors
-            box_c = bp["boxes"][0].get_color()
-            props["box_color"] = mcolors.to_hex(box_c, keep_alpha=False)
-        except Exception:
-            props["box_color"] = bp["boxes"][0].get_color()
+        props["box_color"] = _artist_color_hex(bp["boxes"][0], "facecolor")
         
     # Median Color
     if bp.get("medians"):
-        try:
-            from matplotlib import colors as mcolors
-            med_c = bp["medians"][0].get_color()
-            props["median_color"] = mcolors.to_hex(med_c, keep_alpha=False)
-        except Exception:
-            props["median_color"] = bp["medians"][0].get_color()
+        props["median_color"] = _artist_color_hex(bp["medians"][0], "color")
         
     return props
 
@@ -1881,7 +1888,7 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
                 label.set_fontsize(float(value))
             return
         if prop == "tick_labelcolor":
-            parent_ax.tick_params(axis=axis_name, which="major", labelcolor=value, colors=value)
+            parent_ax.tick_params(axis=axis_name, which="major", labelcolor=value)
             for label in artist.get_ticklabels():
                 label.set_color(value)
             return

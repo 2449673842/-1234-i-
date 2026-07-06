@@ -11,6 +11,7 @@ import { createServer as createViteServer } from 'vite';
 import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import crypto from 'crypto';
+import { buildFigureRenderCacheKey } from './src/utils/renderCacheKey';
 import multer from 'multer';
 import fs from 'fs';
 import os from 'os';
@@ -74,8 +75,68 @@ import {
   type UserAccount
 } from './db';
 async function startServer() {
+  getDb().exec(`
+    CREATE TABLE IF NOT EXISTS render_cache (
+      cache_key TEXT PRIMARY KEY,
+      svg TEXT NOT NULL,
+      manifest TEXT NOT NULL,
+      code_slice TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `);
+
+  function getCachedRender(cacheKey: string) {
+    try {
+      const row = getDb().prepare('SELECT svg, manifest, code_slice FROM render_cache WHERE cache_key = ?').get(cacheKey) as any;
+      if (row) {
+        return {
+          svg: row.svg,
+          manifest: JSON.parse(row.manifest),
+          codeSlice: row.code_slice ? JSON.parse(row.code_slice) : null
+        };
+      }
+    } catch (e) {
+      console.error('Failed to read from render cache:', e);
+    }
+    return null;
+  }
+
+  function setCachedRender(cacheKey: string, svg: string, manifest: any, codeSlice?: any) {
+    try {
+      getDb().prepare(`
+        INSERT OR REPLACE INTO render_cache (cache_key, svg, manifest, code_slice)
+        VALUES (?, ?, ?, ?)
+      `).run(cacheKey, svg, JSON.stringify(manifest), codeSlice ? JSON.stringify(codeSlice) : null);
+    } catch (e) {
+      console.error('Failed to write to render cache:', e);
+    }
+  }
+
+  async function computeRenderCacheKey(session: any, projectContext: any, editLogOverride?: any[]): Promise<string> {
+    const engine = session.language === 'r' ? 'r_ggplot' : 'python_matplotlib';
+    const projectId = projectContext?.projectId || 'single';
+    const figureId = projectContext?.figureId || session.sessionId;
+    let figureFingerprint = '';
+    if (projectContext?.figRow) {
+      figureFingerprint = projectContext.figRow.fingerprint || '';
+    } else if ((session as any)._fingerprint) {
+      figureFingerprint = (session as any)._fingerprint;
+    }
+
+    return buildFigureRenderCacheKey({
+      engine,
+      projectId,
+      figureId,
+      script: session.script || '',
+      dataPayload: session.dataPayload || {},
+      figureFingerprint,
+      editLog: editLogOverride ?? session.editLog ?? [],
+      renderOptions: session.language === 'r' ? { width_in: 7, height_in: 5 } : { dpi: 150 },
+    });
+  }
+
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
   const processedRequestIdsMap = new Map<string, Set<string>>();
   const responseCacheMap = new Map<string, Map<string, any>>();
 
@@ -663,6 +724,17 @@ async function startServer() {
   ${axisElementStyle}
   ${panels}
 </svg>`;
+  }
+
+  function buildCompositionSourceSnapshots(assets: ExportAsset[]) {
+    return assets.map(asset => ({
+      assetId: asset.assetId,
+      figureId: asset.figureId,
+      name: asset.name,
+      format: asset.format,
+      revision: typeof asset.metadata?.revision === 'number' ? asset.metadata.revision : 1,
+      createdAt: asset.createdAt,
+    }));
   }
 
   async function validateAst(script: string, req?: express.Request): Promise<{ ok: boolean; message?: string; errors?: string[] }> {
@@ -1464,6 +1536,35 @@ async function startServer() {
         if (projectContext) {
           session.dataPayload = projectContext.dataPayload;
         }
+
+        // Cache lookup
+        const cacheKey = await computeRenderCacheKey(session, projectContext, mergedEditLog);
+        const cached = getCachedRender(cacheKey);
+        if (cached) {
+          session.editLog = mergedEditLog;
+          session.revision++;
+          persistSession(session);
+          if (projectContext) {
+            syncProjectFigureRevision(session.sessionId, session.revision);
+          }
+          const cachedResponse = {
+            status: 'success',
+            sessionId: session.sessionId,
+            revision: session.revision,
+            editLog: session.editLog,
+            script: session.script,
+            svg: cached.svg,
+            manifest: cached.manifest,
+            applied: newEdits,
+            requestId,
+            cache: { hit: true, key: cacheKey },
+            warnings: revisionWarning ? [revisionWarning] : [],
+          };
+          processedIds.add(requestId);
+          cache.set(requestId, cachedResponse);
+          return res.json(cachedResponse);
+        }
+
         const result = await spawnRWithPayload({
           script: session.script,
           dataPayload: session.dataPayload || null,
@@ -1476,20 +1577,29 @@ async function startServer() {
           session.editLog = mergedEditLog;
           session.revision++;
           persistSession(session);
+          if (projectContext) {
+            syncProjectFigureRevision(session.sessionId, session.revision);
+          }
           result.sessionId = session.sessionId;
           result.revision = session.revision;
           result.editLog = session.editLog;
           result.script = session.script;
+
+          setCachedRender(cacheKey, result.svg, result.manifest);
         }
-        return res.json({
+        const response = {
           ...result,
           applied: newEdits,
           requestId,
+          cache: { hit: false, key: cacheKey },
           warnings: [
             ...(result.warnings || []),
             ...(revisionWarning ? [revisionWarning] : []),
           ],
-        });
+        };
+        processedIds.add(requestId);
+        cache.set(requestId, response);
+        return res.json(response);
       }
 
       // Apply code patches if any
@@ -1548,8 +1658,109 @@ async function startServer() {
         session.dataPayload = projectContext.dataPayload;
       }
 
-      // Otherwise, re-render with updated script and editLog
       const mergedEditLog = [...session.editLog, ...backendPatches];
+
+      // E3 CodePatch project-wide invalidation (V1)
+      if (projectContext && codePatches.length > 0) {
+        const oldFigRows = listProjectFigures(projectContext.projectId);
+        const oldEditLogMap: Record<string, any[]> = {};
+        const oldSessionMap: Record<string, any> = {};
+        for (const row of oldFigRows) {
+          const key = `fig_${row.figure_index + 1}`;
+          const sess = loadSession(row.session_id);
+          if (sess) {
+            oldEditLogMap[key] = sess.editLog;
+            oldSessionMap[key] = sess;
+          }
+        }
+        const effectiveEditLogs = { ...oldEditLogMap, [projectContext.figureId]: mergedEditLog };
+        const compressedEditLogs: Record<string, EditEntry[]> = {};
+        for (const key of Object.keys(effectiveEditLogs)) {
+          compressedEditLogs[key] = compressEditLog(effectiveEditLogs[key]);
+        }
+
+        const result = await spawnPythonWithPayload('introspector.py', {
+          script: session.script,
+          dataPayload: session.dataPayload || null,
+          editLogs: compressedEditLogs,
+          renderOptions: { dpi: 150 },
+          cwd,
+          uploaded_file_paths,
+        }, { req, label: 'patch-project-code' });
+
+        if (result.status === 'success') {
+          const newFigures = result.figures || [];
+          const figInputs: FigSessionInput[] = [];
+          for (let i = 0; i < newFigures.length; i++) {
+            const fig = newFigures[i];
+            const figKey = `fig_${i + 1}`;
+            const figSessionIdResolved = `${projectContext.projectId}_${figKey}`;
+            const incomingEditLog = effectiveEditLogs[figKey] || [];
+            
+            const figSess = loadSession(figSessionIdResolved);
+            const nextRev = (figSess?.revision || 1) + 1;
+            figInputs.push({
+              figureIndex: i,
+              sessionId: figSessionIdResolved,
+              editLog: incomingEditLog,
+              revision: nextRev
+            });
+            fig.revision = nextRev;
+            fig.editLog = incomingEditLog;
+          }
+
+          replaceProjectFiguresAndSessions(projectContext.projectId, figInputs, session.script, session.dataPayload);
+          persistProjectScript(projectContext.projectId, session.script);
+
+          result.warnings = [
+            ...(result.warnings || []),
+            "Code patch has triggered project-wide re-rendering of all figures to ensure consistency."
+          ];
+        }
+
+        const matchedFig = result.figures?.find((f: any) => f.figureId === projectContext.figureId);
+        if (matchedFig) {
+          result.svg = matchedFig.svg;
+          result.manifest = matchedFig.manifest;
+          result.codeSlice = matchedFig.codeSlice;
+        }
+
+        const response = { ...result, applied: newEdits, requestId };
+        processedIds.add(requestId);
+        cache.set(requestId, response);
+        return res.json(response);
+      }
+
+      // Cache lookup for Python figure patch
+      const cacheKey = await computeRenderCacheKey(session, projectContext, mergedEditLog);
+      const cached = getCachedRender(cacheKey);
+      if (cached) {
+        session.editLog = mergedEditLog;
+        session.revision++;
+        persistSession(session);
+        if (projectContext) {
+          syncProjectFigureRevision(session.sessionId, session.revision);
+        }
+        const cachedResponse = {
+          status: 'success',
+          sessionId: session.sessionId,
+          revision: session.revision,
+          editLog: session.editLog,
+          script: session.script,
+          svg: cached.svg,
+          manifest: cached.manifest,
+          codeSlice: cached.codeSlice,
+          applied: newEdits,
+          requestId,
+          cache: { hit: true, key: cacheKey },
+          warnings: revisionWarning ? [revisionWarning] : [],
+        };
+        processedIds.add(requestId);
+        cache.set(requestId, cachedResponse);
+        return res.json(cachedResponse);
+      }
+
+      // Otherwise, re-render with updated script and editLog (cache miss)
       const result = await spawnPythonWithPayload('introspector.py', {
         script: session.script,
         dataPayload: session.dataPayload || null,
@@ -1559,18 +1770,20 @@ async function startServer() {
         uploaded_file_paths,
         editLogs: projectContext ? { [projectContext.figureId]: compressEditLog(mergedEditLog) } : undefined
       }, { req, label: 'patch' });
+
       if (result.status === 'success') {
         session.editLog = mergedEditLog;
         session.revision++;
         persistSession(session);
         syncProjectFigureRevision(session.sessionId, session.revision);
-        if (projectContext && codePatches.length > 0) {
-          persistProjectScript(projectContext.projectId, session.script);
-        }
         result.sessionId = session.sessionId;
         result.revision = session.revision;
         result.editLog = session.editLog;
         result.script = session.script;
+
+        let targetFigSvg = result.svg;
+        let targetFigManifest = result.manifest;
+        let targetFigCodeSlice = result.codeSlice;
 
         if (projectContext) {
           const targetFigId = projectContext.figureId;
@@ -1579,10 +1792,16 @@ async function startServer() {
             result.svg = matchedFig.svg;
             result.manifest = matchedFig.manifest;
             result.codeSlice = matchedFig.codeSlice;
+            targetFigSvg = matchedFig.svg;
+            targetFigManifest = matchedFig.manifest;
+            targetFigCodeSlice = matchedFig.codeSlice;
           }
         }
+
+        setCachedRender(cacheKey, targetFigSvg, targetFigManifest, targetFigCodeSlice);
       }
-      const response = { ...result, requestId };
+      const response = { ...result, applied: newEdits, requestId };
+      response.cache = { hit: false, key: cacheKey };
       if (revisionWarning) {
         response.warnings = [...(response.warnings || []), revisionWarning];
       }
@@ -2293,6 +2512,7 @@ async function startServer() {
         return {
           ...asset,
           sizeBytes,
+          downloadUrl: `/api/projects/${projectId}/export-assets/${asset.assetId}/file`,
         };
       });
       res.json({ status: 'success', assets });
@@ -2439,6 +2659,22 @@ async function startServer() {
       const layout = req.body?.layout && typeof req.body.layout === 'object' ? req.body.layout as ComposeLayout : undefined;
       const dpi = Number(req.body?.dpi || 300);
       const svg = composeSvgAssets(selected, layout);
+      const sourceAssetSnapshots = buildCompositionSourceSnapshots(selected);
+      const sourceFigureRevisions = Object.fromEntries(
+        sourceAssetSnapshots
+          .filter(item => item.figureId && item.figureId !== 'composite')
+          .map(item => [item.figureId, item.revision])
+      );
+      const sourceAssetRevisions = Object.fromEntries(
+        sourceAssetSnapshots.map(item => [item.assetId, item.revision])
+      );
+      const layoutWithSourceSnapshot = layout ? {
+        ...layout,
+        sourceAssetIds: selected.map(item => item.assetId),
+        sourceAssetSnapshots,
+        sourceFigureRevisions,
+        sourceAssetRevisions,
+      } : null;
       const asset = persistProjectExportAsset({
         projectId,
         figureId: 'composite',
@@ -2451,7 +2687,10 @@ async function startServer() {
           kind: 'composite',
           sourceAssetIds: selected.map(item => item.assetId),
           sourceNames: selected.map(item => item.name),
-          layout: layout || null,
+          sourceAssetSnapshots,
+          sourceFigureRevisions,
+          sourceAssetRevisions,
+          layout: layoutWithSourceSnapshot,
           createdBy: 'figure-composer',
         },
         tags: ['composite'],
@@ -2538,6 +2777,7 @@ async function startServer() {
             metadata: {
               exportedFrom: targetFigId,
               requestedFormat: reqFormat,
+              revision: session?.revision || 1,
             },
             tags: ['figure'],
           }) : null;

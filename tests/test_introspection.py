@@ -122,6 +122,28 @@ ax.boxplot([[1, 2, 3], [2, 3, 4]])
         self.assertEqual(child_obj["parentId"], container["id"])
         self.assertEqual(child_obj["role"], "boxplot_group")
 
+    def test_boxplot_patch_artist_pathpatch_introspection(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.boxplot(
+    [[1, 2, 3], [2, 3, 4]],
+    patch_artist=True,
+    boxprops=dict(facecolor="#3366cc", edgecolor="#111111", linewidth=1.2),
+    medianprops=dict(color="#cc3300", linewidth=1.0),
+)
+"""
+        res = replay_render(script)
+        self.assertEqual(res.get("status"), "success")
+
+        objects = res["figures"][0]["manifest"]["objects"]
+        container = next(o for o in objects if o["kind"] == "boxplot_container")
+
+        self.assertEqual(container["role"], "boxplot_group")
+        self.assertEqual(container["currentProps"]["color"].lower(), "#111111")
+        self.assertEqual(container["currentProps"]["box_color"].lower(), "#3366cc")
+        self.assertEqual(container["currentProps"]["median_color"].lower(), "#cc3300")
+
     def test_violinplot_container_introspection(self):
         script = """
 import matplotlib.pyplot as plt
@@ -307,6 +329,47 @@ fig.colorbar(im, ax=ax, orientation="vertical", label="Intensity")
         self.assertEqual(cb["currentProps"]["visible"], False)
         self.assertAlmostEqual(cb["currentProps"]["width"], 0.05)
         self.assertAlmostEqual(cb["currentProps"]["height"], 0.5)
+
+    def test_axis_label_color_does_not_change_tick_label_color(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 3, 2])
+ax.set_ylabel("Response")
+"""
+        edit_log = [
+            {"gid": "axis.y.0", "prop": "label_color", "value": "#ff0000", "mode": "backend_patch"}
+        ]
+        res = replay_render(script, edit_log=edit_log)
+        self.assertEqual(res.get("status"), "success")
+        objects = res["figures"][0]["manifest"]["objects"]
+
+        axis_y = next(o for o in objects if o["id"] == "axis.y.0")
+        ytick = next(o for o in objects if o["id"].startswith("ytick.0."))
+
+        self.assertEqual(axis_y["currentProps"]["label_color"].lower(), "#ff0000")
+        self.assertNotEqual(ytick["currentProps"]["color"].lower(), "#ff0000")
+
+    def test_single_tick_text_color_patch_only_changes_target_tick(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 3, 2])
+ax.set_yticks([1, 2, 3])
+ax.set_yticklabels(["low", "mid", "high"])
+"""
+        edit_log = [
+            {"gid": "ytick.0.0", "prop": "color", "value": "#00aa00", "mode": "backend_patch"}
+        ]
+        res = replay_render(script, edit_log=edit_log)
+        self.assertEqual(res.get("status"), "success")
+        objects = res["figures"][0]["manifest"]["objects"]
+
+        target = next(o for o in objects if o["id"] == "ytick.0.0")
+        sibling = next(o for o in objects if o["id"] == "ytick.0.1")
+
+        self.assertEqual(target["currentProps"]["color"].lower(), "#00aa00")
+        self.assertNotEqual(sibling["currentProps"]["color"].lower(), "#00aa00")
 
     def test_all_fixtures_pipeline(self):
         fixtures_dir = os.path.join(project_root, "tests", "fixtures", "artist_introspection")

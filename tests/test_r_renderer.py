@@ -103,6 +103,24 @@ p
         self.assertEqual(_object(result, "title.0")["currentProps"]["fontsize"], 18)
         self.assertEqual(_object(result, "axis.x.0")["currentProps"]["tick_labelsize"], 14)
 
+    def test_r_individual_tick_objects_are_readonly_but_axis_tick_style_is_editable(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=c("A", "B", "C"), y=c(1, 3, 2))
+p <- ggplot(df, aes(x, y)) + geom_col() + theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        xtick = _object(result, "xtick.0.0")
+        ytick = _object(result, "ytick.0.0")
+        axis_x = _object(result, "axis.x.0")
+        axis_y = _object(result, "axis.y.0")
+
+        self.assertEqual(xtick["editable"], [])
+        self.assertEqual(ytick["editable"], [])
+        self.assertIn("tick_labelcolor", axis_x["editable"])
+        self.assertIn("tick_labelcolor", axis_y["editable"])
+
     def test_layer_style_patch(self):
         script = """
 library(ggplot2)

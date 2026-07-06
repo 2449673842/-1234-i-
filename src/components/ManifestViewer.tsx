@@ -1,7 +1,16 @@
 import type { Manifest } from '../schemas/manifest';
+import type { StandardFigureModel } from '../schemas/standardFigureModel';
 
 interface ManifestViewerProps {
   manifest: Manifest | null;
+  debugModel?: StandardFigureModel | null;
+}
+
+/** Safe value renderer — prevents React "Objects are not valid as a React child" crash */
+function renderDebugValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value);
 }
 
 function isCoverageSummary(value: unknown): value is { recognized: number; editable: number; readonly: number; unsupported: number } {
@@ -44,7 +53,7 @@ function coverageBadgeClass(value: unknown) {
   return 'bg-slate-800 text-slate-300';
 }
 
-export function ManifestViewer({ manifest }: ManifestViewerProps) {
+export function ManifestViewer({ manifest, debugModel }: ManifestViewerProps) {
   if (!manifest) {
     return (
       <div className="w-full h-full bg-[#1e1e1e] text-slate-400 p-4 text-xs font-mono flex items-center justify-center">
@@ -61,6 +70,48 @@ export function ManifestViewer({ manifest }: ManifestViewerProps) {
   return (
     <div className="w-full h-full bg-[#1e1e1e] text-[13px] font-mono overflow-auto p-4">
       <div className="text-emerald-400 mb-4 font-bold">Manifest ({manifest.generatedBy})</div>
+
+      {/* StandardFigureModel debug metadata */}
+      {debugModel && (
+        <div className="mb-4 bg-indigo-950/40 border border-indigo-800/40 rounded-lg p-3">
+          <div className="text-indigo-400 text-xs uppercase tracking-wider mb-2">StandardFigureModel v{debugModel.schemaVersion}</div>
+          <div className="grid grid-cols-3 gap-2 text-[11px]">
+            <div className="bg-slate-800/60 rounded p-1.5">
+              <div className="text-slate-500">engine</div>
+              <div className="text-indigo-300">{renderDebugValue(debugModel.engine)}</div>
+            </div>
+            <div className="bg-slate-800/60 rounded p-1.5">
+              <div className="text-slate-500">figureId</div>
+              <div className="text-indigo-300">{renderDebugValue(debugModel.figureId)}</div>
+            </div>
+            <div className="bg-slate-800/60 rounded p-1.5">
+              <div className="text-slate-500">revision</div>
+              <div className="text-indigo-300">{renderDebugValue(debugModel.revision)}</div>
+            </div>
+            <div className="bg-slate-800/60 rounded p-1.5">
+              <div className="text-slate-500">objects</div>
+              <div className="text-indigo-300">{renderDebugValue(debugModel.objects.length)}</div>
+            </div>
+            <div className="bg-slate-800/60 rounded p-1.5">
+              <div className="text-slate-500">editLog</div>
+              <div className="text-indigo-300">{renderDebugValue(debugModel.editLog.length)} entries</div>
+            </div>
+            <div className="bg-slate-800/60 rounded p-1.5">
+              <div className="text-slate-500">capabilities</div>
+              <div className="text-indigo-300 text-[10px]">
+                {debugModel.capabilities.localPatch && 'L'}
+                {debugModel.capabilities.backendPatch && 'B'}
+                {debugModel.capabilities.codePatch && 'C'}
+              </div>
+            </div>
+          </div>
+          {debugModel.warnings.length > 0 && (
+            <div className="mt-2 text-[10px] text-amber-400/80">
+              {debugModel.warnings.map((w, i) => <div key={i}>⚠ {renderDebugValue(w)}</div>)}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Globals */}
       <div className="mb-4">
