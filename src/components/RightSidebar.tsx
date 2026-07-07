@@ -4,6 +4,7 @@ import { FigureSession, PatchEntry, ManifestObject, ManifestField, Binding } fro
 import { normalizeFigureModel } from '../utils/standardFigureModel';
 import { resolveFigureId } from '../utils/figureIdentity';
 import { compileEditingIntent } from '../utils/editingIntentCompiler';
+import { computeEqualAxesPhysicalLayout } from '../utils/subplotPhysicalLayout';
 import type { StandardFigureModel, StandardFigureObject } from '../schemas/standardFigureModel';
 import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent';
 
@@ -117,6 +118,28 @@ const DEFAULT_SUBPLOT_LAYOUT_SETTINGS: SubplotLayoutSettings = {
   marginBottom: 0.11,
   gapX: 0.08,
   gapY: 0.12,
+};
+
+type PhysicalAxesLayoutSettings = {
+  targetWidthIn: number;
+  targetHeightIn: number;
+  leftIn: number;
+  rightIn: number;
+  topIn: number;
+  bottomIn: number;
+  wspaceIn: number;
+  hspaceIn: number;
+};
+
+const DEFAULT_PHYSICAL_AXES_LAYOUT: PhysicalAxesLayoutSettings = {
+  targetWidthIn: 2.2,
+  targetHeightIn: 2.2,
+  leftIn: 0.7,
+  rightIn: 0.3,
+  topIn: 0.35,
+  bottomIn: 0.55,
+  wspaceIn: 0.45,
+  hspaceIn: 0.45,
 };
 
 const PROP_LABELS: Record<string, string> = {
@@ -280,6 +303,7 @@ export function RightSidebar({
 }: RightSidebarProps) {
   const [activeTab, setActiveTab] = useState<'properties' | 'groups' | 'palette' | 'fonts'>('properties');
   const [subplotLayoutSettings, setSubplotLayoutSettings] = useState<SubplotLayoutSettings>(DEFAULT_SUBPLOT_LAYOUT_SETTINGS);
+  const [physicalAxesLayout, setPhysicalAxesLayout] = useState<PhysicalAxesLayoutSettings>(DEFAULT_PHYSICAL_AXES_LAYOUT);
   const [showDraftDetails, setShowDraftDetails] = useState(false);
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
   const [colorDraftValues, setColorDraftValues] = useState<Record<string, string>>({});
@@ -542,8 +566,52 @@ export function RightSidebar({
     return patches;
   };
 
+  const buildEqualAxesPhysicalLayoutPatches = (
+    rows: number,
+    cols: number,
+    settings: PhysicalAxesLayoutSettings = physicalAxesLayout,
+  ): PatchEntry[] => {
+    const ordered = subplotOptions.slice(0, rows * cols);
+    if (ordered.length === 0) return [];
+    const layout = computeEqualAxesPhysicalLayout({
+      rows,
+      cols,
+      targetAxesWidthIn: settings.targetWidthIn,
+      targetAxesHeightIn: settings.targetHeightIn,
+      margins: {
+        left: settings.leftIn,
+        right: settings.rightIn,
+        top: settings.topIn,
+        bottom: settings.bottomIn,
+        wspace: cols <= 1 ? 0 : settings.wspaceIn,
+        hspace: rows <= 1 ? 0 : settings.hspaceIn,
+      },
+    });
+    const patches: PatchEntry[] = [
+      buildPatchEntry('global', 'figure.width_in', layout.figureWidthIn),
+      buildPatchEntry('global', 'figure.height_in', layout.figureHeightIn),
+    ];
+    ordered.forEach((subplot, index) => {
+      const bounds = layout.bounds[index];
+      if (!bounds) return;
+      patches.push(
+        buildPatchEntry(subplot.id, 'left', bounds.left),
+        buildPatchEntry(subplot.id, 'bottom', bounds.bottom),
+        buildPatchEntry(subplot.id, 'width', bounds.width),
+        buildPatchEntry(subplot.id, 'height', bounds.height),
+      );
+    });
+    return patches;
+  };
+
   const applySubplotLayout = (rows: number, cols: number, settings: SubplotLayoutSettings = subplotLayoutSettings) => {
     const patches = buildSubplotLayoutPatches(rows, cols, settings);
+    if (patches.length === 0) return;
+    void (onImmediatePatch || onPatch)(patches);
+  };
+
+  const applyEqualAxesPhysicalLayout = (rows: number, cols: number, settings: PhysicalAxesLayoutSettings = physicalAxesLayout) => {
+    const patches = buildEqualAxesPhysicalLayoutPatches(rows, cols, settings);
     if (patches.length === 0) return;
     void (onImmediatePatch || onPatch)(patches);
   };
@@ -1246,6 +1314,16 @@ export function RightSidebar({
         [key]: Number(Math.min(0.35, Math.max(0, safeValue)).toFixed(3)),
       }));
     };
+    const updatePhysicalAxesSetting = (key: keyof PhysicalAxesLayoutSettings, value: number) => {
+      const fallback = DEFAULT_PHYSICAL_AXES_LAYOUT[key];
+      const safeValue = Number.isFinite(value) ? value : fallback;
+      const max = key === 'targetWidthIn' || key === 'targetHeightIn' ? 12 : 4;
+      const min = key === 'targetWidthIn' || key === 'targetHeightIn' ? 0.2 : 0;
+      setPhysicalAxesLayout(prev => ({
+        ...prev,
+        [key]: Number(Math.min(max, Math.max(min, safeValue)).toFixed(3)),
+      }));
+    };
     const renderLayoutControl = (
       key: keyof SubplotLayoutSettings,
       label: string,
@@ -1269,6 +1347,36 @@ export function RightSidebar({
       </label>
     );
     const currentPreset = uniquePresets.find(item => item.rows === autoRows && item.cols === autoCols) || uniquePresets[0];
+    const physicalPreview = currentPreset
+      ? computeEqualAxesPhysicalLayout({
+        rows: currentPreset.rows,
+        cols: currentPreset.cols,
+        targetAxesWidthIn: physicalAxesLayout.targetWidthIn,
+        targetAxesHeightIn: physicalAxesLayout.targetHeightIn,
+        margins: {
+          left: physicalAxesLayout.leftIn,
+          right: physicalAxesLayout.rightIn,
+          top: physicalAxesLayout.topIn,
+          bottom: physicalAxesLayout.bottomIn,
+          wspace: currentPreset.cols <= 1 ? 0 : physicalAxesLayout.wspaceIn,
+          hspace: currentPreset.rows <= 1 ? 0 : physicalAxesLayout.hspaceIn,
+        },
+      })
+      : null;
+    const renderPhysicalInput = (key: keyof PhysicalAxesLayoutSettings, label: string, step = 0.05) => (
+      <label className="space-y-1 text-[10px] font-semibold text-slate-600">
+        <span>{label}</span>
+        <input
+          type="number"
+          min={key === 'targetWidthIn' || key === 'targetHeightIn' ? 0.2 : 0}
+          max={key === 'targetWidthIn' || key === 'targetHeightIn' ? 12 : 4}
+          step={step}
+          value={physicalAxesLayout[key]}
+          onChange={(event) => updatePhysicalAxesSetting(key, Number(event.target.value))}
+          className="w-full rounded-md border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-800 focus:border-blue-400 focus:outline-none"
+        />
+      </label>
+    );
     const compactSettings: SubplotLayoutSettings = {
       marginLeft: 0.10,
       marginRight: 0.04,
@@ -1385,6 +1493,57 @@ export function RightSidebar({
               当前边距/间距可能让单个子图过小，长刻度、图例或色条容易被挤压。建议增大画布或减少间距。
             </div>
           )}
+        </div>
+        <div className="mt-3 rounded-xl border border-emerald-100 bg-white p-3">
+          <div className="mb-2 flex items-start justify-between gap-2">
+            <div>
+              <div className="text-xs font-bold text-slate-800">统一真实绘图区尺寸</div>
+              <div className="mt-0.5 text-[10px] leading-relaxed text-slate-500">
+                适合投稿排版：输入每个子图坐标轴框的物理宽高，系统自动反推白色画布大小和所有 `subplot.*` 的位置。
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPhysicalAxesLayout(DEFAULT_PHYSICAL_AXES_LAYOUT)}
+              className="shrink-0 rounded border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-500 hover:bg-slate-50"
+            >
+              默认
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {renderPhysicalInput('targetWidthIn', '单个框宽(in)')}
+            {renderPhysicalInput('targetHeightIn', '单个框高(in)')}
+            {renderPhysicalInput('wspaceIn', '水平间距(in)')}
+            {renderPhysicalInput('hspaceIn', '垂直间距(in)')}
+            {renderPhysicalInput('leftIn', '左预留(in)')}
+            {renderPhysicalInput('rightIn', '右预留(in)')}
+            {renderPhysicalInput('topIn', '上预留(in)')}
+            {renderPhysicalInput('bottomIn', '下预留(in)')}
+          </div>
+          {physicalPreview && (
+            <div className="mt-3 rounded-lg border border-emerald-100 bg-emerald-50 px-2.5 py-2 text-[11px] leading-relaxed text-emerald-800">
+              <div className="font-semibold">
+                当前 {currentPreset.rows}×{currentPreset.cols} 预估画布：{physicalPreview.figureWidthIn.toFixed(2)} × {physicalPreview.figureHeightIn.toFixed(2)} in
+              </div>
+              <div className="mt-1 text-[10px] text-emerald-700">
+                每个坐标轴框固定为 {physicalAxesLayout.targetWidthIn.toFixed(2)} × {physicalAxesLayout.targetHeightIn.toFixed(2)} in；标签、标题、图例需要靠外边距预留空间。
+              </div>
+            </div>
+          )}
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {uniquePresets.map(preset => (
+              <button
+                type="button"
+                key={`physical-${preset.rows}x${preset.cols}`}
+                onClick={() => applyEqualAxesPhysicalLayout(preset.rows, preset.cols)}
+                className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-left hover:border-emerald-400 hover:bg-white transition-colors"
+                title="同时更新画布尺寸和所有子图绘图区 bounds"
+              >
+                <div className="text-xs font-bold text-emerald-900">按 {preset.label} 应用</div>
+                <div className="text-[10px] text-emerald-700 mt-0.5">固定每个子图框真实尺寸</div>
+              </button>
+            ))}
+          </div>
         </div>
         <div className="mt-3 text-[10px] leading-relaxed text-blue-700">
           如果标签或图例被挤出白色画布，先在“整张白色画布 / 输出尺寸”里增大画布，再重新应用版面。
