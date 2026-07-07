@@ -70,6 +70,21 @@ function downloadTextFile(filename: string, content: string, mimeType: string) {
   URL.revokeObjectURL(url);
 }
 
+function isSubplotExportAsset(asset: ExportAsset) {
+  return asset.tags?.includes('subplot') || asset.figureId?.includes(':subplot.');
+}
+
+function getExportAssetTypeLabel(asset: ExportAsset) {
+  if (isSubplotExportAsset(asset)) return '子图裁剪';
+  if (asset.tags?.includes('composite')) return '组合图';
+  return '整图';
+}
+
+function getExportAssetSourceLabel(asset: ExportAsset) {
+  if (asset.figureId?.includes(':subplot.')) return asset.figureId.replace(':', ' · ');
+  return asset.figureId || 'figure';
+}
+
 function collectFontSizeStats(figSession: FigureSession | null, scale: number) {
   const objects = figSession?.manifest?.objects || [];
   const sizes = objects
@@ -985,9 +1000,14 @@ export function ExportSettingsPage({
                           className="mt-1 accent-blue-600"
                         />
                         <div className="min-w-0 flex-1">
-                          <div className="font-semibold text-sm text-slate-800 truncate" title={asset.name}>{asset.name}</div>
+                          <div className="flex items-center gap-1.5">
+                            <div className="font-semibold text-sm text-slate-800 truncate" title={asset.name}>{asset.name}</div>
+                            <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${isSubplotExportAsset(asset) ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                              {getExportAssetTypeLabel(asset)}
+                            </span>
+                          </div>
                           <div className="text-xs text-slate-500 mt-0.5">
-                            {asset.figureId || 'figure'} · {asset.format.toUpperCase()} · {asset.dpi ? `${asset.dpi} dpi` : '矢量'}
+                            {getExportAssetSourceLabel(asset)} · {asset.format.toUpperCase()} · {asset.dpi ? `${asset.dpi} dpi` : '矢量'}
                           </div>
                           <div className="text-xs text-slate-400 mt-0.5">
                             {new Date(asset.createdAt).toLocaleString()}

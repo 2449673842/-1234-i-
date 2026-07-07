@@ -41,6 +41,22 @@ interface ExportLibraryPageProps {
 type SortField = 'date' | 'name' | 'size' | 'dpi';
 type SortOrder = 'asc' | 'desc';
 
+function isSubplotAsset(asset: ExportAsset) {
+  return asset.tags?.includes('subplot') || typeof asset.metadata?.subplotId === 'string';
+}
+
+function getAssetTypeLabel(asset: ExportAsset) {
+  if (isSubplotAsset(asset)) return '子图裁剪';
+  if (asset.tags?.includes('composite')) return '组合图';
+  return '整图';
+}
+
+function getAssetSourceLabel(asset: ExportAsset) {
+  const subplotId = typeof asset.metadata?.subplotId === 'string' ? asset.metadata.subplotId : null;
+  if (subplotId && asset.figureId) return `${asset.figureId} · ${subplotId}`;
+  return asset.figureId || '外部拼接';
+}
+
 export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPageProps) {
   const [assets, setAssets] = useState<ExportAsset[]>([]);
   const [loading, setLoading] = useState(false);
@@ -406,9 +422,14 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
                     ) : (
                       <FileImage className="w-10 h-10 text-slate-300" />
                     )}
-                    <span className="absolute bottom-2 right-2 text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-slate-900/70 text-white select-none">
-                      {asset.format}
-                    </span>
+                    <div className="absolute bottom-2 right-2 flex items-center gap-1">
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded select-none ${isSubplotAsset(asset) ? 'bg-emerald-600/90 text-white' : 'bg-slate-900/70 text-white'}`}>
+                        {getAssetTypeLabel(asset)}
+                      </span>
+                      <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-slate-900/70 text-white select-none">
+                        {asset.format}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Info Details */}
@@ -421,7 +442,11 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
                     <div className="space-y-1 mt-auto">
                       <div className="flex items-center justify-between text-[10px] text-slate-400">
                         <span className="flex items-center gap-1"><Layers className="w-3.5 h-3.5" /> 来源</span>
-                        <span className="font-mono text-slate-600 truncate max-w-[120px]">{asset.figureId || '外部拼接'}</span>
+                        <span className="font-mono text-slate-600 truncate max-w-[120px]" title={getAssetSourceLabel(asset)}>{getAssetSourceLabel(asset)}</span>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-400">
+                        <span>资产类型</span>
+                        <span className={`font-semibold ${isSubplotAsset(asset) ? 'text-emerald-700' : 'text-slate-600'}`}>{getAssetTypeLabel(asset)}</span>
                       </div>
                       <div className="flex items-center justify-between text-[10px] text-slate-400">
                         <span>大小 / DPI</span>
@@ -467,12 +492,13 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
         ) : (
           /* List View (Table-like grid) */
           <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
-            <div className="grid grid-cols-[48px_80px_1fr_100px_120px_120px_150px_100px] border-b border-slate-200 bg-slate-50/75 px-4 py-3 text-[11px] font-bold text-slate-500 uppercase tracking-wider select-none">
+            <div className="grid grid-cols-[48px_80px_1fr_100px_120px_90px_120px_150px_100px] border-b border-slate-200 bg-slate-50/75 px-4 py-3 text-[11px] font-bold text-slate-500 uppercase tracking-wider select-none">
               <span className="text-center">选择</span>
               <span>缩略图</span>
               <span>文件名</span>
               <span>格式</span>
               <span>来源图元</span>
+              <span>类型</span>
               <span>大小</span>
               <span>导出时间</span>
               <span className="text-right">操作</span>
@@ -484,7 +510,7 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
                 return (
                   <div 
                     key={asset.assetId} 
-                    className={`grid grid-cols-[48px_80px_1fr_100px_120px_120px_150px_100px] items-center px-4 py-3 text-xs transition-colors hover:bg-slate-50/50 ${
+                    className={`grid grid-cols-[48px_80px_1fr_100px_120px_90px_120px_150px_100px] items-center px-4 py-3 text-xs transition-colors hover:bg-slate-50/50 ${
                       isSelected ? 'bg-blue-50/20' : ''
                     }`}
                   >
@@ -532,7 +558,12 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
 
                     {/* Figure ID */}
                     <span className="font-mono text-slate-600 truncate pr-3">
-                      {asset.figureId || '外部拼接'}
+                      {getAssetSourceLabel(asset)}
+                    </span>
+
+                    {/* Asset Type */}
+                    <span className={`font-semibold ${isSubplotAsset(asset) ? 'text-emerald-700' : 'text-slate-500'}`}>
+                      {getAssetTypeLabel(asset)}
                     </span>
 
                     {/* Size / Resolution */}

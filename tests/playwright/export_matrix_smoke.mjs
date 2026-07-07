@@ -37,12 +37,17 @@ const script = [
   'ax1.set_xlabel("X One")',
   'ax1.set_ylabel("Y One")',
   'ax1.legend(loc="upper left")',
-  'fig2, ax2 = plt.subplots(figsize=(4, 3))',
-  'ax2.plot([0, 1, 2], [2, 1, 4], color="#993366", label="two")',
-  'ax2.set_title("EXPORT_MATRIX_FIG_TWO")',
-  'ax2.set_xlabel("X Two")',
-  'ax2.set_ylabel("Y Two")',
-  'ax2.legend(loc="upper left")',
+  'fig2, (ax2a, ax2b) = plt.subplots(1, 2, figsize=(7, 3))',
+  'ax2a.plot([0, 1, 2], [2, 1, 4], color="#993366", label="two A")',
+  'ax2a.set_title("EXPORT_MATRIX_FIG_TWO_A")',
+  'ax2a.set_xlabel("X Two A")',
+  'ax2a.set_ylabel("Y Two A")',
+  'ax2a.legend(loc="upper left")',
+  'ax2b.bar(["A", "B", "C"], [3, 1, 2], color="#669933", label="two B")',
+  'ax2b.set_title("EXPORT_MATRIX_FIG_TWO_B")',
+  'ax2b.set_xlabel("X Two B")',
+  'ax2b.set_ylabel("Y Two B")',
+  'ax2b.legend(loc="upper left")',
   'for fig in [fig1, fig2]:',
   '    fig.tight_layout()',
 ].join('\n');
@@ -189,16 +194,42 @@ async function runApiExportMatrix(projectId) {
     `ids=${JSON.stringify(savedAllIds)}, names=${JSON.stringify(savedAllNames)}`,
   );
 
+  const withSubplots = await requestJson(`/api/projects/${projectId}/export`, {
+    method: 'POST',
+    body: JSON.stringify({ figureId: 'fig_2', format: 'svg', dpi: 300, saveToLibrary: true, includeSubplots: true }),
+  });
+  const exportedFig2 = Array.isArray(withSubplots.figures) ? withSubplots.figures[0] : null;
+  const subplotAssets = Array.isArray(exportedFig2?.subplotAssets) ? exportedFig2.subplotAssets : [];
+  const subplotAssetsOk = subplotAssets.length === 2
+    && subplotAssets.every((asset, index) => (
+      asset.figureId === `fig_2:subplot.${index}`
+      && asset.format === 'svg'
+      && asset.metadata?.exportedFrom === 'fig_2'
+      && asset.metadata?.subplotId === `subplot.${index}`
+      && asset.metadata?.cropMode === 'axes_bounds'
+      && Array.isArray(asset.tags)
+      && asset.tags.includes('subplot')
+      && asset.tags.includes('axes-bounds')
+    ));
+  record(
+    'X2c-include-subplots',
+    withSubplots.status === 'success' && exportedFig2?.figureId === 'fig_2' && subplotAssetsOk ? 'PASS' : 'FAIL',
+    `count=${subplotAssets.length}, ids=${JSON.stringify(subplotAssets.map((asset) => asset.figureId))}`,
+  );
+
   const assets = await requestJson(`/api/projects/${projectId}/export-assets`);
   const allFigureAssetsPresent = ['fig_1', 'fig_2'].every((figureId) => (assets.assets || []).some((asset) => asset.figureId === figureId));
   const exportedFormats = new Set((assets.assets || []).filter((asset) => asset.figureId === 'fig_2').map((asset) => asset.format));
+  const subplotLibraryAssets = (assets.assets || []).filter((asset) => String(asset.figureId || '').startsWith('fig_2:subplot.'));
+  const subplotLibraryOk = subplotLibraryAssets.length >= 2
+    && subplotLibraryAssets.every((asset) => asset.format === 'svg' && asset.tags?.includes('subplot') && asset.metadata?.cropMode === 'axes_bounds');
   const assetSizesOk = (assets.assets || [])
     .filter((asset) => asset.figureId === 'fig_2')
     .every((asset) => typeof asset.sizeBytes === 'number' && asset.sizeBytes > 0 && asset.downloadUrl);
   record(
     'X3-assets',
-    ['svg', 'png', 'pdf', 'tiff'].every((fmt) => exportedFormats.has(fmt)) && assetSizesOk && allFigureAssetsPresent ? 'PASS' : 'FAIL',
-    `formats=${JSON.stringify(Array.from(exportedFormats).sort())}, assetSizesOk=${assetSizesOk}, allFigureAssetsPresent=${allFigureAssetsPresent}`,
+    ['svg', 'png', 'pdf', 'tiff'].every((fmt) => exportedFormats.has(fmt)) && assetSizesOk && allFigureAssetsPresent && subplotLibraryOk ? 'PASS' : 'FAIL',
+    `formats=${JSON.stringify(Array.from(exportedFormats).sort())}, assetSizesOk=${assetSizesOk}, allFigureAssetsPresent=${allFigureAssetsPresent}, subplotLibrary=${subplotLibraryAssets.length}`,
   );
 
   diagnostics.matrix = matrix;
