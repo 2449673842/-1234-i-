@@ -3,7 +3,9 @@ import { Baseline, Lock, Layout, Palette, Sliders } from 'lucide-react';
 import { FigureSession, PatchEntry, ManifestObject, ManifestField, Binding } from '../schemas/manifest';
 import { normalizeFigureModel } from '../utils/standardFigureModel';
 import { resolveFigureId } from '../utils/figureIdentity';
+import { compileEditingIntent } from '../utils/editingIntentCompiler';
 import type { StandardFigureModel, StandardFigureObject } from '../schemas/standardFigureModel';
+import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent';
 
 import type { DraftPatch } from '../schemas/draftPatchBatch';
 
@@ -500,6 +502,14 @@ export function RightSidebar({
       ? 'backend_patch'
       : isLocalPatch(currentObject?.kind || '', prop) ? 'local_patch' : 'backend_patch';
     return { op: 'set', gid, prop, value, mode };
+  };
+
+  const compileIntentPatches = (intent: EditingIntent): PatchEntry[] => {
+    const result = compileEditingIntent(manifest, intent);
+    if (result.skipped.length > 0) {
+      console.warn('[EditingIntent] skipped targets', result.skipped);
+    }
+    return result.patches.map(patch => ({ ...patch, intent } as unknown as PatchEntry));
   };
 
   const buildSubplotLayoutPatches = (rows: number, cols: number, settings: SubplotLayoutSettings = subplotLayoutSettings): PatchEntry[] => {
@@ -1596,19 +1606,26 @@ export function RightSidebar({
       const binding = bindings.find((b: Binding) => b.groupId === groupId);
       if (!binding || !Array.isArray(binding.gids)) return;
 
-      const patches: PatchEntry[] = binding.gids.map((gid: string) => {
-        const obj = manifest.objects.find(o => o.id === gid);
+      const targetObjects = binding.gids
+        .map((gid: string) => manifest.objects.find(o => o.id === gid))
+        .filter(Boolean) as ManifestObject[];
+      const patches = targetObjects.flatMap((obj) => {
         let actualProp = prop;
         if (prop === 'color' && obj && (obj.kind === 'patch' || obj.kind === 'collection')) {
           actualProp = 'facecolor';
         }
-        return {
-          op: 'set',
-          mode: resolvePatchMode(actualProp),
-          gid,
-          prop: actualProp,
-          value: val
-        };
+        if (!supportsBatchProp(obj, actualProp)) return [];
+        return compileIntentPatches({
+          intent: actualProp === 'visible' ? 'visibility.component' : 'style.component',
+          scope: {
+            selectionMode: 'explicit_objects',
+            objectIds: [obj.id],
+            targetKinds: [obj.kind],
+          },
+          operation: { prop: actualProp, value: val },
+          commit: { mode: 'draft', applyAsOneHistoryStep: true },
+          fallback: { onUnsupported: 'skip_with_warning' },
+        });
       });
       void onPatch(patches);
     };
@@ -1631,19 +1648,26 @@ export function RightSidebar({
         } else {
           const binding = bindings.find((b: Binding) => b.groupId === groupId);
           if (binding && Array.isArray(binding.gids)) {
-            binding.gids.forEach((gid: string) => {
-              const obj = manifest.objects.find(o => o.id === gid);
+            const targetObjects = binding.gids
+              .map((gid: string) => manifest.objects.find(o => o.id === gid))
+              .filter(Boolean) as ManifestObject[];
+            targetObjects.forEach((obj) => {
               let actualProp = prop;
               if (prop === 'color' && obj && (obj.kind === 'patch' || obj.kind === 'collection')) {
                 actualProp = 'facecolor';
               }
-              patches.push({
-                op: 'set',
-                mode: resolvePatchMode(actualProp),
-                gid,
-                prop: actualProp,
-                value: val
-              });
+              if (!supportsBatchProp(obj, actualProp)) return;
+              patches.push(...compileIntentPatches({
+                intent: actualProp === 'visible' ? 'visibility.component' : 'style.component',
+                scope: {
+                  selectionMode: 'explicit_objects',
+                  objectIds: [obj.id],
+                  targetKinds: [obj.kind],
+                },
+                operation: { prop: actualProp, value: val },
+                commit: { mode: 'draft', applyAsOneHistoryStep: true },
+                fallback: { onUnsupported: 'skip_with_warning' },
+              }));
             });
           }
         }
@@ -2073,31 +2097,37 @@ export function RightSidebar({
     };
 
     const patchComponentGroup = (items: ManifestObject[], prop: string, value: unknown) => {
-      const patches = items.map(obj => {
-        if (!supportsBatchProp(obj, prop)) return null;
-        return {
-          op: 'set' as const,
-          mode: resolvePatchMode(prop),
-          gid: obj.id,
-          prop,
-          value,
-        };
-      }).filter(Boolean) as PatchEntry[];
+      const supportedItems = items.filter(obj => supportsBatchProp(obj, prop));
+      const patches = compileIntentPatches({
+        intent: prop === 'visible' ? 'visibility.component' : 'style.component',
+        scope: {
+          selectionMode: 'explicit_objects',
+          objectIds: supportedItems.map(obj => obj.id),
+          targetKinds: Array.from(new Set(supportedItems.map(obj => obj.kind))),
+        },
+        operation: { prop, value },
+        commit: { mode: 'draft', applyAsOneHistoryStep: true },
+        fallback: { onUnsupported: 'skip_with_warning' },
+      });
       if (patches.length > 0) void onPatch(patches);
     };
 
     const patchPointFillColor = (items: ManifestObject[], value: unknown) => {
-      const patches = items.map(obj => {
+      const patches = items.flatMap(obj => {
         const prop = obj.kind === 'line' ? 'color' : obj.kind === 'collection' ? 'facecolor' : null;
-        if (!prop || !supportsBatchProp(obj, prop)) return null;
-        return {
-          op: 'set' as const,
-          mode: resolvePatchMode(prop),
-          gid: obj.id,
-          prop,
-          value,
-        };
-      }).filter(Boolean) as PatchEntry[];
+        if (!prop || !supportsBatchProp(obj, prop)) return [];
+        return compileIntentPatches({
+          intent: 'style.component',
+          scope: {
+            selectionMode: 'explicit_objects',
+            objectIds: [obj.id],
+            targetKinds: [obj.kind],
+          },
+          operation: { prop, value },
+          commit: { mode: 'draft', applyAsOneHistoryStep: true },
+          fallback: { onUnsupported: 'skip_with_warning' },
+        });
+      });
       if (patches.length > 0) void onPatch(patches);
     };
 
@@ -2655,36 +2685,40 @@ export function RightSidebar({
     prop: FontGroupPatchProp,
     value: unknown,
   ): PatchEntry[] => {
-    const tickAxisMatch = roleId === 'xticks'
-      ? { textRegex: /^xtick\.(\d+)\./, axisRegex: /^axis\.x\.(\d+)$/, axisPrefix: 'axis.x.' }
-      : roleId === 'yticks'
-        ? { textRegex: /^ytick\.(\d+)\./, axisRegex: /^axis\.y\.(\d+)$/, axisPrefix: 'axis.y.' }
-        : null;
+    const roleMap: Record<string, SemanticTargetRole> = {
+      titles: 'title',
+      xlabels: 'x_axis_label',
+      ylabels: 'y_axis_label',
+      xticks: 'x_tick_label',
+      yticks: 'y_tick_label',
+      legend_text: 'legend_text',
+    };
+    const targetRole = roleMap[roleId];
+    const patches = compileIntentPatches({
+      intent: roleId === 'xticks' || roleId === 'yticks'
+        ? 'style.text.tick_label'
+        : roleId === 'legend_text'
+          ? 'style.text.legend'
+          : roleId === 'titles'
+            ? 'style.text.title'
+            : 'style.text.axis_label',
+      scope: {
+        selectionMode: 'role_in_figure',
+        objectIds: items.map(obj => obj.id),
+        ...(targetRole ? { targetRole } : {}),
+      },
+      operation: { prop, value },
+      commit: { mode: 'draft', applyAsOneHistoryStep: true },
+      fallback: { onUnsupported: 'skip_with_warning' },
+    });
 
-    if (tickAxisMatch) {
-      const axisIndexes = Array.from(new Set(items.map(obj => {
-        return obj.id.match(tickAxisMatch.axisRegex)?.[1] || obj.id.match(tickAxisMatch.textRegex)?.[1];
-      }).filter(Boolean))) as string[];
-      const axisProp = fontGroupProp(roleId, prop);
-      return axisIndexes.map(index => ({
-        op: 'set' as const,
-        mode: 'backend_patch' as const,
-        gid: `${tickAxisMatch.axisPrefix}${index}`,
-        prop: axisProp,
-        value,
-      }));
-    }
-
-    return items.map((obj) => {
-      if (!supportsBatchProp(obj, prop)) return null;
-      return {
-        op: 'set' as const,
-        mode: prop === 'color' ? resolvePatchMode(prop) : 'backend_patch' as const,
-        gid: obj.id,
-        prop,
-        value,
-      };
-    }).filter(Boolean) as PatchEntry[];
+    // Preserve the previous durable-render behavior for text styling except
+    // color, while the intent compiler owns target selection and prop mapping.
+    return patches.map(patch => (
+      'type' in patch
+        ? patch
+        : { ...patch, mode: prop === 'color' ? patch.mode : 'backend_patch' as const }
+    ));
   };
 
   const handleFontGroupPatch = (roleId: string, items: ManifestObject[], prop: FontGroupPatchProp, value: unknown) => {
@@ -3142,18 +3176,20 @@ export function RightSidebar({
                             `仅修改已选的 ${selectedCount} 个图元`,
                             resolvePickerColor(String(subsetPreviewColor || p.color)),
                             (value) => {
-                              const patches = selectedGidsOfPalette.map((gid: string) => {
-                                const obj = objects.find(o => o.id === gid);
-                                if (!obj) return null;
+                              const patches = selectedObjectsOfPalette.flatMap((obj) => {
                                 const prop = getPalettePatchProp(obj);
-                                return {
-                                  op: 'set' as const,
-                                  mode: resolvePatchMode(prop),
-                                  gid,
-                                  prop,
-                                  value,
-                                };
-                              }).filter(Boolean) as PatchEntry[];
+                                return compileIntentPatches({
+                                  intent: 'style.component',
+                                  scope: {
+                                    selectionMode: 'selected_only',
+                                    objectIds: [obj.id],
+                                    targetKinds: [obj.kind as any],
+                                  },
+                                  operation: { prop, value },
+                                  commit: { mode: 'draft', applyAsOneHistoryStep: true },
+                                  fallback: { onUnsupported: 'skip_with_warning' },
+                                });
+                              });
                               if (patches.length > 0) void onPatch(patches);
                             },
                             `palette-subset:${p.id}`

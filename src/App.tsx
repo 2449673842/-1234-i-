@@ -21,6 +21,7 @@ import { useFigureSession } from './hooks/useFigureSession';
 import { buildReproduciblePython } from './utils/reproduciblePython';
 import { applyRuntimePatchesToManifest, applyRuntimePatchesToSvg } from './utils/svgEditor';
 import { mapPatchesToTargetFigure } from './utils/semanticPatchMapping';
+import { compileEditingIntent, retargetEditingIntentForFigure } from './utils/editingIntentCompiler';
 import type { FigureSession, EditEntry, PatchEntry, HistorySnapshot, ProjectHistoryState } from './schemas/manifest';
 import type { DraftPatch } from './schemas/draftPatchBatch';
 import './index.css';
@@ -525,20 +526,39 @@ export default function App() {
     }
   };
 
+  const stripPatchMetadata = (items: PatchEntry[]): PatchEntry[] => items.map((patchItem) => {
+    if ('type' in patchItem) {
+      return {
+        type: 'code_patch' as const,
+        target_id: patchItem.target_id,
+        new_value: patchItem.new_value,
+        gids: patchItem.gids || [],
+      };
+    }
+    return {
+      op: 'set' as const,
+      mode: patchItem.mode,
+      gid: patchItem.gid,
+      prop: patchItem.prop,
+      value: patchItem.value,
+    };
+  });
+
   const handlePatch = async (patches: PatchEntry[]) => {
     const figureId = projectId ? activeFigureId : 'fig_1';
-    const draftPatches = patches.map((patch: any) => {
-      const gid = patch.gid || 'code_patch';
-      const prop = patch.prop || patch.target_id || '';
+    const draftPatches = patches.map((patch) => {
+      const gid = 'gid' in patch ? patch.gid : 'code_patch';
+      const prop = 'prop' in patch ? patch.prop : patch.target_id;
       return {
         gid,
         prop,
-        value: patch.value !== undefined ? patch.value : patch.new_value,
-        mode: patch.mode || 'backend_patch',
-        type: patch.type,
-        target_id: patch.target_id,
-        new_value: patch.new_value,
-        gids: patch.gids,
+        value: 'value' in patch ? patch.value : patch.new_value,
+        mode: 'mode' in patch ? patch.mode : 'backend_patch',
+        type: 'type' in patch ? patch.type : undefined,
+        target_id: 'target_id' in patch ? patch.target_id : undefined,
+        new_value: 'new_value' in patch ? patch.new_value : undefined,
+        gids: 'gids' in patch ? patch.gids : undefined,
+        intent: patch.intent,
       };
     });
     handleUpdateDraftsBatch(figureId, draftPatches);
@@ -615,7 +635,7 @@ export default function App() {
             sessionId: `${projectId}_${targetFigureId}`,
             projectId,
             figureId: targetFigureId,
-            patches,
+            patches: stripPatchMetadata(patches),
             requestId: reqId,
             baseRevision: projectFigures[targetFigureId]?.revision || 1,
           })
@@ -710,7 +730,7 @@ export default function App() {
         setRenderLog(prev => [...prev, `> [应用] 正在重渲染 ${patchSummary}...`]);
       }
       try {
-        const res = await patch(patches);
+        const res = await patch(stripPatchMetadata(patches));
         if (res.status === 'success') {
           if (needsBackendRender) {
             setRenderLog(prev => [...prev, `> [完成] 参数已应用，预览已更新`]);
@@ -775,7 +795,8 @@ export default function App() {
         mode: d.mode,
         gid: d.gid,
         prop: d.prop,
-        value: d.value
+        value: d.value,
+        intent: d.intent,
       };
     });
 
@@ -783,6 +804,55 @@ export default function App() {
 
     const sourceManifest = projectFigures[figId]?.manifest || null;
     const skippedByTarget: Record<string, number> = {};
+    const patchFromDraft = (draft: DraftPatch): PatchEntry => {
+      if (draft.type === 'code_patch') {
+        return {
+          type: 'code_patch' as const,
+          target_id: draft.target_id!,
+          new_value: draft.new_value!,
+          gids: draft.gids || []
+        };
+      }
+      return {
+        op: 'set' as const,
+        mode: draft.mode,
+        gid: draft.gid,
+        prop: draft.prop,
+        value: draft.value,
+        intent: draft.intent,
+      };
+    };
+    const dedupePatchEntries = (items: PatchEntry[]): PatchEntry[] => {
+      const seen = new Set<string>();
+      const result: PatchEntry[] = [];
+      items.forEach((item) => {
+        const key = 'gid' in item
+          ? `${item.gid}:${item.prop}:${JSON.stringify(item.value)}`
+          : `code:${item.target_id}:${JSON.stringify(item.new_value)}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        result.push(item);
+      });
+      return result;
+    };
+    const compileDraftForTarget = (draft: DraftPatch, targetId: string): { patches: PatchEntry[]; skipped: unknown[] } => {
+      const plainPatch = patchFromDraft(draft);
+      if (targetId === figId) {
+        return { patches: [plainPatch], skipped: [] as unknown[] };
+      }
+      if (draft.type === 'code_patch' || draft.gid === 'code_patch') {
+        return { patches: [], skipped: [plainPatch] as unknown[] };
+      }
+      const targetManifest = projectFigures[targetId]?.manifest || null;
+      if (draft.intent && targetManifest) {
+        const compiled = compileEditingIntent(targetManifest, retargetEditingIntentForFigure(draft.intent));
+        if (compiled.patches.length > 0) {
+          return { patches: compiled.patches, skipped: compiled.skipped };
+        }
+      }
+      const mapped = mapPatchesToTargetFigure([plainPatch], sourceManifest, targetManifest);
+      return { patches: mapped.patches as PatchEntry[], skipped: mapped.skipped };
+    };
     const targetPatchJobs = targetIds
       .map((targetId) => {
         if (scope === 'current' || targetId === figId) {
@@ -790,11 +860,13 @@ export default function App() {
             ? patches
             : patches.filter((patch: any) => patch.type !== 'code_patch' && patch.gid !== 'code_patch');
           skippedByTarget[targetId] = patches.length - currentPatches.length;
-          return { targetId, patches: currentPatches };
+          return { targetId, patches: dedupePatchEntries(currentPatches as PatchEntry[]) };
         }
 
-        const targetManifest = projectFigures[targetId]?.manifest || null;
-        const { patches: mappedPatches, skipped } = mapPatchesToTargetFigure(patches, sourceManifest, targetManifest);
+        const compiled = Object.values(draftSourceBucket)
+          .map(draft => compileDraftForTarget(draft, targetId));
+        const mappedPatches = dedupePatchEntries(compiled.flatMap(item => item.patches));
+        const skipped = compiled.flatMap(item => item.skipped);
         skippedByTarget[targetId] = skipped.length;
         return { targetId, patches: mappedPatches };
       })

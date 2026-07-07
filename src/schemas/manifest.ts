@@ -1,3 +1,5 @@
+import type { EditingIntent } from './editingIntent';
+
 /* ============================================================
  * IFC v2 Manifest + EditLog Protocol
  * Single source of truth for interactive figure editing.
@@ -232,6 +234,7 @@ export interface LocalPatchEntry {
   gid: string;
   prop: string;
   value: unknown;
+  intent?: EditingIntent;
 }
 
 export interface CodePatchEntry {
@@ -239,6 +242,7 @@ export interface CodePatchEntry {
   target_id: string;
   new_value: unknown;
   gids: string[];
+  intent?: EditingIntent;
 }
 
 export type PatchEntry = LocalPatchEntry | CodePatchEntry;

@@ -1,3 +1,5 @@
+import type { EditingIntent } from './editingIntent';
+
 export type DraftPatchMode = 'local_patch' | 'backend_patch';
 
 export interface DraftPatch {
@@ -10,6 +12,7 @@ export interface DraftPatch {
   target_id?: string;
   new_value?: unknown;
   gids?: string[];
+  intent?: EditingIntent;
 }
 
 export interface DraftPatchBatch {

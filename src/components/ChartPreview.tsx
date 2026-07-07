@@ -3,6 +3,7 @@ import { Minus, Plus, ScanSearch, Move } from 'lucide-react';
 import { FigureSpec } from '../types';
 import { sanitizeSvg } from '../utils/svgEditor';
 import { PatchEntry, FigureSession } from '../schemas/manifest';
+import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent';
 
 const TEXT_GID_RE = /^(r\.text|text|title|xlabel|ylabel|legend_text|legend_title|fig_text)\./;
 const TICK_LABEL_GID_RE = /^(xtick|ytick)\./;
@@ -10,6 +11,16 @@ const LEGEND_CHILD_GID_RE = /^legend_(?:text|title|line|patch)\.(\d+)(?:\.\d+)?$
 
 function isTextGid(gid: string): boolean {
   return TEXT_GID_RE.test(gid);
+}
+
+function inferTextTargetRole(gid: string): SemanticTargetRole | undefined {
+  if (gid.startsWith('title.') || gid.startsWith('suptitle.')) return 'title';
+  if (gid.startsWith('xlabel.') || gid.startsWith('supxlabel.')) return 'x_axis_label';
+  if (gid.startsWith('ylabel.') || gid.startsWith('supylabel.')) return 'y_axis_label';
+  if (gid.startsWith('xtick.')) return 'x_tick_label';
+  if (gid.startsWith('ytick.')) return 'y_tick_label';
+  if (gid.startsWith('legend_text.') || gid.startsWith('legend_title.')) return 'legend_text';
+  return undefined;
 }
 
 interface ChartPreviewProps {
@@ -332,17 +343,40 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       return null;
     }
 
+    const intent: EditingIntent = {
+      intent: obj.kind === 'legend' ? 'layout.position.legend' : 'layout.position.text',
+      scope: {
+        selectionMode: 'explicit_objects',
+        objectIds: [gid],
+        targetKinds: [obj.kind],
+        targetRole: obj.kind === 'legend' ? 'legend_container' : undefined,
+        crossFigure: 'deny',
+      },
+      operation: {
+        prop: 'position',
+        value: {
+          x: Number(nextX.toFixed(6)),
+          y: Number(nextY.toFixed(6)),
+          coord_system: coordSystem,
+        },
+      },
+      commit: {
+        mode: 'immediate',
+        applyAsOneHistoryStep: true,
+      },
+      fallback: {
+        onUnsupported: 'skip_with_warning',
+      },
+    };
+
     return {
       op: 'set',
       mode: 'backend_patch',
       gid,
       prop: 'position',
-      value: {
-        x: Number(nextX.toFixed(6)),
-        y: Number(nextY.toFixed(6)),
-        coord_system: coordSystem,
-      },
-    };
+      value: intent.operation.value,
+      intent,
+    } as PatchEntry & { intent: EditingIntent };
   }, [getAxesBoxForObject, manifestObjectMap, svgSize.viewBox.height, svgSize.viewBox.width]);
 
   const releaseDragCapture = useCallback((pointerId?: number) => {
@@ -672,14 +706,29 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     const currentText = (current?.textContent || '').trim();
     const nextText = window.prompt('编辑文本内容', currentText);
     if (nextText == null || nextText === currentText) return;
+    const obj = manifestObjectMap.get(foundGid);
     void onPatch?.([{
       op: 'set',
       mode: 'backend_patch',
       gid: foundGid,
       prop: 'text',
       value: nextText,
+      intent: {
+        intent: 'content.text',
+        scope: {
+          selectionMode: 'explicit_objects',
+          objectIds: [foundGid],
+          targetKinds: obj?.kind ? [obj.kind] : undefined,
+          targetRole: inferTextTargetRole(foundGid),
+          subplotIds: obj?.subplotId ? [obj.subplotId] : undefined,
+          crossFigure: 'deny',
+        },
+        operation: { prop: 'text', value: nextText },
+        commit: { mode: 'draft', applyAsOneHistoryStep: true },
+        fallback: { onUnsupported: 'skip_with_warning' },
+      },
     }]);
-  }, [validGids, onSelectGids, onSelectObject, onPatch]);
+  }, [manifestObjectMap, validGids, onSelectGids, onSelectObject, onPatch]);
 
   const handleSvgPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (dragMode && event.button === 0) {
