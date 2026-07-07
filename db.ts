@@ -159,6 +159,19 @@ function initSchema() {
   } catch (e) {
     ignoreDuplicateColumnOnly(e);
   }
+  [
+    "ALTER TABLE project_figures ADD COLUMN preview_svg TEXT",
+    "ALTER TABLE project_figures ADD COLUMN manifest TEXT",
+    "ALTER TABLE project_figures ADD COLUMN code_slice TEXT",
+    "ALTER TABLE project_figures ADD COLUMN fingerprint TEXT",
+    "ALTER TABLE project_figures ADD COLUMN preview_updated_at TEXT",
+  ].forEach((sql) => {
+    try {
+      db.prepare(sql).run();
+    } catch (e) {
+      ignoreDuplicateColumnOnly(e);
+    }
+  });
 }
 
 function sha256(value: string): string {
@@ -393,6 +406,9 @@ export interface ProjectSummary {
   updated_at: string;
   group_count: number;
   sample_count: number;
+  figure_count: number;
+  project_type: 'single_figure' | 'multi_figure' | 'composition_code';
+  project_type_label: string;
   preview: string | null;
 }
 
@@ -410,6 +426,18 @@ export function listProjects(): ProjectSummary[] {
     const groupCount = raw?.groups ? Object.keys(raw.groups).length : 0;
     const sampleCount = raw?.categories?.length ?? 0;
     const preview = typeof spec._preview === 'string' ? spec._preview : null;
+    const figureCount = getDb().prepare('SELECT COUNT(*) AS count FROM project_figures WHERE project_id = ?').get(r.id) as { count?: number } | undefined;
+    const compositionKind = spec?.composition?.kind;
+    const projectType = compositionKind === 'code_composition_project'
+      ? 'composition_code'
+      : Number(figureCount?.count || 0) > 1
+        ? 'multi_figure'
+        : 'single_figure';
+    const projectTypeLabel = projectType === 'composition_code'
+      ? '组合代码项目'
+      : projectType === 'multi_figure'
+        ? '多 Figure 项目'
+        : '单图项目';
     return {
       id: r.id,
       name: r.name,
@@ -417,6 +445,9 @@ export function listProjects(): ProjectSummary[] {
       updated_at: r.updated_at,
       group_count: groupCount,
       sample_count: sampleCount,
+      figure_count: Number(figureCount?.count || 0),
+      project_type: projectType,
+      project_type_label: projectTypeLabel,
       preview,
     };
   });
@@ -690,6 +721,10 @@ export interface FigSessionInput {
   sessionId: string;
   editLog: any[];
   revision: number;
+  previewSvg?: string | null;
+  manifest?: any;
+  codeSlice?: any;
+  fingerprint?: string | number | null;
 }
 
 export function replaceProjectFiguresAndSessions(
@@ -702,8 +737,11 @@ export function replaceProjectFiguresAndSessions(
   db.transaction(() => {
     db.prepare('DELETE FROM project_figures WHERE project_id = ?').run(projectId);
     const insertFig = db.prepare(`
-      INSERT INTO project_figures (id, project_id, figure_index, session_id, revision)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO project_figures (
+        id, project_id, figure_index, session_id, revision,
+        preview_svg, manifest, code_slice, fingerprint, preview_updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `);
     const insertSession = db.prepare(`
       INSERT INTO sessions (id, script, data_payload, edit_log, revision, updated_at)
@@ -717,7 +755,17 @@ export function replaceProjectFiguresAndSessions(
     `);
 
     figures.forEach(fig => {
-      insertFig.run(projectId + '_' + fig.figureIndex, projectId, fig.figureIndex, fig.sessionId, fig.revision);
+      insertFig.run(
+        projectId + '_' + fig.figureIndex,
+        projectId,
+        fig.figureIndex,
+        fig.sessionId,
+        fig.revision,
+        fig.previewSvg ?? null,
+        fig.manifest ? JSON.stringify(fig.manifest) : null,
+        fig.codeSlice ? JSON.stringify(fig.codeSlice) : null,
+        fig.fingerprint !== undefined && fig.fingerprint !== null ? String(fig.fingerprint) : null
+      );
 
       const payload = dataPayload ? JSON.stringify(dataPayload) : null;
       insertSession.run(

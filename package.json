@@ -22,6 +22,7 @@
     "test:component-kind-matrix": "node tests/api/component_kind_matrix_smoke.mjs",
     "test:cross-figure-concurrency": "node tests/api/cross_figure_concurrency_smoke.mjs",
     "test:composer-smoke": "node tests/api/composer_consistency_smoke.mjs",
+    "test:composition-code-project": "node tests/api/composition_code_project_smoke.mjs",
     "test:composer-stale-smoke": "node tests/playwright/composer_stale_ui_smoke.mjs"
   },
   "dependencies": {

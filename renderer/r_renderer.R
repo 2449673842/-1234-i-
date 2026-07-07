@@ -92,6 +92,54 @@ latest_bool <- function(gid, prop, fallback) {
   isTRUE(fallback)
 }
 
+latest_prefixed_value <- function(prefix, prop, fallback) {
+  value <- fallback
+  for (entry in edit_entries) {
+    gid <- as.character(entry$gid)
+    if (startsWith(gid, prefix) && identical(as.character(entry$prop), prop)) {
+      value <- entry$value
+      if (is.list(value) && length(value) == 1 && is.null(names(value))) {
+        value <- value[[1]]
+      }
+    }
+  }
+  value
+}
+
+latest_prefixed_numeric <- function(prefix, prop, fallback) {
+  value <- suppressWarnings(as.numeric(latest_prefixed_value(prefix, prop, fallback)))
+  if (length(value) == 0 || is.na(value)) fallback else value
+}
+
+latest_prefixed_string <- function(prefix, prop, fallback) {
+  value <- latest_prefixed_value(prefix, prop, fallback)
+  if (is.null(value) || length(value) == 0) fallback else as.character(value)
+}
+
+latest_matching_value <- function(pattern, prop, fallback) {
+  value <- fallback
+  for (entry in edit_entries) {
+    gid <- as.character(entry$gid)
+    if (grepl(pattern, gid, perl = TRUE) && identical(as.character(entry$prop), prop)) {
+      value <- entry$value
+      if (is.list(value) && length(value) == 1 && is.null(names(value))) {
+        value <- value[[1]]
+      }
+    }
+  }
+  value
+}
+
+latest_matching_numeric <- function(pattern, prop, fallback) {
+  value <- suppressWarnings(as.numeric(latest_matching_value(pattern, prop, fallback)))
+  if (length(value) == 0 || is.na(value)) fallback else value
+}
+
+latest_matching_string <- function(pattern, prop, fallback) {
+  value <- latest_matching_value(pattern, prop, fallback)
+  if (is.null(value) || length(value) == 0) fallback else as.character(value)
+}
+
 alpha_color <- function(color, alpha) {
   if (is.null(color) || length(color) == 0 || is.na(color[[1]])) return(color)
   alpha_num <- suppressWarnings(as.numeric(alpha))
@@ -128,22 +176,58 @@ style_for_gid <- function(gid, defaults) {
 }
 
 axis_style_for_gid <- function(gid, defaults) {
-  weight <- latest_string(gid, "tick_fontweight", latest_string(gid, "fontweight", defaults$fontweight))
-  style <- latest_string(gid, "tick_fontstyle", latest_string(gid, "fontstyle", defaults$fontstyle))
+  tick_prefix <- if (grepl("^axis\\.x\\.", gid)) {
+    sub("^axis\\.x\\.(\\d+)$", "xtick.\\1.", gid)
+  } else if (grepl("^axis\\.y\\.", gid)) {
+    sub("^axis\\.y\\.(\\d+)$", "ytick.\\1.", gid)
+  } else {
+    ""
+  }
+  axis_pattern <- if (grepl("^axis\\.x\\.", gid)) "^axis\\.x\\.\\d+$" else if (grepl("^axis\\.y\\.", gid)) "^axis\\.y\\.\\d+$" else paste0("^", gid, "$")
+  tick_pattern <- if (grepl("^axis\\.x\\.", gid)) "^xtick\\.\\d+\\." else if (grepl("^axis\\.y\\.", gid)) "^ytick\\.\\d+\\." else paste0("^", tick_prefix)
+
+  weight <- latest_matching_string(axis_pattern, "tick_fontweight", latest_string(gid, "tick_fontweight", latest_string(gid, "fontweight", defaults$fontweight)))
+  style <- latest_matching_string(axis_pattern, "tick_fontstyle", latest_string(gid, "tick_fontstyle", latest_string(gid, "fontstyle", defaults$fontstyle)))
+  weight <- latest_matching_string(tick_pattern, "fontweight", weight)
+  style <- latest_matching_string(tick_pattern, "fontstyle", style)
+
+  fontsize <- latest_matching_numeric(axis_pattern, "tick_labelsize", latest_numeric(gid, "tick_labelsize", latest_numeric(gid, "fontsize", defaults$fontsize)))
+  fontfamily <- latest_matching_string(axis_pattern, "tick_labelfamily", latest_string(gid, "tick_labelfamily", latest_string(gid, "fontfamily", defaults$fontfamily)))
+  color <- latest_matching_string(axis_pattern, "tick_labelcolor", latest_string(gid, "tick_labelcolor", latest_string(gid, "color", defaults$color)))
+  rotation <- latest_matching_numeric(axis_pattern, "tick_rotation", latest_numeric(gid, "tick_rotation", defaults$rotation))
+  fontsize <- latest_matching_numeric(tick_pattern, "fontsize", fontsize)
+  fontfamily <- latest_matching_string(tick_pattern, "fontfamily", fontfamily)
+  color <- latest_matching_string(tick_pattern, "color", color)
+  rotation <- latest_matching_numeric(tick_pattern, "rotation", rotation)
+
   list(
-    fontsize = latest_numeric(gid, "tick_labelsize", latest_numeric(gid, "fontsize", defaults$fontsize)),
-    fontfamily = latest_string(gid, "tick_labelfamily", latest_string(gid, "fontfamily", defaults$fontfamily)),
-    color = latest_string(gid, "tick_labelcolor", latest_string(gid, "color", defaults$color)),
+    fontsize = fontsize,
+    fontfamily = fontfamily,
+    color = color,
     fontweight = weight,
     fontstyle = style,
     face = font_face(weight, style),
-    rotation = latest_numeric(gid, "tick_rotation", defaults$rotation),
-    direction = latest_string(gid, "tick_direction", defaults$direction),
-    length = latest_numeric(gid, "tick_length", defaults$length),
-    width = latest_numeric(gid, "tick_width", defaults$width),
-    tick_color = latest_string(gid, "tick_color", defaults$tick_color),
-    pad = latest_numeric(gid, "tick_pad", defaults$pad)
+    rotation = rotation,
+    direction = latest_matching_string(axis_pattern, "tick_direction", latest_string(gid, "tick_direction", defaults$direction)),
+    length = latest_matching_numeric(axis_pattern, "tick_length", latest_numeric(gid, "tick_length", defaults$length)),
+    width = latest_matching_numeric(axis_pattern, "tick_width", latest_numeric(gid, "tick_width", defaults$width)),
+    tick_color = latest_matching_string(axis_pattern, "tick_color", latest_string(gid, "tick_color", defaults$tick_color)),
+    pad = latest_matching_numeric(axis_pattern, "tick_pad", latest_numeric(gid, "tick_pad", defaults$pad))
   )
+}
+
+axis_label_style_for_gid <- function(axis_gid, label_gid, defaults) {
+  axis_pattern <- if (grepl("^axis\\.x\\.", axis_gid)) "^axis\\.x\\.\\d+$" else if (grepl("^axis\\.y\\.", axis_gid)) "^axis\\.y\\.\\d+$" else paste0("^", axis_gid, "$")
+  style <- style_for_gid(label_gid, defaults)
+  style$fontsize <- latest_matching_numeric(axis_pattern, "label_fontsize", style$fontsize)
+  style$color <- latest_matching_string(axis_pattern, "label_color", style$color)
+  style$face <- font_face(style$fontweight, style$fontstyle)
+  style
+}
+
+axis_label_text_for_gid <- function(axis_gid, label_gid, fallback) {
+  axis_pattern <- if (grepl("^axis\\.x\\.", axis_gid)) "^axis\\.x\\.\\d+$" else if (grepl("^axis\\.y\\.", axis_gid)) "^axis\\.y\\.\\d+$" else paste0("^", axis_gid, "$")
+  latest_matching_string(axis_pattern, "label", latest_string(label_gid, "text", fallback))
 }
 
 default_title <- list(fontsize = 14, fontfamily = "", color = "black", fontweight = "normal", fontstyle = "normal")
@@ -172,9 +256,33 @@ default_legend <- list(
   facecolor = "white",
   edgecolor = "none",
   linewidth = 0.5,
-  alpha = 1.0
+  alpha = 1.0,
+  ncol = 1,
+  markerscale = 1.0
+)
+default_colorbar <- list(
+  left = 0.88,
+  bottom = 0.50,
+  width = 0.05,
+  height = 0.35
 )
 default_strip <- list(fontsize = 10, fontfamily = "", color = "black", fontweight = "normal", fontstyle = "normal")
+
+clamp_numeric <- function(value, min_value, max_value) {
+  value <- suppressWarnings(as.numeric(value))
+  if (length(value) == 0 || is.na(value)) return(min_value)
+  max(min_value, min(max_value, value))
+}
+
+subplot_aspect_value <- function() {
+  value <- latest_matching_value("^subplot\\.\\d+$", "aspect", "auto")
+  text <- as.character(value %||% "auto")
+  if (text %in% c("auto", "", "NA")) return("auto")
+  if (text %in% c("equal", "1")) return(1)
+  numeric_value <- suppressWarnings(as.numeric(text))
+  if (length(numeric_value) == 0 || is.na(numeric_value) || numeric_value <= 0) return("auto")
+  numeric_value
+}
 
 geom_class <- function(layer) {
   classes <- class(layer$geom)
@@ -186,7 +294,9 @@ layer_kind <- function(geom) {
   if (geom %in% c("GeomPoint", "GeomJitter", "GeomDotplot")) return("collection")
   if (geom %in% c("GeomText", "GeomLabel")) return("text")
   if (geom %in% c("GeomLine", "GeomPath", "GeomSmooth", "GeomSegment", "GeomCurve")) return("line")
-  if (geom %in% c("GeomCol", "GeomBar", "GeomBoxplot", "GeomViolin", "GeomTile", "GeomRect")) return("patch")
+  if (geom %in% c("GeomBoxplot")) return("boxplot_container")
+  if (geom %in% c("GeomViolin")) return("violinplot_container")
+  if (geom %in% c("GeomCol", "GeomBar", "GeomTile", "GeomRect")) return("patch")
   if (geom %in% c("GeomErrorbar", "GeomErrorbarh", "GeomPointrange", "GeomLinerange", "GeomCrossbar")) return("errorbar_container")
   "container"
 }
@@ -258,8 +368,17 @@ apply_layer_edits <- function(plot_obj) {
     if (has_edit(gid, "facecolor")) {
       params$fill <- latest_string(gid, "facecolor", params$fill %||% "#1F77B4")
     }
+    if (has_edit(gid, "box_color")) {
+      params$fill <- latest_string(gid, "box_color", params$fill %||% "#1F77B4")
+    }
     if (has_edit(gid, "edgecolor")) {
       params$colour <- latest_string(gid, "edgecolor", params$colour %||% "#000000")
+    }
+    if (has_edit(gid, "median_color")) {
+      # ggplot2 does not expose a stable per-layer median-line colour for every
+      # version, so this maps to the boxplot outline colour rather than faking
+      # unsupported per-segment editing.
+      params$colour <- latest_string(gid, "median_color", params$colour %||% "#000000")
     }
     if (has_edit(gid, "linewidth")) {
       line_width <- latest_numeric(gid, "linewidth", params$linewidth %||% params$size %||% 1)
@@ -796,7 +915,11 @@ apply_continuous_scale_edits <- function(plot_obj) {
       has_edit(heatmap_gid, "alpha")
     colorbar_changed <- has_edit(colorbar_gid, "label") ||
       has_edit(colorbar_gid, "tick_fontsize") ||
-      has_edit(colorbar_gid, "visible")
+      has_edit(colorbar_gid, "visible") ||
+      has_edit(colorbar_gid, "left") ||
+      has_edit(colorbar_gid, "bottom") ||
+      has_edit(colorbar_gid, "width") ||
+      has_edit(colorbar_gid, "height")
 
     if (scale_changed || colorbar_changed) {
       cmap <- latest_string(heatmap_gid, "cmap", "custom")
@@ -834,6 +957,30 @@ apply_continuous_scale_edits <- function(plot_obj) {
       plot_obj <- plot_obj + ggplot2::theme(legend.text = ggplot2::element_text(size = tick_size))
     }
 
+    has_bounds_edit <- has_edit(colorbar_gid, "left") ||
+      has_edit(colorbar_gid, "bottom") ||
+      has_edit(colorbar_gid, "width") ||
+      has_edit(colorbar_gid, "height")
+    if (has_bounds_edit) {
+      left <- clamp_numeric(latest_numeric(colorbar_gid, "left", default_colorbar$left), 0, 1)
+      bottom <- clamp_numeric(latest_numeric(colorbar_gid, "bottom", default_colorbar$bottom), 0, 1)
+      width <- clamp_numeric(latest_numeric(colorbar_gid, "width", default_colorbar$width), 0.01, 1)
+      height <- clamp_numeric(latest_numeric(colorbar_gid, "height", default_colorbar$height), 0.01, 1)
+      guide <- ggplot2::guide_colourbar(
+        barwidth = ggplot2::unit(width, "npc"),
+        barheight = ggplot2::unit(height, "npc")
+      )
+      if (kind == "fill") {
+        plot_obj <- plot_obj + ggplot2::guides(fill = guide)
+      } else {
+        plot_obj <- plot_obj + ggplot2::guides(color = guide, colour = guide)
+      }
+      plot_obj <- plot_obj + ggplot2::theme(
+        legend.position = c(left, bottom),
+        legend.justification = c(0, 0)
+      )
+    }
+
     if (has_edit(colorbar_gid, "visible")) {
       is_visible <- latest_bool(colorbar_gid, "visible", TRUE)
       if (!is_visible) {
@@ -849,20 +996,96 @@ apply_continuous_scale_edits <- function(plot_obj) {
   plot_obj
 }
 
+apply_legend_text_edits <- function(plot_obj) {
+  if (!inherits(plot_obj, "ggplot")) return(plot_obj)
+  if (is.null(plot_obj$scales) || length(plot_obj$scales$scales) == 0) return(plot_obj)
+
+  label_index <- 0L
+  for (scale_index in seq_along(plot_obj$scales$scales)) {
+    scale_obj <- plot_obj$scales$scales[[scale_index]]
+    kind <- scale_kind(scale_obj)
+    if (is.null(kind) || is_continuous_colour_scale(scale_obj)) next
+
+    labels <- NULL
+    if (!is.null(scale_obj$get_labels)) {
+      labels <- tryCatch(scale_obj$get_labels(), error = function(e) NULL)
+    }
+    if (is.null(labels) || length(labels) == 0) {
+      labels <- scale_obj$labels
+    }
+    if (is.null(labels) || length(labels) == 0) {
+      labels <- scale_obj$range$range
+    }
+    labels <- as.character(labels %||% character())
+    if (length(labels) == 0) next
+
+    changed <- FALSE
+    next_labels <- labels
+    for (i in seq_along(next_labels)) {
+      gid <- paste0("legend_text.0.", label_index)
+      if (has_edit(gid, "text")) {
+        next_labels[[i]] <- latest_string(gid, "text", next_labels[[i]])
+        changed <- TRUE
+      }
+      label_index <- label_index + 1L
+    }
+    if (changed) {
+      scale_name <- scale_obj$name %||% plot_obj$labels[[kind]] %||% ggplot2::waiver()
+      values <- manual_scale_values(scale_obj)
+      if (!is.null(values)) {
+        breaks <- names(values)
+        if (is.null(breaks) || any(!nzchar(breaks))) {
+          breaks <- labels
+        }
+        if (length(breaks) == length(next_labels)) {
+          names(next_labels) <- breaks
+        }
+        if (kind == "fill") {
+          plot_obj <- suppressMessages(plot_obj + ggplot2::scale_fill_manual(values = values, breaks = breaks, labels = next_labels, name = scale_name))
+        } else {
+          plot_obj <- suppressMessages(plot_obj + ggplot2::scale_colour_manual(values = values, breaks = breaks, labels = next_labels, name = scale_name))
+        }
+      } else {
+        if (kind == "fill") {
+          plot_obj <- suppressMessages(plot_obj + ggplot2::scale_fill_discrete(labels = next_labels, name = scale_name))
+        } else {
+          plot_obj <- suppressMessages(plot_obj + ggplot2::scale_colour_discrete(labels = next_labels, name = scale_name))
+        }
+      }
+    }
+  }
+  plot_obj
+}
+
 apply_ggplot_edits <- function(plot_obj) {
   if (!inherits(plot_obj, "ggplot")) return(plot_obj)
 
   title_text <- latest_string("title.0", "text", plot_obj$labels$title %||% "")
-  x_text <- latest_string("xlabel.0", "text", plot_obj$labels$x %||% "")
-  y_text <- latest_string("ylabel.0", "text", plot_obj$labels$y %||% "")
-  legend_title <- latest_string("legend.0", "title", plot_obj$labels$colour %||% plot_obj$labels$color %||% plot_obj$labels$fill %||% "")
+  x_text <- axis_label_text_for_gid("axis.x.0", "xlabel.0", plot_obj$labels$x %||% "")
+  y_text <- axis_label_text_for_gid("axis.y.0", "ylabel.0", plot_obj$labels$y %||% "")
+  legend_title <- latest_string(
+    "legend_title.0",
+    "text",
+    latest_string("legend.0", "title", plot_obj$labels$colour %||% plot_obj$labels$color %||% plot_obj$labels$fill %||% "")
+  )
 
   title_style <- style_for_gid("title.0", default_title)
-  x_label_style <- style_for_gid("xlabel.0", default_label)
-  y_label_style <- style_for_gid("ylabel.0", default_label)
+  x_label_style <- axis_label_style_for_gid("axis.x.0", "xlabel.0", default_label)
+  y_label_style <- axis_label_style_for_gid("axis.y.0", "ylabel.0", default_label)
   x_tick_style <- axis_style_for_gid("axis.x.0", default_tick)
   y_tick_style <- axis_style_for_gid("axis.y.0", default_tick)
   legend_style <- style_for_gid("legend.0", default_legend)
+  legend_title_style <- style_for_gid("legend_title.0", legend_style)
+  legend_text_weight <- latest_prefixed_string("legend_text.0.", "fontweight", legend_style$fontweight)
+  legend_text_style <- latest_prefixed_string("legend_text.0.", "fontstyle", legend_style$fontstyle)
+  legend_item_style <- list(
+    fontsize = latest_prefixed_numeric("legend_text.0.", "fontsize", legend_style$fontsize),
+    fontfamily = latest_prefixed_string("legend_text.0.", "fontfamily", legend_style$fontfamily),
+    color = latest_prefixed_string("legend_text.0.", "color", legend_style$color),
+    fontweight = legend_text_weight,
+    fontstyle = legend_text_style,
+    face = font_face(legend_text_weight, legend_text_style)
+  )
   strip_style <- style_for_gid("facet.strip.0", default_strip)
 
   grid_visible <- latest_bool("grid.0", "visible", TRUE)
@@ -906,6 +1129,8 @@ apply_ggplot_edits <- function(plot_obj) {
   legend_edge <- latest_string("legend.0", "edgecolor", "none")
   legend_lw <- latest_numeric("legend.0", "linewidth", 0.5)
   legend_alpha <- latest_numeric("legend.0", "alpha", 1.0)
+  legend_ncol <- max(1L, as.integer(latest_numeric("legend.0", "ncol", default_legend$ncol)))
+  legend_markerscale <- max(0.1, latest_numeric("legend.0", "markerscale", default_legend$markerscale))
   legend_face_effective <- if (legend_face == "none") "transparent" else alpha_color(legend_face, legend_alpha)
   legend_edge_effective <- if (legend_edge == "none") "transparent" else alpha_color(legend_edge, legend_alpha)
 
@@ -919,6 +1144,14 @@ apply_ggplot_edits <- function(plot_obj) {
     ggplot2::labs(title = title_text, x = x_text, y = y_text)
 
   if (nzchar(legend_title)) {
+    if (has_edit("legend_title.0", "text") || has_edit("legend.0", "title")) {
+      for (scale_index in seq_along(plot_obj$scales$scales)) {
+        kind <- scale_kind(plot_obj$scales$scales[[scale_index]])
+        if (!is.null(kind) && kind %in% c("color", "fill")) {
+          plot_obj$scales$scales[[scale_index]]$name <- legend_title
+        }
+      }
+    }
     plot_obj <- plot_obj + ggplot2::labs(color = legend_title, colour = legend_title, fill = legend_title)
   }
 
@@ -969,16 +1202,16 @@ apply_ggplot_edits <- function(plot_obj) {
       axis.ticks.length.x = ggplot2::unit(x_tick_length, "pt"),
       axis.ticks.length.y = ggplot2::unit(y_tick_length, "pt"),
       legend.text = ggplot2::element_text(
-        size = legend_style$fontsize,
-        family = legend_style$fontfamily,
-        colour = legend_style$color,
-        face = legend_style$face
+        size = legend_item_style$fontsize,
+        family = legend_item_style$fontfamily,
+        colour = legend_item_style$color,
+        face = legend_item_style$face
       ),
       legend.title = ggplot2::element_text(
-        size = legend_style$fontsize,
-        family = legend_style$fontfamily,
-        colour = legend_style$color,
-        face = legend_style$face
+        size = legend_title_style$fontsize,
+        family = legend_title_style$fontfamily,
+        colour = legend_title_style$color,
+        face = legend_title_style$face
       ),
       legend.position = if (!legend_visible_bool) "none" else r_legend_pos,
       legend.background = if (legend_edge == "none" && legend_face == "white" && legend_alpha == 1.0) {
@@ -990,6 +1223,7 @@ apply_ggplot_edits <- function(plot_obj) {
           linewidth = legend_lw
         )
       },
+      legend.key.size = ggplot2::unit(legend_markerscale, "lines"),
       strip.text = ggplot2::element_text(
         size = strip_style$fontsize,
         family = strip_style$fontfamily,
@@ -1055,6 +1289,30 @@ apply_ggplot_edits <- function(plot_obj) {
       }
     )
 
+  subplot_aspect <- subplot_aspect_value()
+  if (!identical(subplot_aspect, "auto")) {
+    plot_obj <- plot_obj + ggplot2::theme(aspect.ratio = subplot_aspect)
+  }
+
+  if (has_edit("legend.0", "ncol") || has_edit("legend.0", "markerscale")) {
+    continuous_kinds <- unique(vapply(find_continuous_colour_scales(plot_obj), function(item) item$kind, character(1)))
+    guide <- ggplot2::guide_legend(
+      ncol = legend_ncol,
+      override.aes = list(size = 3 * legend_markerscale)
+    )
+    guide_args <- list()
+    if (!"color" %in% continuous_kinds) {
+      guide_args$color <- guide
+      guide_args$colour <- guide
+    }
+    if (!"fill" %in% continuous_kinds) {
+      guide_args$fill <- guide
+    }
+    if (length(guide_args) > 0) {
+      plot_obj <- plot_obj + do.call(ggplot2::guides, guide_args)
+    }
+  }
+
   if (has_edit("axis.x.0", "limits")) {
     lims <- latest_value("axis.x.0", "limits", NULL)
     if (is.numeric(lims) && length(lims) >= 2 && all(is.finite(lims))) {
@@ -1094,6 +1352,7 @@ apply_ggplot_edits <- function(plot_obj) {
   }
 
   plot_obj <- apply_manual_scale_edits(plot_obj)
+  plot_obj <- apply_legend_text_edits(plot_obj)
   plot_obj <- apply_continuous_scale_edits(plot_obj)
   plot_obj <- apply_text_layer_edits(plot_obj)
   apply_layer_edits(plot_obj)
@@ -1122,15 +1381,88 @@ manifest_text_object <- function(id, label, text, style) {
   )
 }
 
+legend_item_labels <- function(plot_obj) {
+  built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
+  scale_list <- NULL
+  if (!is.null(built) && !is.null(built$plot) && !is.null(built$plot$scales)) {
+    scale_list <- built$plot$scales$scales
+  }
+  if (is.null(scale_list)) {
+    scale_list <- plot_obj$scales$scales %||% list()
+  }
+  if (length(scale_list) == 0) return(character())
+
+  labels <- character()
+  for (scale_obj in scale_list) {
+    kind <- scale_kind(scale_obj)
+    if (is.null(kind) || is_continuous_colour_scale(scale_obj)) next
+
+    scale_labels <- NULL
+    if (!is.null(scale_obj$get_labels)) {
+      scale_labels <- tryCatch(scale_obj$get_labels(), error = function(e) NULL)
+    }
+    if (is.null(scale_labels) || length(scale_labels) == 0) {
+      scale_labels <- scale_obj$labels
+    }
+    if (is.null(scale_labels) || length(scale_labels) == 0) {
+      scale_labels <- scale_obj$range$range
+    }
+    scale_labels <- as.character(scale_labels %||% character())
+    scale_labels <- scale_labels[!is.na(scale_labels) & nzchar(scale_labels)]
+    labels <- c(labels, scale_labels)
+  }
+  unique(labels)
+}
+
+manifest_legend_text_objects <- function(plot_obj, legend_title, legend_style) {
+  objects <- list()
+  title_style <- style_for_gid("legend_title.0", legend_style)
+  if (nzchar(legend_title)) {
+    objects[[length(objects) + 1]] <- manifest_text_object("legend_title.0", "legend_title", legend_title, title_style)
+    objects[[length(objects)]]$role <- "legend_title"
+    objects[[length(objects)]]$source <- list(artistClass = "ggplot_legend_title", axesIndex = 0)
+  }
+
+  labels <- legend_item_labels(plot_obj)
+  if (length(labels) == 0) return(objects)
+  for (i in seq_along(labels)) {
+    gid <- paste0("legend_text.0.", i - 1)
+    text_weight <- latest_string(gid, "fontweight", legend_style$fontweight)
+    text_style <- latest_string(gid, "fontstyle", legend_style$fontstyle)
+    style <- list(
+      fontsize = latest_numeric(gid, "fontsize", legend_style$fontsize),
+      fontfamily = latest_string(gid, "fontfamily", legend_style$fontfamily),
+      color = latest_string(gid, "color", legend_style$color),
+      fontweight = text_weight,
+      fontstyle = text_style,
+      face = font_face(text_weight, text_style)
+    )
+    obj <- manifest_text_object(gid, "legend_text", latest_string(gid, "text", labels[[i]]), style)
+    obj$currentProps$originalText <- labels[[i]]
+    obj$editable <- list("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color")
+    obj$role <- "legend_text"
+    obj$source <- list(artistClass = "ggplot_legend_text", axesIndex = 0, zorder = i)
+    objects[[length(objects) + 1]] <- obj
+  }
+  objects
+}
+
 manifest_axis_object <- function(id, label, style, plot_obj = NULL) {
   axis_name <- if (grepl("^axis\\.x", id)) "x" else "y"
+  label_gid <- if (axis_name == "x") "xlabel.0" else "ylabel.0"
+  label_fallback <- if (axis_name == "x") plot_obj$labels$x %||% "" else plot_obj$labels$y %||% ""
+  label_text <- axis_label_text_for_gid(id, label_gid, label_fallback)
+  label_style <- axis_label_style_for_gid(id, label_gid, default_label)
   lims <- if (has_edit(id, "limits")) latest_value(id, "limits", NULL) else axis_limits_from_build(plot_obj, axis_name, 1)
   list(
     id = id,
     kind = if (axis_name == "x") "axis_x" else "axis_y",
     label = label,
-    editable = list("tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad"),
+    editable = list("label", "label_fontsize", "label_color", "tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad"),
     currentProps = list(
+      label = label_text,
+      label_fontsize = label_style$fontsize,
+      label_color = label_style$color,
       tick_labelsize = style$fontsize,
       tick_labelfamily = style$fontfamily,
       tick_labelcolor = style$color,
@@ -1161,6 +1493,8 @@ manifest_layer_object <- function(layer, index) {
     line = list("color", "linewidth", "linestyle", "alpha"),
     patch = list("facecolor", "edgecolor", "linewidth", "alpha"),
     errorbar_container = list("color", "linewidth", "alpha"),
+    boxplot_container = list("color", "linewidth", "alpha", "box_color", "median_color"),
+    violinplot_container = list("color", "facecolor", "edgecolor", "linewidth", "alpha"),
     list("color", "linewidth", "alpha")
   )
   current_props <- switch(
@@ -1170,6 +1504,8 @@ manifest_layer_object <- function(layer, index) {
     line = list(color = props$color, linewidth = props$linewidth, linestyle = props$linestyle, alpha = props$alpha),
     patch = list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
     errorbar_container = list(color = props$color, linewidth = props$linewidth, alpha = props$alpha),
+    boxplot_container = list(color = props$color, linewidth = props$linewidth, alpha = props$alpha, box_color = latest_string(gid, "box_color", props$facecolor), median_color = latest_string(gid, "median_color", props$edgecolor)),
+    violinplot_container = list(color = props$color, facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
     list(color = props$color, linewidth = props$linewidth, alpha = props$alpha)
   )
   list(
@@ -1206,6 +1542,7 @@ manifest_facet_objects <- function(plot_obj) {
   if (is.null(built) || is.null(built$layout) || is.null(built$layout$layout)) return(list())
   layout <- built$layout$layout
   if (nrow(layout) == 0) return(list())
+  aspect <- subplot_aspect_value()
 
   lapply(seq_len(nrow(layout)), function(i) {
     row <- layout[i, , drop = FALSE]
@@ -1217,13 +1554,16 @@ manifest_facet_objects <- function(plot_obj) {
       id = paste0("subplot.", panel - 1),
       kind = "subplot",
       label = if (nzchar(label)) paste0("Facet ", panel, ": ", label) else paste0("Facet ", panel),
-      editable = list(),
+      editable = list("aspect"),
       currentProps = list(
         subplotIndex = panel - 1,
         panel = panel,
         row = row_index,
         col = col_index,
-        label = label
+        label = label,
+        aspect = aspect,
+        unsupportedProps = list("left", "bottom", "width", "height"),
+        unsupportedReason = "ggplot facet panels use shared gtable layout; independent panel bounds are not equivalent to Matplotlib axes bounds."
       ),
       role = "ggplot_facet_panel",
       source = list(artistClass = "ggplot_facet_panel", axesIndex = panel - 1)
@@ -1346,11 +1686,15 @@ manifest_heatmap_colorbar_objects <- function(plot_obj) {
       id = colorbar_gid,
       kind = "colorbar",
       label = paste0("ggplot colorbar ", label),
-      editable = list("label", "tick_fontsize", "visible"),
+      editable = list("label", "tick_fontsize", "visible", "left", "bottom", "width", "height"),
       currentProps = list(
         label = latest_string(colorbar_gid, "label", label),
         tick_fontsize = latest_numeric(colorbar_gid, "tick_fontsize", default_legend$fontsize),
         visible = latest_value(colorbar_gid, "visible", TRUE),
+        left = latest_numeric(colorbar_gid, "left", default_colorbar$left),
+        bottom = latest_numeric(colorbar_gid, "bottom", default_colorbar$bottom),
+        width = latest_numeric(colorbar_gid, "width", default_colorbar$width),
+        height = latest_numeric(colorbar_gid, "height", default_colorbar$height),
         vmin = latest_numeric(heatmap_gid, "vmin", current_vmin),
         vmax = latest_numeric(heatmap_gid, "vmax", current_vmax),
         cmap = latest_string(heatmap_gid, "cmap", "custom")
@@ -1500,6 +1844,49 @@ inject_svg_text_ids <- function(svg, manifest, ggplot_obj = NULL) {
     }
   }
 
+  svg
+}
+
+apply_svg_legend_text_edits <- function(svg, manifest) {
+  objects <- manifest$objects %||% list()
+  if (length(objects) == 0) return(svg)
+  for (obj in objects) {
+    if (!identical(obj$role %||% "", "legend_text")) next
+    gid <- as.character(obj$id %||% "")
+    props <- obj$currentProps %||% list()
+    original_text <- as.character(props$originalText %||% "")
+    next_text <- as.character(props$text %||% "")
+    if (!nzchar(gid) || !nzchar(original_text) || !nzchar(next_text) || identical(original_text, next_text)) next
+
+    old_escaped <- regex_escape(svg_escape_text(original_text))
+    pattern <- paste0("<text\\b[^>]*>\\s*", old_escaped, "\\s*</text>")
+    matches <- gregexpr(pattern, svg, perl = TRUE)[[1]]
+    if (length(matches) == 1 && matches[[1]] == -1) next
+    match_lengths <- attr(matches, "match.length")
+
+    for (i in seq_along(matches)) {
+      start <- matches[[i]]
+      len <- match_lengths[[i]]
+      if (start < 0 || len <= 0) next
+      chunk <- substr(svg, start, start + len - 1)
+      open_tag <- regmatches(chunk, regexpr("^<text\\b[^>]*>", chunk, perl = TRUE))
+      if (!length(open_tag) || grepl("data-fig-id\\s*=", open_tag, perl = TRUE) || grepl("\\bid\\s*=", open_tag, perl = TRUE)) next
+
+      replacement <- sub("^<text\\b", paste0("<text id=\"", gid, "\" data-fig-id=\"", gid, "\""), chunk, perl = TRUE)
+      replacement <- sub(
+        paste0(">\\s*", old_escaped, "\\s*</text>$"),
+        paste0(">", svg_escape_text(next_text), "</text>"),
+        replacement,
+        perl = TRUE
+      )
+      svg <- paste0(
+        substr(svg, 1, start - 1),
+        replacement,
+        substr(svg, start + len, nchar(svg))
+      )
+      break
+    }
+  }
   svg
 }
 
@@ -1671,16 +2058,20 @@ inject_svg_layer_data_ids <- function(svg, plot_obj) {
 
 build_ggplot_manifest <- function(plot_obj) {
   title_style <- style_for_gid("title.0", default_title)
-  x_label_style <- style_for_gid("xlabel.0", default_label)
-  y_label_style <- style_for_gid("ylabel.0", default_label)
+  x_label_style <- axis_label_style_for_gid("axis.x.0", "xlabel.0", default_label)
+  y_label_style <- axis_label_style_for_gid("axis.y.0", "ylabel.0", default_label)
   x_tick_style <- axis_style_for_gid("axis.x.0", default_tick)
   y_tick_style <- axis_style_for_gid("axis.y.0", default_tick)
   legend_style <- style_for_gid("legend.0", default_legend)
 
   title_text <- latest_string("title.0", "text", plot_obj$labels$title %||% "")
-  x_text <- latest_string("xlabel.0", "text", plot_obj$labels$x %||% "")
-  y_text <- latest_string("ylabel.0", "text", plot_obj$labels$y %||% "")
-  legend_title <- latest_string("legend.0", "title", plot_obj$labels$colour %||% plot_obj$labels$color %||% plot_obj$labels$fill %||% "")
+  x_text <- axis_label_text_for_gid("axis.x.0", "xlabel.0", plot_obj$labels$x %||% "")
+  y_text <- axis_label_text_for_gid("axis.y.0", "ylabel.0", plot_obj$labels$y %||% "")
+  legend_title <- latest_string(
+    "legend_title.0",
+    "text",
+    latest_string("legend.0", "title", plot_obj$labels$colour %||% plot_obj$labels$color %||% plot_obj$labels$fill %||% "")
+  )
 
   legend_visible_bool <- latest_bool("legend.0", "visible", TRUE)
   legend_loc <- latest_string("legend.0", "loc", "right")
@@ -1688,6 +2079,8 @@ build_ggplot_manifest <- function(plot_obj) {
   legend_edge <- latest_string("legend.0", "edgecolor", "none")
   legend_lw <- latest_numeric("legend.0", "linewidth", 0.5)
   legend_alpha <- latest_numeric("legend.0", "alpha", 1.0)
+  legend_ncol <- max(1L, as.integer(latest_numeric("legend.0", "ncol", default_legend$ncol)))
+  legend_markerscale <- max(0.1, latest_numeric("legend.0", "markerscale", default_legend$markerscale))
 
   grid_visible <- latest_bool("grid.0", "visible", TRUE)
   grid_color <- latest_string("grid.0", "color", "#E5E5E5")
@@ -1705,7 +2098,7 @@ build_ggplot_manifest <- function(plot_obj) {
       id = "legend.0",
       kind = "legend",
       label = "legend",
-      editable = list("title", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "visible", "loc", "facecolor", "edgecolor", "linewidth", "alpha"),
+      editable = list("title", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "visible", "loc", "ncol", "markerscale", "facecolor", "edgecolor", "linewidth", "alpha"),
       currentProps = list(
         title = legend_title,
         fontsize = legend_style$fontsize,
@@ -1715,6 +2108,8 @@ build_ggplot_manifest <- function(plot_obj) {
         color = legend_style$color,
         visible = legend_visible_bool,
         loc = legend_loc,
+        ncol = legend_ncol,
+        markerscale = legend_markerscale,
         facecolor = legend_face,
         edgecolor = legend_edge,
         linewidth = legend_lw,
@@ -1763,6 +2158,7 @@ build_ggplot_manifest <- function(plot_obj) {
   objects[[length(objects) + 1]] <- manifest_spine_object("spine.left.0", "left")
   objects[[length(objects) + 1]] <- manifest_spine_object("spine.top.0", "top")
   objects[[length(objects) + 1]] <- manifest_spine_object("spine.right.0", "right")
+  objects <- c(objects, manifest_legend_text_objects(plot_obj, legend_title, legend_style))
   
   # Inject individual xtick and ytick objects into objects list
   built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
@@ -1797,11 +2193,15 @@ build_ggplot_manifest <- function(plot_obj) {
             id = id,
             kind = "xtick",
             label = "xtick",
-            editable = list(),
+            editable = list("fontsize", "fontfamily", "fontweight", "fontstyle", "color", "rotation"),
             currentProps = list(
-              fontsize = x_tick_style$fontsize,
-              fontfamily = x_tick_style$fontfamily,
-              color = x_tick_style$color
+              text = x_labels[[i]],
+              fontsize = latest_numeric(id, "fontsize", x_tick_style$fontsize),
+              fontfamily = latest_string(id, "fontfamily", x_tick_style$fontfamily),
+              fontweight = latest_string(id, "fontweight", x_tick_style$fontweight),
+              fontstyle = latest_string(id, "fontstyle", x_tick_style$fontstyle),
+              color = latest_string(id, "color", x_tick_style$color),
+              rotation = latest_numeric(id, "rotation", x_tick_style$rotation)
             ),
             role = "xtick",
             source = list(artistClass = "ggplot_tick_label", axesIndex = p_idx - 1)
@@ -1817,11 +2217,15 @@ build_ggplot_manifest <- function(plot_obj) {
             id = id,
             kind = "ytick",
             label = "ytick",
-            editable = list(),
+            editable = list("fontsize", "fontfamily", "fontweight", "fontstyle", "color", "rotation"),
             currentProps = list(
-              fontsize = y_tick_style$fontsize,
-              fontfamily = y_tick_style$fontfamily,
-              color = y_tick_style$color
+              text = y_labels[[i]],
+              fontsize = latest_numeric(id, "fontsize", y_tick_style$fontsize),
+              fontfamily = latest_string(id, "fontfamily", y_tick_style$fontfamily),
+              fontweight = latest_string(id, "fontweight", y_tick_style$fontweight),
+              fontstyle = latest_string(id, "fontstyle", y_tick_style$fontstyle),
+              color = latest_string(id, "color", y_tick_style$color),
+              rotation = latest_numeric(id, "rotation", y_tick_style$rotation)
             ),
             role = "ytick",
             source = list(artistClass = "ggplot_tick_label", axesIndex = p_idx - 1)
@@ -1864,17 +2268,21 @@ build_ggplot_manifest <- function(plot_obj) {
   }
   by_kind <- list(
     text = list(count = kind_count("text"), editableProps = list("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color")),
-    axis_x = list(count = kind_count("axis_x"), editableProps = list("tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad")),
-    axis_y = list(count = kind_count("axis_y"), editableProps = list("tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad")),
-    legend = list(count = kind_count("legend"), editableProps = list("title", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "visible", "loc", "facecolor", "edgecolor", "linewidth", "alpha")),
+    axis_x = list(count = kind_count("axis_x"), editableProps = list("label", "label_fontsize", "label_color", "tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad")),
+    axis_y = list(count = kind_count("axis_y"), editableProps = list("label", "label_fontsize", "label_color", "tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad")),
+    legend = list(count = kind_count("legend"), editableProps = list("title", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "visible", "loc", "ncol", "markerscale", "facecolor", "edgecolor", "linewidth", "alpha")),
     collection = list(count = kind_count("collection"), editableProps = list("color", "facecolor", "size", "alpha")),
     line = list(count = kind_count("line"), editableProps = list("color", "linewidth", "linestyle", "alpha")),
     patch = list(count = kind_count("patch"), editableProps = list("facecolor", "edgecolor", "linewidth", "alpha")),
     errorbar_container = list(count = kind_count("errorbar_container"), editableProps = list("color", "linewidth", "alpha")),
-    subplot = list(count = kind_count("subplot"), editableProps = list()),
+    boxplot_container = list(count = kind_count("boxplot_container"), editableProps = list("color", "linewidth", "alpha", "box_color", "median_color")),
+    violinplot_container = list(count = kind_count("violinplot_container"), editableProps = list("color", "facecolor", "edgecolor", "linewidth", "alpha")),
+    xtick = list(count = kind_count("xtick"), editableProps = list("fontsize", "fontfamily", "fontweight", "fontstyle", "color", "rotation")),
+    ytick = list(count = kind_count("ytick"), editableProps = list("fontsize", "fontfamily", "fontweight", "fontstyle", "color", "rotation")),
+    subplot = list(count = kind_count("subplot"), editableProps = list("aspect")),
     facet_strip = list(count = if (any(vapply(objects, function(obj) identical(obj$id, "facet.strip.0"), logical(1)))) 1L else 0L, editableProps = list("fontsize", "fontfamily", "fontweight", "fontstyle", "color")),
     heatmap = list(count = kind_count("heatmap"), editableProps = list("cmap", "vmin", "vmax", "alpha")),
-    colorbar = list(count = kind_count("colorbar"), editableProps = list("label", "tick_fontsize", "visible")),
+    colorbar = list(count = kind_count("colorbar"), editableProps = list("label", "tick_fontsize", "visible", "left", "bottom", "width", "height")),
     spine = list(count = kind_count("spine"), editableProps = list("visible", "color", "linewidth")),
     grid = list(count = kind_count("grid"), editableProps = list("visible", "color", "linewidth", "linestyle", "alpha"))
   )
@@ -1897,6 +2305,7 @@ build_ggplot_manifest <- function(plot_obj) {
     ),
     unsupportedNotes = list(
       "R ggplot2 semantic editing currently covers labels, theme text, whole-layer geom styles, manual color/fill scales, facet panel discovery, and continuous heatmap/colorbar scales.",
+      "R facet subplot aspect uses ggplot theme(aspect.ratio); independent left/bottom/width/height panel bounds are not equivalent to Matplotlib axes bounds.",
       "Drag-position replay and per-facet independent label styling are not enabled in this phase."
     )
   )
@@ -2046,6 +2455,7 @@ result <- tryCatch({
   }
 
   if (!is.null(ggplot_obj)) {
+    svg <- apply_svg_legend_text_edits(svg, manifest)
     svg <- inject_svg_text_ids(svg, manifest, ggplot_obj)
     svg <- inject_svg_layer_data_ids(svg, ggplot_obj)
   }

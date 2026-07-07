@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Baseline, Lock, Layout, Palette, Sliders } from 'lucide-react';
 import { FigureSession, PatchEntry, ManifestObject, ManifestField, Binding } from '../schemas/manifest';
 import { normalizeFigureModel } from '../utils/standardFigureModel';
@@ -16,6 +16,7 @@ interface RightSidebarProps {
   selectedGids?: string[];
   onSelectGids?: (gids: string[]) => void;
   onPatch: (patches: PatchEntry[]) => void;
+  onImmediatePatch?: (patches: PatchEntry[]) => void | Promise<unknown>;
   lockedObjects?: Set<string>;
   
   // Draft props
@@ -98,6 +99,24 @@ const DEFAULT_STYLE_PRESETS: Record<string, FigureStylePreset> = {
   },
 };
 
+type SubplotLayoutSettings = {
+  marginLeft: number;
+  marginRight: number;
+  marginTop: number;
+  marginBottom: number;
+  gapX: number;
+  gapY: number;
+};
+
+const DEFAULT_SUBPLOT_LAYOUT_SETTINGS: SubplotLayoutSettings = {
+  marginLeft: 0.12,
+  marginRight: 0.06,
+  marginTop: 0.09,
+  marginBottom: 0.11,
+  gapX: 0.08,
+  gapY: 0.12,
+};
+
 const PROP_LABELS: Record<string, string> = {
   text: '文字内容',
   title: '标题',
@@ -141,6 +160,8 @@ const PROP_LABELS: Record<string, string> = {
   tick_labelsize: '刻度文字字号',
   tick_labelcolor: '刻度文字颜色',
   tick_labelfamily: '刻度文字字体',
+  tick_label_dx: '刻度文字水平偏移(pt)',
+  tick_label_dy: '刻度文字垂直偏移(pt)',
   sci_notation: '科学计数法',
   use_math_text: '数学字体',
   offset_text_size: '偏移文字字号',
@@ -247,6 +268,7 @@ export function RightSidebar({
   selectedGids = [],
   onSelectGids,
   onPatch,
+  onImmediatePatch,
   lockedObjects,
   projectDrafts,
   onUpdateDraft,
@@ -255,6 +277,7 @@ export function RightSidebar({
   onApplyDraft,
 }: RightSidebarProps) {
   const [activeTab, setActiveTab] = useState<'properties' | 'groups' | 'palette' | 'fonts'>('properties');
+  const [subplotLayoutSettings, setSubplotLayoutSettings] = useState<SubplotLayoutSettings>(DEFAULT_SUBPLOT_LAYOUT_SETTINGS);
   const [showDraftDetails, setShowDraftDetails] = useState(false);
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
   const [colorDraftValues, setColorDraftValues] = useState<Record<string, string>>({});
@@ -265,6 +288,8 @@ export function RightSidebar({
   const [lastSelectedGroupId, setLastSelectedGroupId] = useState<string | null>(null);
   const [componentSubplotScope, setComponentSubplotScope] = useState<string>('all');
   const [fontSubplotScope, setFontSubplotScope] = useState<string>('all');
+  const textInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const [textSelections, setTextSelections] = useState<Record<string, { start: number; end: number }>>({});
 
   useEffect(() => {
     setSelectedGroupIds(new Set());
@@ -391,7 +416,7 @@ export function RightSidebar({
       const gid = Array.isArray(binding?.gids) ? binding.gids[0] : null;
       const prop = Array.isArray(binding?.props) ? binding.props[0] : null;
       if (gid && prop) {
-        const objectDraftKey = `${gid}::${prop}`;
+        const objectDraftKey = `${gid}:${prop}`;
         if (figDrafts[objectDraftKey]) {
           return {
             ...p,
@@ -420,6 +445,10 @@ export function RightSidebar({
   const getDraftKey = (gid: string, prop: string) => `${gid}::${prop}`;
   const getPropLabel = (prop: string) => PROP_LABELS[prop] || prop.replace(/_/g, ' ');
   const getValueLabel = (prop: string, value: string) => VALUE_LABELS[prop]?.[value] || value;
+  const getUnsupportedProps = (obj: ManifestObject | undefined) => {
+    const unsupported = obj?.currentProps?.unsupportedProps;
+    return Array.isArray(unsupported) ? unsupported.map(String) : [];
+  };
   const resolvePatchMode = (prop: string) => (
     manifest.generatedBy === 'r_svg' || !LOCAL_PROPS.has(prop) ? 'backend_patch' as const : 'local_patch' as const
   );
@@ -463,6 +492,50 @@ export function RightSidebar({
       ? 'backend_patch'
       : isLocalPatch(currentObject?.kind || '', prop) ? 'local_patch' : 'backend_patch';
     onUpdateDraft(figureId, { gid, prop, value, mode });
+  };
+
+  const buildPatchEntry = (gid: string, prop: string, value: unknown): PatchEntry => {
+    const currentObject = manifest.objects.find((item) => item.id === gid);
+    const mode = manifest.generatedBy === 'r_svg'
+      ? 'backend_patch'
+      : isLocalPatch(currentObject?.kind || '', prop) ? 'local_patch' : 'backend_patch';
+    return { op: 'set', gid, prop, value, mode };
+  };
+
+  const buildSubplotLayoutPatches = (rows: number, cols: number, settings: SubplotLayoutSettings = subplotLayoutSettings): PatchEntry[] => {
+    const ordered = subplotOptions.slice(0, rows * cols);
+    if (ordered.length === 0) return [];
+    const margin = {
+      left: cols === 1 ? Math.max(settings.marginLeft, 0.18) : settings.marginLeft,
+      right: settings.marginRight,
+      bottom: rows === 1 ? Math.max(settings.marginBottom, 0.18) : settings.marginBottom,
+      top: settings.marginTop,
+    };
+    const gapX = cols <= 1 ? 0 : settings.gapX;
+    const gapY = rows <= 1 ? 0 : settings.gapY;
+    const cellWidth = Math.max(0.005, (1 - margin.left - margin.right - gapX * (cols - 1)) / cols);
+    const cellHeight = Math.max(0.005, (1 - margin.top - margin.bottom - gapY * (rows - 1)) / rows);
+    const patches: PatchEntry[] = [];
+
+    ordered.forEach((subplot, index) => {
+      const row = Math.floor(index / cols);
+      const col = index % cols;
+      const left = margin.left + col * (cellWidth + gapX);
+      const bottom = 1 - margin.top - (row + 1) * cellHeight - row * gapY;
+      patches.push(
+        buildPatchEntry(subplot.id, 'left', Number(left.toFixed(4))),
+        buildPatchEntry(subplot.id, 'bottom', Number(bottom.toFixed(4))),
+        buildPatchEntry(subplot.id, 'width', Number(cellWidth.toFixed(4))),
+        buildPatchEntry(subplot.id, 'height', Number(cellHeight.toFixed(4))),
+      );
+    });
+    return patches;
+  };
+
+  const applySubplotLayout = (rows: number, cols: number, settings: SubplotLayoutSettings = subplotLayoutSettings) => {
+    const patches = buildSubplotLayoutPatches(rows, cols, settings);
+    if (patches.length === 0) return;
+    void (onImmediatePatch || onPatch)(patches);
   };
 
   const handlePaletteColorChange = (paletteId: string, newColor: string) => {
@@ -603,20 +676,21 @@ export function RightSidebar({
     label: string,
     value: number | undefined,
     onValue: (nextValue: number) => void,
-    options?: { min?: number; max?: number; step?: number }
+    options?: { min?: number; max?: number; step?: number; displayLabel?: string }
   ) => {
     const key = getDraftKey(gid, label);
     const inputValue = draftValues[key] ?? (value ?? '').toString();
     const dirty = isDirty(gid, label);
+    const displayLabel = options?.displayLabel || getPropLabel(label);
     return (
-      <div className="grid grid-cols-[88px_1fr] items-center gap-2 text-sm" key={label}>
+      <div className="grid grid-cols-[104px_1fr] items-center gap-2 text-sm" key={label}>
         <span className="text-slate-600 flex items-center gap-1 select-none">
-          {getPropLabel(label)}
+          {displayLabel}
           {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="已修改（未保存至引擎）" />}
         </span>
         <input
           type="number"
-          aria-label={getPropLabel(label)}
+          aria-label={displayLabel}
           data-param-role="number"
           data-param-gid={gid}
           data-param-prop={label}
@@ -645,31 +719,80 @@ export function RightSidebar({
     const key = getDraftKey(gid, label);
     const inputValue = draftValues[key] ?? value;
     const dirty = isDirty(gid, label);
+    const displayLabel = getPropLabel(label);
+    const rememberSelection = (input: HTMLInputElement) => {
+      setTextSelections(prev => ({
+        ...prev,
+        [key]: {
+          start: input.selectionStart ?? input.value.length,
+          end: input.selectionEnd ?? input.value.length,
+        },
+      }));
+    };
+    const insertScriptFragment = (scriptType: 'sub' | 'sup') => {
+      const input = textInputRefs.current[key];
+      const baseValue = draftValues[key] ?? value ?? '';
+      const saved = textSelections[key];
+      const start = input?.selectionStart ?? saved?.start ?? baseValue.length;
+      const end = input?.selectionEnd ?? saved?.end ?? start;
+      const selected = baseValue.slice(start, end);
+      const fragment = scriptType === 'sub'
+        ? selected ? `$_{${selected}}$` : '$_{}$'
+        : selected ? `$^{${selected}}$` : '$^{}$';
+      const nextValue = `${baseValue.slice(0, start)}${fragment}${baseValue.slice(end)}`;
+      updateDraft(gid, label, nextValue);
+      window.requestAnimationFrame(() => {
+        const nextInput = textInputRefs.current[key];
+        if (!nextInput) return;
+        nextInput.focus();
+        const cursor = selected ? start + fragment.length : start + 3;
+        nextInput.setSelectionRange(cursor, cursor);
+        rememberSelection(nextInput);
+      });
+    };
+    const commitTextDraft = (nextVal: string) => {
+      if (nextVal !== value) {
+        onValue(nextVal);
+      }
+      clearDraft(gid, label);
+    };
+    const applyTextImmediately = (nextVal: string) => {
+      if (nextVal === value) {
+        clearDraft(gid, label);
+        return;
+      }
+      clearDraft(gid, label);
+      void (onImmediatePatch || onPatch)([buildPatchEntry(gid, label, nextVal)]);
+    };
     return (
       <div className="text-sm space-y-1.5" key={label}>
         <span className="text-slate-600 flex items-center gap-1 select-none">
-          {getPropLabel(label)}
+          {displayLabel}
           {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="已修改（未保存至引擎）" />}
         </span>
         <input
           type="text"
+          ref={(node) => {
+            textInputRefs.current[key] = node;
+          }}
+          aria-label={displayLabel}
+          data-param-role="text"
+          data-param-gid={gid}
+          data-param-prop={label}
           className="border border-slate-200 rounded p-1.5 outline-none focus:border-blue-500 w-full bg-white text-slate-700"
           value={inputValue}
           onChange={(event) => updateDraft(gid, label, event.target.value)}
+          onSelect={(event) => rememberSelection(event.currentTarget)}
+          onKeyUp={(event) => rememberSelection(event.currentTarget)}
+          onClick={(event) => rememberSelection(event.currentTarget)}
           onBlur={(event) => {
             const nextVal = event.target.value;
-            if (nextVal !== value) {
-              onValue(nextVal);
-            }
-            clearDraft(gid, label);
+            commitTextDraft(nextVal);
           }}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
               const nextVal = (event.target as HTMLInputElement).value;
-              if (nextVal !== value) {
-                onValue(nextVal);
-              }
-              clearDraft(gid, label);
+              commitTextDraft(nextVal);
               (event.target as HTMLInputElement).blur();
             }
             if (event.key === 'Escape') {
@@ -677,6 +800,47 @@ export function RightSidebar({
             }
           }}
         />
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => insertScriptFragment('sup')}
+            className="px-2 py-1 rounded border border-slate-200 bg-white text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+            title="把选中的字符设为上标，使用 Matplotlib mathtext 语法"
+          >
+            上标 x²
+          </button>
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => insertScriptFragment('sub')}
+            className="px-2 py-1 rounded border border-slate-200 bg-white text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+            title="把选中的字符设为下标，使用 Matplotlib mathtext 语法"
+          >
+            下标 x₂
+          </button>
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => commitTextDraft(draftValues[key] ?? value)}
+            className="px-2 py-1 rounded border border-amber-200 bg-amber-50 text-[11px] font-semibold text-amber-700 hover:bg-amber-100"
+            title="只暂存修改，稍后用底部按钮统一应用"
+          >
+            暂存文本
+          </button>
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => applyTextImmediately(draftValues[key] ?? value)}
+            className="px-2 py-1 rounded border border-blue-200 bg-blue-50 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
+            title="立即写入当前 Figure 并重渲染"
+          >
+            立即应用
+          </button>
+        </div>
+        <div className="text-[10px] text-slate-400 leading-relaxed">
+          Enter/失焦只会暂存到草稿；要马上看到刻度文本变化，请点“立即应用”，或用底部“应用当前图”批量提交。
+        </div>
       </div>
     );
   };
@@ -955,25 +1119,265 @@ export function RightSidebar({
     return null;
   };
 
+  const getGlobalNumberValue = (key: string): number | null => {
+    const field = manifest.globals?.[key];
+    if (!field || field.type !== 'number') return null;
+    const value = Number(field.value);
+    return Number.isFinite(value) ? value : null;
+  };
+
   const renderSubplotPanel = (obj: ManifestObject) => {
     const props = obj.currentProps as any;
+    const unsupportedProps = getUnsupportedProps(obj);
+    const boundsProps = ['left', 'bottom', 'width', 'height'];
+    const editable = Array.isArray(obj.editable) ? obj.editable : [];
+    const canEditBounds = boundsProps.some(prop => editable.includes(prop) && !unsupportedProps.includes(prop));
+    const canEditAspect = editable.includes('aspect') || props.aspect !== undefined;
+    const unsupportedReason = typeof props.unsupportedReason === 'string'
+      ? props.unsupportedReason
+      : '当前图形引擎没有提供独立坐标轴框位置映射。';
+    const width = Number(props.width);
+    const height = Number(props.height);
+    const ratio = Number.isFinite(width) && Number.isFinite(height) && height > 0 ? width / height : null;
+    const figureWidthIn = getGlobalNumberValue('figure.width_in');
+    const figureHeightIn = getGlobalNumberValue('figure.height_in');
+    const physicalWidthIn = ratio !== null && figureWidthIn !== null ? width * figureWidthIn : null;
+    const physicalHeightIn = ratio !== null && figureHeightIn !== null ? height * figureHeightIn : null;
+    const physicalWidthMm = physicalWidthIn !== null ? physicalWidthIn * 25.4 : null;
+    const physicalHeightMm = physicalHeightIn !== null ? physicalHeightIn * 25.4 : null;
     return (
       <div className="space-y-6">
-        {renderPanelTitle('子图位置与比例')}
-        <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 text-xs text-blue-700">
-          {props.label || obj.label || obj.id}
+        {renderPanelTitle('真实绘图区 / 坐标轴框')}
+        <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 text-xs leading-relaxed text-blue-700">
+          <div className="font-semibold text-blue-800">{props.label || obj.label || obj.id}</div>
+          <div className="mt-1">
+            调整的是白色画布里的坐标轴边框和数据绘图区，不改变整张输出画布尺寸。
+          </div>
         </div>
+        {ratio !== null && (
+          <div className="rounded-lg border border-slate-100 bg-white p-3">
+            <div className="grid grid-cols-3 gap-2 text-center">
+            <div>
+              <div className="text-[10px] font-semibold text-slate-400">框宽</div>
+              <div className="mt-1 font-mono text-sm font-bold text-slate-800">{width.toFixed(3)}</div>
+              <div className="text-[10px] text-slate-400">{(width * 100).toFixed(1)}%</div>
+            </div>
+            <div>
+              <div className="text-[10px] font-semibold text-slate-400">框高</div>
+              <div className="mt-1 font-mono text-sm font-bold text-slate-800">{height.toFixed(3)}</div>
+              <div className="text-[10px] text-slate-400">{(height * 100).toFixed(1)}%</div>
+            </div>
+            <div>
+              <div className="text-[10px] font-semibold text-slate-400">宽高比</div>
+              <div className="mt-1 font-mono text-sm font-bold text-blue-700">{ratio.toFixed(2)}:1</div>
+              <div className="text-[10px] text-slate-400">{ratio > 1 ? '横向' : ratio < 1 ? '纵向' : '正方形'}</div>
+            </div>
+            </div>
+            {physicalWidthIn !== null && physicalHeightIn !== null && physicalWidthMm !== null && physicalHeightMm !== null && (
+              <div className="mt-3 rounded-md border border-blue-100 bg-blue-50 px-2.5 py-2 text-[11px] leading-relaxed text-blue-800">
+                <div className="font-semibold">按当前白色画布换算的真实绘图区尺寸</div>
+                <div className="mt-1 font-mono">
+                  {physicalWidthIn.toFixed(2)} × {physicalHeightIn.toFixed(2)} in
+                  <span className="mx-1 text-blue-300">/</span>
+                  {physicalWidthMm.toFixed(1)} × {physicalHeightMm.toFixed(1)} mm
+                </div>
+                <div className="mt-1 text-[10px] text-blue-600">
+                  当前画布：{figureWidthIn?.toFixed(2)} × {figureHeightIn?.toFixed(2)} in。修改画布尺寸会同步改变这里的物理尺寸；修改绘图区宽高只改变框线在画布内的占比。
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-2">
-            {renderNumberInput(obj.id, 'left', props.left ?? 0, (v) => handlePatch(obj.id, 'left', v), { min: 0, max: 1, step: 0.01 })}
-            {renderNumberInput(obj.id, 'bottom', props.bottom ?? 0, (v) => handlePatch(obj.id, 'bottom', v), { min: 0, max: 1, step: 0.01 })}
-            {renderNumberInput(obj.id, 'width', props.width ?? 0.5, (v) => handlePatch(obj.id, 'width', v), { min: 0.005, max: 1, step: 0.01 })}
-            {renderNumberInput(obj.id, 'height', props.height ?? 0.5, (v) => handlePatch(obj.id, 'height', v), { min: 0.005, max: 1, step: 0.01 })}
-          </div>
-          {renderSelectInput('子图比例', String(props.aspect || 'auto'), ['auto', 'equal', '1'], (v) => handlePatch(obj.id, 'aspect', v), obj.id, 'aspect')}
+          {canEditBounds ? (
+            <div className="space-y-2 rounded-lg border border-slate-100 bg-white p-3">
+              <div className="text-[11px] font-semibold text-slate-500">坐标轴框在白色画布内的位置和大小（0-1 归一化）</div>
+              <div className="grid grid-cols-2 gap-2">
+                {!unsupportedProps.includes('left') && renderNumberInput(obj.id, 'left', props.left ?? 0, (v) => handlePatch(obj.id, 'left', v), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区左边距' })}
+                {!unsupportedProps.includes('bottom') && renderNumberInput(obj.id, 'bottom', props.bottom ?? 0, (v) => handlePatch(obj.id, 'bottom', v), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区下边距' })}
+                {!unsupportedProps.includes('width') && renderNumberInput(obj.id, 'width', props.width ?? 0.5, (v) => handlePatch(obj.id, 'width', v), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区宽度' })}
+                {!unsupportedProps.includes('height') && renderNumberInput(obj.id, 'height', props.height ?? 0.5, (v) => handlePatch(obj.id, 'height', v), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区高度' })}
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-800">
+              当前对象不支持独立调整绘图区边框宽高。{unsupportedReason}
+            </div>
+          )}
+          {canEditAspect && renderSelectInput('子图比例', String(props.aspect || 'auto'), ['auto', 'equal', '1'], (v) => handlePatch(obj.id, 'aspect', v), obj.id, 'aspect')}
           <div className="text-[11px] leading-relaxed text-slate-500">
-            这里修改的是 Matplotlib Axes 在整张图中的归一化位置。适合统一 2x2、2x4 等多子图的单个面板大小和比例。
+            固定最终出图大小时，先在下方“整张白色画布 / 输出尺寸”设置画布宽高，再在这里调坐标轴框的宽高和边距。标签跑到白色区域外时，通常需要增大画布或缩小/移动绘图区。
           </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderSubplotLayoutPanel = () => {
+    const count = subplotOptions.length;
+    if (count <= 1) return null;
+    const autoCols = Math.ceil(Math.sqrt(count));
+    const autoRows = Math.ceil(count / autoCols);
+    const twoCols = Math.min(2, count);
+    const twoColRows = Math.ceil(count / twoCols);
+    const presets = [
+      { rows: 1, cols: count, label: `一行 ${count} 列`, hint: '适合横向论文宽图' },
+      { rows: count, cols: 1, label: `${count} 行一列`, hint: '适合 Word 纵向检查' },
+      { rows: autoRows, cols: autoCols, label: `${autoRows}×${autoCols} 自动网格`, hint: '接近方形紧凑布局' },
+      { rows: twoColRows, cols: twoCols, label: `${twoColRows}×${twoCols} 双列`, hint: '常见多面板布局' },
+    ];
+    const uniquePresets = Array.from(
+      new Map(presets.map(item => [`${item.rows}x${item.cols}`, item])).values()
+    );
+    const updateLayoutSetting = (key: keyof SubplotLayoutSettings, value: number) => {
+      const safeValue = Number.isFinite(value) ? value : DEFAULT_SUBPLOT_LAYOUT_SETTINGS[key];
+      setSubplotLayoutSettings(prev => ({
+        ...prev,
+        [key]: Number(Math.min(0.35, Math.max(0, safeValue)).toFixed(3)),
+      }));
+    };
+    const renderLayoutControl = (
+      key: keyof SubplotLayoutSettings,
+      label: string,
+      max = 0.25,
+      step = 0.01,
+    ) => (
+      <label className="space-y-1 text-[10px] font-semibold text-slate-600">
+        <div className="flex items-center justify-between gap-2">
+          <span>{label}</span>
+          <span className="font-mono text-slate-400">{subplotLayoutSettings[key].toFixed(2)}</span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={max}
+          step={step}
+          value={subplotLayoutSettings[key]}
+          onChange={(event) => updateLayoutSetting(key, Number(event.target.value))}
+          className="w-full accent-blue-600"
+        />
+      </label>
+    );
+    const currentPreset = uniquePresets.find(item => item.rows === autoRows && item.cols === autoCols) || uniquePresets[0];
+    const compactSettings: SubplotLayoutSettings = {
+      marginLeft: 0.10,
+      marginRight: 0.04,
+      marginTop: 0.06,
+      marginBottom: 0.09,
+      gapX: 0.04,
+      gapY: 0.06,
+    };
+    const roomySettings: SubplotLayoutSettings = {
+      marginLeft: 0.16,
+      marginRight: 0.08,
+      marginTop: 0.12,
+      marginBottom: 0.15,
+      gapX: 0.12,
+      gapY: 0.16,
+    };
+    const activeCellWidth = currentPreset
+      ? (1 - subplotLayoutSettings.marginLeft - subplotLayoutSettings.marginRight - subplotLayoutSettings.gapX * Math.max(0, currentPreset.cols - 1)) / currentPreset.cols
+      : 0;
+    const activeCellHeight = currentPreset
+      ? (1 - subplotLayoutSettings.marginTop - subplotLayoutSettings.marginBottom - subplotLayoutSettings.gapY * Math.max(0, currentPreset.rows - 1)) / currentPreset.rows
+      : 0;
+    const layoutTooTight = activeCellWidth < 0.08 || activeCellHeight < 0.08;
+
+    return (
+      <div className="mb-5 rounded-xl border border-blue-100 bg-blue-50/60 p-4 shadow-sm">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div>
+            <div className="text-sm font-bold text-blue-900">多子图版面重排</div>
+            <div className="text-[11px] leading-relaxed text-blue-700 mt-1">
+              已识别 {count} 个子图坐标轴框。这里会重排 `subplot.*` 的真实绘图区位置，写入 EditLog 后重渲染；不改原始绘图数据。
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onSelectGids?.(subplotOptions.map(subplot => subplot.id))}
+            className="shrink-0 rounded-lg border border-blue-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
+          >
+            选中全部
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {uniquePresets.map(preset => (
+            <button
+              type="button"
+              key={`${preset.rows}x${preset.cols}`}
+              onClick={() => applySubplotLayout(preset.rows, preset.cols)}
+              className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-left hover:border-blue-400 hover:bg-blue-50 transition-colors"
+              title={preset.hint}
+            >
+              <div className="text-xs font-bold text-slate-800">{preset.label}</div>
+              <div className="text-[10px] text-slate-500 mt-0.5">{preset.hint}</div>
+            </button>
+          ))}
+        </div>
+        <div className="mt-3 rounded-xl border border-blue-100 bg-white p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div>
+              <div className="text-xs font-bold text-slate-800">子图间距 / 外边距</div>
+              <div className="mt-0.5 text-[10px] leading-relaxed text-slate-500">
+                调整后不会立即重渲染；点击上面的版面按钮后一次性写回，避免连续拖动造成重复渲染。
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSubplotLayoutSettings(DEFAULT_SUBPLOT_LAYOUT_SETTINGS)}
+              className="shrink-0 rounded border border-slate-200 px-2 py-1 text-[10px] font-semibold text-slate-500 hover:bg-slate-50"
+            >
+              重置
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+            {renderLayoutControl('gapX', '水平间距')}
+            {renderLayoutControl('gapY', '垂直间距')}
+            {renderLayoutControl('marginLeft', '左外边距', 0.3)}
+            {renderLayoutControl('marginRight', '右外边距', 0.3)}
+            {renderLayoutControl('marginTop', '上外边距', 0.3)}
+            {renderLayoutControl('marginBottom', '下外边距', 0.3)}
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setSubplotLayoutSettings(compactSettings);
+                if (currentPreset) applySubplotLayout(currentPreset.rows, currentPreset.cols, compactSettings);
+              }}
+              className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-[10px] font-semibold text-slate-600 hover:bg-white"
+            >
+              紧凑应用
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSubplotLayoutSettings(DEFAULT_SUBPLOT_LAYOUT_SETTINGS);
+                if (currentPreset) applySubplotLayout(currentPreset.rows, currentPreset.cols, DEFAULT_SUBPLOT_LAYOUT_SETTINGS);
+              }}
+              className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-[10px] font-semibold text-slate-600 hover:bg-white"
+            >
+              标准应用
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSubplotLayoutSettings(roomySettings);
+                if (currentPreset) applySubplotLayout(currentPreset.rows, currentPreset.cols, roomySettings);
+              }}
+              className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-[10px] font-semibold text-slate-600 hover:bg-white"
+            >
+              宽松应用
+            </button>
+          </div>
+          {layoutTooTight && (
+            <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] leading-relaxed text-amber-700">
+              当前边距/间距可能让单个子图过小，长刻度、图例或色条容易被挤压。建议增大画布或减少间距。
+            </div>
+          )}
+        </div>
+        <div className="mt-3 text-[10px] leading-relaxed text-blue-700">
+          如果标签或图例被挤出白色画布，先在“整张白色画布 / 输出尺寸”里增大画布，再重新应用版面。
         </div>
       </div>
     );
@@ -1039,6 +1443,7 @@ export function RightSidebar({
   const renderAxisDetailPanel = (obj: ManifestObject, axisName: string) => {
     const props = obj.currentProps as any;
     const limits = Array.isArray(props.limits) ? props.limits : [0, 1];
+    const editable = Array.isArray(obj.editable) ? obj.editable : [];
     return (
       <div className="space-y-6">
         {renderPanelTitle(`${axisName} 轴详细控制`)}
@@ -1060,6 +1465,8 @@ export function RightSidebar({
           {renderNumberInput(obj.id, 'tick_labelsize', props.tick_labelsize || 10, (v) => handlePatch(obj.id, 'tick_labelsize', v), { min: 4, max: 30, step: 0.5 })}
           {renderColorInput(`${axisName} 刻度文字颜色`, props.tick_labelcolor || '#000000', (v) => handlePatch(obj.id, 'tick_labelcolor', v), `${obj.id}:tick_labelcolor`)}
           {renderFontSelect(obj.id, 'tick_labelfamily', props.tick_labelfamily || 'Arial', (v) => handlePatch(obj.id, 'tick_labelfamily', v))}
+          {editable.includes('tick_label_dx') && renderNumberInput(obj.id, 'tick_label_dx', props.tick_label_dx || 0, (v) => handlePatch(obj.id, 'tick_label_dx', v), { min: -80, max: 80, step: 0.5 })}
+          {editable.includes('tick_label_dy') && renderNumberInput(obj.id, 'tick_label_dy', props.tick_label_dy || 0, (v) => handlePatch(obj.id, 'tick_label_dy', v), { min: -80, max: 80, step: 0.5 })}
           {renderBoolInput('sci_notation', Boolean(props.sci_notation), (v) => handlePatch(obj.id, 'sci_notation', v))}
           {renderBoolInput('use_math_text', Boolean(props.use_math_text), (v) => handlePatch(obj.id, 'use_math_text', v))}
           {renderNumberInput(obj.id, 'offset_text_size', props.offset_text_size || 10, (v) => handlePatch(obj.id, 'offset_text_size', v), { min: 4, max: 30, step: 0.5 })}
@@ -1143,7 +1550,10 @@ export function RightSidebar({
     if (!manifest.globals || Object.keys(manifest.globals).length === 0) return null;
     return (
       <div className="space-y-6 pt-6 border-t border-slate-200 mt-6">
-        {renderPanelTitle('画布尺寸与精度')}
+        {renderPanelTitle('整张白色画布 / 输出尺寸')}
+        <div className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-600">
+          控制最终导出的白色画布大小和 DPI。它决定整张图的物理尺寸；坐标轴框/真实绘图区宽高请选中 `subplot.*` 后在“真实绘图区 / 坐标轴框”中调整。
+        </div>
         <div className="space-y-4">
           {Object.entries(manifest.globals).map(([key, field]) => {
             const f = field as ManifestField;
@@ -1505,21 +1915,27 @@ export function RightSidebar({
   const supportsBatchProp = (obj: ManifestObject | undefined, prop: string): boolean => {
     if (!obj) return false;
     if (prop === 'visible') return true;
-    if (prop === 'alpha') return ['line', 'patch', 'collection', 'legend', 'grid', 'text', 'figure'].includes(obj.kind);
-    if (prop === 'color') return ['line', 'patch', 'collection', 'text', 'spine', 'grid'].includes(obj.kind);
-    if (prop === 'facecolor') return ['patch', 'collection', 'legend'].includes(obj.kind);
-    if (prop === 'edgecolor') return ['patch', 'collection', 'legend'].includes(obj.kind);
-    if (prop === 'linewidth') return ['line', 'patch', 'collection', 'spine', 'grid'].includes(obj.kind);
+    if (prop === 'alpha') return ['line', 'patch', 'collection', 'legend', 'grid', 'text', 'figure', 'boxplot_container', 'violinplot_container'].includes(obj.kind);
+    if (prop === 'color') return ['line', 'patch', 'collection', 'text', 'spine', 'grid', 'xtick', 'ytick', 'boxplot_container', 'violinplot_container'].includes(obj.kind);
+    if (prop === 'facecolor') return ['patch', 'collection', 'legend', 'violinplot_container'].includes(obj.kind);
+    if (prop === 'edgecolor') return ['patch', 'collection', 'legend', 'violinplot_container'].includes(obj.kind);
+    if (prop === 'linewidth') return ['line', 'patch', 'collection', 'spine', 'grid', 'boxplot_container', 'violinplot_container'].includes(obj.kind);
+    if (prop === 'box_color' || prop === 'median_color') return obj.kind === 'boxplot_container';
     if (prop === 'markersize') return obj.kind === 'line';
     if (prop === 'size') return obj.kind === 'collection';
-    if (prop === 'fontsize') return obj.kind === 'text' || obj.kind === 'legend';
-    if (prop === 'fontfamily') return obj.kind === 'text' || obj.kind === 'legend';
-    if (prop === 'fontweight' || prop === 'fontstyle') return obj.kind === 'text' || obj.kind === 'legend' || obj.kind === 'axis_x' || obj.kind === 'axis_y';
-    if (['left', 'bottom', 'width', 'height', 'aspect'].includes(prop)) return obj.kind === 'subplot';
+    if (prop === 'fontsize') return obj.kind === 'text' || obj.kind === 'legend' || obj.kind === 'xtick' || obj.kind === 'ytick';
+    if (prop === 'fontfamily') return obj.kind === 'text' || obj.kind === 'legend' || obj.kind === 'xtick' || obj.kind === 'ytick';
+    if (prop === 'fontweight' || prop === 'fontstyle') return obj.kind === 'text' || obj.kind === 'legend' || obj.kind === 'axis_x' || obj.kind === 'axis_y' || obj.kind === 'xtick' || obj.kind === 'ytick';
+    if (['left', 'bottom', 'width', 'height', 'aspect'].includes(prop)) {
+      return obj.kind === 'subplot' && !getUnsupportedProps(obj).includes(prop);
+    }
     if (['left', 'bottom', 'width', 'height', 'tick_fontsize', 'label'].includes(prop)) {
       return obj.kind === 'colorbar';
     }
     if (prop === 'linestyle') return ['line', 'grid', 'spine'].includes(obj.kind);
+    if (['tick_label_dx', 'tick_label_dy'].includes(prop)) {
+      return ['axis_x', 'axis_y'].includes(obj.kind);
+    }
     if (['tick_direction', 'tick_length', 'tick_width', 'tick_color', 'show_minor_ticks'].includes(prop)) {
       return ['axis_x', 'axis_y', 'axes'].includes(obj.kind);
     }
@@ -1837,13 +2253,14 @@ export function RightSidebar({
                 {targetObjects.some(obj => supportsBatchProp(obj, 'fontstyle')) && (
                   renderSelectInput('字形', commonComponentProp(targetObjects, 'fontstyle', 'normal') as string, ['normal', 'italic', 'oblique'], (value) => patchComponentGroup(targetObjects, 'fontstyle', value))
                 )}
-                {targetObjects.some(obj => supportsBatchProp(obj, 'width')) && (
+                {targetObjects.some(obj => obj.kind === 'subplot' && supportsBatchProp(obj, 'width')) && (
                   <div className="space-y-2 rounded-md border border-slate-100 bg-white/80 p-2">
-                    <div className="text-[11px] font-semibold text-slate-500">子图位置与尺寸</div>
-                    {renderNumberInput(`component-${group.id}`, 'left', commonComponentProp(targetObjects, 'left', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'left', value), { min: 0, max: 1, step: 0.01 })}
-                    {renderNumberInput(`component-${group.id}`, 'bottom', commonComponentProp(targetObjects, 'bottom', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'bottom', value), { min: 0, max: 1, step: 0.01 })}
-                    {renderNumberInput(`component-${group.id}`, 'width', commonComponentProp(targetObjects, 'width', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'width', value), { min: 0.005, max: 1, step: 0.01 })}
-                    {renderNumberInput(`component-${group.id}`, 'height', commonComponentProp(targetObjects, 'height', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'height', value), { min: 0.005, max: 1, step: 0.01 })}
+                    <div className="text-[11px] font-semibold text-slate-500">真实绘图区 / 坐标轴框</div>
+                    <div className="text-[11px] leading-relaxed text-slate-400">批量统一多个子图坐标轴框的位置和宽高，不改变整张白色画布。</div>
+                    {renderNumberInput(`component-${group.id}`, 'left', commonComponentProp(targetObjects, 'left', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'left', value), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区左边距' })}
+                    {renderNumberInput(`component-${group.id}`, 'bottom', commonComponentProp(targetObjects, 'bottom', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'bottom', value), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区下边距' })}
+                    {renderNumberInput(`component-${group.id}`, 'width', commonComponentProp(targetObjects, 'width', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'width', value), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区宽度' })}
+                    {renderNumberInput(`component-${group.id}`, 'height', commonComponentProp(targetObjects, 'height', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'height', value), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区高度' })}
                     {renderSelectInput('比例', commonComponentProp(targetObjects, 'aspect', 'auto') as string, ['auto', 'equal', '1'], (value) => patchComponentGroup(targetObjects, 'aspect', value))}
                   </div>
                 )}
@@ -2917,6 +3334,7 @@ export function RightSidebar({
         <div className={isLocked && activeTab === 'properties' ? 'opacity-55 pointer-events-none' : ''}>
           {activeTab === 'properties' && (
             <>
+              {renderSubplotLayoutPanel()}
               {selectedGids.length > 1 && renderBatchPanel()}
               {selectedObj ? renderObjectPanel(selectedObj) : (
                 <div className="text-sm text-slate-500">未选择任何对象。</div>

@@ -8,6 +8,9 @@ interface ProjectSummary {
   updated_at: string;
   group_count: number;
   sample_count: number;
+  figure_count?: number;
+  project_type?: 'single_figure' | 'multi_figure' | 'composition_code';
+  project_type_label?: string;
   preview: string | null;
 }
 
@@ -21,6 +24,7 @@ export function ProjectsPage({ subView, onNavigate, onLoadProject }: {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'single_figure' | 'multi_figure' | 'composition_code'>('all');
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -109,7 +113,21 @@ export function ProjectsPage({ subView, onNavigate, onLoadProject }: {
     setTimeout(() => commitRename(id), 150);
   };
 
-  const filtered = projects.filter(p => p.name.includes(searchQuery));
+  const typeCounts = {
+    all: projects.length,
+    single_figure: projects.filter(p => (p.project_type || 'single_figure') === 'single_figure').length,
+    multi_figure: projects.filter(p => p.project_type === 'multi_figure').length,
+    composition_code: projects.filter(p => p.project_type === 'composition_code').length,
+  };
+  const filtered = projects
+    .filter(p => p.name.includes(searchQuery))
+    .filter(p => typeFilter === 'all' || (p.project_type || 'single_figure') === typeFilter);
+  const typeFilterItems = [
+    { id: 'all' as const, label: '全部项目', count: typeCounts.all },
+    { id: 'single_figure' as const, label: '单图项目', count: typeCounts.single_figure },
+    { id: 'multi_figure' as const, label: '多 Figure 项目', count: typeCounts.multi_figure },
+    { id: 'composition_code' as const, label: '组合代码项目', count: typeCounts.composition_code },
+  ];
 
   return (
     <div className="flex-1 overflow-y-auto bg-slate-50 p-8">
@@ -136,6 +154,24 @@ export function ProjectsPage({ subView, onNavigate, onLoadProject }: {
               新建项目
             </button>
           </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
+          {typeFilterItems.map(item => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setTypeFilter(item.id)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                typeFilter === item.id
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              {item.label}
+              <span className={`ml-1 ${typeFilter === item.id ? 'text-blue-100' : 'text-slate-400'}`}>({item.count})</span>
+            </button>
+          ))}
         </div>
 
         <div className="grid gap-4">
@@ -183,7 +219,20 @@ export function ProjectsPage({ subView, onNavigate, onLoadProject }: {
                         />
                       </div>
                     )}
-                    <div className="text-xs text-slate-500 mt-0.5">{p.group_count} 组 · {p.sample_count} 个样品</div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                      <span className={`rounded-full px-2 py-0.5 font-semibold ${
+                        p.project_type === 'composition_code'
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : p.project_type === 'multi_figure'
+                            ? 'bg-indigo-50 text-indigo-700'
+                            : 'bg-slate-100 text-slate-600'
+                      }`}>
+                        {p.project_type_label || '单图项目'}
+                      </span>
+                      <span>{p.figure_count || 0} Figure</span>
+                      <span>{p.group_count} 组</span>
+                      <span>{p.sample_count} 个样品</span>
+                    </div>
                   </div>
                   <div className="text-xs text-slate-400 text-right shrink-0 ml-4 leading-tight">
                     <div>{p.updated_at}</div>

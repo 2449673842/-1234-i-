@@ -49,6 +49,14 @@ const COMPOSER_PANEL_HEIGHT = 210;
 const COMPOSER_GAP_X = 34;
 const COMPOSER_GAP_Y = 44;
 const COMPOSER_LABEL_OFFSET = 24;
+const A4_WIDTH_MM = 210;
+const A4_HEIGHT_MM = 297;
+const CSS_PX_PER_MM = 96 / 25.4;
+const WORD_MARGIN_PRESETS = {
+  normal: { label: 'Word 默认页边距', top: 25.4, right: 25.4, bottom: 25.4, left: 25.4 },
+  narrow: { label: 'Word 窄页边距', top: 12.7, right: 12.7, bottom: 12.7, left: 12.7 },
+  manuscript: { label: '论文常用 20mm', top: 20, right: 20, bottom: 20, left: 20 },
+};
 
 function downloadTextFile(filename: string, content: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType });
@@ -60,6 +68,25 @@ function downloadTextFile(filename: string, content: string, mimeType: string) {
   anchor.click();
   document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
+}
+
+function collectFontSizeStats(figSession: FigureSession | null, scale: number) {
+  const objects = figSession?.manifest?.objects || [];
+  const sizes = objects
+    .map((obj) => {
+      const props = obj.currentProps || {};
+      const size = Number(props.fontsize ?? props.tick_labelsize ?? props.label_fontsize);
+      if (!Number.isFinite(size) || size <= 0) return null;
+      const role = obj.role || obj.kind || obj.id;
+      return { id: obj.id, role: String(role), sourcePt: size, finalPt: size * scale };
+    })
+    .filter(Boolean) as Array<{ id: string; role: string; sourcePt: number; finalPt: number }>;
+
+  sizes.sort((a, b) => a.finalPt - b.finalPt);
+  const min = sizes[0] || null;
+  const tooSmall = sizes.filter(item => item.finalPt < 6).length;
+  const borderline = sizes.filter(item => item.finalPt >= 6 && item.finalPt < 7).length;
+  return { min, tooSmall, borderline, count: sizes.length };
 }
 
 export function ExportSettingsPage({
@@ -88,10 +115,16 @@ export function ExportSettingsPage({
   const [assetSort, setAssetSort] = useState<'newest' | 'oldest' | 'name'>('newest');
   const [isAssetLoading, setIsAssetLoading] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
+  const [isSavingAllFigures, setIsSavingAllFigures] = useState(false);
+  const [includeSubplotExports, setIncludeSubplotExports] = useState(false);
   const [isComposerOpen, setIsComposerOpen] = useState(false);
   const [composerPanels, setComposerPanels] = useState<ComposerPanel[]>([]);
   const [activeComposerAssetId, setActiveComposerAssetId] = useState<string | null>(null);
   const [dragState, setDragState] = useState<DragState | null>(null);
+  const [wordMarginPreset, setWordMarginPreset] = useState<keyof typeof WORD_MARGIN_PRESETS>('normal');
+  const [wordPreviewMode, setWordPreviewMode] = useState<'actual' | 'fitWidth'>('fitWidth');
+  const [wordPageZoom, setWordPageZoom] = useState(1);
+  const [showWordSampleText, setShowWordSampleText] = useState(true);
 
   const loadAssets = async () => {
     if (!projectId) return;
@@ -162,6 +195,44 @@ export function ExportSettingsPage({
     const map = new Map(assets.map(asset => [asset.assetId, asset]));
     return composerPanels.map(panel => map.get(panel.assetId)).filter(Boolean) as ExportAsset[];
   }, [assets, composerPanels]);
+
+  const wordPreview = useMemo(() => {
+    const margins = WORD_MARGIN_PRESETS[wordMarginPreset];
+    const contentWidth = A4_WIDTH_MM - margins.left - margins.right;
+    const contentHeight = A4_HEIGHT_MM - margins.top - margins.bottom;
+    const sourceWidth = Math.max(1, Number(figureConfig.width) || 100);
+    const sourceHeight = Math.max(1, Number(figureConfig.height) || 80);
+    const fitScale = Math.min(contentWidth / sourceWidth, contentHeight / sourceHeight);
+    const displayScale = wordPreviewMode === 'fitWidth' ? Math.min(fitScale, 1) : 1;
+    const finalWidth = sourceWidth * displayScale;
+    const finalHeight = sourceHeight * displayScale;
+    const pagePx = A4_WIDTH_MM * CSS_PX_PER_MM * wordPageZoom;
+    const pageScale = pagePx / A4_WIDTH_MM;
+    const left = margins.left * pageScale + Math.max(0, (contentWidth - finalWidth) * pageScale / 2);
+    const sampleTopReserveMm = showWordSampleText ? 44 : 0;
+    const top = (margins.top + sampleTopReserveMm) * pageScale;
+    const stats = collectFontSizeStats(figSession, displayScale);
+    return {
+      margins,
+      contentWidth,
+      contentHeight,
+      sourceWidth,
+      sourceHeight,
+      finalWidth,
+      finalHeight,
+      displayScale,
+      pagePx,
+      pageHeightPx: A4_HEIGHT_MM * pageScale,
+      pageScale,
+      left,
+      top,
+      sampleTopReserveMm,
+      figureWidthPx: finalWidth * pageScale,
+      figureHeightPx: finalHeight * pageScale,
+      overflows: finalWidth > contentWidth || finalHeight > contentHeight,
+      stats,
+    };
+  }, [figSession, figureConfig.height, figureConfig.width, showWordSampleText, wordMarginPreset, wordPageZoom, wordPreviewMode]);
 
   const toggleAssetSelection = (assetId: string) => {
     setSelectedAssetIds(prev => prev.includes(assetId) ? prev.filter(id => id !== assetId) : [...prev, assetId]);
@@ -351,7 +422,7 @@ export function ExportSettingsPage({
 
       const endpoint = isProjectExport ? `/api/projects/${projectId}/export` : '/api/figure/export';
       const payload = isProjectExport
-        ? { figureId: activeFigureId, format: selectedFormat, dpi: selectedDpi, revision: figSession?.revision }
+        ? { figureId: activeFigureId, format: selectedFormat, dpi: selectedDpi, revision: figSession?.revision, includeSubplots: includeSubplotExports }
         : { sessionId: figSession?.sessionId, format: selectedFormat, dpi: selectedDpi, revision: figSession?.revision };
 
       const res = await fetch(endpoint, {
@@ -407,10 +478,49 @@ export function ExportSettingsPage({
       }
       if (isProjectExport) {
         await loadAssets();
+        const subplotCount = Array.isArray(exportPayload.subplotAssets) ? exportPayload.subplotAssets.length : 0;
+        if (includeSubplotExports && subplotCount > 0) {
+          alert(`已同时保存 ${subplotCount} 个子图 SVG 到导出图库。`);
+        }
       }
     } catch (err: any) {
       console.error('Export error:', err);
       alert(`导出失败: ${err.message}`);
+    }
+  };
+
+  const saveAllFiguresToLibrary = async () => {
+    if (!projectId) {
+      alert('请先打开一个项目。');
+      return;
+    }
+    if (isRendering) {
+      alert('后台引擎正在渲染中，请等待渲染完成后再保存到图库。');
+      return;
+    }
+    setIsSavingAllFigures(true);
+    try {
+      const selectedDpi = exportConfig.dpi || 600;
+      const res = await fetch(`/api/projects/${projectId}/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          format: 'svg',
+          dpi: selectedDpi,
+          saveToLibrary: true,
+        }),
+      });
+      const data = await res.json();
+      if (data.status !== 'success') {
+        throw new Error(data.message || '保存到图库失败');
+      }
+      const count = Array.isArray(data.figures) ? data.figures.filter((figure: any) => figure.asset).length : 0;
+      await loadAssets();
+      alert(`已保存 ${count} 张 Figure 到历史导出资产。`);
+    } catch (err: any) {
+      alert(`保存到图库失败: ${err.message || '未知错误'}`);
+    } finally {
+      setIsSavingAllFigures(false);
     }
   };
 
@@ -521,6 +631,169 @@ export function ExportSettingsPage({
                 </div>
               </div>
             </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
+              <div className="flex flex-wrap items-start justify-between gap-4 mb-4 pb-3 border-b border-slate-100">
+                <div>
+                  <h3 className="font-bold text-lg text-slate-800">Word / A4 最终尺寸预览</h3>
+                  <p className="text-sm text-slate-500 mt-1">模拟图片插入 A4 Word 页面后的占位大小，重点检查缩放后的字体是否还能读清。</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={wordMarginPreset}
+                    onChange={(e) => setWordMarginPreset(e.target.value as keyof typeof WORD_MARGIN_PRESETS)}
+                    className="border border-slate-300 rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {Object.entries(WORD_MARGIN_PRESETS).map(([key, preset]) => (
+                      <option key={key} value={key}>{preset.label}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={wordPreviewMode}
+                    onChange={(e) => setWordPreviewMode(e.target.value as 'actual' | 'fitWidth')}
+                    className="border border-slate-300 rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="fitWidth">适应 Word 版心</option>
+                    <option value="actual">按导出物理尺寸</option>
+                  </select>
+                  <select
+                    value={wordPageZoom}
+                    onChange={(e) => setWordPageZoom(Number(e.target.value) || 1)}
+                    className="border border-slate-300 rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value={0.75}>页面 75%</option>
+                    <option value={1}>页面 100%（Word）</option>
+                    <option value={1.25}>页面 125%</option>
+                  </select>
+                  <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={showWordSampleText}
+                      onChange={(e) => setShowWordSampleText(e.target.checked)}
+                      className="accent-blue-600"
+                    />
+                    示例正文
+                  </label>
+                </div>
+              </div>
+
+              <div className="space-y-5">
+                <div className="max-h-[82vh] overflow-auto rounded-xl border border-slate-200 bg-slate-100 p-8">
+                  <div
+                    className="relative mx-auto bg-white shadow-lg ring-1 ring-slate-200"
+                    style={{ width: wordPreview.pagePx, height: wordPreview.pageHeightPx }}
+                  >
+                    <div
+                      className="absolute border border-dashed border-slate-300 bg-slate-50/40"
+                      style={{
+                        left: wordPreview.margins.left * wordPreview.pageScale,
+                        top: wordPreview.margins.top * wordPreview.pageScale,
+                        width: wordPreview.contentWidth * wordPreview.pageScale,
+                        height: wordPreview.contentHeight * wordPreview.pageScale,
+                      }}
+                    />
+                    {showWordSampleText && (
+                      <div
+                        className="absolute text-slate-800"
+                        style={{
+                          left: wordPreview.margins.left * wordPreview.pageScale,
+                          top: wordPreview.margins.top * wordPreview.pageScale,
+                          width: wordPreview.contentWidth * wordPreview.pageScale,
+                        }}
+                      >
+                        <div
+                          className="font-serif font-bold leading-tight"
+                          style={{ fontSize: 14 * wordPageZoom, lineHeight: 1.25 }}
+                        >
+                          Results and discussion
+                        </div>
+                        <div
+                          className="mt-2 font-serif text-slate-700"
+                          style={{ fontSize: 11 * wordPageZoom, lineHeight: 1.55 }}
+                        >
+                          The assembled figure is placed in the manuscript body to evaluate whether axis labels,
+                          tick labels, legends and panel annotations remain readable at the final Word layout size.
+                        </div>
+                      </div>
+                    )}
+                    <div
+                      className={`absolute flex items-center justify-center overflow-hidden bg-white shadow-sm ring-1 ${
+                        wordPreview.overflows ? 'ring-rose-400' : 'ring-blue-300'
+                      }`}
+                      style={{
+                        left: wordPreview.left,
+                        top: wordPreview.top,
+                        width: wordPreview.figureWidthPx,
+                        height: wordPreview.figureHeightPx,
+                      }}
+                      title={`${wordPreview.finalWidth.toFixed(1)} × ${wordPreview.finalHeight.toFixed(1)} mm`}
+                    >
+                      {figSession?.svg ? (
+                        <div
+                          className="w-full h-full [&>svg]:w-full [&>svg]:h-full [&>svg]:object-contain"
+                          dangerouslySetInnerHTML={{ __html: sanitizeSvg(figSession.svg) }}
+                        />
+                      ) : (
+                        <div className="px-4 text-center text-xs text-slate-400">请先渲染当前 Figure，再查看 A4 预览</div>
+                      )}
+                    </div>
+                    {showWordSampleText && (
+                      <div
+                        className="absolute font-serif text-slate-700"
+                        style={{
+                          left: wordPreview.left,
+                          top: wordPreview.top + wordPreview.figureHeightPx + 10 * wordPageZoom,
+                          width: Math.min(wordPreview.figureWidthPx, wordPreview.contentWidth * wordPreview.pageScale),
+                          fontSize: 9 * wordPageZoom,
+                          lineHeight: 1.35,
+                        }}
+                      >
+                        <span className="font-bold">Figure 1.</span> Example caption text showing how the exported
+                        figure, legend and panel labels sit relative to manuscript typography on an A4 page.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-sm">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-xs font-semibold text-slate-500 mb-2">页面与图片尺寸</div>
+                    <div className="space-y-1.5 text-xs text-slate-600">
+                      <div className="flex justify-between gap-3"><span>A4 页面</span><span className="font-mono">210 × 297 mm</span></div>
+                      <div className="flex justify-between gap-3"><span>Word 版心</span><span className="font-mono">{wordPreview.contentWidth.toFixed(1)} × {wordPreview.contentHeight.toFixed(1)} mm</span></div>
+                      <div className="flex justify-between gap-3"><span>导出尺寸</span><span className="font-mono">{wordPreview.sourceWidth.toFixed(1)} × {wordPreview.sourceHeight.toFixed(1)} mm</span></div>
+                      <div className="flex justify-between gap-3"><span>插入后尺寸</span><span className="font-mono">{wordPreview.finalWidth.toFixed(1)} × {wordPreview.finalHeight.toFixed(1)} mm</span></div>
+                      <div className="flex justify-between gap-3"><span>Word 缩放</span><span className="font-mono">{Math.round(wordPreview.displayScale * 100)}%</span></div>
+                      <div className="flex justify-between gap-3"><span>页面显示</span><span className="font-mono">{Math.round(wordPageZoom * 100)}%</span></div>
+                    </div>
+                  </div>
+
+                  <div className={`rounded-xl border p-4 ${
+                    wordPreview.overflows || wordPreview.stats.tooSmall > 0
+                      ? 'border-amber-200 bg-amber-50 text-amber-800'
+                      : 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  }`}>
+                    <div className="text-xs font-semibold mb-2">可读性检查</div>
+                    <div className="space-y-1.5 text-xs leading-relaxed">
+                      {wordPreview.stats.count > 0 ? (
+                        <>
+                          <div>最小估算字号：<span className="font-mono font-semibold">{wordPreview.stats.min?.finalPt.toFixed(1)} pt</span>（来源 {wordPreview.stats.min?.id}）</div>
+                          <div>低于 6 pt：{wordPreview.stats.tooSmall} 个；6-7 pt 临界：{wordPreview.stats.borderline} 个。</div>
+                        </>
+                      ) : (
+                        <div>当前 manifest 未提供可统计字号；请以视觉预览为准。</div>
+                      )}
+                      {wordPreview.overflows && <div>当前图片超过 Word 版心，建议改用“适应 Word 版心”或减小导出尺寸。</div>}
+                      {!wordPreview.overflows && wordPreview.stats.tooSmall === 0 && <div>当前尺寸下没有检测到明显过小字体。</div>}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-xs leading-relaxed text-blue-700">
+                    建议流程：先用“适应 Word 版心”看最终读者视角；若最小字号低于 6 pt，回到字体中心提高 tick/legend 字号，或减少拼图面板数量后再导出。
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Right Sidebar - Publication Checklist & Export */}
@@ -552,6 +825,21 @@ export function ExportSettingsPage({
               </div>
 
               <div className="space-y-3">
+                <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={includeSubplotExports}
+                    onChange={(event) => setIncludeSubplotExports(event.target.checked)}
+                    disabled={!projectId}
+                    className="mt-0.5 accent-blue-600"
+                  />
+                  <span>
+                    <span className="font-semibold text-slate-800">同时导出每个子图到图库</span>
+                    <span className="mt-0.5 block text-[11px] text-slate-500">
+                      适合 2×2 等多子图 Figure。第一版按识别到的坐标轴框裁出 SVG；框外图例、长标签或色条可能需要后续“包含标签图例”模式。
+                    </span>
+                  </span>
+                </label>
                 <button onClick={() => handleExport()} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow-md hover:bg-blue-700 flex items-center justify-center gap-2 transition-all hover:-translate-y-0.5">
                   <Download className="w-4 h-4" /> 导出高质量图形 ({exportConfig.format})
                 </button>
@@ -591,6 +879,14 @@ export function ExportSettingsPage({
                 className="px-3 py-2 text-sm rounded-lg border border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-50"
               >
                 {isAssetLoading ? '刷新中...' : '刷新'}
+              </button>
+              <button
+                onClick={() => void saveAllFiguresToLibrary()}
+                disabled={!projectId || isRendering || isSavingAllFigures}
+                className="px-3 py-2 text-sm rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                title="把当前项目所有已渲染 Figure 以 SVG 保存到历史导出资产，供组合图工作台和资产库使用。"
+              >
+                {isSavingAllFigures ? '保存中...' : '保存全部 Figure 到图库'}
               </button>
               <button
                 onClick={downloadSelectedAssets}
@@ -659,7 +955,7 @@ export function ExportSettingsPage({
             </div>
           ) : filteredAssets.length === 0 ? (
             <div className="border border-dashed border-slate-300 rounded-xl p-8 text-center text-sm text-slate-500">
-              暂无导出记录。先导出一张图，系统会自动保存到项目图库。
+              暂无历史导出资产。渲染预览不会自动进入图库；点击上方“保存全部 Figure 到图库”，或导出单张高质量图形后，这里才会出现可下载/拼版的资产。
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">

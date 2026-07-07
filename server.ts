@@ -490,6 +490,48 @@ async function startServer() {
       .replace(/<\/svg>\s*$/i, '');
   }
 
+  function buildSubplotSvgExports(svg: string, manifest: any): Array<{ subplotId: string; index: number; svg: string; bounds: any }> {
+    const objects = Array.isArray(manifest?.objects) ? manifest.objects : [];
+    const subplots = objects
+      .filter((obj: any) => obj?.kind === 'subplot' && typeof obj?.id === 'string')
+      .map((obj: any, fallbackIndex: number) => {
+        const props = obj.currentProps || {};
+        const left = Number(props.left);
+        const bottom = Number(props.bottom);
+        const width = Number(props.width);
+        const height = Number(props.height);
+        if (![left, bottom, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+          return null;
+        }
+        return {
+          subplotId: obj.id,
+          index: Number.isFinite(Number(props.subplotIndex)) ? Number(props.subplotIndex) : fallbackIndex,
+          bounds: { left, bottom, width, height },
+        };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => a.index - b.index) as Array<{ subplotId: string; index: number; bounds: any }>;
+
+    if (subplots.length === 0) return [];
+    const viewBox = parseSvgViewBox(svg);
+    const inner = extractSvgInner(svg);
+    return subplots.map((subplot, idx) => {
+      const cropX = viewBox.x + subplot.bounds.left * viewBox.width;
+      const cropY = viewBox.y + (1 - subplot.bounds.bottom - subplot.bounds.height) * viewBox.height;
+      const cropW = subplot.bounds.width * viewBox.width;
+      const cropH = subplot.bounds.height * viewBox.height;
+      const panelSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${cropW}" height="${cropH}" viewBox="${cropX} ${cropY} ${cropW} ${cropH}">
+${inner}
+</svg>`;
+      return {
+        subplotId: subplot.subplotId,
+        index: idx,
+        svg: panelSvg,
+        bounds: subplot.bounds,
+      };
+    });
+  }
+
   interface ComposePanelLayout {
     assetId: string;
     x: number;
@@ -753,6 +795,19 @@ async function startServer() {
   app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (err instanceof SyntaxError && 'body' in err) {
       return res.status(400).json({ status: 'error', message: 'Invalid JSON payload' });
+    }
+    if (err?.type === 'entity.too.large') {
+      return res.status(413).json({
+        status: 'error',
+        message: '请求体过大：请减少一次性传入的代码片段数量，或不要把超长完整脚本作为 codeSlice 发送。',
+      });
+    }
+    if (req.path.startsWith('/api/')) {
+      const status = Number(err?.status || err?.statusCode || 500);
+      return res.status(Number.isFinite(status) ? status : 500).json({
+        status: 'error',
+        message: err?.message || 'API request failed',
+      });
     }
     next(err);
   });
@@ -1361,6 +1416,346 @@ async function startServer() {
     };
   }
 
+  interface CompositionProjectSourceInput {
+    projectId?: unknown;
+    figureId?: unknown;
+    codeSlice?: {
+      code?: unknown;
+      title?: unknown;
+      startLine?: unknown;
+      endLine?: unknown;
+      confidence?: unknown;
+      mode?: unknown;
+      reason?: unknown;
+    } | null;
+  }
+
+  interface ResolvedCompositionSource {
+    projectId: string;
+    projectName: string;
+    figureId: string;
+    figureIndex: number;
+    script: string;
+    language: 'python' | 'r';
+    editLog: EditEntry[];
+    revision: number;
+    codeSlice: any | null;
+    datasets: DatasetEntry[];
+  }
+
+  function normalizeCompositionSources(body: any, fallbackProjectId?: string): CompositionProjectSourceInput[] {
+    if (Array.isArray(body?.sources)) {
+      return body.sources;
+    }
+    const figureIds = Array.isArray(body?.figureIds) ? body.figureIds : [];
+    if (fallbackProjectId && figureIds.length > 0) {
+      return figureIds.map((figureId: unknown) => ({ projectId: fallbackProjectId, figureId }));
+    }
+    return [];
+  }
+
+  function parseFigureIdIndex(figureId: string): number {
+    const match = /^fig_(\d+)$/.exec(figureId);
+    if (!match) {
+      throw new Error(`无效的 Figure ID: ${figureId}`);
+    }
+    const index = Number(match[1]) - 1;
+    if (!Number.isInteger(index) || index < 0) {
+      throw new Error(`无效的 Figure ID: ${figureId}`);
+    }
+    return index;
+  }
+
+  function resolveCompositionSources(rawSources: CompositionProjectSourceInput[]): ResolvedCompositionSource[] {
+    if (!Array.isArray(rawSources) || rawSources.length === 0) {
+      throw new Error('请至少选择一张 Figure');
+    }
+    if (rawSources.length > 24) {
+      throw new Error('一次最多选择 24 张 Figure 创建组合代码项目');
+    }
+
+    const seen = new Set<string>();
+    return rawSources.map((raw) => {
+      const projectId = String(raw?.projectId || '').trim();
+      const figureId = String(raw?.figureId || '').trim();
+      assertSafeProjectId(projectId);
+      const figureIndex = parseFigureIdIndex(figureId);
+      const key = `${projectId}:${figureId}`;
+      if (seen.has(key)) {
+        throw new Error(`重复选择了 ${projectId}/${figureId}`);
+      }
+      seen.add(key);
+
+      const project = getProject(projectId);
+      if (!project) {
+        throw new Error(`源项目不存在: ${projectId}`);
+      }
+      const figRow = listProjectFigures(projectId).find(row => Number(row.figure_index) === figureIndex);
+      if (!figRow) {
+        throw new Error(`源项目 ${project.name} 中不存在 ${figureId}`);
+      }
+      const session = loadSession(figRow.session_id);
+      const projectScript = project.script || (() => {
+        try {
+          const spec = JSON.parse(project.spec || '{}');
+          return spec.custom_script || spec.script || '';
+        } catch {
+          return '';
+        }
+      })();
+      const script = session?.script || projectScript || '';
+      if (!script) {
+        throw new Error(`源项目 ${project.name}/${figureId} 没有可用于转写的脚本`);
+      }
+
+      const clientCodeSlice = raw?.codeSlice && typeof raw.codeSlice === 'object' && typeof raw.codeSlice.code === 'string'
+        ? {
+            figureId,
+            title: typeof raw.codeSlice.title === 'string' ? raw.codeSlice.title : `${figureId} 代码片段`,
+            startLine: Number(raw.codeSlice.startLine || 0),
+            endLine: Number(raw.codeSlice.endLine || 0),
+            code: raw.codeSlice.code,
+            confidence: typeof raw.codeSlice.confidence === 'string' ? raw.codeSlice.confidence : 'client',
+            mode: typeof raw.codeSlice.mode === 'string' ? raw.codeSlice.mode : 'client_slice',
+            reason: typeof raw.codeSlice.reason === 'string' ? raw.codeSlice.reason : 'frontend-provided codeSlice',
+          }
+        : null;
+
+      return {
+        projectId,
+        projectName: project.name,
+        figureId,
+        figureIndex,
+        script,
+        language: inferScriptLanguage(script),
+        editLog: session?.editLog || [],
+        revision: session?.revision || figRow.revision || 1,
+        codeSlice: clientCodeSlice,
+        datasets: listProjectFiles(projectId),
+      };
+    });
+  }
+
+  function copyCompositionProjectFiles(targetProjectId: string, sources: ResolvedCompositionSource[]) {
+    const targetDir = path.join(process.cwd(), 'data', 'projects', targetProjectId, 'files');
+    fs.mkdirSync(targetDir, { recursive: true });
+    const copied: Array<{
+      sourceProjectId: string;
+      sourceProjectName: string;
+      sourceDatasetId: string;
+      sourceFileName: string;
+      copiedDatasetId: string;
+      copiedFileName: string;
+      columns: string[];
+      rowCount: number;
+    }> = [];
+    const copiedBySourcePath = new Map<string, string>();
+
+    sources.forEach((source) => {
+      source.datasets.forEach((dataset) => {
+        const sourceAbs = path.resolve(process.cwd(), dataset.filePath);
+        if (!fs.existsSync(sourceAbs)) return;
+
+        const sourceKey = sourceAbs.toLowerCase();
+        if (copiedBySourcePath.has(sourceKey)) return;
+
+        const ext = path.extname(dataset.fileName || path.basename(sourceAbs));
+        const base = path.basename(dataset.fileName || path.basename(sourceAbs), ext).replace(/[^\w\u4e00-\u9fa5.-]+/g, '_') || 'dataset';
+        const copiedDatasetId = randomUUID();
+        const copiedFileName = `${source.projectName.replace(/[^\w\u4e00-\u9fa5.-]+/g, '_')}_${base}_${copiedDatasetId.slice(0, 8)}${ext}`;
+        const destAbs = path.join(targetDir, copiedFileName);
+        fs.copyFileSync(sourceAbs, destAbs);
+        const storedPath = path.relative(process.cwd(), destAbs).replace(/\\/g, '/');
+        addProjectFile(copiedDatasetId, targetProjectId, copiedFileName, storedPath, dataset.columns || [], dataset.rowCount || 0);
+        copiedBySourcePath.set(sourceKey, copiedDatasetId);
+        copied.push({
+          sourceProjectId: source.projectId,
+          sourceProjectName: source.projectName,
+          sourceDatasetId: dataset.datasetId,
+          sourceFileName: dataset.fileName,
+          copiedDatasetId,
+          copiedFileName,
+          columns: dataset.columns || [],
+          rowCount: dataset.rowCount || 0,
+        });
+      });
+    });
+
+    return copied;
+  }
+
+  function makeCompositionScaffold(language: 'python' | 'r', targetAxesWidthIn: number, targetAxesHeightIn: number): string {
+    if (language === 'r') {
+      return [
+        '# language: r',
+        '# 组合代码项目脚手架：请把下方 AI 提示词交给网页 AI，让它基于源代码与已复制数据重写组合图代码。',
+        '# 要求：组合后的每个子图绘图区尺寸保持一致。',
+        `target_axes_width_in <- ${targetAxesWidthIn}`,
+        `target_axes_height_in <- ${targetAxesHeightIn}`,
+        '',
+        '# TODO: paste AI-generated R code here.',
+      ].join('\n');
+    }
+    return [
+      '# Composition code project scaffold.',
+      '# Paste the web-AI rewritten Matplotlib code below.',
+      '# Requirement: every subplot axes box must have the same physical size.',
+      `TARGET_AXES_WIDTH_IN = ${targetAxesWidthIn}`,
+      `TARGET_AXES_HEIGHT_IN = ${targetAxesHeightIn}`,
+      '',
+      '# TODO: paste AI-generated Python code here.',
+    ].join('\n');
+  }
+
+  function buildCompositionPrompt(args: {
+    sources: ResolvedCompositionSource[];
+    copiedFiles: ReturnType<typeof copyCompositionProjectFiles>;
+    targetAxesWidthIn: number;
+    targetAxesHeightIn: number;
+    layout: string;
+    language: 'python' | 'r';
+  }): string {
+    const sourceSections = args.sources.map((source, index) => {
+      const preferredCode = source.codeSlice?.code || source.script;
+      const confidence = source.codeSlice
+        ? `${source.codeSlice.confidence || 'unknown'} / ${source.codeSlice.mode || 'unknown'}`
+        : 'fallback: full source project script';
+      const files = args.copiedFiles
+        .filter(file => file.sourceProjectId === source.projectId)
+        .map(file => `- ${file.sourceFileName} -> ${file.copiedFileName}; columns=${(file.columns || []).join(', ')}; rows=${file.rowCount}`)
+        .join('\n') || '- 无上传数据文件';
+      return [
+        `## Source ${index + 1}: ${source.projectName} / ${source.figureId}`,
+        `- sourceProjectId: ${source.projectId}`,
+        `- language: ${source.language}`,
+        `- revision: ${source.revision}`,
+        `- codeSlice: ${confidence}`,
+        '',
+        '### Copied data files available in the new project',
+        files,
+        '',
+        '### Source plotting code',
+        '```' + (source.language === 'r' ? 'r' : 'python'),
+        preferredCode.trim(),
+        '```',
+      ].join('\n');
+    }).join('\n\n');
+
+    const fileList = args.copiedFiles.map(file => (
+      `- ${file.copiedFileName}: copied from ${file.sourceProjectName}/${file.sourceFileName}; columns=${(file.columns || []).join(', ')}; rows=${file.rowCount}`
+    )).join('\n') || '- No uploaded data files were copied.';
+
+    return [
+      '# Task: rewrite selected scientific figures into one combined subplot script',
+      '',
+      'You are rewriting plotting code for SciFigure Studio. Use the copied data files in the new project. Do not invent columns, do not change data meaning, and do not fabricate trends, statistics, labels, or significance marks.',
+      '',
+      `Target language: ${args.language === 'r' ? 'R' : 'Python / Matplotlib'}`,
+      `Target layout: ${args.layout}`,
+      `Required axes box size: ${args.targetAxesWidthIn} in × ${args.targetAxesHeightIn} in for every subplot.`,
+      '',
+      'Hard requirements:',
+      '- Create one final multi-panel figure containing all selected source figures.',
+      '- Keep each subplot data axes box physically identical in width and height.',
+      '- It is acceptable for the outer canvas to grow to fit labels, legends, and colorbars.',
+      '- Use the explicit `fig.add_axes([...])` helper below for the final combined figure. Do not replace it with `plt.subplots`, `GridSpec`, `subplots_adjust`, `tight_layout`, or `constrained_layout` for the final combined figure, because those APIs make physical axes-box size ambiguous.',
+      '- Preserve source data transformations and plotted variables.',
+      '- Use only copied data files listed below.',
+      '- In a multi-file project, do not use `_uploaded_data` to guess the active dataset. Always load each required file explicitly by exact copied filename through `_uploaded_file_paths["filename.csv"]` or `_uploaded_file_paths["filename.xlsx"]`.',
+      '- Do not use `__file__`, `Path(__file__)`, `Path(...).resolve().parents[...]`, local absolute paths, historical project directories, Desktop/OneDrive paths, network paths, or any file that is not listed as copied data below.',
+      '- Do not import or call `shutil`, `shutil.copy`, `shutil.copy2`, `open`, `os`, `sys`, `subprocess`, `requests`, `urllib`, `eval`, or `exec`. Remove any original preserve/copy/archive/save-note logic; this script is only allowed to read uploaded data and draw figures.',
+      '- Before plotting, assert that every loaded DataFrame contains the columns required by that panel; if not, raise an error naming the filename and missing columns.',
+      '- If a source uses only inline data, preserve that inline data exactly.',
+      '- Add panel labels (a), (b), (c) in reading order.',
+      '- Return runnable code only, with concise comments where needed.',
+      '',
+      'Copied data files in the new project:',
+      fileList,
+      '',
+      'Use this exact Matplotlib layout helper for the final combined figure:',
+      '```python',
+      'def make_equal_axes_figure(nrows, ncols, ax_w, ax_h, left=0.7, right=0.3, bottom=0.55, top=0.35, wspace=0.45, hspace=0.45):',
+      '    fig_w = left + ncols * ax_w + (ncols - 1) * wspace + right',
+      '    fig_h = bottom + nrows * ax_h + (nrows - 1) * hspace + top',
+      '    fig = plt.figure(figsize=(fig_w, fig_h))',
+      '    axes = []',
+      '    for r in range(nrows):',
+      '        for c in range(ncols):',
+      '            x = (left + c * (ax_w + wspace)) / fig_w',
+      '            y = (bottom + (nrows - 1 - r) * (ax_h + hspace)) / fig_h',
+      '            axes.append(fig.add_axes([x, y, ax_w / fig_w, ax_h / fig_h]))',
+      '    return fig, axes',
+      '```',
+      '',
+      'Important: for the final combined figure, draw into the `axes` returned by `make_equal_axes_figure`. Do not call `fig.tight_layout()` or `plt.tight_layout()` afterward.',
+      '',
+      sourceSections,
+    ].join('\n');
+  }
+
+  function createCompositionCodeProject(body: any, fallbackProjectId?: string) {
+    const rawSources = normalizeCompositionSources(body, fallbackProjectId);
+    const sources = resolveCompositionSources(rawSources);
+    const targetAxesWidthIn = Math.max(0.5, Math.min(12, Number(body?.targetAxesWidthIn || 2.2)));
+    const targetAxesHeightIn = Math.max(0.5, Math.min(12, Number(body?.targetAxesHeightIn || 2.2)));
+    const layout = typeof body?.layout === 'string' && body.layout.trim() ? body.layout.trim() : 'auto';
+    const requestedName = typeof body?.name === 'string' && body.name.trim() ? body.name.trim() : '';
+    const allLanguages = new Set(sources.map(source => source.language));
+    const language: 'python' | 'r' = allLanguages.size === 1 && allLanguages.has('r') ? 'r' : 'python';
+    const targetProjectId = randomUUID();
+    const targetName = requestedName || `组合代码项目 ${new Date().toLocaleString('zh-CN', { hour12: false })}`;
+    const scaffold = makeCompositionScaffold(language, targetAxesWidthIn, targetAxesHeightIn);
+    const spec = {
+      plot_type: 'custom',
+      script_language: language,
+      custom_script: scaffold,
+      script: scaffold,
+      composition: {
+        kind: 'code_composition_project',
+        targetAxesWidthIn,
+        targetAxesHeightIn,
+        layout,
+        sources: sources.map(source => ({
+          projectId: source.projectId,
+          projectName: source.projectName,
+          figureId: source.figureId,
+          revision: source.revision,
+          language: source.language,
+          codeSliceAvailable: Boolean(source.codeSlice),
+        })),
+      },
+    };
+
+    createProject(targetProjectId, targetName, spec);
+    updateProject(targetProjectId, targetName, spec, scaffold);
+    const copiedFiles = copyCompositionProjectFiles(targetProjectId, sources);
+    const prompt = buildCompositionPrompt({
+      sources,
+      copiedFiles,
+      targetAxesWidthIn,
+      targetAxesHeightIn,
+      layout,
+      language,
+    });
+
+    return {
+      status: 'success',
+      projectId: targetProjectId,
+      projectName: targetName,
+      language,
+      prompt,
+      sourceFigures: sources.map(source => ({
+        projectId: source.projectId,
+        projectName: source.projectName,
+        figureId: source.figureId,
+        revision: source.revision,
+        language: source.language,
+        usedCodeSlice: Boolean(source.codeSlice),
+      })),
+      copiedFiles,
+    };
+  }
+
   function applyCodePatch(script: string, patch: any): string {
     const lines = script.split('\n');
     if (!/^#[0-9A-Fa-f]{6}$/.test(patch.new_value)) {
@@ -1387,17 +1782,44 @@ async function startServer() {
     }
     const safeTarget = escapeRegExp(patch.target_id);
     const regexConstant = new RegExp(`^(${safeTarget})\\s*=\\s*["\'](#[0-9A-Fa-f]{6})["\']`);
-    const cleanKey = patch.target_id.replace(/^dict_/, '');
-    const safeKey = escapeRegExp(cleanKey);
+    const targetId = String(patch.target_id || '');
+    const scopedDictMatch = /^dict_([^_][\w]*)__(.*)$/.exec(targetId);
+    const cleanKey = targetId.replace(/^dict_/, '');
+    const safeKey = escapeRegExp(scopedDictMatch ? scopedDictMatch[2] : cleanKey);
     const regexDict = new RegExp(`(["\']${safeKey}["\']\\s*:\\s*)["\'](#[0-9A-Fa-f]{6})["\']`);
+    const scopedDictName = scopedDictMatch ? scopedDictMatch[1] : null;
+    let insideScopedDict = false;
+    let scopedBraceDepth = 0;
+    const replaceDictColor = (line: string) => line.replace(regexDict, (_match, prefix) => `${prefix}"${patch.new_value}"`);
 
     const updatedLines = lines.map(line => {
       const trimmed = line.trim();
       if (regexConstant.test(trimmed)) {
         return line.replace(/(#[0-9A-Fa-f]{6})/, patch.new_value);
       }
+
+      if (scopedDictName) {
+        const startsScopedDict = new RegExp(`^${escapeRegExp(scopedDictName)}\\s*=\\s*\\{`).test(trimmed);
+        if (startsScopedDict) {
+          insideScopedDict = true;
+          scopedBraceDepth = 0;
+        }
+        if (insideScopedDict) {
+          scopedBraceDepth += (line.match(/\{/g) || []).length;
+          scopedBraceDepth -= (line.match(/\}/g) || []).length;
+          const nextLine = regexDict.test(trimmed)
+            ? replaceDictColor(line)
+            : line;
+          if (scopedBraceDepth <= 0) {
+            insideScopedDict = false;
+          }
+          return nextLine;
+        }
+        return line;
+      }
+
       if (regexDict.test(trimmed)) {
-        return line.replace(/(#[0-9A-Fa-f]{6})/, patch.new_value);
+        return replaceDictColor(line);
       }
       return line;
     });
@@ -2107,6 +2529,27 @@ async function startServer() {
     }
   });
 
+  app.post('/api/projects/create-composition-project', (req, res) => {
+    try {
+      res.json(createCompositionCodeProject(req.body));
+    } catch (err: any) {
+      res.status(400).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/projects/:id/create-composition-project', (req, res) => {
+    try {
+      const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      if (!getProject(projectId)) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
+      res.json(createCompositionCodeProject(req.body, projectId));
+    } catch (err: any) {
+      res.status(400).json({ status: 'error', message: err.message });
+    }
+  });
+
   app.put('/api/projects/:id', (req, res) => {
     try {
       const projectId = req.params.id;
@@ -2402,7 +2845,11 @@ async function startServer() {
             figureIndex: i,
             sessionId: figSessionIdResolved,
             editLog: preservedEditLog,
-            revision: oldSessionMap[figKey]?.revision || 1
+            revision: oldSessionMap[figKey]?.revision || 1,
+            previewSvg: fig.svg || null,
+            manifest: fig.manifest || null,
+            codeSlice: fig.codeSlice ?? null,
+            fingerprint: fig.fingerprint ?? null,
           });
           fig.revision = oldSessionMap[figKey]?.revision || 1;
           fig.editLog = preservedEditLog;
@@ -2469,7 +2916,7 @@ async function startServer() {
   });
 
   // GET /api/projects/:id/figures — list project figures metadata
-  app.get('/api/projects/:id/figures', (req, res) => {
+  app.get('/api/projects/:id/figures', async (req, res) => {
     try {
       const projectId = req.params.id;
       assertSafeProjectId(projectId);
@@ -2478,7 +2925,7 @@ async function startServer() {
         return res.status(404).json({ status: 'error', message: '项目不存在' });
       }
       const figures = listProjectFigures(projectId);
-      const resultFigures = [];
+      const resultFigures: any[] = [];
       for (const fig of figures) {
         const session = loadSession(fig.session_id);
         if (session) {
@@ -2486,10 +2933,138 @@ async function startServer() {
             figureId: `fig_${fig.figure_index + 1}`,
             index: fig.figure_index,
             editLog: session.editLog,
-            revision: session.revision
+            revision: session.revision,
+            hasPreview: Boolean(fig.preview_svg),
+            previewUpdatedAt: fig.preview_updated_at || null,
           });
         }
       }
+
+      if (String(req.query.includePreview || '') === '1' && resultFigures.length > 0) {
+        const forcePreview = String(req.query.forcePreview || '') === '1';
+        const cachedById = new Map(figures.map((fig: any) => [`fig_${fig.figure_index + 1}`, fig]));
+        if (!forcePreview) {
+          let allCached = true;
+          resultFigures.forEach(fig => {
+            const row = cachedById.get(fig.figureId) as any;
+            if (row?.preview_svg) {
+              fig.svg = row.preview_svg;
+              fig.manifest = row.manifest ? JSON.parse(row.manifest) : null;
+              fig.codeSlice = row.code_slice ? JSON.parse(row.code_slice) : null;
+              fig.fingerprint = row.fingerprint ?? null;
+              fig.previewUpdatedAt = row.preview_updated_at || null;
+              fig.previewSource = 'cache';
+            } else {
+              allCached = false;
+            }
+          });
+          if (allCached) {
+            return res.json({ status: 'success', figures: resultFigures, previewSource: 'cache' });
+          }
+        }
+
+        try {
+          const firstSession = loadSession(figures[0].session_id);
+          const script = firstSession?.script || project.script || (() => {
+            try {
+              const spec = JSON.parse(project.spec || '{}');
+              return spec.custom_script || spec.script || '';
+            } catch {
+              return '';
+            }
+          })();
+          if (!script) {
+            return res.json({ status: 'success', figures: resultFigures, previewWarning: '项目没有可渲染脚本' });
+          }
+
+          const language = inferScriptLanguage(script);
+          const datasets = listProjectFiles(projectId);
+          const projectDataPayload = buildProjectDataPayload(datasets);
+          const uploaded_file_paths: Record<string, string> = {};
+          datasets.forEach(d => addUploadedFilePathAliases(uploaded_file_paths, d.fileName, d.filePath));
+          const cwd = path.join(process.cwd(), 'data', 'projects', projectId, 'files');
+          fs.mkdirSync(cwd, { recursive: true });
+
+          const editLogs: Record<string, EditEntry[]> = {};
+          for (const row of figures) {
+            const figureId = `fig_${row.figure_index + 1}`;
+            const session = loadSession(row.session_id);
+            editLogs[figureId] = compressEditLog(session?.editLog || []);
+          }
+
+          let previewResult: any;
+          if (language === 'r') {
+            const rResult = await spawnRWithPayload({
+              script,
+              dataPayload: projectDataPayload,
+              cwd: cwd.replace(/\\/g, '/'),
+              uploaded_file_paths: prepareUploadedFilePathsForR(uploaded_file_paths, cwd),
+              editLog: editLogs.fig_1 || [],
+              renderOptions: { width_in: 7, height_in: 5 }
+            }, { req, label: 'project-figure-preview-r' });
+            previewResult = rResult.status === 'success'
+              ? {
+                  status: 'success',
+                  figures: [{
+                    figureId: 'fig_1',
+                    svg: rResult.svg,
+                    manifest: rResult.manifest,
+                    codeSlice: null,
+                  }],
+                }
+              : rResult;
+          } else {
+            previewResult = await spawnPythonWithPayload('introspector.py', {
+              script,
+              dataPayload: projectDataPayload,
+              cwd: cwd.replace(/\\/g, '/'),
+              uploaded_file_paths,
+              editLogs,
+              renderOptions: { dpi: 120 }
+            }, { req, label: 'project-figure-preview' });
+          }
+
+          if (previewResult.status === 'success') {
+            const previewById = new Map((previewResult.figures || []).map((fig: any) => [fig.figureId, fig]));
+            const updatePreviewStmt = getDb().prepare(`
+              UPDATE project_figures
+              SET preview_svg = ?, manifest = ?, code_slice = ?, fingerprint = ?, preview_updated_at = datetime('now')
+              WHERE project_id = ? AND figure_index = ?
+            `);
+            resultFigures.forEach(fig => {
+              const preview = previewById.get(fig.figureId) as any;
+              if (preview) {
+                fig.svg = preview.svg || null;
+                fig.manifest = preview.manifest || null;
+                fig.codeSlice = preview.codeSlice ?? null;
+                fig.fingerprint = preview.fingerprint;
+                fig.previewSource = 'rendered';
+                updatePreviewStmt.run(
+                  preview.svg || null,
+                  preview.manifest ? JSON.stringify(preview.manifest) : null,
+                  preview.codeSlice ? JSON.stringify(preview.codeSlice) : null,
+                  preview.fingerprint !== undefined && preview.fingerprint !== null ? String(preview.fingerprint) : null,
+                  projectId,
+                  fig.index
+                );
+              }
+            });
+          } else {
+            return res.json({
+              status: 'success',
+              figures: resultFigures,
+              previewWarning: previewResult.message || 'Figure 预览生成失败',
+            });
+          }
+        } catch (previewErr: any) {
+          return res.json({
+            status: 'success',
+            figures: resultFigures,
+            previewWarning: previewErr?.message || 'Figure 预览生成失败',
+          });
+        }
+      }
+
       res.json({ status: 'success', figures: resultFigures });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
@@ -2711,7 +3286,7 @@ async function startServer() {
       if (!project) {
         return res.status(404).json({ status: 'error', message: '项目不存在' });
       }
-      const { figureId, format, dpi, name, saveToLibrary = true } = req.body;
+      const { figureId, format, dpi, name, saveToLibrary = true, includeSubplots = false } = req.body;
       const reqFormat = (format || 'svg').toLowerCase();
 
       const figRows = listProjectFigures(projectId);
@@ -2765,10 +3340,11 @@ async function startServer() {
 
         if (result.status === 'success') {
           const matchedFig = result.figures?.find((f: any) => f.figureId === targetFigId) || result;
+          const assetName = figureId ? (name || targetFigId) : targetFigId;
           const asset = saveToLibrary !== false ? persistProjectExportAsset({
             projectId,
             figureId: targetFigId,
-            name: name || targetFigId,
+            name: assetName,
             format: matchedFig.binary_b64 ? reqFormat : 'svg',
             dpi: dpi || 300,
             svg: matchedFig.svg,
@@ -2781,12 +3357,35 @@ async function startServer() {
             },
             tags: ['figure'],
           }) : null;
+          const subplotAssets = saveToLibrary !== false && includeSubplots
+            ? buildSubplotSvgExports(matchedFig.svg, matchedFig.manifest).map((panel, panelIndex) => persistProjectExportAsset({
+                projectId,
+                figureId: `${targetFigId}:${panel.subplotId}`,
+                name: `${assetName}_panel_${panelIndex + 1}`,
+                format: 'svg',
+                dpi: dpi || 300,
+                svg: panel.svg,
+                thumbnailSvg: panel.svg,
+                metadata: {
+                  exportedFrom: targetFigId,
+                  subplotId: panel.subplotId,
+                  panelIndex,
+                  cropMode: 'axes_bounds',
+                  requestedFormat: reqFormat,
+                  revision: session?.revision || 1,
+                  note: 'Subplot SVG is cropped to the recognized axes bounds. External titles, legends, labels, and colorbars outside the axes box may require a future include-labels crop mode.',
+                  bounds: panel.bounds,
+                },
+                tags: ['subplot', 'axes-bounds'],
+              }))
+            : [];
           results.push({
             figureId: targetFigId,
             svg: matchedFig.svg,
             binary_b64: matchedFig.binary_b64 || null,
             format: matchedFig.binary_b64 ? reqFormat : 'svg',
-            asset
+            asset,
+            subplotAssets,
           });
         }
       }

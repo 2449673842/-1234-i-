@@ -5,6 +5,8 @@ import { sanitizeSvg } from '../utils/svgEditor';
 import { PatchEntry, FigureSession } from '../schemas/manifest';
 
 const TEXT_GID_RE = /^(r\.text|text|title|xlabel|ylabel|legend_text|legend_title|fig_text)\./;
+const TICK_LABEL_GID_RE = /^(xtick|ytick)\./;
+const LEGEND_CHILD_GID_RE = /^legend_(?:text|title|line|patch)\.(\d+)(?:\.\d+)?$/;
 
 function isTextGid(gid: string): boolean {
   return TEXT_GID_RE.test(gid);
@@ -145,7 +147,13 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const isDraggableTextObject = useCallback((gid: string) => {
     const obj = manifestObjectMap.get(gid);
     const props = obj?.currentProps || {};
-    return obj?.kind === 'text'
+    if (TICK_LABEL_GID_RE.test(gid) || obj?.role === 'x_tick_label' || obj?.role === 'y_tick_label') {
+      return false;
+    }
+    if (LEGEND_CHILD_GID_RE.test(gid) || obj?.role === 'legend_text' || obj?.role === 'legend_marker') {
+      return false;
+    }
+    return (obj?.kind === 'text' || obj?.kind === 'legend')
       && Array.isArray(obj?.editable)
       && obj.editable.includes('position')
       && typeof props.x === 'number'
@@ -225,8 +233,16 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     return null;
   }, [validGids]);
 
+  const resolveLegendDragTarget = useCallback((gid: string | null) => {
+    if (!gid) return gid;
+    const childMatch = gid.match(LEGEND_CHILD_GID_RE);
+    if (!childMatch) return gid;
+    const legendGid = `legend.${childMatch[1]}`;
+    return validGids.has(legendGid) ? legendGid : gid;
+  }, [validGids]);
+
   const findDraggableTextGidAtPoint = useCallback((target: HTMLElement | null, clientX: number, clientY: number) => {
-    const targetGid = findElementGid(target);
+    const targetGid = resolveLegendDragTarget(findElementGid(target));
     if (targetGid && isDraggableTextObject(targetGid)) return targetGid;
 
     const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
@@ -253,7 +269,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       if (!best || score < best.score) best = { gid, score };
     });
     return best?.gid ?? targetGid;
-  }, [findElementGid, isDraggableTextObject, querySvgElementById, validGids]);
+  }, [findElementGid, isDraggableTextObject, querySvgElementById, resolveLegendDragTarget, validGids]);
 
   const inferAxesIndexFromGid = useCallback((gid: string): number | null => {
     const obj = manifestObjectMap.get(gid);
@@ -292,7 +308,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     const obj = manifestObjectMap.get(gid);
     const props = obj?.currentProps || {};
     const coordSystem = props.coord_system;
-    if (obj?.kind !== 'text' || typeof props.x !== 'number' || typeof props.y !== 'number') return null;
+    if ((obj?.kind !== 'text' && obj?.kind !== 'legend') || typeof props.x !== 'number' || typeof props.y !== 'number') return null;
     const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
     if (!svgEl) return null;
 
@@ -710,7 +726,11 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         event.stopPropagation();
         onSelectGids?.([foundGid]);
         onSelectObject(foundGid);
-        setDragHint('当前对象不支持拖拽；仅支持可编辑 position 的文本对象，R/复杂坐标对象会被保护。');
+        setDragHint(TICK_LABEL_GID_RE.test(foundGid)
+          ? '刻度标签由坐标轴系统自动布局，不能自由拖拽写回；请在轴面板调整刻度间距、旋转、字号或绘图区边距。'
+          : LEGEND_CHILD_GID_RE.test(foundGid)
+            ? '图例内部文字/符号由图例容器布局管理；请拖动整个图例框，文字和符号会一起移动。'
+            : '当前对象不支持拖拽；仅支持可编辑 position 的普通文本/图例，R/复杂坐标对象会被保护。');
         return;
       }
     }
@@ -819,10 +839,12 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     const target = event.target as HTMLElement;
     let current: HTMLElement | null = target;
     while (current) {
-      if (current.id && isTextGid(current.id) && validGids.has(current.id)) {
+      if (current.id && validGids.has(current.id)) {
         current.style.cursor = dragMode && isDraggableTextObject(current.id)
           ? 'grab'
-          : 'pointer';
+          : isTextGid(current.id)
+            ? 'pointer'
+            : '';
         break;
       }
       current = current.parentElement;
@@ -858,9 +880,9 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   }
 
   return (
-    <div className="w-full h-full p-4 bg-slate-50">
-      <div className="relative w-full h-full rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-        <div className="absolute left-3 top-3 z-20 flex items-center gap-2 rounded-lg border border-slate-200 bg-white/95 px-2 py-1.5 shadow-sm backdrop-blur">
+    <div className="h-full w-full bg-transparent">
+      <div className="relative h-full w-full overflow-hidden">
+        <div className="absolute bottom-4 left-4 z-20 flex items-center gap-2 rounded-lg border border-slate-200 bg-white/95 px-2 py-1.5 shadow-sm backdrop-blur">
           <button type="button" className="rounded p-1 text-slate-600 hover:bg-slate-100 hover:text-slate-900" onClick={() => setManualZoom(scale / 1.1)} title="缩小"><Minus className="w-4 h-4" /></button>
           <button type="button" className="rounded p-1 text-slate-600 hover:bg-slate-100 hover:text-slate-900" onClick={() => setManualZoom(scale * 1.1)} title="放大"><Plus className="w-4 h-4" /></button>
           <button type="button" className={`rounded px-2 py-1 text-xs font-medium transition-colors ${zoomMode === 'fit' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-100'}`} onClick={() => { setZoomMode('fit'); setPan({ x: 0, y: 0 }); }} title="适配窗口">适配</button>
@@ -868,7 +890,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
           <span className="min-w-[52px] text-center text-xs font-semibold text-slate-700">{zoomPercent}%</span>
         </div>
 
-        <div className="absolute right-3 top-3 z-20 flex items-center gap-1 rounded-lg border border-slate-200 bg-white/95 px-2 py-1.5 text-[11px] text-slate-600 shadow-sm backdrop-blur">
+        <div className="absolute bottom-4 right-4 z-20 flex items-center gap-1 rounded-lg border border-slate-200 bg-white/95 px-2 py-1.5 text-[11px] text-slate-600 shadow-sm backdrop-blur">
           <Move className="w-3.5 h-3.5" /><span>空格+拖动平移</span>
           <span className="text-slate-300">|</span>
           <ScanSearch className="w-3.5 h-3.5" /><span>滚轮缩放</span>
@@ -884,7 +906,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
         {dragMode && pendingPositionPatches.length > 0 && (
           <div
-            className="pointer-events-none absolute left-1/2 top-14 z-30 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-blue-100 bg-white/95 px-4 py-2 text-xs shadow-xl backdrop-blur"
+            className="pointer-events-none absolute left-1/2 top-4 z-30 flex -translate-x-1/2 items-center gap-3 rounded-xl border border-blue-100 bg-white/95 px-4 py-2 text-xs shadow-xl backdrop-blur"
             onPointerDown={(event) => event.stopPropagation()}
             onPointerUp={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
@@ -910,7 +932,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         )}
 
         {dragMode && dragHint && (
-          <div className="pointer-events-none absolute left-1/2 top-14 z-30 -translate-x-1/2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800 shadow-lg">
+          <div className="pointer-events-none absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800 shadow-lg">
             {dragHint}
           </div>
         )}
@@ -936,7 +958,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
               onClick={handleSvgClick}
               onDoubleClick={handleSvgDoubleClick}
               onPointerOver={handleSvgPointerOver}
-              className="shadow-sm bg-white flex items-center justify-center [&>svg]:block [&>svg]:w-auto [&>svg]:h-auto [&>svg]:max-w-none [&>svg]:max-h-none"
+              className="flex items-center justify-center shadow-sm [&>svg]:block [&>svg]:h-auto [&>svg]:max-h-none [&>svg]:max-w-none [&>svg]:w-auto"
               dangerouslySetInnerHTML={{ __html: sanitizeSvg(renderedSVG) }}
             />
             {overlayFrame && (overlayBoxes.length > 0 || marqueeRect) && (

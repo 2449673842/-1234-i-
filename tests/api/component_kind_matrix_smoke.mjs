@@ -79,6 +79,7 @@ const checks = [
   { id: 'heatmap', kind: 'heatmap', prop: 'alpha', value: 0.6, expected: (props) => Math.abs(Number(props.alpha) - 0.6) < 0.01 },
   { id: 'colorbar', kind: 'colorbar', prop: 'label', value: 'Updated Scale', expected: (props) => String(props.label) === 'Updated Scale' },
   { id: 'legend', kind: 'legend', prop: 'title', value: 'Updated Legend', expected: (props) => String(props.title) === 'Updated Legend' },
+  { id: 'legend-position', kind: 'legend', prop: 'position', value: { x: 0.72, y: 0.34, coord_system: 'figure' }, expected: (props) => Math.abs(Number(props.x) - 0.72) < 0.03 && Math.abs(Number(props.y) - 0.34) < 0.03 && props.coord_system === 'figure' },
   { id: 'spine-group', kind: 'spine_group', prop: 'linewidth', value: 1.7, expected: (props) => Number(props.linewidth) === 1.7 },
   { id: 'axis-x', kind: 'axis_x', prop: 'tick_labelsize', value: 13, expected: (props) => Number(props.tick_labelsize) === 13 },
 ];

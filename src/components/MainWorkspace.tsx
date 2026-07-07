@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import Editor from '@monaco-editor/react';
 import { ChartPreview } from './ChartPreview';
+import { WordA4Preview } from './WordA4Preview';
 import { ManifestViewer } from './ManifestViewer';
 import { DatasetEntry, FigureSpec } from '../types';
-import { Home, ChevronRight, PenLine, Maximize, Settings, UploadCloud, Minus, Baseline, Download, Loader2, Save, Eye } from 'lucide-react';
+import { Home, ChevronRight, PenLine, Maximize, Settings, UploadCloud, Download, Loader2, Save, Eye, Copy, Plus, X } from 'lucide-react';
 import { ViewState } from '../App';
 import { buildReproduciblePython } from '../utils/reproduciblePython';
 import { sanitizeSvg } from '../utils/svgEditor';
@@ -22,6 +23,7 @@ interface MainWorkspaceProps {
   projectId: string | null;
   projectName: string;
   onProjectChange: (id: string | null, name: string) => void;
+  onLoadProject?: (id: string, name: string, data: any) => void;
   specHistory: FigureSpec[];
   historyIndex: number;
   canUndoFigure: boolean;
@@ -64,6 +66,30 @@ interface DataPreviewState {
   returnedRows: number;
 }
 
+interface ProjectPickerSummary {
+  id: string;
+  name: string;
+  updated_at?: string;
+}
+
+interface FigurePickerSummary {
+  figureId: string;
+  index: number;
+  revision?: number;
+  svg?: string | null;
+  codeSlice?: any;
+  manifest?: any;
+  previewError?: string;
+}
+
+interface CompositionSourceDraft {
+  projectId: string;
+  projectName: string;
+  figureId: string;
+  codeSlice?: any;
+  svg?: string | null;
+}
+
 export function MainWorkspace({
   spec,
   onSpecChange,
@@ -75,6 +101,7 @@ export function MainWorkspace({
   projectId,
   projectName,
   onProjectChange,
+  onLoadProject,
   specHistory,
   historyIndex,
   canUndoFigure,
@@ -105,7 +132,10 @@ export function MainWorkspace({
   onProjectHistoryJump,
 }: MainWorkspaceProps) {
   const [activeTab, setActiveTab] = useState<'preview' | 'code' | 'data' | 'spec'>('preview');
+  const [showWordA4Preview, setShowWordA4Preview] = useState(false);
+  const [showWordA4ReadingPreview, setShowWordA4ReadingPreview] = useState(false);
   const [bottomTab, setBottomTab] = useState<'python' | 'spec' | 'log'>('python');
+  const [showBottomPanel, setShowBottomPanel] = useState(false);
   const [showSvgModal, setShowSvgModal] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
@@ -114,6 +144,22 @@ export function MainWorkspace({
   const [scriptDragOver, setScriptDragOver] = useState(false);
   const [showHistoryMenu, setShowHistoryMenu] = useState(false);
   const [dragEditMode, setDragEditMode] = useState(false);
+  const [showCompositionDialog, setShowCompositionDialog] = useState(false);
+  const [compositionSources, setCompositionSources] = useState<CompositionSourceDraft[]>([]);
+  const [compositionProjects, setCompositionProjects] = useState<ProjectPickerSummary[]>([]);
+  const [compositionFigures, setCompositionFigures] = useState<FigurePickerSummary[]>([]);
+  const [compositionFiguresLoading, setCompositionFiguresLoading] = useState(false);
+  const [compositionPreviewWarning, setCompositionPreviewWarning] = useState<string | null>(null);
+  const [compositionProjectPick, setCompositionProjectPick] = useState('');
+  const [compositionFigurePick, setCompositionFigurePick] = useState('');
+  const [compositionAxesWidth, setCompositionAxesWidth] = useState(2.2);
+  const [compositionAxesHeight, setCompositionAxesHeight] = useState(2.2);
+  const [compositionLayout, setCompositionLayout] = useState('auto');
+  const [compositionName, setCompositionName] = useState('');
+  const [compositionPrompt, setCompositionPrompt] = useState('');
+  const [compositionCreatedProject, setCompositionCreatedProject] = useState<{ id: string; name: string } | null>(null);
+  const [compositionLoading, setCompositionLoading] = useState(false);
+  const [compositionError, setCompositionError] = useState<string | null>(null);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [renderElapsedMs, setRenderElapsedMs] = useState(0);
   const [activeDataFileId, setActiveDataFileId] = useState<string | null>(null);
@@ -180,6 +226,128 @@ export function MainWorkspace({
       : [...selectedFigureIds, figureId]
     );
   };
+  const makeSourceKey = (source: Pick<CompositionSourceDraft, 'projectId' | 'figureId'>) => `${source.projectId}:${source.figureId}`;
+  const openCompositionProjectDialog = () => {
+    const initialFigureIds = selectedFigureIds.length > 0
+      ? selectedFigureIds.filter(figId => projectFigures[figId])
+      : (projectId && projectFigures[activeFigureId] ? [activeFigureId] : []);
+    const initialSources = projectId
+      ? initialFigureIds.map(figId => ({
+          projectId,
+          projectName,
+          figureId: figId,
+          codeSlice: projectFigures[figId]?.codeSlice ?? null,
+          svg: projectFigures[figId]?.svg ?? null,
+        }))
+      : [];
+    setCompositionSources(initialSources);
+    setCompositionName(projectName ? `${projectName} - 组合代码项目` : '组合代码项目');
+    setCompositionPrompt('');
+    setCompositionCreatedProject(null);
+    setCompositionError(null);
+    setShowCompositionDialog(true);
+  };
+
+  const addCompositionSource = (source: CompositionSourceDraft) => {
+    if (!source.projectId || !source.figureId) return;
+    setCompositionSources(prev => {
+      const key = makeSourceKey(source);
+      if (prev.some(item => makeSourceKey(item) === key)) return prev;
+      return [...prev, source];
+    });
+  };
+
+  const removeCompositionSource = (source: CompositionSourceDraft) => {
+    const key = makeSourceKey(source);
+    setCompositionSources(prev => prev.filter(item => makeSourceKey(item) !== key));
+  };
+
+  const addPickedCompositionSource = () => {
+    const project = compositionProjects.find(item => item.id === compositionProjectPick);
+    const figure = compositionFigures.find(item => item.figureId === compositionFigurePick);
+    if (!project || !figure) return;
+    addCompositionSource({
+      projectId: project.id,
+      projectName: project.name,
+      figureId: figure.figureId,
+      codeSlice: figure.codeSlice ?? null,
+      svg: figure.svg ?? null,
+    });
+  };
+
+  const readJsonResponse = async (res: Response, fallbackMessage: string) => {
+    const text = await res.text();
+    if (!text.trim()) {
+      throw new Error(`${fallbackMessage}：服务端返回空响应（HTTP ${res.status}）。如果刚升级过代码，请重启后端服务。`);
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      const preview = text.slice(0, 240).replace(/\s+/g, ' ').trim();
+      throw new Error(`${fallbackMessage}：服务端没有返回 JSON（HTTP ${res.status}）。${preview ? `响应片段：${preview}` : '响应为空。'}`);
+    }
+  };
+
+  const createCompositionProject = async () => {
+    if (compositionSources.length === 0) {
+      setCompositionError('请至少加入一张 Figure');
+      return;
+    }
+    setCompositionLoading(true);
+    setCompositionError(null);
+    try {
+      const res = await fetch('/api/projects/create-composition-project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: compositionName.trim() || undefined,
+          targetAxesWidthIn: compositionAxesWidth,
+          targetAxesHeightIn: compositionAxesHeight,
+          layout: compositionLayout,
+          sources: compositionSources.map(source => ({
+            projectId: source.projectId,
+            figureId: source.figureId,
+            codeSlice: source.codeSlice || undefined,
+          })),
+        }),
+      });
+      const data = await readJsonResponse(res, '创建组合代码项目失败');
+      if (!res.ok || data.status !== 'success') {
+        throw new Error(data.message || '创建组合代码项目失败');
+      }
+      setCompositionPrompt(data.prompt || '');
+      setCompositionCreatedProject({ id: data.projectId, name: data.projectName || compositionName || '组合代码项目' });
+      if (data.prompt) {
+        navigator.clipboard?.writeText(data.prompt).catch(() => {});
+      }
+      onRenderLog([
+        `> [组合代码项目] 已创建 ${data.projectName || data.projectId}`,
+        `> [组合代码项目] 已复制 ${data.copiedFiles?.length || 0} 个数据文件，AI 提示词已生成。`,
+      ]);
+    } catch (err: any) {
+      setCompositionError(err?.message || '创建组合代码项目失败');
+    } finally {
+      setCompositionLoading(false);
+    }
+  };
+
+  const openCreatedCompositionProject = async () => {
+    if (!compositionCreatedProject || !onLoadProject) return;
+    setCompositionLoading(true);
+    try {
+      const res = await fetch(`/api/projects/${compositionCreatedProject.id}`);
+      const data = await readJsonResponse(res, '加载新项目失败');
+      if (data.status !== 'success') {
+        throw new Error(data.message || '加载新项目失败');
+      }
+      onLoadProject(compositionCreatedProject.id, compositionCreatedProject.name, data.project);
+      setShowCompositionDialog(false);
+    } catch (err: any) {
+      setCompositionError(err?.message || '加载新项目失败');
+    } finally {
+      setCompositionLoading(false);
+    }
+  };
   const activeCodeSlice = activeProjectFigure?.codeSlice ?? null;
   const activeScript = spec.custom_script || figSession?.script || generatePythonCode(spec);
   const codeSliceConfidenceClass =
@@ -226,6 +394,65 @@ export function MainWorkspace({
       setActiveDataFileId(dataFiles[0].datasetId);
     }
   }, [activeDataFileId, dataFiles]);
+
+  useEffect(() => {
+    if (!showCompositionDialog) return;
+    let cancelled = false;
+    fetch('/api/projects')
+      .then(res => res.json())
+      .then(data => {
+        if (cancelled) return;
+        const projects = Array.isArray(data.projects) ? data.projects : [];
+        setCompositionProjects(projects.map((project: any) => ({
+          id: project.id || project.projectId,
+          name: project.name || project.id || '未命名项目',
+          updated_at: project.updated_at,
+        })).filter((project: ProjectPickerSummary) => project.id));
+        if (!compositionProjectPick && projectId) {
+          setCompositionProjectPick(projectId);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCompositionProjects([]);
+      });
+    return () => { cancelled = true; };
+  }, [showCompositionDialog, projectId, compositionProjectPick]);
+
+  useEffect(() => {
+    if (!showCompositionDialog || !compositionProjectPick) {
+      setCompositionFigures([]);
+      setCompositionFigurePick('');
+      setCompositionFiguresLoading(false);
+      setCompositionPreviewWarning(null);
+      return;
+    }
+    let cancelled = false;
+    setCompositionFiguresLoading(true);
+    setCompositionPreviewWarning(null);
+    fetch(`/api/projects/${compositionProjectPick}/figures?includePreview=1`)
+      .then(res => res.json())
+      .then(data => {
+        if (cancelled) return;
+        const figures = Array.isArray(data.figures) ? data.figures : [];
+        setCompositionFigures(figures);
+        setCompositionPreviewWarning(data.previewWarning || null);
+        setCompositionFigurePick(prev => figures.some((fig: FigurePickerSummary) => fig.figureId === prev)
+          ? prev
+          : (figures[0]?.figureId || '')
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCompositionFigures([]);
+          setCompositionFigurePick('');
+          setCompositionPreviewWarning('Figure 预览加载失败');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCompositionFiguresLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [showCompositionDialog, compositionProjectPick]);
 
   useEffect(() => {
     if (activeTab !== 'data' || !projectId || !activeDataFile || activeDataFile.datasetId === 'local_raw_data') {
@@ -781,26 +1008,38 @@ export function MainWorkspace({
       </div>
 
       <div className="flex-1 flex flex-col px-4 sm:px-6 pb-2 pt-4 min-h-0 overflow-hidden">
-        <div className="flex items-center justify-between bg-white px-2 py-1.5 rounded-t-lg border border-slate-200 border-b-0">
-          <div className="flex gap-4 px-2">
-            {[
-              { id: 'preview', label: '预览' },
-              { id: 'code', label: '代码' },
-              { id: 'data', label: '数据' },
-              { id: 'spec', label: 'Spec' },
-            ].map(tab => (
-              <button
-                type="button"
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id as 'preview' | 'code' | 'data' | 'spec')}
-                className={`text-sm font-medium pb-1.5 border-b-2 pt-1 transition-colors ${activeTab === tab.id ? 'text-blue-600 border-blue-600' : 'text-slate-500 border-transparent hover:text-slate-700'}`}
-              >
-                {tab.label}
-              </button>
-            ))}
+        <div className="flex items-center justify-between gap-2 bg-white px-2 py-1.5 rounded-t-lg border border-slate-200 border-b-0">
+          <div className="flex min-w-0 flex-1 items-center gap-3 px-2">
+            <div className="flex shrink-0 gap-4">
+              {[
+                { id: 'preview', label: '预览' },
+                { id: 'code', label: '代码' },
+                { id: 'data', label: '数据' },
+                { id: 'spec', label: 'Spec' },
+              ].map(tab => (
+                <button
+                  type="button"
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id as 'preview' | 'code' | 'data' | 'spec')}
+                  className={`text-sm font-medium pb-1.5 border-b-2 pt-1 transition-colors ${activeTab === tab.id ? 'text-blue-600 border-blue-600' : 'text-slate-500 border-transparent hover:text-slate-700'}`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-2">
+            {selectedObject !== 'Figure' && (
+              <div
+                className="flex max-w-[240px] items-center gap-2 rounded-full border border-slate-200 bg-slate-900 px-2.5 py-1 text-xs font-semibold text-white shadow-sm"
+                title={`当前选中对象：${selectedObject}`}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-300" />
+                <span className="truncate text-blue-100">{selectedObject}</span>
+                <span className="font-normal text-slate-300">右侧编辑</span>
+              </div>
+            )}
             <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full border border-emerald-100 mr-1">
               <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
               实时渲染
@@ -825,6 +1064,30 @@ export function MainWorkspace({
                 拖拽微调 {dragEditMode ? '开' : '关'}
               </button>
             )}
+            {activeTab === 'preview' && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowWordA4Preview(prev => !prev)}
+                  className={`text-xs font-semibold rounded-full border px-2 py-1 transition-colors ${
+                    showWordA4Preview
+                      ? 'border-blue-200 bg-blue-50 text-blue-700'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  }`}
+                  title="打开/关闭 Word A4 旁路预览；不影响当前图元编辑。"
+                >
+                  A4旁览 {showWordA4Preview ? '开' : '关'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowWordA4ReadingPreview(true)}
+                  className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900"
+                  title="打开接近 Word 打印布局的大页面预览，用于判断真实字号和版面。"
+                >
+                  Word真实预览
+                </button>
+              </>
+            )}
             {isRendering && (
               <div className="flex items-center gap-2 text-xs text-blue-700 font-medium bg-blue-50 border border-blue-100 px-2 py-1 rounded-full">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -833,92 +1096,105 @@ export function MainWorkspace({
               </div>
             )}
             {figSession?.updatedAt && <div className="text-xs text-slate-500">最近渲染 {new Date(figSession.updatedAt).toLocaleTimeString()}</div>}
+            <button
+              type="button"
+              onClick={() => setShowBottomPanel(prev => !prev)}
+              className={`rounded-full border px-2 py-1 text-xs font-semibold transition-colors ${
+                showBottomPanel
+                  ? 'border-slate-300 bg-slate-100 text-slate-700'
+                  : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+              }`}
+              title={showBottomPanel ? '收起底部代码 / 日志面板，扩大画布' : '展开底部代码 / 日志面板'}
+            >
+              {showBottomPanel ? '收起代码面板' : '代码面板'}
+            </button>
           </div>
         </div>
 
+        {activeTab === 'preview' && projectId && projectFigures && Object.keys(projectFigures).length > 0 && (
+          <div className="flex min-h-0 items-center gap-2 border-x border-t border-slate-200 bg-white px-3 py-1.5">
+            <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Figure</span>
+            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-lg border border-slate-200 bg-slate-50/80 p-0.5">
+              {Object.keys(projectFigures).map(figId => (
+                <div
+                  key={figId}
+                  className={`flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold transition-colors ${activeFigureId === figId ? 'bg-white text-blue-700 shadow-sm ring-1 ring-blue-100' : 'text-slate-500 hover:bg-white hover:text-slate-700'}`}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label={`选择 Figure ${figId.split('_')[1]} 作为批量应用目标`}
+                    checked={selectedFigureIds.includes(figId)}
+                    onChange={() => toggleSelectedFigure(figId)}
+                    onClick={(event) => event.stopPropagation()}
+                    className="h-3.5 w-3.5 accent-blue-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => onSelectFigure?.(figId)}
+                    className="font-semibold"
+                  >
+                    Figure {figId.split('_')[1]}
+                  </button>
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={openCompositionProjectDialog}
+              className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100"
+              title="把当前勾选 Figure 和其他项目 Figure 一起生成新组合代码项目，并复制数据文件。"
+            >
+              组合代码项目
+            </button>
+          </div>
+        )}
+
         <div
-          className="flex-1 bg-[#e5e5f7] border-l border-r border-b border-slate-200 relative overflow-auto rounded-b-lg flex items-center justify-center p-8 custom-scrollbar min-h-[300px]"
+          className={`flex-1 bg-[#e5e5f7] border-l border-r border-b border-slate-200 relative overflow-auto rounded-b-lg flex items-center justify-center custom-scrollbar min-h-[300px] ${
+            activeTab === 'preview' ? 'p-0' : 'p-8'
+          }`}
           style={{ backgroundImage: 'radial-gradient(#d1d5db 1px, transparent 1px)', backgroundSize: '20px 20px' }}
         >
           {activeTab === 'preview' && (
-            <div className="relative w-full h-full flex flex-col items-center">
-              {projectId && projectFigures && Object.keys(projectFigures).length > 0 && (
-                <div className="flex items-center gap-1.5 self-start bg-white border border-slate-200 rounded-lg p-1 mb-4 shadow-sm z-10">
-                  {Object.keys(projectFigures).map(figId => (
-                    <div
-                      key={figId}
-                      className={`flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold transition-colors ${activeFigureId === figId ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100' : 'text-slate-500 hover:text-slate-700'}`}
-                    >
-                      <input
-                        type="checkbox"
-                        aria-label={`选择 Figure ${figId.split('_')[1]} 作为批量应用目标`}
-                        checked={selectedFigureIds.includes(figId)}
-                        onChange={() => toggleSelectedFigure(figId)}
-                        onClick={(event) => event.stopPropagation()}
-                        className="h-3.5 w-3.5 accent-blue-600"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => onSelectFigure?.(figId)}
-                        className="font-semibold"
-                      >
-                        Figure {figId.split('_')[1]}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <ChartPreview
-                spec={spec}
-                onSpecChange={onSpecChange}
-                selectedObject={selectedObject}
-                onSelectObject={onSelectObject}
-                selectedGids={selectedGids}
-                onSelectGids={onSelectGids}
-                renderedSVG={figSession?.svg ?? null}
-                onPatch={onPatch}
-                onImmediatePatch={onImmediatePatch}
-                figSession={figSession}
-                dragMode={dragEditMode}
-              />
-              {isRendering && (
-                <div className="absolute left-1/2 top-20 z-40 w-[min(520px,calc(100%-48px))] -translate-x-1/2 overflow-hidden rounded-xl border border-blue-100 bg-white/95 shadow-xl backdrop-blur">
-                  <div className="flex items-start gap-3 px-4 py-3">
-                    <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-600">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-semibold text-slate-800">正在重新渲染当前图形</div>
-                      <div className="mt-1 text-xs leading-relaxed text-slate-500">{activeRenderProgressText}</div>
-                      <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
-                        <span>执行 Python → 应用 editLog → 生成 SVG → 刷新画布</span>
-                        <span>{(renderElapsedMs / 1000).toFixed(1)}s</span>
+            <div className="flex h-full w-full min-w-0 overflow-hidden">
+              <div className="relative h-full min-w-0 flex-1">
+                <ChartPreview
+                  spec={spec}
+                  onSpecChange={onSpecChange}
+                  selectedObject={selectedObject}
+                  onSelectObject={onSelectObject}
+                  selectedGids={selectedGids}
+                  onSelectGids={onSelectGids}
+                  renderedSVG={figSession?.svg ?? null}
+                  onPatch={onPatch}
+                  onImmediatePatch={onImmediatePatch}
+                  figSession={figSession}
+                  dragMode={dragEditMode}
+                />
+                {isRendering && (
+                  <div className="absolute left-1/2 top-20 z-40 w-[min(520px,calc(100%-48px))] -translate-x-1/2 overflow-hidden rounded-xl border border-blue-100 bg-white/95 shadow-xl backdrop-blur">
+                    <div className="flex items-start gap-3 px-4 py-3">
+                      <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-blue-600">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-semibold text-slate-800">正在重新渲染当前图形</div>
+                        <div className="mt-1 text-xs leading-relaxed text-slate-500">{activeRenderProgressText}</div>
+                        <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
+                          <span>执行 Python → 应用 editLog → 生成 SVG → 刷新画布</span>
+                          <span>{(renderElapsedMs / 1000).toFixed(1)}s</span>
+                        </div>
                       </div>
                     </div>
+                    <div className="h-1.5 w-full overflow-hidden bg-blue-50">
+                      <div className="h-full w-1/2 animate-[render-progress_1.15s_ease-in-out_infinite] rounded-r-full bg-blue-500" />
+                    </div>
                   </div>
-                  <div className="h-1.5 w-full overflow-hidden bg-blue-50">
-                    <div className="h-full w-1/2 animate-[render-progress_1.15s_ease-in-out_infinite] rounded-r-full bg-blue-500" />
-                  </div>
-                </div>
-              )}
-              {spec.plot_type === 'custom' && (
-                <div className="absolute left-4 top-4 max-w-sm bg-white/95 border border-amber-200 text-amber-900 px-3 py-2 rounded-lg shadow-sm text-xs leading-relaxed">
-                  选中真实 SVG 文本、线条或图形后，可在右侧直接修改。图尺寸、全局字体等参数改完后，再点击「同步至引擎并预览 SVG」重渲染。
-                </div>
-              )}
-              {selectedObject !== 'Figure' && (
-                <div className="absolute left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg bg-slate-800 px-3 py-1.5 text-xs text-white shadow-xl">
-                  <span className="font-semibold text-blue-300 truncate max-w-[120px]" title={selectedObject}>{selectedObject}</span>
-                  <div className="w-px h-3 bg-slate-600"></div>
-                  <button type="button" className="hover:text-blue-400 transition-colors" title="快速设置样式">
-                    <Settings className="w-3.5 h-3.5" />
-                  </button>
-                  <button type="button" className="hover:text-blue-400 transition-colors" title="文字/字体">
-                    <Baseline className="w-3.5 h-3.5" />
-                  </button>
-                  <button type="button" className="hover:text-red-400 transition-colors" title="隐藏">
-                    <Minus className="w-3.5 h-3.5" />
-                  </button>
+                )}
+              </div>
+              {showWordA4Preview && (
+                <div className="h-full w-[520px] max-w-[45%] shrink-0 border-l border-slate-200 bg-white shadow-[-8px_0_18px_rgba(15,23,42,0.08)]">
+                  <WordA4Preview spec={spec} figSession={figSession} compact />
                 </div>
               )}
             </div>
@@ -1163,6 +1439,7 @@ export function MainWorkspace({
           )}
         </div>
 
+        {showBottomPanel && (
         <div className="h-64 mt-4 bg-white border border-slate-200 rounded-lg flex flex-col shrink-0 overflow-hidden shadow-sm">
           <div className="flex items-center justify-between px-4 border-b border-slate-100 bg-slate-50/50">
             <div className="flex gap-4">
@@ -1287,6 +1564,7 @@ export function MainWorkspace({
             )}
           </div>
         </div>
+        )}
       </div>
 
       <div className="h-8 shrink-0 bg-white border-t border-slate-200 flex items-center justify-between px-4 text-xs font-medium text-slate-500">
@@ -1299,6 +1577,269 @@ export function MainWorkspace({
           <span className="flex items-center gap-1"><UploadCloud className="w-3 h-3" /> 自动保存已开启 (5s)</span>
         </div>
       </div>
+
+      {showCompositionDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-6 backdrop-blur-sm">
+          <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4">
+              <div>
+                <h2 className="text-base font-bold text-slate-900">创建组合代码项目</h2>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                  可从多个项目加入 Figure。系统会复制源数据文件，生成给网页 AI 的转写提示词，要求组合图中每个子图绘图区尺寸一致。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCompositionDialog(false)}
+                className="rounded-full p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="关闭组合代码项目弹窗"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden lg:grid-cols-[360px_1fr]">
+              <div className="min-h-0 space-y-4 overflow-auto border-r border-slate-200 bg-slate-50 p-5">
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-slate-600">新项目名称</label>
+                  <input
+                    value={compositionName}
+                    onChange={event => setCompositionName(event.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    placeholder="组合代码项目"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="space-y-2 text-xs font-semibold text-slate-600">
+                    子图框宽(in)
+                    <input
+                      type="number"
+                      min={0.5}
+                      max={12}
+                      step={0.1}
+                      value={compositionAxesWidth}
+                      onChange={event => setCompositionAxesWidth(Number(event.target.value))}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </label>
+                  <label className="space-y-2 text-xs font-semibold text-slate-600">
+                    子图框高(in)
+                    <input
+                      type="number"
+                      min={0.5}
+                      max={12}
+                      step={0.1}
+                      value={compositionAxesHeight}
+                      onChange={event => setCompositionAxesHeight(Number(event.target.value))}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    />
+                  </label>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-semibold text-slate-600">布局要求</label>
+                  <input
+                    value={compositionLayout}
+                    onChange={event => setCompositionLayout(event.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    placeholder="auto / 2x2 / 1x3 / left-large-right-stack"
+                  />
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="mb-3 text-xs font-bold text-slate-700">从其他项目加入 Figure</div>
+                  <div className="space-y-2">
+                    <select
+                      value={compositionProjectPick}
+                      onChange={event => setCompositionProjectPick(event.target.value)}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs outline-none focus:border-blue-400"
+                    >
+                      <option value="">选择项目</option>
+                      {compositionProjects.map(project => (
+                        <option key={project.id} value={project.id}>{project.name}</option>
+                      ))}
+                    </select>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="text-[11px] font-semibold text-slate-600">可视化选择 Figure</div>
+                        {compositionFiguresLoading && <div className="text-[11px] text-blue-600">生成预览中...</div>}
+                      </div>
+                      {compositionPreviewWarning && (
+                        <div className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] leading-relaxed text-amber-700">
+                          {compositionPreviewWarning}
+                        </div>
+                      )}
+                      {!compositionFiguresLoading && compositionFigures.length === 0 && (
+                        <div className="rounded border border-dashed border-slate-300 bg-white px-3 py-5 text-center text-[11px] text-slate-400">
+                          当前项目还没有可选择的 Figure；请先打开项目并渲染。
+                        </div>
+                      )}
+                      <div className="grid max-h-72 grid-cols-1 gap-2 overflow-auto pr-1">
+                        {compositionFigures.map(figure => {
+                          const selected = compositionFigurePick === figure.figureId;
+                          return (
+                            <button
+                              type="button"
+                              key={figure.figureId}
+                              onClick={() => setCompositionFigurePick(figure.figureId)}
+                              className={`overflow-hidden rounded-lg border bg-white text-left transition-all ${
+                                selected
+                                  ? 'border-blue-400 ring-2 ring-blue-100'
+                                  : 'border-slate-200 hover:border-slate-300 hover:shadow-sm'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-2 py-1.5">
+                                <span className="text-[11px] font-bold text-slate-700">{figure.figureId}</span>
+                                <span className="text-[10px] text-slate-400">rev {figure.revision || 1}</span>
+                              </div>
+                              <div className="flex h-28 items-center justify-center bg-[radial-gradient(#d7dce5_1px,transparent_1px)] bg-[length:12px_12px] p-2">
+                                {figure.svg ? (
+                                  <div
+                                    className="pointer-events-none max-h-full max-w-full overflow-hidden rounded bg-white shadow-sm [&>svg]:h-24 [&>svg]:w-full [&>svg]:max-w-full"
+                                    dangerouslySetInnerHTML={{ __html: sanitizeSvg(figure.svg) }}
+                                  />
+                                ) : (
+                                  <div className="text-center text-[11px] leading-relaxed text-slate-400">
+                                    无预览
+                                    <br />
+                                    仍可加入
+                                  </div>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={addPickedCompositionSource}
+                      disabled={!compositionProjectPick || !compositionFigurePick}
+                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      加入来源 Figure
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-xs font-bold text-slate-700">已加入来源 ({compositionSources.length})</div>
+                  <div className="space-y-2">
+                    {compositionSources.length === 0 && (
+                      <div className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-4 text-center text-xs text-slate-400">
+                        尚未加入 Figure
+                      </div>
+                    )}
+                    {compositionSources.map(source => (
+                      <div key={makeSourceKey(source)} className="flex gap-2 rounded-lg border border-slate-200 bg-white p-2">
+                        <div className="flex h-14 w-20 shrink-0 items-center justify-center overflow-hidden rounded border border-slate-100 bg-slate-50">
+                          {source.svg ? (
+                            <div
+                              className="pointer-events-none max-h-full max-w-full [&>svg]:h-12 [&>svg]:w-full"
+                              dangerouslySetInnerHTML={{ __html: sanitizeSvg(source.svg) }}
+                            />
+                          ) : (
+                            <span className="text-[10px] text-slate-400">无预览</span>
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-xs font-semibold text-slate-800">{source.projectName}</div>
+                          <div className="text-[11px] text-slate-500">{source.figureId}{source.codeSlice ? ' · 使用代码片段' : ' · 使用项目脚本回退'}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeCompositionSource(source)}
+                          className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                          aria-label={`移除 ${source.projectName} ${source.figureId}`}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex min-h-0 flex-col p-5">
+                {compositionError && (
+                  <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                    {compositionError}
+                  </div>
+                )}
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-slate-900">AI 转写提示词</div>
+                    <div className="mt-1 text-xs text-slate-500">创建后会自动复制到剪贴板；也可以手动复制。</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {compositionPrompt && (
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard?.writeText(compositionPrompt)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                        复制提示词
+                      </button>
+                    )}
+                    {compositionCreatedProject && onLoadProject && (
+                      <button
+                        type="button"
+                        onClick={openCreatedCompositionProject}
+                        disabled={compositionLoading}
+                        className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-60"
+                      >
+                        打开新项目
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={createCompositionProject}
+                      disabled={compositionLoading || compositionSources.length === 0}
+                      className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    >
+                      {compositionLoading ? '处理中...' : '创建并生成提示词'}
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  value={compositionPrompt || '点击“创建并生成提示词”后，这里会显示可交给网页 AI 的完整提示词。'}
+                  readOnly
+                  className="min-h-0 flex-1 resize-none rounded-xl border border-slate-200 bg-slate-950 p-4 font-mono text-xs leading-relaxed text-slate-100 outline-none"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showWordA4ReadingPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-5 backdrop-blur-sm">
+          <div className="flex h-[94vh] w-[min(1280px,96vw)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 px-4 py-3">
+              <div>
+                <div className="text-sm font-bold text-slate-900">Word 真实阅读预览</div>
+                <div className="mt-0.5 text-xs text-slate-500">
+                  用大页面视图校准 Word 100% 视觉大小；关闭后回到编辑器，当前图仍保持同步。
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowWordA4ReadingPreview(false)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+              >
+                <X className="h-3.5 w-3.5" />
+                关闭
+              </button>
+            </div>
+            <div className="min-h-0 flex-1">
+              <WordA4Preview spec={spec} figSession={figSession} readingMode />
+            </div>
+          </div>
+        </div>
+      )}
 
       {showSvgModal && figSession?.svg && (
         <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-8 backdrop-blur-sm">

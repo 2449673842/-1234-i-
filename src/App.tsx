@@ -123,6 +123,34 @@ function normalizeProjectHistory(raw: unknown): Record<string, ProjectHistorySta
   return result;
 }
 
+function mergeReturnedProjectFigures(
+  previous: Record<string, FigureEntry>,
+  returnedFigures: any[],
+  fallbacks: {
+    editLogs?: Record<string, any[]>;
+    revisions?: Record<string, number>;
+  } = {}
+): Record<string, FigureEntry> {
+  const next: Record<string, FigureEntry> = {};
+  returnedFigures.forEach((figure: any, index: number) => {
+    const figureId = typeof figure.figureId === 'string' && figure.figureId ? figure.figureId : `fig_${index + 1}`;
+    const existing = previous[figureId];
+    next[figureId] = {
+      figureId,
+      index,
+      manifest: figure.manifest || existing?.manifest || null,
+      editLog: figure.editLog || fallbacks.editLogs?.[figureId] || existing?.editLog || [],
+      revision: figure.revision || fallbacks.revisions?.[figureId] || existing?.revision || 1,
+      svg: figure.svg || existing?.svg,
+      fingerprint: figure.fingerprint || existing?.fingerprint,
+      codeSlice: figure.codeSlice ?? existing?.codeSlice ?? null,
+      renderStatus: 'success',
+      error: undefined,
+    };
+  });
+  return next;
+}
+
 function loadInitialState(): PersistedAppState {
   if (typeof window === 'undefined') {
     return {
@@ -248,6 +276,20 @@ export default function App() {
   const [projectIsRendering, setProjectIsRendering] = useState(false);
   const [renderProgressText, setRenderProgressText] = useState<string | null>(null);
   const latestRequestIdByFigure = useRef<Record<string, string>>({});
+  const activeProjectRenderRequests = useRef<Set<string>>(new Set());
+
+  const beginProjectRenderRequest = (requestId: string) => {
+    activeProjectRenderRequests.current.add(requestId);
+    setProjectIsRendering(true);
+  };
+
+  const finishProjectRenderRequest = (requestId: string) => {
+    activeProjectRenderRequests.current.delete(requestId);
+    if (activeProjectRenderRequests.current.size === 0) {
+      setProjectIsRendering(false);
+      setRenderProgressText(null);
+    }
+  };
 
   const [projectDrafts, setProjectDrafts] = useState<Record<string, Record<string, DraftPatch>>>(initialState.projectDrafts ?? {});
 
@@ -386,7 +428,7 @@ export default function App() {
         });
         return next;
       });
-      setProjectIsRendering(true);
+      beginProjectRenderRequest(reqId);
       setRenderProgressText('正在恢复项目预览：读取服务端编辑历史并重建 SVG...');
 
       (async () => {
@@ -421,31 +463,18 @@ export default function App() {
           const data = await renderRes.json();
           
           setProjectFigures(prev => {
-            const next = { ...prev };
             const returnedFigs = data.figures || [];
-            
+            if (data.status === 'success' && returnedFigs.length > 0) {
+              return mergeReturnedProjectFigures(prev, returnedFigs, { editLogs });
+            }
+            const next = { ...prev };
             figIds.forEach(fid => {
               if (latestRequestIdByFigure.current[fid] === reqId && next[fid]) {
-                const matched = returnedFigs.find((rf: any) => rf.figureId === fid);
-                if (matched && data.status === 'success') {
-                  next[fid] = {
-                    ...next[fid],
-                    svg: matched.svg,
-                    manifest: matched.manifest,
-                    editLog: editLogs[fid] || [],
-                    revision: projectFigures[fid]?.revision || 1,
-                    fingerprint: matched.fingerprint,
-                    codeSlice: matched.codeSlice ?? null,
-                    renderStatus: 'success',
-                    error: undefined
-                  };
-                } else {
-                  next[fid] = {
-                    ...next[fid],
-                    renderStatus: 'error',
-                    error: data.message || '恢复失败'
-                  };
-                }
+                next[fid] = {
+                  ...next[fid],
+                  renderStatus: 'error',
+                  error: data.message || '恢复失败'
+                };
               }
             });
             return next;
@@ -453,6 +482,11 @@ export default function App() {
           
           if (data.status === 'success') {
             setRenderLog((prev: string[]) => [...prev, `> [自动] 已从服务端编辑历史重建项目多图预览`]);
+            const returnedIds = (data.figures || []).map((fig: any) => fig.figureId).filter(Boolean);
+            if (returnedIds.length > 0) {
+              setActiveFigureId(prev => returnedIds.includes(prev) ? prev : returnedIds[0]);
+              setSelectedFigureIds(prev => prev.filter(id => returnedIds.includes(id)));
+            }
           }
         } catch (err: any) {
           console.error('Auto render failed:', err);
@@ -470,10 +504,7 @@ export default function App() {
             return next;
           });
         } finally {
-          if (latestRequestIdByFigure.current[activeFigureId] === reqId) {
-            setProjectIsRendering(false);
-            setRenderProgressText(null);
-          }
+          finishProjectRenderRequest(reqId);
         }
       })();
     }
@@ -572,7 +603,7 @@ export default function App() {
             }
             return next;
           });
-          setProjectIsRendering(true);
+          beginProjectRenderRequest(reqId);
           setRenderProgressText(`正在应用 ${patchSummary}：重放并重新渲染...`);
           setRenderLog(prev => [...prev, `> [应用] ${targetFigureId} 正在重渲染 ${patchSummary}...`]);
         }
@@ -670,10 +701,7 @@ export default function App() {
         });
         setRenderLog(prev => [...prev, `> [异常] ${targetFigureId} 应用异常: ${err.message}`]);
       } finally {
-        if (latestRequestIdByFigure.current[targetFigureId] === reqId) {
-          setProjectIsRendering(false);
-          setRenderProgressText(null);
-        }
+          finishProjectRenderRequest(reqId);
       }
     } else {
       // Single figure mode fallback
@@ -840,7 +868,7 @@ export default function App() {
           }
           return next;
         });
-        setProjectIsRendering(true);
+        beginProjectRenderRequest(reqId);
         setRenderProgressText('正在应用代码修改：校验脚本、检测漂移并重新渲染...');
         setRenderLog(prev => [...prev, `> [代码补丁] 正在校验并重渲染 ${targetFigureId}...`]);
         const res = await fetch('/api/figure/code-patch', {
@@ -926,10 +954,7 @@ export default function App() {
         }
         return { status: 'error', message: err.message };
       } finally {
-        if (reqId === latestRequestIdByFigure.current[targetFigureId]) {
-          setProjectIsRendering(false);
-          setRenderProgressText(null);
-        }
+        finishProjectRenderRequest(reqId);
       }
     } else {
       setRenderProgressText('正在应用代码修改：校验脚本、检测漂移并重新渲染...');
@@ -956,7 +981,8 @@ export default function App() {
     if (!projectId) return;
     const reqId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     const figIds = Object.keys(projectFigures);
-    figIds.forEach(fid => {
+    const trackedFigIds = figIds.length > 0 ? figIds : [activeFigureId || 'fig_1'];
+    trackedFigIds.forEach(fid => {
       latestRequestIdByFigure.current[fid] = reqId;
     });
     setProjectFigures(prev => {
@@ -975,7 +1001,7 @@ export default function App() {
 
     try {
       const scriptToReplay = scriptOverride ?? spec.custom_script ?? '';
-      setProjectIsRendering(true);
+      beginProjectRenderRequest(reqId);
       setRenderProgressText('正在撤销/重做：重放当前项目编辑历史并刷新 SVG...');
       setRenderLog(prev => [...prev, `> [历史] 正在重放项目编辑历史...`]);
       const res = await fetch(`/api/projects/${projectId}/figures/render`, {
@@ -986,37 +1012,29 @@ export default function App() {
       const data = await res.json();
       
       setProjectFigures(prev => {
-        const next = { ...prev };
         const returnedFigs = data.figures || [];
-        
-        figIds.forEach(fid => {
+        if (data.status === 'success' && returnedFigs.length > 0) {
+          return mergeReturnedProjectFigures(prev, returnedFigs, { editLogs });
+        }
+        const next = { ...prev };
+        trackedFigIds.forEach(fid => {
           if (latestRequestIdByFigure.current[fid] === reqId && next[fid]) {
-            const matched = returnedFigs.find((rf: any) => rf.figureId === fid);
-            if (matched && data.status === 'success') {
-              next[fid] = {
-                ...next[fid],
-                svg: matched.svg,
-                manifest: matched.manifest,
-                editLog: matched.editLog || editLogs[fid] || next[fid]?.editLog || [],
-                revision: matched.revision || next[fid]?.revision || 1,
-                fingerprint: matched.fingerprint,
-                codeSlice: matched.codeSlice ?? next[fid]?.codeSlice ?? null,
-                renderStatus: 'success',
-                error: undefined
-              };
-            } else {
-              next[fid] = {
-                ...next[fid],
-                renderStatus: 'error',
-                error: data.message || '重放失败'
-              };
-            }
+            next[fid] = {
+              ...next[fid],
+              renderStatus: 'error',
+              error: data.message || '重放失败'
+            };
           }
         });
         return next;
       });
 
       if (data.status === 'success') {
+        const returnedIds = (data.figures || []).map((fig: any) => fig.figureId).filter(Boolean);
+        if (returnedIds.length > 0) {
+          setActiveFigureId(prev => returnedIds.includes(prev) ? prev : returnedIds[0]);
+          setSelectedFigureIds(prev => prev.filter(id => returnedIds.includes(id)));
+        }
         if (scriptOverride !== undefined && scriptOverride !== spec.custom_script) {
           const nextSpec = cloneSpec(spec);
           nextSpec.custom_script = scriptOverride;
@@ -1040,10 +1058,7 @@ export default function App() {
         return next;
       });
     } finally {
-      if (latestRequestIdByFigure.current[activeFigureId] === reqId) {
-        setProjectIsRendering(false);
-        setRenderProgressText(null);
-      }
+      finishProjectRenderRequest(reqId);
     }
   };
 
@@ -1264,7 +1279,7 @@ export default function App() {
           });
           return next;
         });
-        setProjectIsRendering(true);
+        beginProjectRenderRequest(reqId);
         setTimeout(() => {
           fetch(`/api/projects/${id}/figures/render`, {
             method: 'POST',
@@ -1272,31 +1287,18 @@ export default function App() {
             body: JSON.stringify({ script: renderScript, editLogs: initialEditLogs, language: cleanSpec.script_language || 'python', requestId: reqId })
           }).then(r => r.json()).then(data => {
             setProjectFigures(prev => {
-              const next = { ...prev };
               const returnedFigs = data.figures || [];
-              
+              if (data.status === 'success' && returnedFigs.length > 0) {
+                return mergeReturnedProjectFigures(prev, returnedFigs, { editLogs: initialEditLogs, revisions: initialRevisions });
+              }
+              const next = { ...prev };
               figIds.forEach(fid => {
                 if (latestRequestIdByFigure.current[fid] === reqId && next[fid]) {
-                  const matched = returnedFigs.find((rf: any) => rf.figureId === fid);
-                  if (matched && data.status === 'success') {
-                    next[fid] = {
-                      ...next[fid],
-                      svg: matched.svg,
-                      manifest: matched.manifest,
-                      editLog: matched.editLog || initialEditLogs[fid] || [],
-                      revision: matched.revision || initialRevisions[fid] || 1,
-                      fingerprint: matched.fingerprint,
-                      codeSlice: matched.codeSlice ?? null,
-                      renderStatus: 'success',
-                      error: undefined
-                    };
-                  } else {
-                    next[fid] = {
-                      ...next[fid],
-                      renderStatus: 'error',
-                      error: data.message || '渲染失败'
-                    };
-                  }
+                  next[fid] = {
+                    ...next[fid],
+                    renderStatus: 'error',
+                    error: data.message || '渲染失败'
+                  };
                 }
               });
               return next;
@@ -1304,6 +1306,11 @@ export default function App() {
             
             if (data.status === 'success') {
               setRenderLog((prev: string[]) => [...prev, `> 渲染成功，已捕获 ${data.figures?.length || 0} 张 Figure`]);
+              const returnedIds = (data.figures || []).map((fig: any) => fig.figureId).filter(Boolean);
+              if (returnedIds.length > 0) {
+                setActiveFigureId(prev => returnedIds.includes(prev) ? prev : returnedIds[0]);
+                setSelectedFigureIds(prev => prev.filter(id => returnedIds.includes(id)));
+              }
             } else {
               setRenderLog((prev: string[]) => [...prev, `> [渲染错误] ${data.message || '未知错误'}`]);
             }
@@ -1323,16 +1330,16 @@ export default function App() {
               return next;
             });
           }).finally(() => {
-            const activeFigIdToCompare = figList.length > 0 ? figList[0].figureId : 'fig_1';
-            if (latestRequestIdByFigure.current[activeFigIdToCompare] === reqId) {
-              setProjectIsRendering(false);
-            }
+            finishProjectRenderRequest(reqId);
           });
         }, 100);
       }
     } catch (err: any) {
       setRenderLog((prev: string[]) => [...prev, `> [错误] 生成渲染脚本失败: ${err.message}`]);
-      setProjectIsRendering(false);
+      if (activeProjectRenderRequests.current.size === 0) {
+        setProjectIsRendering(false);
+        setRenderProgressText(null);
+      }
     }
   };
 
@@ -1391,7 +1398,8 @@ export default function App() {
     if (!projectId) return;
     const reqId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     const figIds = Object.keys(projectFigures);
-    figIds.forEach(fid => {
+    const trackedFigIds = figIds.length > 0 ? figIds : [activeFigureId || 'fig_1'];
+    trackedFigIds.forEach(fid => {
       latestRequestIdByFigure.current[fid] = reqId;
     });
     setProjectFigures(prev => {
@@ -1408,7 +1416,7 @@ export default function App() {
       return next;
     });
 
-    setProjectIsRendering(true);
+    beginProjectRenderRequest(reqId);
     const engineName = (spec.script_language || 'python') === 'r' ? 'R 引擎' : 'Python 引擎';
     setRenderProgressText(`正在调用 ${engineName}：执行脚本、捕获 Figure、生成 SVG...`);
     setSpec(prev => {
@@ -1434,7 +1442,7 @@ export default function App() {
       setRenderLog(prev => [...prev, `> [错误] 生成渲染脚本失败: ${err.message}`]);
       setProjectFigures(prev => {
         const next = { ...prev };
-        figIds.forEach(fid => {
+        trackedFigIds.forEach(fid => {
           if (latestRequestIdByFigure.current[fid] === reqId && next[fid]) {
             next[fid] = {
               ...next[fid],
@@ -1445,8 +1453,7 @@ export default function App() {
         });
         return next;
       });
-      setProjectIsRendering(false);
-      setRenderProgressText(null);
+      finishProjectRenderRequest(reqId);
       return;
     }
     
@@ -1464,31 +1471,21 @@ export default function App() {
       const data = await res.json();
       
       setProjectFigures(prev => {
-        const next = { ...prev };
         const returnedFigs = data.figures || [];
-        
-        figIds.forEach(fid => {
+        if (data.status === 'success' && returnedFigs.length > 0) {
+          const revisions = Object.fromEntries(
+            Object.entries(projectFigures as Record<string, FigureEntry>).map(([fid, fig]) => [fid, fig.revision || 1])
+          );
+          return mergeReturnedProjectFigures(prev, returnedFigs, { editLogs, revisions });
+        }
+        const next = { ...prev };
+        trackedFigIds.forEach(fid => {
           if (latestRequestIdByFigure.current[fid] === reqId && next[fid]) {
-            const matched = returnedFigs.find((rf: any) => rf.figureId === fid);
-            if (matched && data.status === 'success') {
-              next[fid] = {
-                ...next[fid],
-                svg: matched.svg,
-                manifest: matched.manifest,
-                editLog: matched.editLog || editLogs[fid] || [],
-                revision: matched.revision || projectFigures[fid]?.revision || 1,
-                fingerprint: matched.fingerprint,
-                codeSlice: matched.codeSlice ?? null,
-                renderStatus: 'success',
-                error: undefined
-              };
-            } else {
-              next[fid] = {
-                ...next[fid],
-                renderStatus: 'error',
-                error: data.message || '渲染失败'
-              };
-            }
+            next[fid] = {
+              ...next[fid],
+              renderStatus: 'error',
+              error: data.message || '渲染失败'
+            };
           }
         });
         return next;
@@ -1498,10 +1495,9 @@ export default function App() {
         setRenderLog(prev => [...prev, `> [引擎] 渲染成功，共捕获 ${data.figures?.length || 0} 张 Figure`]);
         const returnedFigs = data.figures || [];
         if (returnedFigs.length > 0) {
-          const matchedActive = returnedFigs.find((rf: any) => rf.figureId === activeFigureId);
-          if (!matchedActive) {
-            setActiveFigureId(returnedFigs[0].figureId);
-          }
+          const returnedIds = returnedFigs.map((fig: any) => fig.figureId).filter(Boolean);
+          setActiveFigureId(prev => returnedIds.includes(prev) ? prev : returnedIds[0]);
+          setSelectedFigureIds(prev => prev.filter(id => returnedIds.includes(id)));
         }
       } else {
         setRenderLog(prev => [...prev, `> [错误] ${data.message}`]);
@@ -1510,7 +1506,7 @@ export default function App() {
       setRenderLog(prev => [...prev, `> [异常] ${err.message}`]);
       setProjectFigures(prev => {
         const next = { ...prev };
-        figIds.forEach(fid => {
+        trackedFigIds.forEach(fid => {
           if (latestRequestIdByFigure.current[fid] === reqId && next[fid]) {
             next[fid] = {
               ...next[fid],
@@ -1522,10 +1518,7 @@ export default function App() {
         return next;
       });
     } finally {
-      if (latestRequestIdByFigure.current[activeFigureId] === reqId) {
-        setProjectIsRendering(false);
-        setRenderProgressText(null);
-      }
+      finishProjectRenderRequest(reqId);
     }
   };
 
@@ -1610,6 +1603,7 @@ export default function App() {
               projectId={projectId}
               projectName={projectName}
               onProjectChange={(id, name) => { setProjectId(id); setProjectName(name); }}
+              onLoadProject={handleLoadProject}
               specHistory={specHistory}
               historyIndex={historyIndex}
               canUndoFigure={canUndoActiveFigure}
@@ -1648,6 +1642,7 @@ export default function App() {
               selectedGids={selectedGids}
               onSelectGids={handleSelectGids}
               onPatch={handlePatch}
+              onImmediatePatch={handleImmediatePatch}
               lockedObjects={lockedObjects}
               projectDrafts={projectDrafts}
               onUpdateDraft={handleUpdateDraft}

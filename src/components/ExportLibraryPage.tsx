@@ -354,8 +354,17 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
             <FileImage className="w-12 h-12 text-slate-300 mx-auto mb-3" />
             <div className="text-sm font-semibold text-slate-700">未找到任何导出资产</div>
             <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-              {query ? '尝试更改搜索关键词或格式过滤条件' : '您当前项目尚未导出 any 论文图，请前往导出页面进行高分辨率图保存'}
+              {query ? '尝试更改搜索关键词或格式过滤条件' : '当前项目还没有写入历史导出资产。普通渲染预览只用于编辑预览；请到导出设置中保存全部 Figure 到图库，或导出单张高质量图形。'}
             </p>
+            {!query && (
+              <button
+                type="button"
+                onClick={() => onNavigate('export_settings')}
+                className="mt-5 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700 shadow-sm transition-colors"
+              >
+                去导出设置保存到图库
+              </button>
+            )}
           </div>
         ) : viewMode === 'grid' ? (
           /* Grid View */

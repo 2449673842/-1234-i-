@@ -331,7 +331,13 @@ df_excel = pd.read_excel(_uploaded_file_paths["OPR_FeP二维交互响应图_绘�
 | 任意已上传具名文件 | 路径在 \`_uploaded_file_paths\` | \`pd.read_csv/read_excel(_uploaded_file_paths["文件名"])\` |
 | 未上传的文件 | ❌ 无法访问 | — |
 
-**严禁**：\`open\` / \`Path(...)\` / 任意本地绝对路径 / 网络路径 / \`plt.savefig\` / \`plt.show\`
+**严禁**：\`open\` / \`Path(...)\` / \`__file__\` / \`Path(__file__).resolve()\` / \`import shutil\` / \`shutil.copy\` / \`shutil.copy2\` / 任意本地绝对路径 / 历史工程目录 / 网络路径 / 未上传文件路径 / \`plt.savefig\` / \`plt.show\`
+
+**本地路径迁移规则：**
+- 原脚本里的 \`SOURCE_DIR\`、\`SOURCE_RUN_DIR\`、\`PROJECT_ROOT\`、\`Path(__file__).resolve().parents[...]\` 必须删除，不能照搬。
+- 原脚本读取历史目录 CSV/XLSX 时，必须改成 \`pd.read_csv(_uploaded_file_paths["原始文件名.csv"])\` 或 \`pd.read_excel(_uploaded_file_paths["原始文件名.xlsx"])\`。
+- 原脚本里的 \`preserve_inputs()\`、复制参考图、写运行说明、\`shutil.copy2(...)\` 等文件归档逻辑必须删除。平台脚本只能绘图和读取已上传数据，不能复制、保存或归档文件。
+- 不要依赖当前工作目录、脚本文件位置或用户电脑目录；平台在受控 \`exec()\` 环境中运行脚本，\`__file__\` 不可靠。
 
 ### 三、多 Figure 支持（脚本可生成任意数量 Figure）
 
@@ -429,7 +435,7 @@ build_figure(df)
 - 图例优先使用 \`ax.legend()\`，避免复杂锚点
 
 ### 八、安全限制（会被拦截）
-os / sys / subprocess / builtins / shutil / socket / urllib / requests / eval / exec / compile / __import__ / globals / locals / open / Path / 网络请求 / 任何未上传文件路径
+os / sys / subprocess / builtins / shutil / socket / urllib / requests / eval / exec / compile / __import__ / globals / locals / open / Path / __file__ / Path(__file__).resolve() / shutil.copy / shutil.copy2 / 本机绝对路径 / 历史工程目录 / 网络请求 / 任何未上传文件路径
 
 ### 九、转译要求（必须满足）
 1. 只返回纯 Python 代码，不要 markdown 包裹，不要解释文字
@@ -438,7 +444,7 @@ os / sys / subprocess / builtins / shutil / socket / urllib / requests / eval / 
 4. \`.str\` 访问器只能用于真实字符串列，不能对数值列使用
 5. 随机过程必须固定 seed，避免同一输入每次渲染结果漂移
 6. 不要写 \`if __name__ == "__main__":\`
-7. 不要写 \`open\`、\`Path\`、本地绝对路径或网络路径；已上传文件只能通过 \`_uploaded_file_paths\` + pandas 读取
+7. 不要写 \`open\`、\`Path\`、\`__file__\`、\`Path(__file__).resolve()\`、\`shutil.copy2\`、本地绝对路径、历史工程目录或网络路径；已上传文件只能通过 \`_uploaded_file_paths\` + pandas 读取
 8. 多文件脚本必须按文件名读取每个具名数据表；不要把 \`_uploaded_data\` 当成某个 CSV/Excel 的替代品
 9. 保留原图科研意图：图类型、分组逻辑、排序逻辑、统计逻辑、标题和配色语义
 10. \`set_xticks\` / \`set_xticklabels\` 数量必须一致

@@ -103,23 +103,68 @@ p
         self.assertEqual(_object(result, "title.0")["currentProps"]["fontsize"], 18)
         self.assertEqual(_object(result, "axis.x.0")["currentProps"]["tick_labelsize"], 14)
 
-    def test_r_individual_tick_objects_are_readonly_but_axis_tick_style_is_editable(self):
+    def test_r_individual_tick_objects_are_style_editable(self):
         script = """
 library(ggplot2)
 df <- data.frame(x=c("A", "B", "C"), y=c(1, 3, 2))
 p <- ggplot(df, aes(x, y)) + geom_col() + theme_classic()
 p
 """
-        result = _run_r_renderer(script)
+        result = _run_r_renderer(script, [
+            {"gid": "xtick.0.0", "prop": "fontsize", "value": 13, "mode": "backend_patch"},
+            {"gid": "xtick.0.0", "prop": "fontfamily", "value": "Times New Roman", "mode": "backend_patch"},
+            {"gid": "xtick.0.0", "prop": "fontweight", "value": "bold", "mode": "backend_patch"},
+            {"gid": "xtick.0.0", "prop": "fontstyle", "value": "italic", "mode": "backend_patch"},
+            {"gid": "xtick.0.0", "prop": "color", "value": "#AA0000", "mode": "backend_patch"},
+            {"gid": "xtick.0.0", "prop": "rotation", "value": 35, "mode": "backend_patch"},
+        ])
         xtick = _object(result, "xtick.0.0")
         ytick = _object(result, "ytick.0.0")
         axis_x = _object(result, "axis.x.0")
         axis_y = _object(result, "axis.y.0")
 
-        self.assertEqual(xtick["editable"], [])
-        self.assertEqual(ytick["editable"], [])
+        self.assertIn("fontsize", xtick["editable"])
+        self.assertIn("fontfamily", xtick["editable"])
+        self.assertIn("color", xtick["editable"])
+        self.assertIn("rotation", xtick["editable"])
+        self.assertIn("fontsize", ytick["editable"])
+        self.assertEqual(xtick["currentProps"]["fontsize"], 13)
+        self.assertEqual(xtick["currentProps"]["fontfamily"], "Times New Roman")
+        self.assertEqual(xtick["currentProps"]["fontweight"], "bold")
+        self.assertEqual(xtick["currentProps"]["fontstyle"], "italic")
+        self.assertEqual(xtick["currentProps"]["color"], "#AA0000")
+        self.assertEqual(xtick["currentProps"]["rotation"], 35)
+        # ggplot applies tick text styling at the axis theme level.
+        self.assertEqual(axis_x["currentProps"]["tick_labelsize"], 13)
+        self.assertEqual(axis_x["currentProps"]["tick_labelfamily"], "Times New Roman")
+        self.assertEqual(axis_x["currentProps"]["tick_labelcolor"], "#AA0000")
+        self.assertEqual(axis_x["currentProps"]["tick_rotation"], 35)
         self.assertIn("tick_labelcolor", axis_x["editable"])
         self.assertIn("tick_labelcolor", axis_y["editable"])
+
+    def test_axis_label_and_tick_style_are_separate(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+p <- ggplot(df, aes(x, y)) + geom_point() + theme_classic() + labs(x="Old X", y="Old Y")
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "axis.y.0", "prop": "label", "value": "Updated Y", "mode": "backend_patch"},
+            {"gid": "axis.y.0", "prop": "label_color", "value": "#AA0000", "mode": "backend_patch"},
+            {"gid": "axis.y.0", "prop": "label_fontsize", "value": 17, "mode": "backend_patch"},
+            {"gid": "axis.y.0", "prop": "tick_labelcolor", "value": "#2CA02C", "mode": "backend_patch"},
+        ])
+        axis_y = _object(result, "axis.y.0")
+        ylabel = _object(result, "ylabel.0")
+
+        self.assertEqual(axis_y["currentProps"]["label"], "Updated Y")
+        self.assertEqual(axis_y["currentProps"]["label_color"], "#AA0000")
+        self.assertEqual(axis_y["currentProps"]["label_fontsize"], 17)
+        self.assertEqual(axis_y["currentProps"]["tick_labelcolor"], "#2CA02C")
+        self.assertEqual(ylabel["currentProps"]["text"], "Updated Y")
+        self.assertEqual(ylabel["currentProps"]["color"], "#AA0000")
+        self.assertIn("Updated Y", result["svg"])
 
     def test_layer_style_patch(self):
         script = """
@@ -155,6 +200,74 @@ p
         self.assertIn("#2CA02C".lower(), result["svg"].lower())
         self.assertEqual(_object(result, "r.group.color.0.1")["currentProps"]["color"], "#2CA02C")
 
+    def test_legend_title_and_item_text_manifest(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:6, y=c(1,4,2,6,3,7), group=rep(c("A","B"),3))
+p <- ggplot(df, aes(x,y,color=group)) +
+  geom_point(size=4) +
+  scale_color_manual(values=c(A="#1F78B4", B="#D62728"), name="Group") +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "legend_title.0", "prop": "text", "value": "Updated group", "mode": "backend_patch"},
+            {"gid": "legend_title.0", "prop": "fontsize", "value": 14, "mode": "backend_patch"},
+            {"gid": "legend_title.0", "prop": "color", "value": "#AA0000", "mode": "backend_patch"},
+            {"gid": "legend_text.0.0", "prop": "text", "value": "Alpha group", "mode": "backend_patch"},
+            {"gid": "legend_text.0.0", "prop": "fontsize", "value": 11, "mode": "backend_patch"},
+            {"gid": "legend_text.0.0", "prop": "fontfamily", "value": "Times New Roman", "mode": "backend_patch"},
+            {"gid": "legend_text.0.0", "prop": "color", "value": "#2CA02C", "mode": "backend_patch"},
+        ])
+        legend_title = _object(result, "legend_title.0")
+        legend_text = _object(result, "legend_text.0.0")
+        legend = _object(result, "legend.0")
+
+        self.assertEqual(legend["currentProps"]["title"], "Updated group")
+        self.assertEqual(legend_title["currentProps"]["text"], "Updated group")
+        self.assertEqual(legend_title["currentProps"]["fontsize"], 14)
+        self.assertEqual(legend_title["currentProps"]["color"], "#AA0000")
+        self.assertEqual(legend_text["kind"], "text")
+        self.assertEqual(legend_text["role"], "legend_text")
+        self.assertEqual(legend_text["currentProps"]["text"], "Alpha group")
+        self.assertEqual(legend_text["currentProps"]["fontsize"], 11)
+        self.assertEqual(legend_text["currentProps"]["fontfamily"], "Times New Roman")
+        self.assertEqual(legend_text["currentProps"]["color"], "#2CA02C")
+        self.assertIn("text", legend_text["editable"])
+        self.assertIn("Updated group", result["svg"])
+        self.assertIn("Alpha group", result["svg"])
+
+    def test_boxplot_and_violin_layers_are_semantic_containers(self):
+        script = """
+library(ggplot2)
+df <- data.frame(group=rep(c("A", "B"), each=10), value=c(1:10, 3:12))
+p <- ggplot(df, aes(group, value, fill=group)) +
+  geom_boxplot(alpha=0.7) +
+  geom_violin(alpha=0.3) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "box_color", "value": "#2CA02C", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "median_color", "value": "#AA0000", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "linewidth", "value": 2, "mode": "backend_patch"},
+            {"gid": "r.layer.1", "prop": "facecolor", "value": "#9467BD", "mode": "backend_patch"},
+            {"gid": "r.layer.1", "prop": "edgecolor", "value": "#111111", "mode": "backend_patch"},
+        ])
+        box = _object(result, "r.layer.0")
+        violin = _object(result, "r.layer.1")
+
+        self.assertEqual(box["kind"], "boxplot_container")
+        self.assertIn("box_color", box["editable"])
+        self.assertIn("median_color", box["editable"])
+        self.assertEqual(box["currentProps"]["box_color"], "#2CA02C")
+        self.assertEqual(box["currentProps"]["median_color"], "#AA0000")
+        self.assertEqual(box["currentProps"]["linewidth"], 2)
+        self.assertEqual(violin["kind"], "violinplot_container")
+        self.assertIn("facecolor", violin["editable"])
+        self.assertEqual(violin["currentProps"]["facecolor"], "#9467BD")
+        self.assertEqual(violin["currentProps"]["edgecolor"], "#111111")
+
     def test_facet_manifest_and_strip_patch(self):
         script = """
 library(ggplot2)
@@ -165,11 +278,50 @@ p
         result = _run_r_renderer(script, [
             {"gid": "facet.strip.0", "prop": "color", "value": "#2CA02C", "mode": "backend_patch"},
             {"gid": "facet.strip.0", "prop": "fontsize", "value": 16, "mode": "backend_patch"},
+            {"gid": "subplot.1", "prop": "aspect", "value": "1", "mode": "backend_patch"},
         ])
         subplots = [obj for obj in _objects(result) if obj["kind"] == "subplot"]
         self.assertEqual(len(subplots), 2)
+        self.assertIn("aspect", subplots[0]["editable"])
+        self.assertEqual(subplots[0]["currentProps"]["aspect"], 1)
+        self.assertEqual(subplots[1]["currentProps"]["aspect"], 1)
+        self.assertIn("left", subplots[0]["currentProps"]["unsupportedProps"])
+        self.assertIn("width", subplots[0]["currentProps"]["unsupportedProps"])
         self.assertIn("#2CA02C".lower(), result["svg"].lower())
         self.assertEqual(_object(result, "facet.strip.0")["currentProps"]["fontsize"], 16)
+
+    def test_facet_non_first_panel_tick_edits_apply_to_global_axis_theme(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  x=rep(c("A", "B", "C"), 2),
+  y=c(1, 3, 2, 2, 4, 3),
+  facet=rep(c("F1","F2"), each=3)
+)
+p <- ggplot(df, aes(x,y)) + geom_col() + facet_wrap(~facet) + theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "xtick.1.0", "prop": "fontsize", "value": 15, "mode": "backend_patch"},
+            {"gid": "xtick.1.0", "prop": "fontfamily", "value": "Times New Roman", "mode": "backend_patch"},
+            {"gid": "xtick.1.0", "prop": "color", "value": "#AA0000", "mode": "backend_patch"},
+            {"gid": "axis.x.1", "prop": "tick_rotation", "value": 30, "mode": "backend_patch"},
+            {"gid": "axis.x.1", "prop": "tick_direction", "value": "in", "mode": "backend_patch"},
+        ])
+        subplots = [obj for obj in _objects(result) if obj["kind"] == "subplot"]
+        self.assertEqual(len(subplots), 2)
+
+        xtick = _object(result, "xtick.1.0")
+        axis_x = _object(result, "axis.x.0")
+        self.assertEqual(xtick["currentProps"]["fontsize"], 15)
+        self.assertEqual(xtick["currentProps"]["fontfamily"], "Times New Roman")
+        self.assertEqual(xtick["currentProps"]["color"], "#AA0000")
+        # ggplot applies facet tick styling through the global axis theme.
+        self.assertEqual(axis_x["currentProps"]["tick_labelsize"], 15)
+        self.assertEqual(axis_x["currentProps"]["tick_labelfamily"], "Times New Roman")
+        self.assertEqual(axis_x["currentProps"]["tick_labelcolor"], "#AA0000")
+        self.assertEqual(axis_x["currentProps"]["tick_rotation"], 30)
+        self.assertEqual(axis_x["currentProps"]["tick_direction"], "in")
 
     def test_heatmap_colorbar_patch(self):
         script = """
@@ -188,6 +340,10 @@ p
             {"gid": "r.heatmap.fill.0", "prop": "vmax", "value": 1.1, "mode": "backend_patch"},
             {"gid": "r.colorbar.fill.0", "prop": "label", "value": "Updated intensity", "mode": "backend_patch"},
             {"gid": "r.colorbar.fill.0", "prop": "tick_fontsize", "value": 15, "mode": "backend_patch"},
+            {"gid": "r.colorbar.fill.0", "prop": "left", "value": 0.72, "mode": "backend_patch"},
+            {"gid": "r.colorbar.fill.0", "prop": "bottom", "value": 0.18, "mode": "backend_patch"},
+            {"gid": "r.colorbar.fill.0", "prop": "width", "value": 0.08, "mode": "backend_patch"},
+            {"gid": "r.colorbar.fill.0", "prop": "height", "value": 0.45, "mode": "backend_patch"},
         ])
         heatmaps = [obj for obj in _objects(result) if obj["kind"] == "heatmap"]
         colorbars = [obj for obj in _objects(result) if obj["kind"] == "colorbar"]
@@ -196,7 +352,16 @@ p
         self.assertIn("Updated intensity", result["svg"])
         self.assertEqual(_object(result, "r.heatmap.fill.0")["currentProps"]["cmap"], "inferno")
         self.assertEqual(_object(result, "r.heatmap.fill.0")["currentProps"]["vmin"], 0.2)
-        self.assertEqual(_object(result, "r.colorbar.fill.0")["currentProps"]["tick_fontsize"], 15)
+        colorbar = _object(result, "r.colorbar.fill.0")
+        self.assertEqual(colorbar["currentProps"]["tick_fontsize"], 15)
+        self.assertIn("left", colorbar["editable"])
+        self.assertIn("bottom", colorbar["editable"])
+        self.assertIn("width", colorbar["editable"])
+        self.assertIn("height", colorbar["editable"])
+        self.assertEqual(colorbar["currentProps"]["left"], 0.72)
+        self.assertEqual(colorbar["currentProps"]["bottom"], 0.18)
+        self.assertEqual(colorbar["currentProps"]["width"], 0.08)
+        self.assertEqual(colorbar["currentProps"]["height"], 0.45)
 
     def test_text_annotation_position_patch(self):
         script = """
@@ -324,6 +489,8 @@ p
             # Legend visible/loc/facecolor/edgecolor/linewidth
             {"gid": "legend.0", "prop": "visible", "value": True, "mode": "backend_patch"},
             {"gid": "legend.0", "prop": "loc", "value": "bottom", "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "ncol", "value": 2, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "markerscale", "value": 1.8, "mode": "backend_patch"},
             {"gid": "legend.0", "prop": "facecolor", "value": "#00FF00", "mode": "backend_patch"},
             {"gid": "legend.0", "prop": "edgecolor", "value": "#0000FF", "mode": "backend_patch"},
             {"gid": "legend.0", "prop": "linewidth", "value": 1.5, "mode": "backend_patch"},
@@ -355,6 +522,8 @@ p
         legend = _object(result, "legend.0")
         self.assertEqual(legend["currentProps"]["visible"], True)
         self.assertEqual(legend["currentProps"]["loc"], "bottom")
+        self.assertEqual(legend["currentProps"]["ncol"], 2)
+        self.assertEqual(legend["currentProps"]["markerscale"], 1.8)
         self.assertEqual(legend["currentProps"]["facecolor"], "#00FF00")
         self.assertEqual(legend["currentProps"]["edgecolor"], "#0000FF")
         self.assertEqual(legend["currentProps"]["linewidth"], 1.5)

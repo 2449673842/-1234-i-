@@ -401,6 +401,8 @@ def _snapshot_text_style(text):
         "ha": text.get_horizontalalignment(),
         "va": text.get_verticalalignment(),
         "visible": text.get_visible(),
+        "fontweight": text.get_fontweight(),
+        "fontstyle": text.get_fontstyle(),
     }
 
 
@@ -413,6 +415,68 @@ def _restore_text_style(text, style: dict):
         text.set_horizontalalignment(style["ha"])
         text.set_verticalalignment(style["va"])
         text.set_visible(style["visible"])
+        text.set_fontweight(style.get("fontweight", "normal"))
+        text.set_fontstyle(style.get("fontstyle", "normal"))
+    except Exception:
+        pass
+
+
+def _get_tick_label_offset(axis) -> tuple[float, float]:
+    return (
+        float(getattr(axis, "_scifigure_tick_label_dx", 0.0) or 0.0),
+        float(getattr(axis, "_scifigure_tick_label_dy", 0.0) or 0.0),
+    )
+
+
+def _get_tick_label_text_overrides(axis) -> dict[int, str]:
+    overrides = getattr(axis, "_scifigure_tick_label_text_overrides", None)
+    if not isinstance(overrides, dict):
+        overrides = {}
+        setattr(axis, "_scifigure_tick_label_text_overrides", overrides)
+    return overrides
+
+
+def _set_tick_label_text_override(artist, gid: str, value: Any) -> bool:
+    match = re.match(r"^(x|y)tick\.(\d+)\.(\d+)$", gid or "")
+    if not match:
+        return False
+    ax = getattr(artist, "axes", None)
+    if ax is None:
+        fig = getattr(artist, "figure", None)
+        axes = getattr(fig, "axes", []) if fig is not None else []
+        ax_idx = int(match.group(2))
+        if 0 <= ax_idx < len(axes):
+            ax = axes[ax_idx]
+    if ax is None:
+        return False
+    axis = ax.xaxis if match.group(1) == "x" else ax.yaxis
+    index = int(match.group(3))
+    overrides = _get_tick_label_text_overrides(axis)
+    overrides[index] = str(value)
+    try:
+        artist.set_text(str(value))
+    except Exception:
+        pass
+    return True
+
+
+def _apply_tick_label_offset(axis, axis_name: str):
+    """Shift tick label text in points without moving ticks or data limits."""
+    try:
+        from matplotlib.transforms import ScaledTranslation
+
+        dx, dy = _get_tick_label_offset(axis)
+        fig = axis.axes.figure if axis.axes is not None else None
+        if fig is None:
+            return
+        offset = ScaledTranslation(dx / 72.0, dy / 72.0, fig.dpi_scale_trans)
+        for label in axis.get_ticklabels():
+            base = getattr(label, "_scifigure_base_transform", None)
+            if base is None or getattr(label, "_scifigure_offset_axis_name", None) != axis_name:
+                base = label.get_transform()
+                setattr(label, "_scifigure_base_transform", base)
+                setattr(label, "_scifigure_offset_axis_name", axis_name)
+            label.set_transform(base + offset)
     except Exception:
         pass
 
@@ -438,6 +502,10 @@ def _freeze_ticklabels_preserving_style(ax):
 
         labels = list(get_labels())
         texts = [label.get_text() for label in labels]
+        text_overrides = _get_tick_label_text_overrides(axis)
+        for idx, override_text in text_overrides.items():
+            if 0 <= idx < len(texts):
+                texts[idx] = override_text
         styles = [_snapshot_text_style(label) for label in labels]
         set_ticks(get_ticks())
         next_labels = set_labels(texts)
@@ -445,6 +513,7 @@ def _freeze_ticklabels_preserving_style(ax):
             next_labels = list(get_labels())
         for label, style in zip(next_labels, styles):
             _restore_text_style(label, style)
+        _apply_tick_label_offset(axis, axis_name)
 
     # Matplotlib intentionally expands view limits when set_ticks() receives
     # ticks outside the current limits.  That breaks user-applied xlim/ylim
@@ -521,6 +590,20 @@ def _read_legend_props(artist) -> dict:
             return mcolors.to_hex(c, keep_alpha=False)
         except Exception:
             return "#ffffff"
+
+    position = {"x": None, "y": None, "coord_system": "figure"}
+    try:
+        fig = artist.figure
+        if fig is not None and fig.canvas is not None:
+            fig.canvas.draw()
+            bbox = artist.get_window_extent(fig.canvas.get_renderer()).transformed(fig.transFigure.inverted())
+            position = {
+                "x": float((bbox.x0 + bbox.x1) / 2),
+                "y": float((bbox.y0 + bbox.y1) / 2),
+                "coord_system": "figure",
+            }
+    except Exception:
+        pass
             
     return {
         "visible": bool(artist.get_visible()),
@@ -535,6 +618,9 @@ def _read_legend_props(artist) -> dict:
         "markerscale": getattr(artist, "markerscale", 1.0) or 1.0,
         "title": artist.get_title().get_text() if artist.get_title() is not None else "",
         "fontfamily": artist.get_texts()[0].get_fontname() if artist.get_texts() else "",
+        "x": position["x"],
+        "y": position["y"],
+        "coord_system": position["coord_system"],
     }
 
 
@@ -757,6 +843,8 @@ def _read_axis_props(axis, axis_name: str) -> dict:
         "tick_labelfamily": labels[0].get_fontname() if labels else "",
         "tick_fontweight": labels[0].get_fontweight() if labels else "normal",
         "tick_fontstyle": labels[0].get_fontstyle() if labels else "normal",
+        "tick_label_dx": _get_tick_label_offset(axis)[0],
+        "tick_label_dy": _get_tick_label_offset(axis)[1],
         "sci_notation": sci_notation,
         "use_math_text": use_math_text,
         "offset_text_size": axis.get_offset_text().get_fontsize(),
@@ -1131,14 +1219,14 @@ _EDITABLE = {
     "subplot": ["left", "bottom", "width", "height", "aspect", "zorder"],
     "spine": ["visible", "color", "linewidth", "zorder"],
     "spine_group": ["visible", "color", "linewidth", "zorder"],
-    "legend": ["visible", "fontsize", "frameon", "facecolor", "edgecolor", "linewidth", "alpha", "loc", "ncol", "markerscale", "title", "fontfamily", "zorder"],
+    "legend": ["visible", "fontsize", "frameon", "facecolor", "edgecolor", "linewidth", "alpha", "loc", "ncol", "markerscale", "title", "fontfamily", "position", "zorder"],
     "line": ["color", "linewidth", "linestyle", "alpha", "marker", "markersize", "zorder"],
     "patch": ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
     "collection": ["facecolor", "edgecolor", "alpha", "linewidth", "size", "zorder"],
     "axes": ["xlim", "ylim", "show_minor_ticks", "x_tick_rotation", "tick_direction", "zorder"],
     "grid": ["visible", "color", "linewidth", "linestyle", "alpha", "zorder"],
-    "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "sci_notation", "use_math_text", "offset_text_size"],
-    "axis_y": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "sci_notation", "use_math_text", "offset_text_size"],
+    "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "tick_label_dx", "tick_label_dy", "sci_notation", "use_math_text", "offset_text_size"],
+    "axis_y": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "tick_label_dx", "tick_label_dy", "sci_notation", "use_math_text", "offset_text_size"],
     "bar_container": ["color", "facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
     "errorbar_container": ["color", "linewidth", "elinewidth", "capsize", "capthick", "alpha", "marker", "markersize", "zorder"],
     "boxplot_container": ["color", "linewidth", "alpha", "box_color", "median_color", "zorder"],
@@ -1295,11 +1383,31 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 "col": meta.get("col", 0),
                 "label": label,
             }
+        editable = _get_editable(kind)
+        if gid.startswith(("xtick.", "ytick.")):
+            # Tick labels are owned by Matplotlib's axis/tick layout engine.
+            # Free-position patches are visually previewable in SVG but are not
+            # stable after replay/render; use axis tick_pad/rotation instead.
+            editable = [prop for prop in editable if prop != "position"]
+            current_props = {
+                **current_props,
+                "positionEditable": False,
+                "positionUnsupportedReason": "Tick labels are controlled by the axis layout engine; adjust tick_pad, rotation, font size, or subplot bounds instead.",
+            }
+        if gid.startswith(("legend_text.", "legend_title.")):
+            # Legend child artists are laid out by the Legend container.
+            # Moving them independently detaches text from legend handles after replay.
+            editable = [prop for prop in editable if prop != "position"]
+            current_props = {
+                **current_props,
+                "positionEditable": False,
+                "positionUnsupportedReason": "Legend text is controlled by the legend container; move legend.* instead.",
+            }
         objects.append({
             "id": gid,
             "kind": kind,
             "label": label,
-            "editable": _get_editable(kind),
+            "editable": editable,
             "currentProps": current_props,
         })
 
@@ -1575,6 +1683,20 @@ def _legend_loc_to_string(loc: Any) -> str:
         return _LEGEND_LOC_MAP.get(loc, "best")
     return "best"
 
+
+def _set_legend_loc(artist, loc: Any) -> None:
+    setter = getattr(artist, "set_loc", None)
+    if callable(setter):
+        setter(loc)
+        return
+    reverse = {value: key for key, value in _LEGEND_LOC_MAP.items()}
+    normalized = reverse.get(str(loc), loc)
+    private_setter = getattr(artist, "_set_loc", None)
+    if callable(private_setter):
+        private_setter(normalized)
+        return
+    artist._loc = normalized
+
 # Map manifest prop names → matplotlib setter method names
 _PROP_TO_SETTER = {
     "text": "set_text",
@@ -1633,6 +1755,10 @@ def _apply_color_patch(artist, value):
 
 
 def _apply_single(artist, prop: str, value: Any, gid: str = ""):
+    if gid.startswith(("xtick.", "ytick.")) and prop == "text":
+        _set_tick_label_text_override(artist, gid, value)
+        return
+
     if gid.startswith("heatmap."):
         if prop == "cmap":
             artist.set_cmap(value)
@@ -1904,6 +2030,14 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             for label in artist.get_ticklabels():
                 label.set_fontstyle(str(value))
             return
+        if prop == "tick_label_dx":
+            setattr(artist, "_scifigure_tick_label_dx", float(value))
+            _apply_tick_label_offset(artist, axis_name)
+            return
+        if prop == "tick_label_dy":
+            setattr(artist, "_scifigure_tick_label_dy", float(value))
+            _apply_tick_label_offset(artist, axis_name)
+            return
         if prop == "tick_direction":
             parent_ax.tick_params(axis=axis_name, which="both", direction=str(value))
             return
@@ -1967,7 +2101,7 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         elif prop == "alpha":
             frame.set_alpha(float(value))
         elif prop == "loc":
-            artist.set_loc(str(value))
+            _set_legend_loc(artist, str(value))
         elif prop == "ncol":
             artist.set_ncols(int(value))
         elif prop == "markerscale":
@@ -1980,6 +2114,14 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             title = artist.get_title()
             if title is not None:
                 title.set_fontname(str(value))
+        elif prop == "position":
+            x = float(value["x"])
+            y = float(value["y"])
+            coord_system = value.get("coord_system", "figure")
+            if coord_system != "figure":
+                return "unsupported_legend_position_coord"
+            _set_legend_loc(artist, "center")
+            artist.set_bbox_to_anchor((x, y), transform=artist.figure.transFigure)
         elif prop == "fontweight":
             for text in artist.get_texts():
                 text.set_fontweight(str(value))
@@ -1993,6 +2135,9 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             if title is not None:
                 title.set_fontstyle(str(value))
         return
+
+    if gid.startswith(("legend_text.", "legend_title.")) and prop == "position":
+        return "unsupported_legend_child_position"
 
     if prop == "position":
         x = float(value["x"])
@@ -2112,6 +2257,8 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
             gid.startswith("colorbar.") and prop in {"left", "bottom", "width", "height"}
         ) or (
             gid.startswith("subplot.") and prop in {"left", "bottom", "width", "height", "aspect"}
+        ) or (
+            gid.startswith("legend.") and prop == "position"
         ):
             has_manual_positioning = True
 

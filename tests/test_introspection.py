@@ -8,9 +8,42 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(project_root, "renderer"))
 
 from introspector import replay_render
+from semantic_scanner import scan_source
 
 class TestArtistIntrospection(unittest.TestCase):
     
+    def test_dict_palette_ids_include_dict_name_to_avoid_cross_group_color_edits(self):
+        script = """
+import matplotlib.pyplot as plt
+CLUSTER_COLORS = {"Weak": "#11aa33", "Mixed": "#aa3311"}
+LEGEND_COLORS = {"Weak": "#eeeeee", "Mixed": "#333333"}
+fig, ax = plt.subplots()
+ax.plot([1, 2], [1, 2], color=CLUSTER_COLORS["Weak"], label="Weak")
+"""
+        semantic = scan_source(script)
+        palette_ids = {palette["id"] for palette in semantic["palettes"]}
+        self.assertIn("dict_CLUSTER_COLORS__Weak", palette_ids)
+        self.assertIn("dict_LEGEND_COLORS__Weak", palette_ids)
+        self.assertIn("dict_CLUSTER_COLORS__Mixed", palette_ids)
+        self.assertIn("dict_LEGEND_COLORS__Mixed", palette_ids)
+        weak_group = next(group for group in semantic["groups"] if group["label"] == "Weak")
+        self.assertEqual(weak_group["paletteId"], "dict_CLUSTER_COLORS__Weak")
+
+    
+    def test_replay_render_captures_more_than_three_figures(self):
+        script = """
+import matplotlib.pyplot as plt
+for i in range(5):
+    fig, ax = plt.subplots()
+    ax.plot([0, 1, 2], [i, i + 1, i + 2])
+    ax.set_title(f"Figure {i + 1}")
+"""
+        res = replay_render(script)
+        self.assertEqual(res.get("status"), "success")
+        figures = res.get("figures", [])
+        self.assertEqual(len(figures), 5)
+        self.assertEqual([fig.get("figureId") for fig in figures], ["fig_1", "fig_2", "fig_3", "fig_4", "fig_5"])
+
     def test_bar_container_introspection(self):
         script = """
 import matplotlib.pyplot as plt
@@ -370,6 +403,147 @@ ax.set_yticklabels(["low", "mid", "high"])
 
         self.assertEqual(target["currentProps"]["color"].lower(), "#00aa00")
         self.assertNotEqual(sibling["currentProps"]["color"].lower(), "#00aa00")
+
+    def test_single_tick_text_patch_only_changes_target_tick_text(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 2, 3])
+ax.set_xticks([0, 1, 2])
+ax.set_xticklabels(["A", "B", "C"])
+ax.set_yticks([1, 2, 3])
+ax.set_yticklabels(["low", "mid", "high"])
+"""
+        edit_log = [
+            {"gid": "ytick.0.1", "prop": "text", "value": "middle", "mode": "backend_patch"},
+            {"gid": "xtick.0.2", "prop": "text", "value": "C$^{2}$", "mode": "backend_patch"},
+        ]
+        res = replay_render(script, edit_log=edit_log)
+        self.assertEqual(res.get("status"), "success")
+        objects = res["figures"][0]["manifest"]["objects"]
+
+        y_target = next(o for o in objects if o["id"] == "ytick.0.1")
+        y_sibling = next(o for o in objects if o["id"] == "ytick.0.0")
+        x_target = next(o for o in objects if o["id"] == "xtick.0.2")
+        x_sibling = next(o for o in objects if o["id"] == "xtick.0.1")
+
+        self.assertIn("text", y_target["editable"])
+        self.assertEqual(y_target["currentProps"]["text"], "middle")
+        self.assertEqual(y_sibling["currentProps"]["text"], "low")
+        self.assertEqual(x_target["currentProps"]["text"], "C$^{2}$")
+        self.assertEqual(x_sibling["currentProps"]["text"], "B")
+
+    def test_tick_labels_do_not_expose_unstable_position_dragging(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 3, 2])
+ax.set_xticks([0, 1, 2])
+ax.set_xticklabels(["A", "B", "C"])
+"""
+        res = replay_render(script)
+        self.assertEqual(res.get("status"), "success")
+        objects = res["figures"][0]["manifest"]["objects"]
+
+        xtick = next(o for o in objects if o["id"] == "xtick.0.0")
+
+        self.assertNotIn("position", xtick["editable"])
+        self.assertIn("fontsize", xtick["editable"])
+        self.assertIn("color", xtick["editable"])
+        self.assertFalse(xtick["currentProps"]["positionEditable"])
+        self.assertIn("axis layout engine", xtick["currentProps"]["positionUnsupportedReason"])
+
+    def test_axis_tick_label_offset_moves_text_without_changing_axis_limits(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 3, 2])
+ax.set_xticks([0, 1, 2])
+ax.set_xticklabels(["A", "B", "C"])
+ax.set_xlim(0, 2)
+"""
+        edit_log = [
+            {"gid": "axis.x.0", "prop": "tick_label_dx", "value": 8.0, "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_label_dy", "value": -2.0, "mode": "backend_patch"},
+        ]
+        res = replay_render(script, edit_log=edit_log)
+        self.assertEqual(res.get("status"), "success")
+        objects = res["figures"][0]["manifest"]["objects"]
+
+        axis_x = next(o for o in objects if o["id"] == "axis.x.0")
+
+        self.assertIn("tick_label_dx", axis_x["editable"])
+        self.assertIn("tick_label_dy", axis_x["editable"])
+        self.assertAlmostEqual(axis_x["currentProps"]["tick_label_dx"], 8.0)
+        self.assertAlmostEqual(axis_x["currentProps"]["tick_label_dy"], -2.0)
+        self.assertEqual(axis_x["currentProps"]["limits"], [0.0, 2.0])
+
+    def test_legend_position_patch_application(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 3, 2], label="A")
+ax.plot([0, 1, 2], [2, 1, 3], label="B")
+ax.legend(loc="upper left", title="Group")
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success")
+        initial_objects = initial["figures"][0]["manifest"]["objects"]
+        initial_legend = next(o for o in initial_objects if o["id"] == "legend.0")
+
+        self.assertIn("position", initial_legend["editable"])
+        self.assertEqual(initial_legend["currentProps"]["coord_system"], "figure")
+        self.assertIsInstance(initial_legend["currentProps"]["x"], float)
+        self.assertIsInstance(initial_legend["currentProps"]["y"], float)
+
+        edit_log = [
+            {
+                "gid": "legend.0",
+                "prop": "position",
+                "value": {"x": 0.72, "y": 0.36, "coord_system": "figure"},
+                "mode": "backend_patch",
+            }
+        ]
+        patched = replay_render(script, edit_log=edit_log)
+        self.assertEqual(patched.get("status"), "success")
+        patched_objects = patched["figures"][0]["manifest"]["objects"]
+        patched_legend = next(o for o in patched_objects if o["id"] == "legend.0")
+
+        self.assertAlmostEqual(patched_legend["currentProps"]["x"], 0.72, places=2)
+        self.assertAlmostEqual(patched_legend["currentProps"]["y"], 0.36, places=2)
+        self.assertEqual(patched_legend["currentProps"]["coord_system"], "figure")
+
+    def test_legend_child_text_does_not_expose_unstable_position_dragging(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 3, 2], label="A")
+ax.plot([0, 1, 2], [2, 1, 3], label="B")
+ax.legend(loc="upper left", title="Group")
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success")
+        initial_objects = initial["figures"][0]["manifest"]["objects"]
+
+        legend = next(o for o in initial_objects if o["id"] == "legend.0")
+        legend_text = next(o for o in initial_objects if o["id"] == "legend_text.0.0")
+
+        self.assertIn("position", legend["editable"])
+        self.assertNotIn("position", legend_text["editable"])
+        self.assertFalse(legend_text["currentProps"]["positionEditable"])
+        self.assertIn("legend container", legend_text["currentProps"]["positionUnsupportedReason"])
+
+        patched = replay_render(script, edit_log=[
+            {
+                "gid": "legend_text.0.0",
+                "prop": "position",
+                "value": {"x": 0.1, "y": 0.1, "coord_system": "figure"},
+                "mode": "backend_patch",
+            }
+        ])
+        self.assertEqual(patched.get("status"), "success")
+        warning_types = [w.get("type") for w in patched.get("warnings", [])]
+        self.assertIn("unsupported_legend_child_position", warning_types)
 
     def test_all_fixtures_pipeline(self):
         fixtures_dir = os.path.join(project_root, "tests", "fixtures", "artist_introspection")

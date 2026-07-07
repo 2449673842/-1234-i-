@@ -56,6 +56,8 @@ export type ManifestObjectKind =
   | "grid"
   | "axis_x"
   | "axis_y"
+  | "xtick"
+  | "ytick"
   | "bar_container"
   | "errorbar_container"
   | "stem_container"

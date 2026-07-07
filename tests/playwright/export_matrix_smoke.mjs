@@ -172,15 +172,33 @@ async function runApiExportMatrix(projectId) {
     `ids=${JSON.stringify(ids)}, allHasBoth=${Boolean(allHasBoth)}`,
   );
 
+  const saveAllSvg = await requestJson(`/api/projects/${projectId}/export`, {
+    method: 'POST',
+    body: JSON.stringify({ format: 'svg', dpi: 300, saveToLibrary: true }),
+  });
+  const savedAllAssets = Array.isArray(saveAllSvg.figures) ? saveAllSvg.figures.map((fig) => fig.asset).filter(Boolean) : [];
+  const savedAllIds = savedAllAssets.map((asset) => asset.figureId).sort();
+  const savedAllNames = savedAllAssets.map((asset) => asset.name).sort();
+  record(
+    'X2b-save-all-assets',
+    saveAllSvg.status === 'success'
+      && savedAllIds.join(',') === 'fig_1,fig_2'
+      && savedAllNames.join(',') === 'fig_1,fig_2'
+      ? 'PASS'
+      : 'FAIL',
+    `ids=${JSON.stringify(savedAllIds)}, names=${JSON.stringify(savedAllNames)}`,
+  );
+
   const assets = await requestJson(`/api/projects/${projectId}/export-assets`);
+  const allFigureAssetsPresent = ['fig_1', 'fig_2'].every((figureId) => (assets.assets || []).some((asset) => asset.figureId === figureId));
   const exportedFormats = new Set((assets.assets || []).filter((asset) => asset.figureId === 'fig_2').map((asset) => asset.format));
   const assetSizesOk = (assets.assets || [])
     .filter((asset) => asset.figureId === 'fig_2')
     .every((asset) => typeof asset.sizeBytes === 'number' && asset.sizeBytes > 0 && asset.downloadUrl);
   record(
     'X3-assets',
-    ['svg', 'png', 'pdf', 'tiff'].every((fmt) => exportedFormats.has(fmt)) && assetSizesOk ? 'PASS' : 'FAIL',
-    `formats=${JSON.stringify(Array.from(exportedFormats).sort())}, assetSizesOk=${assetSizesOk}`,
+    ['svg', 'png', 'pdf', 'tiff'].every((fmt) => exportedFormats.has(fmt)) && assetSizesOk && allFigureAssetsPresent ? 'PASS' : 'FAIL',
+    `formats=${JSON.stringify(Array.from(exportedFormats).sort())}, assetSizesOk=${assetSizesOk}, allFigureAssetsPresent=${allFigureAssetsPresent}`,
   );
 
   diagnostics.matrix = matrix;

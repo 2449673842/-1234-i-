@@ -67,6 +67,15 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 **严禁**（会被 AST 安全门拦截）：
 - `open()` / `pathlib.Path().read_text()` / 任何磁盘文件读写
 - `plt.savefig()` / `plt.show()`
+- `import shutil` / `shutil.copy()` / `shutil.copy2()` / 复制、归档、保存任何输入文件
+- `Path(__file__)` / `__file__` / `Path(...).resolve().parents[...]` / 根据脚本所在目录反推项目根目录
+- 任何本机绝对路径、历史工程目录、桌面/OneDrive 路径、网络路径或未上传文件路径
+
+**本地路径迁移规则：**
+- 如果原脚本包含 `SOURCE_DIR`、`SOURCE_RUN_DIR`、`PROJECT_ROOT`、`Path(__file__).resolve()` 等路径逻辑，必须删除。
+- 如果原脚本从历史目录读取 CSV/XLSX，必须改成 `_uploaded_file_paths["原始文件名.csv"]` 或 `_uploaded_file_paths["原始文件名.xlsx"]`。
+- 如果原脚本有 `preserve_inputs()`、`copy2()`、复制参考图、写运行说明等归档逻辑，必须删除；平台只负责绘图和内省，不允许脚本操作文件系统。
+- 不要让脚本依赖当前工作目录、脚本文件位置或用户电脑目录。平台脚本是在受控 `exec()` 环境中执行，`__file__` 不可靠。
 
 ---
 
@@ -135,7 +144,8 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
 ### 六、安全与限制
 
-* **禁止模块**：`os`, `sys`, `subprocess`, `builtins`, `socket`, `urllib`, `requests`，以及任何形式的 `eval()` / `exec()`，脚本必须是安全的科学绘图纯逻辑。
+* **禁止模块**：`os`, `sys`, `subprocess`, `builtins`, `shutil`, `socket`, `urllib`, `requests`，以及任何形式的 `eval()` / `exec()`，脚本必须是安全的科学绘图纯逻辑。
+* **禁止本地路径依赖**：不得使用 `__file__`、`Path(__file__)`、本机绝对路径、历史工程目录或未上传文件路径。所有数据来源必须来自 `_uploaded_data` 或 `_uploaded_file_paths`。
 
 ---
 

@@ -5,6 +5,9 @@ from typing import Any, Dict, List, Optional
 # Match UPPER_CASE = "#HEX"
 PATTERN_CONSTANT = re.compile(r'^([A-Z][A-Z0-9_]*)\s*=\s*["\'](\#[0-9A-Fa-f]{6})["\']')
 
+def _dict_palette_id(dict_name: str, key: Any) -> str:
+    return f"dict_{dict_name}__{key}"
+
 def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Scans the Matplotlib Python script for semantic color constants and dictionary definitions.
@@ -75,7 +78,7 @@ def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict
 
                     if isinstance(node.value, ast.Dict):
                         for k_val, v_val in dict_entries:
-                            palette_id = f"dict_{k_val}"
+                            palette_id = _dict_palette_id(dict_name, k_val)
                             if not any(p["id"] == palette_id for p in palettes):
                                 palettes.append({
                                     "id": palette_id,
@@ -104,7 +107,7 @@ def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict
                                     slice_node = kw.value.slice
                                     slice_val = getattr(slice_node, 'value', getattr(slice_node, 's', None))
                                     if slice_val is not None:
-                                        color_arg = f"dict_{slice_val}"
+                                        color_arg = _dict_palette_id(kw.value.value.id, slice_val)
                             elif isinstance(kw.value, ast.Constant):
                                 color_arg = kw.value.value
                         elif kw.arg == 'label':
@@ -144,7 +147,7 @@ def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict
                 continue
             for key, val in dict_value.items():
                 if isinstance(val, str) and re.match(r'^\#[0-9A-Fa-f]{6}$', val):
-                    dict_id = f"dict_{key}"
+                    dict_id = _dict_palette_id(dict_name, key)
                     if not any(p["id"] == dict_id for p in palettes):
                         palettes.append({
                             "id": dict_id,

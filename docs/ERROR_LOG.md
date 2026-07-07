@@ -4,6 +4,229 @@
 
 ---
 
+## 2026-07-07 白色输出画布与真实绘图区控制入口不清晰
+
+**现象**
+
+- 用户在编辑器中看到标签跑到白色画布外，但不知道应调整“整张白色画布”还是“坐标轴框/真实绘图区”。
+- 右侧面板已有 `figure.width_in` / `figure.height_in` 控件，也已有 `subplot.left/bottom/width/height` 控件，但命名为“画布尺寸与精度”“子图位置与比例”，用户容易理解成只能改画布，找不到真正的坐标轴框宽高入口。
+- R/ggplot facet 子图不支持独立 bounds，但前端批量能力之前没有统一读取 `unsupportedProps` 做禁用保护，容易造成“控件可见但实际不应支持”的误解。
+
+**根因**
+
+- 后端协议已经区分两类尺寸：
+  - `global:figure.width_in/figure.height_in` 控制最终白色输出画布。
+  - `subplot.*:left/bottom/width/height` 控制 Matplotlib Axes 在白色画布内的真实绘图区/坐标轴框。
+- 前端文案没有把这两类尺寸解释清楚，也没有在组件中心批量入口中明确“绘图区宽高”和“画布宽高”的边界。
+- R facet 使用 ggplot gtable 共享布局，独立 panel bounds 不等价于 Matplotlib axes bounds，因此只能明确提示不支持，不能假装支持。
+
+**修复**
+
+- 将右侧全局面板标题改为“整张白色画布 / 输出尺寸”，并增加说明：它控制最终导出的白色画布大小和 DPI。
+- 将 `subplot.*` 专用面板标题改为“真实绘图区 / 坐标轴框”，将 `left/bottom/width/height` 显示为“绘图区左边距/下边距/宽度/高度”。
+- 在 `subplot.*` 面板中增加工作流提示：先固定白色画布，再调整真实绘图区；标签出界时通常需要增大画布或移动/缩小绘图区。
+- 前端读取 `currentProps.unsupportedProps`，对 R facet 等不支持独立 bounds 的对象隐藏对应控件并展示不支持原因。
+- 组件中心的批量“真实绘图区 / 坐标轴框”入口只对 `subplot` 对象显示，避免误用于 colorbar 等其它 `width/height` 语义不同的对象。
+
+**验证**
+
+- `npx tsc --noEmit`：通过。
+- `python tests/test_introspection.py`：通过，16 tests。
+- `python tests/test_r_renderer.py`：通过，17 tests。
+- `npm test`：通过，5 files / 42 tests。
+- `npm run build`：通过；仍存在项目既有 chunk size warning 与 `server.ts` 的 `import.meta` CJS warning。
+
+---
+
+## 2026-07-07 拖动刻度标签后重绘回到原位置
+
+**现象**
+
+- 用户开启拖拽模式后拖动坐标轴刻度标签，例如 `xtick.*` / `ytick.*`。
+- SVG 预览阶段标签会跟随鼠标移动，但确认重绘后又回到轴系统原来的布局位置。
+
+**根因**
+
+- Matplotlib 的刻度标签不是普通自由文本，而是由 Axis/Tick layout engine 管理。
+- 平台之前把 tick label 按普通 `text` 对象继承了 `position` 编辑能力，前端也允许其进入拖拽写回流程。
+- 重绘时 `_freeze_ticklabels_preserving_style()` 和 Matplotlib tick 系统会重新固化刻度位置，因此自由 `position` patch 不具备稳定回放语义。
+- 正确的稳定控制参数应是 `axis.x/y.*` 上的 `tick_pad`、`tick_rotation`、`tick_labelsize`、`tick_labelfamily`、`tick_labelcolor`，以及 `subplot.*` 绘图区边距/宽高。
+
+**修复**
+
+- `renderer/introspector.py`：
+  - 对 `xtick.*` / `ytick.*` 移除 `position` 可编辑字段。
+  - 保留 `fontsize`、`fontfamily`、`fontweight`、`fontstyle`、`color`、`rotation` 等样式编辑。
+  - 在 `currentProps` 中加入 `positionEditable=false` 与原因说明。
+- `src/components/ChartPreview.tsx`：
+  - 拖拽模式下显式排除 `xtick.*` / `ytick.*` 及 `x_tick_label` / `y_tick_label` 角色。
+  - 用户尝试拖动刻度标签时提示改用轴面板的刻度间距、旋转、字号或绘图区边距。
+- `tests/test_introspection.py`：
+  - 新增回归测试，确认 tick label 不再暴露不稳定的 `position`，但仍保留样式编辑能力。
+
+**验证**
+
+- `python tests/test_introspection.py`：通过，17 tests。
+- `python tests/test_r_renderer.py`：通过，17 tests。
+- `npx tsc --noEmit`：通过。
+- `npm test`：通过，5 files / 42 tests。
+- `npm run build`：通过；仍存在项目既有 chunk size warning 与 `server.ts` 的 `import.meta` CJS warning。
+
+---
+
+## 2026-07-07 需要整体平移刻度文字但保持刻度线不动
+
+**需求**
+
+- 用户希望将横坐标刻度文字整体向右微调一点。
+- 刻度线、刻度值和数据坐标范围不能变化。
+- 不能回到之前“自由拖拽单个 tick label”的不稳定方案。
+
+**设计**
+
+- 新增轴级稳定参数：
+  - `tick_label_dx`：刻度文字水平偏移，单位 pt。
+  - `tick_label_dy`：刻度文字垂直偏移，单位 pt。
+- 该参数作用在 `axis.x.*` / `axis.y.*`，通过 Matplotlib text transform 加 `ScaledTranslation` 实现。
+- 偏移只作用于 tick label 文本，不调用 `set_xticks` / `set_xlim`，因此不会移动刻度线、不会改变数据范围。
+- R/ggplot 暂不暴露该控件；ggplot 需要另走 theme margin / justification 映射，不能复用 Matplotlib transform 方案。
+
+**修复**
+
+- `renderer/introspector.py`：
+  - 在 axis manifest 中加入 `tick_label_dx` / `tick_label_dy`。
+  - 在 axis patch 中支持这两个参数。
+  - 在 `_freeze_ticklabels_preserving_style()` 后重新应用 tick label offset，避免 Matplotlib 固化 tick labels 时丢失偏移。
+- `src/components/RightSidebar.tsx`：
+  - 在轴详情面板中显示“刻度文字水平偏移(pt)”和“刻度文字垂直偏移(pt)”。
+  - 仅当 manifest 明确声明 editable 时显示，避免 R 路径出现假控件。
+- `tests/test_introspection.py`：
+  - 新增回归测试，确认设置 offset 后 manifest 可读回，同时轴 limits 不变。
+
+**验证**
+
+- `python tests/test_introspection.py`：通过，18 tests。
+- `python tests/test_r_renderer.py`：通过，17 tests。
+- `npx tsc --noEmit`：通过。
+- `npm test`：通过，5 files / 42 tests。
+- `npm run build`：通过；仍存在项目既有 chunk size warning 与 `server.ts` 的 `import.meta` CJS warning。
+
+---
+
+## 2026-07-07 拖动图例内部文字导致文字跑到左下角
+
+**现象**
+
+- 用户在拖拽模式下移动图例相关内容。
+- 图例中的线条/点/色块位置不变，但图例文字脱离图例布局，跑到左下角或其它异常位置。
+
+**根因**
+
+- Matplotlib legend 是一个容器布局系统。
+- `legend.0` 是可稳定移动的图例容器。
+- `legend_text.*` / `legend_title.*` / `legend_line.*` / `legend_patch.*` 是容器内部子对象，位置由 legend layout 管理。
+- 旧协议把 `legend_text.*` / `legend_title.*` 作为普通 text 继承了 `position` 编辑能力；一旦写入 position patch，文字会脱离 legend 容器，而图例符号仍留在容器布局中。
+
+**修复**
+
+- `src/components/ChartPreview.tsx`：
+  - 拖拽模式下点击 `legend_text.*` / `legend_title.*` / `legend_line.*` / `legend_patch.*` 时，自动归一到对应 `legend.N` 容器。
+  - `legend_text` / `legend_marker` 角色不再作为独立可拖拽对象。
+- `renderer/introspector.py`：
+  - `legend_text.*` / `legend_title.*` 不再暴露 `position` 编辑能力。
+  - 保留图例文字的字体、字号、颜色、字重、斜体等样式编辑能力。
+  - 对旧 editLog 中的 `legend_text.* position` / `legend_title.* position` 返回 `unsupported_legend_child_position`，避免继续破坏图例布局。
+- `tests/test_introspection.py`：
+  - 新增回归测试，确认 `legend.0` 仍可移动，`legend_text.*` 不暴露 `position`，旧子文字 position patch 会被拒绝并产生 warning。
+
+**验证**
+
+- `python tests/test_introspection.py`：通过，19 tests。
+- `python tests/test_r_renderer.py`：通过，17 tests。
+- `npx tsc --noEmit`：通过。
+- `npm test`：通过，5 files / 42 tests。
+- `npm run build`：通过；仍存在项目既有 chunk size warning 与 `server.ts` 的 `import.meta` CJS warning。
+
+---
+
+## 2026-07-07 多图模式从 3 张扩展到更多 Figure 时前端不显示新增图
+
+**现象**
+
+- 用户怀疑多图模式被限制为最多 3 张 Figure。
+- Python 后端实际可以捕获任意数量的 Matplotlib Figure，但当前前端在项目已有 3 张图时，如果代码重新渲染生成 4 张或更多，Figure 切换条仍可能只显示旧的 3 张。
+
+**根因**
+
+- 后端 `renderer/introspector.py` 按 `unique_figures` 循环返回 `fig_1 ... fig_N`，没有 3 张上限。
+- 前端 `src/App.tsx` 多个全量项目渲染成功分支使用 `Object.keys(projectFigures)` 作为更新范围。
+- 当代码生成了新增 Figure，例如 `fig_4` / `fig_5`，这些 id 不在旧 `projectFigures` 中，因此前端不会把后端返回的新 Figure 合并进状态。
+- 这表现为“后端说捕获了更多图，但编辑器仍只能切到旧的几张图”。
+
+**修复**
+
+- `src/App.tsx`：
+  - 新增 `mergeReturnedProjectFigures()`，全量项目渲染成功后以后端返回的 `data.figures` 为准重建 `projectFigures`。
+  - 保留同名 Figure 的 editLog / revision fallback，但允许新增 `fig_N` 自动进入前端状态。
+  - 当 Figure 数量减少时，前端状态也随返回结果收敛，避免旧 Figure 残留。
+  - 清理 `selectedFigureIds`，移除已不存在的 Figure；当前 active Figure 不存在时自动切到返回的第一张。
+  - 修复空 Figure 项目首次渲染时 requestId 无绑定导致渲染状态可能不结束的边界。
+- `tests/test_introspection.py`：
+  - 新增 Python 回归测试，脚本创建 5 张 Matplotlib Figure 时必须返回 `fig_1` 到 `fig_5`。
+
+**验证**
+
+- `python tests/test_introspection.py`：通过，20 tests。
+- `python tests/test_r_renderer.py`：通过，17 tests。
+- `npx tsc --noEmit`：通过。
+- `npm test`：通过，5 files / 42 tests。
+- `npm run build`：通过；仍存在项目既有 chunk size warning 与 `server.ts` 的 `import.meta` CJS warning。
+
+**遗留说明**
+
+- Python/Matplotlib 多 Figure 路径现在按代码实际生成数量显示。
+- R 项目渲染当前仍由 `server.ts` 包装为单 `fig_1`，这是 R 渲染路径的现有限制，不属于 Python 多图显示上限。
+
+---
+
+## 2026-07-06：画布顶栏控件覆盖 Figure 批量选择复选框
+
+**现象**
+
+- 画布升级时把 Figure 切换器从画布浮层移动到顶部预览工具栏。
+- 在自动化回归中，点击 `选择 Figure 2 作为批量应用目标` 超时。
+- Playwright 证据显示右侧状态胶囊（`实时渲染` / `真实 SVG 对象可直接编辑`）拦截了 Figure 复选框的 pointer event。
+
+**根因**
+
+- 平台 UI 布局问题。
+- Figure 选择器和右侧状态区放在同一行，窄宽度或状态文案较长时发生视觉重叠，导致复选框虽然可见但点击目标被右侧元素覆盖。
+
+**修复记录**
+
+- `src/components/MainWorkspace.tsx`：
+  - 将 Figure 选择器从顶栏同一行拆到预览区上方的独立窄工具条。
+  - 工具条保持在画布外部，不再遮挡图形内容。
+  - 选中对象黑色浮层从画布内部移到顶部状态 chip，避免中间黑色浮层裁切/遮挡。
+- `src/components/ChartPreview.tsx`：
+  - 画布铺满预览区域。
+  - 缩放和操作提示移动到底部 HUD。
+  - 拖拽确认条移动到顶部安全区。
+
+**验证**
+
+- `npx tsc --noEmit`：通过。
+- `npm test`：通过，42/42。
+- `npm run test:drag-extended-smoke`：通过，覆盖连续拖拽、多选拖拽、取消、R native 保护。
+- `npm run test:cross-figure-smoke`：通过，覆盖 Figure 复选框点击、应用全部、应用选中、多子图 grid/spine fanout。
+- `npm run build`：通过；仍存在项目既有 Vite chunk 过大和 `server.ts import.meta` CJS 警告。
+
+**遗留风险**
+
+- `npm run test:behavior-smoke` 在 `http://localhost:3100` 仍有 3 项失败：stale 文本最终断言、导出最新文本断言、Vite HMR WebSocket console/page error。导出矩阵专项测试已通过，行为 smoke 的 patch/export 最新文本一致性需单独调查，不能归因于本次画布布局改动。
+
+---
+
 ## 2026-07-03：R 项目渲染误走 Python 校验与上传 CSV 读取失败
 
 **相关诊断文件**
@@ -382,3 +605,49 @@ build_figure(fl9_data, stats_df, opr_fep_df)
 - `npx tsc --noEmit`：通过。
 - `npm test`：通过，5 files / 42 tests。
 - `npm run build`：通过；仍存在既有 chunk size warning 与 `server.ts` 的 `import.meta` CJS warning。
+
+---
+
+## 2026-07-07 组合代码项目多文件数据源错配与渲染中不停止
+
+**现象**
+
+- 用户从多个 Figure 创建“组合代码项目”后，AI 转写出的脚本渲染失败。
+- 诊断文件 `组图_render_diagnostic_2026-07-07T03-12-24-487Z.md` 报错：
+  - `SHAP data must contain 'display_name' and 'mean_abs_shap' columns`
+- 前端同时出现“渲染中”状态不停止的问题。
+
+**根因**
+
+- 当前组合项目包含多个数据文件，第一份文件是 `Table4_classification_metric_summary.csv`，SHAP 表实际是 `Table6_logistic_shap_summary.csv`。
+- AI 转写代码中的 `load_shap_data()` 使用 `pd.DataFrame(_uploaded_data)`，但平台多文件项目里 `_uploaded_data` 是默认/首个数据表，不等于用户想要的 SHAP 表。
+- 因此 `display_name`、`mean_abs_shap` 不存在，脚本主动抛出 ValueError。
+- 渲染状态不停止的前端问题来自项目级渲染请求的全局 loading 收敛条件过窄：部分分支用当前 active figure 的 `requestId` 判断是否关闭 `projectIsRendering`。用户切换 Figure、跨图渲染、或错误返回后，目标 Figure 已进入 error，但全局 loading 可能仍保持 true。
+
+**修复**
+
+- 收紧组合代码项目生成的网页 AI 提示词：
+  - 多文件项目禁止使用 `_uploaded_data` 猜当前数据。
+  - 必须通过 `_uploaded_file_paths["具体文件名.csv"]` / `_uploaded_file_paths["具体文件名.xlsx"]` 精确读取每个面板需要的数据。
+  - 绘图前必须断言对应 DataFrame 是否包含所需列，并在错误中明确文件名和缺失列。
+- 前端项目级渲染状态改为活跃请求集合：
+  - 开始项目级渲染时登记 `requestId`。
+  - 成功、失败、异常、stale response 结束时注销该 `requestId`。
+  - 只有活跃请求集合为空时才关闭 `projectIsRendering` 和 `renderProgressText`。
+  - 图级 stale response guard 仍保留，只是不再用 active figure 判断全局 loading 是否收敛。
+
+**当前诊断对应的代码修正建议**
+
+- 将：
+  - `df = pd.DataFrame(_uploaded_data)`
+- 改为：
+  - `df = pd.read_csv(_uploaded_file_paths["Table6_logistic_shap_summary.csv"])`
+- 如果新项目中复制后的文件名带项目名前缀，应使用组合提示词列出的 copied filename。
+
+**验证**
+
+- 待本次代码改动完成后运行：
+  - `npx tsc --noEmit`
+  - `npm test`
+  - `npm run build`
+  - `npm run test:composition-code-project`
