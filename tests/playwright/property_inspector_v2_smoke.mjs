@@ -46,7 +46,8 @@ async function verifyStagingProvenance() {
     && markerResponse.ok
     && marker?.kind === 'unified-editing-staging'
     && marker?.propertyDescriptorV1 === true
-    && marker?.propertyInspectorV2 === true;
+    && marker?.propertyInspectorV2 === true
+    && marker?.fontControlsV2 === true;
   if (!valid) {
     throw new Error(`Refusing non-staging target: profile=${profile}, marker=${JSON.stringify(marker)}`);
   }
@@ -65,8 +66,9 @@ async function prepareFixture(token) {
   const script = [
     'import matplotlib.pyplot as plt',
     'fig, ax = plt.subplots(figsize=(5, 3.5))',
+    'fig.suptitle("Shared heading", fontsize=18)',
     'ax.plot([0, 1, 2], [1, 3, 2], color="#225577", linewidth=1.5)',
-    'ax.set_title("Property Inspector V2")',
+    'ax.set_title("Property Inspector V2", fontsize=12)',
     'ax.set_xlabel("X axis")',
     'ax.set_ylabel("Y axis")',
     'plt.tight_layout()',
@@ -216,6 +218,36 @@ async function run() {
       && Number(patches[0]?.value) === 17
       && patches[0]?.mode === expectedMode;
     record('P2-exact-patch', exactPatch, `expectedMode=${expectedMode}, patches=${JSON.stringify(patches)}`);
+
+    await page.getByRole('button', { name: '字体中心', exact: true }).last().click();
+    await page.locator('[data-font-controls-version="2"]').first().waitFor({ state: 'visible', timeout: 10000 });
+    const mixedTitleSize = await page.locator('[data-font-group="titles"] [data-property-state="mixed"] [data-property-control="fontsize"]').count();
+    const tickRotationControls = page.locator('[data-font-group="xticks"] [data-property-control="rotation"]');
+    const tickRotationCount = await tickRotationControls.count();
+    record('F2-mixed-and-rotation', mixedTitleSize === 1 && tickRotationCount === 1,
+      `mixedTitleSize=${mixedTitleSize}, tickRotation=${tickRotationCount}`);
+
+    const rotation = tickRotationControls.first();
+    await rotation.fill('25');
+    await rotation.blur();
+    await page.waitForTimeout(300);
+    const fontDraftVisible = (await page.textContent('body') || '').includes('已暂存');
+    record('F2-draft', fontDraftVisible, `draftVisible=${fontDraftVisible}`);
+    const tickResponsePromise = page.waitForResponse(response => (
+      response.url().includes('/api/figure/patch')
+      && response.status() >= 200
+      && response.status() < 300
+    ), { timeout: 90000 });
+    await page.getByRole('button', { name: /应用当前图/ }).first().click();
+    await tickResponsePromise;
+    await waitForWorkspace(page);
+    const tickPatches = patchRequests.at(-1)?.patches || [];
+    const exactTickRotation = tickPatches.length === 1
+      && tickPatches[0]?.gid === 'axis.x.0'
+      && tickPatches[0]?.prop === 'tick_rotation'
+      && Number(tickPatches[0]?.value) === 25
+      && tickPatches[0]?.mode === 'backend_patch';
+    record('F2-exact-tick-rotation', exactTickRotation, JSON.stringify(tickPatches));
     record('P2-console', consoleErrors.length === 0, `consoleErrors=${consoleErrors.length}`);
     await page.screenshot({ path: path.join(OUTPUT_DIR, 'property-inspector-v2.png'), fullPage: true });
   } finally {

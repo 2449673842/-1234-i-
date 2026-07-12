@@ -101,6 +101,10 @@ describe('property descriptor projection', () => {
     const projected = byKey(projectPropertyDescriptors({ center: 'fonts', objects: [editableText, line], scope: 'object' }), 'fontfamily');
 
     expect(projected.state).toBe('partial');
+    expect(projected.stateByObjectId).toEqual({
+      'title.0': 'editable',
+      'line.0': 'unsupported',
+    });
     expect(projected.counts).toEqual({
       total: 2, editable: 1, readonly: 0, unsupported: 1, conditional: 0, legacyFallback: 0,
     });
@@ -157,6 +161,43 @@ describe('property descriptor projection', () => {
 
     expect(projected.state).toBe('editable');
     expect(projected.value).toBe(15);
+  });
+
+  it('exposes visibility and opacity in the font center when figure-scope replay is supported', () => {
+    const title = object({
+      id: 'title.0',
+      currentProps: { visible: true, alpha: 0.8 },
+      propertyCapabilities: [capability('visible'), capability('alpha')],
+    });
+
+    const projected = projectPropertyDescriptors({
+      center: 'fonts',
+      objects: [title],
+      scope: 'figure',
+    });
+
+    expect(byKey(projected, 'visible').state).toBe('editable');
+    expect(byKey(projected, 'alpha').state).toBe('editable');
+  });
+
+  it('does not advertise a font group property that cannot replay at figure scope', () => {
+    const title = object({
+      id: 'title.0',
+      currentProps: { fontsize: 12 },
+      propertyCapabilities: [{
+        ...capability('fontsize'),
+        scopes: ['group'],
+      }],
+    });
+
+    const projected = byKey(projectPropertyDescriptors({
+      center: 'fonts',
+      objects: [title],
+      scope: 'figure',
+    }), 'fontsize');
+
+    expect(projected.state).toBe('readonly');
+    expect(projected.unsupportedReasons['title.0']).toContain('figure');
   });
 
   it('does not alias tick-line color to canonical text color', () => {

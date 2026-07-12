@@ -365,6 +365,33 @@ describe('controlled strict target compiler', () => {
     }]);
   });
 
+  it('maps group tick rotation to the durable virtual axis property', () => {
+    const figure = manifest([{
+      id: 'axis.x.0',
+      kind: 'axis_x',
+      label: 'X axis',
+      editable: ['tick_rotation'],
+      currentProps: { tick_rotation: 0 },
+      identity: identity('axis.x.0'),
+      propertyCapabilities: [capability('tick_rotation', 'backend_patch')],
+    }]);
+
+    const result = compileEditingIntentWithControlledResolver(figure, {
+      intent: 'style.text.tick_label',
+      scope: {
+        selectionMode: 'role_in_figure',
+        objectIds: ['axis.x.0'],
+        targetRole: 'x_tick_label',
+      },
+      operation: { prop: 'rotation', value: 25 },
+    }, true);
+
+    expect(result.strategy).toBe('strict');
+    expect(result.patches).toEqual([{
+      op: 'set', mode: 'backend_patch', gid: 'axis.x.0', prop: 'tick_rotation', value: 25,
+    }]);
+  });
+
   it('keeps a selected multi-subplot font scope inside the requested subplot', () => {
     const objects = [0, 1].map((index): ManifestObject => ({
       id: `ylabel.${index}`,

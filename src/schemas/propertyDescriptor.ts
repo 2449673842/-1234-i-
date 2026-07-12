@@ -48,6 +48,8 @@ export type ProjectedPropertyState =
   | 'unsupported'
   | 'mixed';
 
+export type ProjectedObjectPropertyState = 'editable' | 'readonly' | 'unsupported';
+
 export interface PropertyDescriptor {
   key: CanonicalPropertyKey;
   label: string;
@@ -80,6 +82,7 @@ export interface ProjectedPropertyDescriptor {
   counts: ProjectedPropertyCounts;
   scope: ManifestEditScope;
   mixed: boolean;
+  stateByObjectId: Record<string, ProjectedObjectPropertyState>;
   propByObjectId: Record<string, string | undefined>;
   value: unknown;
   valuesByObjectId: Record<string, unknown>;

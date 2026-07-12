@@ -24,6 +24,7 @@ function projection(overrides: Partial<ProjectedPropertyDescriptor> = {}): Proje
     counts: { total: 1, editable: 1, readonly: 0, unsupported: 0, conditional: 0, legacyFallback: 0 },
     scope: 'object',
     mixed: false,
+    stateByObjectId: { 'title.0': 'editable' },
     propByObjectId: { 'title.0': 'fontsize' },
     value: 12,
     valuesByObjectId: { 'title.0': 12 },

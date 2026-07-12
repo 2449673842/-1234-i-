@@ -15,7 +15,7 @@ import { resolveExplicitColorbarOwner } from '../utils/colorbarOwnership';
 import type { StandardFigureModel, StandardFigureObject } from '../schemas/standardFigureModel';
 import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent';
 import type { EditingIntentApplyReport, EditingIntentSkippedTarget } from '../schemas/editingIntent';
-import type { EditingCenterId } from '../schemas/propertyDescriptor';
+import type { CanonicalPropertyKey, EditingCenterId, ProjectedPropertyDescriptor } from '../schemas/propertyDescriptor';
 import { PropertyControl } from './PropertyControl';
 
 import type { DraftPatch } from '../schemas/draftPatchBatch';
@@ -54,6 +54,9 @@ const PALETTE_TARGET_RESOLVER_V2_ENABLED = (
 const PROPERTY_INSPECTOR_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
 ).env?.VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2 === '1';
+const FONT_CONTROLS_V2_ENABLED = (
+  import.meta as ImportMeta & { env?: Record<string, string | undefined> }
+).env?.VITE_SCIFIGURE_FONT_CONTROLS_V2 === '1';
 const DEFAULT_PRESETS: Record<string, string[]> = {
   Nature: ['#1F78B4', '#D95F02', '#7570B3', '#E7298A', '#66A61E'],
   Science: ['#E41A1C', '#377EB8', '#4DAF4A', '#984EA3', '#FF7F00'],
@@ -4125,7 +4128,10 @@ export function RightSidebar({
     return values.length > 0 && values.every(value => value === values[0]) ? values[0] : fallback;
   };
 
-  type FontGroupPatchProp = 'fontsize' | 'fontfamily' | 'color' | 'fontweight' | 'fontstyle';
+  type FontGroupPatchProp = Extract<
+    CanonicalPropertyKey,
+    'fontsize' | 'fontfamily' | 'color' | 'fontweight' | 'fontstyle' | 'rotation' | 'ha' | 'va' | 'visible' | 'alpha'
+  >;
 
   const fontGroupProp = (roleId: string, prop: FontGroupPatchProp) => {
     if (roleId === 'xticks' || roleId === 'yticks') {
@@ -4134,6 +4140,7 @@ export function RightSidebar({
       if (prop === 'color') return 'tick_labelcolor';
       if (prop === 'fontweight') return 'tick_fontweight';
       if (prop === 'fontstyle') return 'tick_fontstyle';
+      if (prop === 'rotation') return 'tick_rotation';
     }
     return prop;
   };
@@ -4193,6 +4200,34 @@ export function RightSidebar({
 
   const handleFontGroupPatch = (roleId: string, items: ManifestObject[], prop: FontGroupPatchProp, value: unknown) => {
     const patches = buildFontGroupPatches(roleId, items, prop, value);
+    if (patches.length > 0) void onPatch(patches);
+  };
+
+  const fontGroupSemanticRole = (roleId: string): SemanticTargetRole | undefined => ({
+    titles: 'title',
+    xlabels: 'x_axis_label',
+    ylabels: 'y_axis_label',
+    xticks: 'x_tick_label',
+    yticks: 'y_tick_label',
+    legend_text: 'legend_text',
+  } as Partial<Record<string, SemanticTargetRole>>)[roleId];
+
+  const projectFontGroupControls = (roleId: string, items: ManifestObject[]) => (
+    projectPropertyDescriptors({
+      center: 'fonts',
+      objects: items,
+      semanticRole: fontGroupSemanticRole(roleId),
+      scope: 'figure',
+    }).filter(projection => Object.values(projection.propByObjectId).some(Boolean))
+  );
+
+  const handleProjectedFontGroupPatch = (
+    roleId: string,
+    items: ManifestObject[],
+    projection: ProjectedPropertyDescriptor,
+    value: unknown,
+  ) => {
+    const patches = buildFontGroupPatches(roleId, items, projection.key as FontGroupPatchProp, value);
     if (patches.length > 0) void onPatch(patches);
   };
 
@@ -4358,6 +4393,9 @@ export function RightSidebar({
               const color = resolvePickerColor(commonFontGroupProp(group.id, group.objects, 'color', '#000000'));
               const weight = String(commonFontGroupProp(group.id, group.objects, 'fontweight', 'normal'));
               const style = String(commonFontGroupProp(group.id, group.objects, 'fontstyle', 'normal'));
+              const projectedControls = FONT_CONTROLS_V2_ENABLED
+                ? projectFontGroupControls(group.id, group.objects)
+                : [];
               return (
                 <div key={group.id} className="p-3 rounded-lg border border-slate-100 bg-slate-50/50 space-y-3">
                   <div className="flex items-center justify-between">
@@ -4374,11 +4412,39 @@ export function RightSidebar({
                     </button>
                   </div>
                   <div className="space-y-3 pt-2 border-t border-slate-100">
-                    {renderNumberInput(`font-center-${group.id}`, 'fontsize', size, (v) => handleFontGroupPatch(group.id, group.objects, 'fontsize', v), { min: 4, max: 48, step: 0.5 })}
-                    {renderFontSelect(`font-center-${group.id}`, 'fontfamily', family, (v) => handleFontGroupPatch(group.id, group.objects, 'fontfamily', v))}
-                    {renderSelectInput('字重', weight, ['normal', 'bold', 'semibold', 'light'], (v) => handleFontGroupPatch(group.id, group.objects, 'fontweight', v))}
-                    {renderSelectInput('字形', style, ['normal', 'italic', 'oblique'], (v) => handleFontGroupPatch(group.id, group.objects, 'fontstyle', v))}
-                    {renderColorInput('文字颜色', color, (v) => handleFontGroupPatch(group.id, group.objects, 'color', v), `font-center:${group.id}:color`)}
+                    {FONT_CONTROLS_V2_ENABLED ? (
+                      <div className="space-y-3" data-font-controls-version="2" data-font-group={group.id}>
+                        {projectedControls.map(projection => {
+                          const representative = group.objects.find(object => (
+                            projection.stateByObjectId[object.id] === 'editable'
+                            && Boolean(projection.propByObjectId[object.id])
+                          )) || group.objects.find(object => Boolean(projection.propByObjectId[object.id]));
+                          if (!representative) return null;
+                          const dirty = group.objects.some(object => {
+                            const prop = projection.propByObjectId[object.id];
+                            return Boolean(prop && isDirty(object.id, prop));
+                          });
+                          return (
+                            <React.Fragment key={projection.key}>
+                              <PropertyControl
+                                projection={projection}
+                                objectId={representative.id}
+                                dirty={dirty}
+                                onChange={(value) => handleProjectedFontGroupPatch(group.id, group.objects, projection, value)}
+                              />
+                            </React.Fragment>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <>
+                        {renderNumberInput(`font-center-${group.id}`, 'fontsize', size, (v) => handleFontGroupPatch(group.id, group.objects, 'fontsize', v), { min: 4, max: 48, step: 0.5 })}
+                        {renderFontSelect(`font-center-${group.id}`, 'fontfamily', family, (v) => handleFontGroupPatch(group.id, group.objects, 'fontfamily', v))}
+                        {renderSelectInput('字重', weight, ['normal', 'bold', 'semibold', 'light'], (v) => handleFontGroupPatch(group.id, group.objects, 'fontweight', v))}
+                        {renderSelectInput('字形', style, ['normal', 'italic', 'oblique'], (v) => handleFontGroupPatch(group.id, group.objects, 'fontstyle', v))}
+                        {renderColorInput('文字颜色', color, (v) => handleFontGroupPatch(group.id, group.objects, 'color', v), `font-center:${group.id}:color`)}
+                      </>
+                    )}
                   </div>
                 </div>
               );

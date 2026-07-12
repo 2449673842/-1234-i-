@@ -1,8 +1,8 @@
 # SciFigure 统一编辑中心与属性能力升级方案
 
-> 状态：Phase 0/1 完成；Phase 2 统一控件与 Phase 3 属性编辑首批接入已在 3200 候选环境完成
+> 状态：Phase 0-3 完成；Phase 4 字体中心统一控件已在 3200 候选环境完成
 > 创建时间：2026-07-12 16:10:44 +08:00
-> 最后更新：2026-07-12 21:34:43 +08:00
+> 最后更新：2026-07-12 22:33:04 +08:00
 > 适用范围：属性编辑、布局中心、组件中心、配色中心、字体中心
 > 实施方式：Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire
 
@@ -1061,6 +1061,34 @@ staging 数据审计：0 projects / 0 assets / 0 issues
 当前 `3200` 沿用的 renderer Docker 镜像仍输出旧 manifest：对象缺少 `propertyCapabilities`，palette binding 缺少 `targetMode`。因此浏览器候选当前验证的是 legacy fallback；新 renderer 代码的 capability、同色语义绑定、单 tick 精确修改和 tick line/tick label 隔离已由 `tests.test_introspection` 验证。此差异不得被描述为前端 V2 已完成 capability 端到端验证；进入默认启用前必须重建 renderer 候选镜像并复跑同一浏览器矩阵。
 
 下一步按独立 flag 迁移字体中心。属性编辑专用面板继续保留，待公共控件逐项通过真实项目回归后再减少 legacy 重复实现。
+
+### 13.15 Phase 4 字体中心候选状态（2026-07-12 22:33:04 +08:00）
+
+字体中心已在 `VITE_SCIFIGURE_FONT_CONTROLS_V2` 独立开关下迁移：
+
+- 标题、X/Y 轴标签、X/Y 刻度文字、图例文字和其它文本分组继续沿用原语义分类与子图范围。
+- 每个分组通过同一 descriptor registry 投影字体家族、字号、字重、字形、颜色、旋转、水平/垂直对齐、可见性和透明度。
+- 投影新增逐对象 editable/readonly/unsupported 状态；组控件只选择真实可编辑 representative，mixed 和 partial 不再用第一个值伪装成全组值。
+- 组级写回继续经过 EditingIntent 和目标解析器，不直接把 representative 当成唯一目标，避免“选中整组只改第一个”。
+- descriptor 投影与 `role_in_figure` 写回统一按 `figure` capability scope 校验，避免控件显示可编辑但应用时被 resolver 跳过。
+- tick rotation 统一映射为稳定虚拟轴属性 `tick_rotation`，不写入会在重绘后重建的临时 tick text。
+- legacy 字体中心五项控件仍完整保留在 flag 后，可单中心回滚；字体预设和图形风格预设继续使用原 Draft 批处理。
+- staging marker 新增 `fontControlsV2: true`，旧候选不能被 staging 启动器误认为 Phase 4 候选。
+
+验证证据：
+
+```text
+相关 Vitest：3 files / 37 tests 通过
+TypeScript：通过
+Phase 4 staging 构建：通过
+属性/字体中心联合浏览器回归：9 PASS / 0 FAIL
+标题组 mixed 字号状态：通过
+X 刻度旋转实际 patch：仅 axis.x.0:tick_rotation=25、backend_patch 一条
+浏览器 console/page error：0
+3000 与 3200 并行健康检查：HTTP 200
+```
+
+当前浏览器候选仍使用 legacy renderer image，因此 capability-backed 强制门尚未放行；`SCIFIGURE_REQUIRE_CAPABILITY_MANIFEST=1` 会在旧镜像下明确失败。重建 renderer 候选镜像后必须复跑同一用例，再决定字体中心默认启用。
 
 ## 14. 实施阶段
 

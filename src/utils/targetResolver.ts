@@ -83,6 +83,7 @@ const TICK_PROP_MAP: Record<string, string> = {
   color: 'tick_labelcolor',
   fontweight: 'tick_fontweight',
   fontstyle: 'tick_fontstyle',
+  rotation: 'tick_rotation',
 };
 
 function capabilityFor(object: ManifestObject, prop: string): ManifestPropertyCapability | undefined {

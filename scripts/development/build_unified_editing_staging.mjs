@@ -37,6 +37,7 @@ function runBuild(distDir) {
     ...stableFeatureEnv(),
     VITE_SCIFIGURE_PROPERTY_DESCRIPTOR_V1: '1',
     VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2: '1',
+    VITE_SCIFIGURE_FONT_CONTROLS_V2: '1',
     DISABLE_HMR: 'true',
   };
   return new Promise((resolve, reject) => {
@@ -74,6 +75,7 @@ const marker = {
   gitRevision,
   propertyDescriptorV1: true,
   propertyInspectorV2: true,
+  fontControlsV2: true,
 };
 fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
 fs.writeFileSync(publicMarkerPath, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');

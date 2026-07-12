@@ -5,6 +5,7 @@ import type {
   EditingCenterId,
   PropertyProjectionRequest,
   ProjectedPropertyDescriptor,
+  ProjectedObjectPropertyState,
   ProjectedPropertyState,
   PropertyDescriptor,
 } from '../schemas/propertyDescriptor';
@@ -102,11 +103,11 @@ export const PROPERTY_DESCRIPTOR_REGISTRY: readonly PropertyDescriptor[] = [
   },
   {
     key: 'visible', label: '可见', family: 'visibility', valueType: 'boolean', control: 'toggle', unit: 'none',
-    centers: ['properties', 'components'], props: ['visible'],
+    centers: ['properties', 'components', 'fonts'], props: ['visible'],
   },
   {
     key: 'alpha', label: '不透明度', family: 'appearance', valueType: 'number', control: 'number', unit: 'ratio',
-    min: 0, max: 1, step: 0.05, centers: ['properties', 'components', 'palette'], props: ['alpha'],
+    min: 0, max: 1, step: 0.05, centers: ['properties', 'components', 'palette', 'fonts'], props: ['alpha'],
   },
   {
     key: 'linewidth', label: '线宽', family: 'stroke', valueType: 'number', control: 'number', unit: 'pt',
@@ -184,14 +185,12 @@ export function resolveCanonicalPropertyAlias(
     ?? candidates.find(prop => propIsKnown(object, prop));
 }
 
-type ObjectProjectionState = 'editable' | 'readonly' | 'unsupported';
-
 function projectObjectState(
   object: ManifestObject,
   prop: string | undefined,
   scope: import('../schemas/manifest').ManifestEditScope,
 ): {
-  state: ObjectProjectionState;
+  state: ProjectedObjectPropertyState;
   value: unknown;
   unsupportedReason?: string;
   conditional: boolean;
@@ -284,6 +283,7 @@ export function projectPropertyDescriptors({
 
   return getPropertyDescriptorsForCenter(center).map((descriptor): ProjectedPropertyDescriptor => {
     const propByObjectId: Record<string, string | undefined> = {};
+    const stateByObjectId: Record<string, ProjectedObjectPropertyState> = {};
     const valuesByObjectId: Record<string, unknown> = {};
     const unsupportedReasons: Record<string, string | undefined> = {};
     const editableValueKeys = new Set<string>();
@@ -298,6 +298,7 @@ export function projectPropertyDescriptors({
       const prop = resolveCanonicalPropertyAlias(descriptor.key, object, semanticRole);
       const objectState = projectObjectState(object, prop, scope);
       propByObjectId[object.id] = prop;
+      stateByObjectId[object.id] = objectState.state;
       valuesByObjectId[object.id] = objectState.value;
       if (objectState.unsupportedReason) unsupportedReasons[object.id] = objectState.unsupportedReason;
       if (objectState.conditional) conditional += 1;
@@ -320,6 +321,7 @@ export function projectPropertyDescriptors({
       state: aggregateState(objects.length, editable, readonly, unsupported, editableValueKeys),
       scope,
       mixed: editableValueKeys.size > 1,
+      stateByObjectId,
       counts: {
         total: objects.length,
         editable,
