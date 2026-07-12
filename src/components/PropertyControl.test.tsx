@@ -77,4 +77,19 @@ describe('PropertyControl', () => {
     expect(html).toContain('placeholder="混合值"');
     expect(html).toContain('混合值');
   });
+
+  it('renders a contextual label and stable control scope', () => {
+    const html = renderToStaticMarkup(
+      <PropertyControl
+        projection={projection()}
+        objectId="title.0"
+        label="统一修改代码颜色"
+        controlScope="palette:SERIES"
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(html).toContain('统一修改代码颜色');
+    expect(html).toContain('data-property-scope="palette:SERIES"');
+  });
 });

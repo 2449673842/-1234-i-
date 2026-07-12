@@ -40,7 +40,16 @@ export function draftAppliesToFigure(draft: DraftPatch, figureId: string): boole
 }
 
 export function draftsEligibleForDirectPersistence(drafts: DraftPatch[]): DraftPatch[] {
-  return drafts.filter(draft => !draft.pendingFigureIds?.length);
+  return drafts.filter(draft => (
+    draft.mode === 'local_patch'
+    && draft.type !== 'code_patch'
+    && !draft.pendingFigureIds?.length
+  ));
+}
+
+export function draftsRequiringEngineApply(drafts: DraftPatch[]): DraftPatch[] {
+  const directDrafts = new Set(draftsEligibleForDirectPersistence(drafts));
+  return drafts.filter(draft => !directDrafts.has(draft));
 }
 
 export function settleDraftTransaction(

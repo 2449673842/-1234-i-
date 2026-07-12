@@ -358,6 +358,14 @@ async function setColorControl(page, sectionText, labelText, value) {
 }
 
 async function setColorByScope(page, scope, value) {
+  const propertyInput = page.locator(`input[data-property-control="color-text"][data-property-scope="${scope}"]`).first();
+  if (await propertyInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await propertyInput.fill(value);
+    await propertyInput.press('Enter').catch(() => {});
+    await propertyInput.evaluate((node) => node.blur());
+    await page.waitForTimeout(700);
+    return true;
+  }
   const textInput = page.locator(`input[data-color-role="text"][data-color-scope="${scope}"]`).first();
   if (!(await textInput.isVisible({ timeout: 3000 }).catch(() => false))) return false;
   await textInput.fill(value);
@@ -575,8 +583,17 @@ async function run() {
     record('G2-scatter-excludes-legend', pointOk ? 'PASS' : 'FAIL', `changed=${pointSizeChanged}, draft=${pointDraft}, patches=${JSON.stringify(pointPatches)}`);
 
     await clickText(page, '配色中心');
+    const paletteV2Expected = process.env.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 === '1';
+    const paletteV2Count = await page.locator('[data-palette-controls-version="2"]').count();
+    const strictPaletteControlCount = await page.locator('input[data-property-control="color-text"][data-property-scope="palette:LINE_COLOR"]').count();
+    record(
+      'P6-palette-descriptor-controls',
+      (paletteV2Expected ? paletteV2Count > 0 && strictPaletteControlCount === 1 : paletteV2Count === 0) ? 'PASS' : 'FAIL',
+      `expected=${paletteV2Expected}, controls=${paletteV2Count}, lineColor=${strictPaletteControlCount}`,
+    );
     const selectedPaletteObject = await clickFirstPaletteAffectedObject(page, 'LINE_COLOR');
-    const subsetChanged = await setColorControl(page, 'LINE_COLOR', '仅修改已选', '#4455aa');
+    const subsetChanged = await setColorByScope(page, 'palette-subset:LINE_COLOR', '#4455aa')
+      || await setColorControl(page, 'LINE_COLOR', '仅修改已选', '#4455aa');
     const subsetDraft = (await getBodyText(page)).includes('已暂存');
     const subsetApply = subsetChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const subsetPatches = patchList(subsetApply.patchBody);
@@ -590,7 +607,7 @@ async function run() {
     record('H1-subset', subsetOk ? 'PASS' : 'FAIL', `selected=${JSON.stringify(selectedPaletteObject)}, changed=${subsetChanged}, draft=${subsetDraft}, patches=${JSON.stringify(subsetPatches)}`);
 
     await clickText(page, '配色中心');
-    const paletteChanged =
+    const paletteChanged = await setColorByScope(page, 'palette:LINE_COLOR', '#118833') ||
       await setColorControl(page, 'LINE_COLOR', '统一修改代码全局常量', '#118833') ||
       await setColorControl(page, 'LINE_COLOR', '修改组颜色代码常量', '#118833');
     const paletteDraft = (await getBodyText(page)).includes('已暂存');
@@ -692,7 +709,8 @@ async function run() {
 
     await clickText(page, '配色中心');
     const selectedForSave = await clickFirstPaletteAffectedObject(page, 'LINE_COLOR');
-    const saveDraftChanged = await setColorControl(page, 'LINE_COLOR', '仅修改已选', '#aa3377');
+    const saveDraftChanged = await setColorByScope(page, 'palette-subset:LINE_COLOR', '#aa3377')
+      || await setColorControl(page, 'LINE_COLOR', '仅修改已选', '#aa3377');
     const saveDraftVisible = (await getBodyText(page)).includes('已暂存');
     const saveResult = saveDraftChanged ? await saveProjectAndReadPut(page) : { clicked: false, putBody: null, successful: false };
     const savedFigureLog = Array.isArray(saveResult.putBody?.figures?.[0]?.editLog)
@@ -717,6 +735,29 @@ async function run() {
       'H2-save-local-draft',
       selectedForSave.clicked && saveDraftChanged && saveDraftVisible && saveResult.clicked && saveResult.successful && savedLocalColor && persistedLocalColor && draftClearedAfterSave ? 'PASS' : 'FAIL',
       `selected=${JSON.stringify(selectedForSave)}, changed=${saveDraftChanged}, draft=${saveDraftVisible}, savedLocalColor=${savedLocalColor}, persistedLocalColor=${persistedLocalColor}, persistedLog=${JSON.stringify(persistedLog)}, draftCleared=${draftClearedAfterSave}`,
+    );
+
+    await clickText(page, '配色中心');
+    const engineDraftChanged = await setColorByScope(page, 'palette:LINE_COLOR', '#bb5522');
+    const engineDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const saveRequestStart = apiRequests.length;
+    let blockedSaveMessage = '';
+    page.once('dialog', async (dialog) => {
+      blockedSaveMessage = dialog.message();
+      await dialog.accept();
+    });
+    const saveButton = page.getByRole('button', { name: /^保存$/ }).first();
+    const saveButtonClicked = await saveButton.isVisible({ timeout: 3000 }).catch(() => false);
+    if (saveButtonClicked) await saveButton.click();
+    await page.waitForTimeout(900);
+    const blockedSavePut = apiRequests.slice(saveRequestStart).some((request) => (
+      request.method === 'PUT' && /\/api\/projects\/[^/]+$/.test(new URL(request.url).pathname)
+    ));
+    const engineDraftRetained = (await getBodyText(page)).includes('已暂存');
+    record(
+      'H3-save-blocks-engine-draft',
+      engineDraftChanged && engineDraftVisible && saveButtonClicked && !blockedSavePut && engineDraftRetained && blockedSaveMessage.includes('需要先应用') ? 'PASS' : 'FAIL',
+      `changed=${engineDraftChanged}, draft=${engineDraftVisible}, clicked=${saveButtonClicked}, put=${blockedSavePut}, retained=${engineDraftRetained}, dialog=${JSON.stringify(blockedSaveMessage)}`,
     );
 
     if (consoleErrors.length > 0 || pageErrors.length > 0) {

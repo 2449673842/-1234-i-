@@ -3,6 +3,7 @@ import type { DraftPatch } from '../schemas/draftPatchBatch';
 import {
   draftAppliesToFigure,
   draftsEligibleForDirectPersistence,
+  draftsRequiringEngineApply,
   mergeDraftSettlement,
   settleDraftTransaction,
 } from './draftTransaction';
@@ -105,6 +106,23 @@ describe('draft transaction settlement', () => {
   it('does not let save consume drafts reserved for failed-figure retry', () => {
     const retryDraft = { ...colorDraft, pendingFigureIds: ['fig_2'] };
 
-    expect(draftsEligibleForDirectPersistence([retryDraft, widthDraft])).toEqual([widthDraft]);
+    expect(draftsEligibleForDirectPersistence([retryDraft, widthDraft, colorDraft])).toEqual([colorDraft]);
+    expect(draftsRequiringEngineApply([retryDraft, widthDraft, colorDraft])).toEqual([retryDraft, widthDraft]);
+  });
+
+  it('requires code patches to be applied before project persistence', () => {
+    const codeDraft: DraftPatch = {
+      gid: 'code_patch',
+      prop: 'SERIES_COLOR',
+      value: '#118833',
+      mode: 'backend_patch',
+      type: 'code_patch',
+      target_id: 'SERIES_COLOR',
+      new_value: '#118833',
+      gids: ['line.0.0'],
+    };
+
+    expect(draftsEligibleForDirectPersistence([codeDraft])).toEqual([]);
+    expect(draftsRequiringEngineApply([codeDraft])).toEqual([codeDraft]);
   });
 });

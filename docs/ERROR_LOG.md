@@ -1,7 +1,47 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-13 00:08:59 +08:00
+> 最后修改时间：2026-07-13 01:22:24 +08:00
+
+---
+
+## 2026-07-13 01:04:32 +08:00 配色中心严格协议缺失与未应用颜色草稿假保存
+
+**现象**
+
+- 新配色控件如果直接按 canonical `color` 投影，会遗漏 binding 指定的 `facecolor/edgecolor`，或把同一 palette 的不同 target 错套为一个 prop。
+- palette resolver 开启后，旧 manifest 缺少 target identity/capability 时仍会回退 legacy GID，存在恢复同色串改的风险。
+- 用户暂存全局颜色常量后直接点击“保存”，旧保存链只持久化 local patch，`code_patch/backend_patch` 被过滤，但界面仍可能显示保存完成。
+
+**根因**
+
+- descriptor 与 palette resolver 之间没有传递 per-target prop 的协议接缝。
+- strict resolver 把协议缺失视为兼容 fallback，而不是候选放行门禁。
+- `MainWorkspace.handleSave()` 只收集 local draft，没有识别必须先经过 renderer 的草稿类型。
+
+**修复**
+
+- descriptor 投影新增可选 `resolvedPropByKey`；palette 适配器只消费 resolver 已确认的 target/prop，并统一 mixed/partial 状态。
+- Phase 6 controls 开启时要求完整 binding/object protocol；缺失时 object patch 为空，Python 只允许明确代码常量修改，R 直接阻止。
+- `code_only` 与 selected subset 继续分离，向量 collection 不生成对象颜色 patch。
+- Draft 工具明确区分可直接持久化 local patch 与必须先应用的 backend/code patch；保存遇到后者不发送 PUT，并保留草稿。
+
+**验证**
+
+- 全量 Vitest：26 files / 177 tests；Python/R renderer：68 tests。
+- Python 语义 smoke：14 PASS / 0 FAIL；R 语义 smoke：6 PASS / 0 FAIL。
+- strict protocol 缺失、unresolved、per-target prop、mixed、code_only 和保存阻止均有独立回归。
+- 3200 使用当前本地 renderer 时 Python/R capability 端到端通过；旧 Docker image 会被严格门阻止对象配色，证明门禁有效。
+
+**遗留门禁**
+
+- Docker Desktop/BuildKit 未响应，Phase 6 renderer 镜像未能重建。3200 的本地 renderer 仅用于隔离升级测试，不可作为生产安全配置。
+
+**防复发规则**
+
+- palette target/prop 只能来自 binding resolver，descriptor 不得重新猜测 `color/facecolor/edgecolor`。
+- strict 模式缺 identity/capability 时必须阻止对象 patch，不得静默降级同色匹配。
+- 保存不得把未应用的 backend/code draft 标记为已持久化；必须先应用或明确阻止。
 
 ---
 

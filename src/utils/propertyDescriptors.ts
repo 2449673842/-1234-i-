@@ -278,6 +278,7 @@ export function projectPropertyDescriptors({
   objects: selection,
   semanticRole,
   scope = defaultScopeForCenter(center),
+  resolvedPropByKey,
 }: PropertyProjectionRequest): ProjectedPropertyDescriptor[] {
   const objects = Array.from(selection);
 
@@ -295,7 +296,8 @@ export function projectPropertyDescriptors({
     let firstEditableValue: unknown;
 
     for (const object of objects) {
-      const prop = resolveCanonicalPropertyAlias(descriptor.key, object, semanticRole);
+      const prop = resolvedPropByKey?.[descriptor.key]?.[object.id]
+        ?? resolveCanonicalPropertyAlias(descriptor.key, object, semanticRole);
       const objectState = projectObjectState(object, prop, scope);
       propByObjectId[object.id] = prop;
       stateByObjectId[object.id] = objectState.state;

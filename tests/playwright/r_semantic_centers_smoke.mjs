@@ -209,6 +209,14 @@ async function setColorControl(page, sectionText, labelText, value) {
 }
 
 async function setColorByScope(page, scope, value) {
+  const propertyInput = page.locator(`input[data-property-control="color-text"][data-property-scope="${scope}"]`).first();
+  if (await propertyInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await propertyInput.fill(value);
+    await propertyInput.press('Enter').catch(() => {});
+    await propertyInput.evaluate((node) => node.blur());
+    await page.waitForTimeout(700);
+    return true;
+  }
   const textInput = page.locator(`input[data-color-role="text"][data-color-scope="${scope}"]`).first();
   if (await textInput.isVisible({ timeout: 3000 }).catch(() => false)) {
     await textInput.fill(value);
@@ -375,6 +383,13 @@ async function run() {
     record('R2-component-center', componentOk ? 'PASS' : 'FAIL', `changed=${componentChanged}, draft=${componentDraft}, patches=${JSON.stringify(componentPatches)}`);
 
     await clickText(page, '配色中心');
+    const paletteV2Expected = process.env.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 === '1';
+    const paletteV2Count = await page.locator('[data-palette-controls-version="2"]').count();
+    record(
+      'R3a-palette-descriptor-controls',
+      (paletteV2Expected ? paletteV2Count > 0 : paletteV2Count === 0) ? 'PASS' : 'FAIL',
+      `expected=${paletteV2Expected}, controls=${paletteV2Count}`,
+    );
     const paletteChanged = await setColorByScope(page, 'palette:r.scale.color.0.0', '#2ca02c')
       || await setColorControl(page, 'A', '颜色', '#2ca02c')
       || await setColorControl(page, '配色', '颜色', '#2ca02c');

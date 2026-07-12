@@ -323,6 +323,27 @@ describe('property descriptor projection', () => {
     expect(projected.unsupportedReasons['line.0']).toContain('group');
   });
 
+  it('uses a resolver-confirmed property without changing default aliases', () => {
+    const patch = object({
+      id: 'patch.0',
+      kind: 'patch',
+      currentProps: { facecolor: '#445566' },
+      propertyCapabilities: [capability('facecolor')],
+    });
+
+    const projected = byKey(projectPropertyDescriptors({
+      center: 'palette',
+      objects: [patch],
+      scope: 'object',
+      resolvedPropByKey: { color: { 'patch.0': 'facecolor' } },
+    }), 'color');
+
+    expect(projected.state).toBe('editable');
+    expect(projected.propByObjectId['patch.0']).toBe('facecolor');
+    expect(projected.value).toBe('#445566');
+    expect(resolveCanonicalPropertyAlias('color', patch)).toBeUndefined();
+  });
+
   it('keeps a supported property readonly when the requested scope is not declared', () => {
     const title = object({
       id: 'title.0',

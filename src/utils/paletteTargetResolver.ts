@@ -217,6 +217,7 @@ export function resolvePaletteTargets(
   paletteId: string,
   enabled: boolean,
   selectedObjectIds?: string[],
+  requireProtocol = false,
 ): PaletteTargetResolution {
   const bindings = matchingBindings(manifest, paletteId);
   if (!enabled) {
@@ -226,6 +227,21 @@ export function resolvePaletteTargets(
     return legacyResolution(manifest, paletteId, bindings, selectedObjectIds);
   }
   if (!bindings.every(bindingProtocolReady)) {
+    if (requireProtocol) {
+      return {
+        paletteId,
+        strategy: 'strict',
+        fallbackReason: 'missing_binding_protocol',
+        targetMode: 'unresolved',
+        targets: [],
+        skipped: [],
+        ambiguous: [{
+          reason: 'ambiguous_binding',
+          detail: `${paletteId} 缺少完整的 binding target 身份协议，已阻止对象颜色修改。`,
+        }],
+        warnings: [],
+      };
+    }
     return legacyResolution(
       manifest,
       paletteId,
@@ -235,6 +251,21 @@ export function resolvePaletteTargets(
     );
   }
   if (!objectProtocolReady(manifest, bindings)) {
+    if (requireProtocol) {
+      return {
+        paletteId,
+        strategy: 'strict',
+        fallbackReason: 'missing_object_protocol',
+        targetMode: 'unresolved',
+        targets: [],
+        skipped: [],
+        ambiguous: [{
+          reason: 'ambiguous_binding',
+          detail: `${paletteId} 的目标对象缺少稳定 identity/capability，已阻止对象颜色修改。`,
+        }],
+        warnings: [],
+      };
+    }
     return legacyResolution(
       manifest,
       paletteId,

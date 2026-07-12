@@ -10,6 +10,7 @@ import { recordPropertyProjectionShadowDiagnostic } from '../utils/propertyProje
 import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
 import { resolvePropertyPatchMode } from '../utils/propertyPatchMode';
 import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolvePaletteTargets } from '../utils/paletteTargetResolver';
+import { projectPaletteColorControl } from '../utils/palettePropertyProjection';
 import { computeEqualAxesPhysicalLayout } from '../utils/subplotPhysicalLayout';
 import { resolveExplicitColorbarOwner } from '../utils/colorbarOwnership';
 import type { StandardFigureModel, StandardFigureObject } from '../schemas/standardFigureModel';
@@ -51,6 +52,9 @@ const COMPONENT_TARGET_RESOLVER_V2_ENABLED = (
 const PALETTE_TARGET_RESOLVER_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
 ).env?.VITE_SCIFIGURE_PALETTE_TARGET_RESOLVER_V2 === '1';
+const PALETTE_CONTROLS_V2_ENABLED = (
+  import.meta as ImportMeta & { env?: Record<string, string | undefined> }
+).env?.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 === '1';
 const PROPERTY_INSPECTOR_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
 ).env?.VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2 === '1';
@@ -651,6 +655,15 @@ export function RightSidebar({
   }
 
   const { manifest } = figSession;
+  const resolvePaletteBindingTargets = (paletteId: string, selectedObjectIds?: string[]) => (
+    resolvePaletteTargets(
+      manifest,
+      paletteId,
+      PALETTE_TARGET_RESOLVER_V2_ENABLED,
+      selectedObjectIds,
+      PALETTE_CONTROLS_V2_ENABLED,
+    )
+  );
   const isLocked = Boolean(selectedObject && lockedObjects?.has(selectedObject));
   const presetMap = { ...DEFAULT_PRESETS, ...customPresets };
   const fontPresetMap: Record<string, FontPreset> = { ...DEFAULT_FONT_PRESETS, ...customFontPresets };
@@ -1129,11 +1142,7 @@ export function RightSidebar({
   };
 
   const handlePaletteColorChange = (paletteId: string, newColor: string) => {
-    const resolution = resolvePaletteTargets(
-      manifest,
-      paletteId,
-      PALETTE_TARGET_RESOLVER_V2_ENABLED,
-    );
+    const resolution = resolvePaletteBindingTargets(paletteId);
     if (resolution.fallbackReason && resolution.fallbackReason !== 'feature_disabled') {
       console.info('[PaletteTargetResolverV2] compatibility fallback', {
         paletteId,
@@ -4624,11 +4633,7 @@ export function RightSidebar({
     const bindings = debugModel?.bindings || [];
     const paletteGroups = palettes.map((palette: any) => {
       const binding = bindings.find((b: any) => b.paletteId === palette.id);
-      const resolution = resolvePaletteTargets(
-        manifest,
-        palette.id,
-        PALETTE_TARGET_RESOLVER_V2_ENABLED,
-      );
+      const resolution = resolvePaletteBindingTargets(palette.id);
       const gids = Array.from(new Set(resolution.targets.map(target => target.objectId)));
       const selectableGids = Array.from(new Set(
         resolution.targets
@@ -4665,22 +4670,14 @@ export function RightSidebar({
       if (!colors) return;
       if (manifest.generatedBy === 'r_svg') {
         const patchArray = palettes.flatMap((p: any, idx: number) => {
-          const resolution = resolvePaletteTargets(
-            manifest,
-            p.id,
-            PALETTE_TARGET_RESOLVER_V2_ENABLED,
-          );
+          const resolution = resolvePaletteBindingTargets(p.id);
           return buildPaletteObjectPatches(resolution, colors[idx % colors.length]);
         });
         void onPatch(patchArray);
         return;
       }
       const patchArray = palettes.flatMap((p: any, idx: number) => {
-        const resolution = resolvePaletteTargets(
-          manifest,
-          p.id,
-          PALETTE_TARGET_RESOLVER_V2_ENABLED,
-        );
+        const resolution = resolvePaletteBindingTargets(p.id);
         return buildPaletteUpdatePatches(
           resolution,
           colors[idx % colors.length],
@@ -4747,6 +4744,56 @@ export function RightSidebar({
               const bindingBlocked = resolution.ambiguous.length > 0;
               const codeReplayOnly = resolution.targets.length > 0
                 && resolution.targets.every(target => target.replayMode === 'code_only');
+              const selectedResolution = selectedPatchableGids.length > 0
+                ? resolvePaletteBindingTargets(p.id, selectedPatchableGids)
+                : null;
+              const fullPaletteControl = PALETTE_CONTROLS_V2_ENABLED
+                ? projectPaletteColorControl({
+                  manifest,
+                  resolution,
+                  paletteColor: resolvePickerColor(p.color),
+                  controlId: `palette:${p.id}`,
+                  allowCodePatch: manifest.generatedBy !== 'r_svg',
+                })
+                : null;
+              const subsetPaletteControl = PALETTE_CONTROLS_V2_ENABLED && selectedResolution
+                ? projectPaletteColorControl({
+                  manifest,
+                  resolution: selectedResolution,
+                  paletteColor: resolvePickerColor(String(subsetPreviewColor || p.color)),
+                  controlId: `palette-subset:${p.id}`,
+                  allowCodePatch: false,
+                  selectedOnly: true,
+                })
+                : null;
+              const fullPaletteDirty = isColorDirty('', `palette:${p.id}`)
+                || resolution.targets.some(target => isDirty(target.objectId, target.prop));
+              const subsetPaletteDirty = selectedResolution?.targets.some(target => (
+                isDirty(target.objectId, target.prop)
+              )) ?? false;
+              const handleSelectedPaletteColor = (value: string) => {
+                if (!selectedResolution) return;
+                const patches = buildPaletteObjectPatches(selectedResolution, value).map((patch) => {
+                  const object = manifest.objects.find(item => item.id === patch.gid);
+                  const intent: EditingIntent = {
+                    intent: 'style.component',
+                    scope: {
+                      selectionMode: 'selected_only',
+                      objectIds: [patch.gid],
+                      targetKinds: object ? [object.kind] : undefined,
+                      crossFigure: 'deny',
+                    },
+                    operation: { prop: patch.prop, value },
+                    commit: { mode: 'draft', applyAsOneHistoryStep: true },
+                    fallback: { onUnsupported: 'skip_with_warning' },
+                  };
+                  return { ...patch, intent };
+                });
+                if (patches.length > 0) void onPatch(patches);
+              };
+              const fullPaletteLabel = manifest.generatedBy === 'r_svg'
+                ? `统一修改该组颜色 (整组同步: ${count} 个图元)`
+                : `统一修改代码全局常量 (整组同步: ${count} 个图元)`;
               return (
                 <div
                   key={p.id}
@@ -4818,46 +4865,55 @@ export function RightSidebar({
                     <div className="space-y-2 pt-2 border-t border-slate-100">
                       {selectedPatchableGids.length > 0 ? (
                         <>
-                          {renderColorInput(
+                          {subsetPaletteControl ? (
+                            <div data-palette-controls-version="2" data-palette-control-scope={`palette-subset:${p.id}`}>
+                              <PropertyControl
+                                projection={subsetPaletteControl.projection}
+                                objectId={subsetPaletteControl.representativeId}
+                                label={`仅修改已选的 ${selectedPatchableGids.length} 个图元`}
+                                controlScope={`palette-subset:${p.id}`}
+                                dirty={subsetPaletteDirty}
+                                onChange={(value) => handleSelectedPaletteColor(String(value))}
+                              />
+                            </div>
+                          ) : renderColorInput(
                             `仅修改已选的 ${selectedPatchableGids.length} 个图元`,
                             resolvePickerColor(String(subsetPreviewColor || p.color)),
-                            (value) => {
-                              const selectedResolution = resolvePaletteTargets(
-                                manifest,
-                                p.id,
-                                PALETTE_TARGET_RESOLVER_V2_ENABLED,
-                                selectedPatchableGids,
-                              );
-                              const patches = buildPaletteObjectPatches(selectedResolution, value).map((patch) => {
-                                const object = manifest.objects.find(item => item.id === patch.gid);
-                                const intent: EditingIntent = {
-                                  intent: 'style.component',
-                                  scope: {
-                                    selectionMode: 'selected_only',
-                                    objectIds: [patch.gid],
-                                    targetKinds: object ? [object.kind] : undefined,
-                                    crossFigure: 'deny',
-                                  },
-                                  operation: { prop: patch.prop, value },
-                                  commit: { mode: 'draft', applyAsOneHistoryStep: true },
-                                  fallback: { onUnsupported: 'skip_with_warning' },
-                                };
-                                return { ...patch, intent };
-                              });
-                              if (patches.length > 0) void onPatch(patches);
-                            },
-                            `palette-subset:${p.id}`
+                            handleSelectedPaletteColor,
+                            `palette-subset:${p.id}`,
                           )}
-                          {renderColorInput(
-                            `统一修改代码全局常量 (整组同步: ${count} 个图元)`,
+                          {fullPaletteControl ? (
+                            <div data-palette-controls-version="2" data-palette-control-scope={`palette:${p.id}`}>
+                              <PropertyControl
+                                projection={fullPaletteControl.projection}
+                                objectId={fullPaletteControl.representativeId}
+                                label={fullPaletteLabel}
+                                controlScope={`palette:${p.id}`}
+                                dirty={fullPaletteDirty}
+                                onChange={(value) => handlePaletteColorChange(p.id, String(value))}
+                              />
+                            </div>
+                          ) : renderColorInput(
+                            fullPaletteLabel,
                             resolvePickerColor(p.color),
                             (value) => handlePaletteColorChange(p.id, value),
-                            `palette:${p.id}`
+                            `palette:${p.id}`,
                           )}
                         </>
+                      ) : fullPaletteControl ? (
+                        <div data-palette-controls-version="2" data-palette-control-scope={`palette:${p.id}`}>
+                          <PropertyControl
+                            projection={fullPaletteControl.projection}
+                            objectId={fullPaletteControl.representativeId}
+                            label={fullPaletteLabel}
+                            controlScope={`palette:${p.id}`}
+                            dirty={fullPaletteDirty}
+                            onChange={(value) => handlePaletteColorChange(p.id, String(value))}
+                          />
+                        </div>
                       ) : (
                         renderColorInput(
-                          `修改组颜色代码常量 (整组同步: ${count} 个图元)`,
+                          fullPaletteLabel,
                           resolvePickerColor(p.color),
                           (value) => handlePaletteColorChange(p.id, value),
                           `palette:${p.id}`
@@ -4913,12 +4969,23 @@ export function RightSidebar({
                     <div className="space-y-2 rounded-md border border-red-200 bg-red-50 p-2 text-[11px] leading-relaxed text-red-700">
                       <div>当前颜色绑定存在歧义，平台不会按相同颜色猜测影响对象。</div>
                       {manifest.generatedBy !== 'r_svg' && (
-                        renderColorInput(
-                          '仅修改明确的 Python 代码常量',
-                          resolvePickerColor(p.color),
-                          (value) => handlePaletteColorChange(p.id, value),
-                          `palette:${p.id}`,
-                        )
+                        fullPaletteControl ? (
+                          <div data-palette-controls-version="2" data-palette-control-scope={`palette:${p.id}`}>
+                            <PropertyControl
+                              projection={fullPaletteControl.projection}
+                              objectId={fullPaletteControl.representativeId}
+                              label="仅修改明确的 Python 代码常量"
+                              controlScope={`palette:${p.id}`}
+                              dirty={fullPaletteDirty}
+                              onChange={(value) => handlePaletteColorChange(p.id, String(value))}
+                            />
+                          </div>
+                        ) : renderColorInput(
+                            '仅修改明确的 Python 代码常量',
+                            resolvePickerColor(p.color),
+                            (value) => handlePaletteColorChange(p.id, value),
+                            `palette:${p.id}`,
+                          )
                       )}
                       {manifest.generatedBy === 'r_svg' && (
                         <div>R 图元没有可安全区分的 scale 目标，本次修改已阻止。</div>

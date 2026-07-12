@@ -33,6 +33,8 @@ export interface PropertyControlProps {
   projection: ProjectedPropertyDescriptor;
   objectId: string;
   dirty?: boolean;
+  label?: string;
+  controlScope?: string;
   onChange: (value: unknown, prop: string) => void;
 }
 
@@ -75,8 +77,16 @@ function PropertyStateBadge({ projection }: { projection: ProjectedPropertyDescr
   );
 }
 
-export function PropertyControl({ projection, objectId, dirty = false, onChange }: PropertyControlProps) {
+export function PropertyControl({
+  projection,
+  objectId,
+  dirty = false,
+  label: labelOverride,
+  controlScope,
+  onChange,
+}: PropertyControlProps) {
   const { descriptor } = projection;
+  const displayLabelText = labelOverride ?? descriptor.label;
   const prop = projection.propByObjectId[objectId];
   const value = projection.valuesByObjectId[objectId];
   const interactive = Boolean(prop) && isProjectedPropertyInteractive(projection);
@@ -105,7 +115,7 @@ export function PropertyControl({ projection, objectId, dirty = false, onChange 
   const statusReason = Object.values(projection.unsupportedReasons).find(Boolean);
   const label = (
     <span className="flex min-w-0 items-center gap-1.5 text-slate-600">
-      <span className="truncate">{descriptor.label}</span>
+      <span className="truncate">{displayLabelText}</span>
       {descriptor.unit && descriptor.unit !== 'none' && (
         <span className="text-[9px] text-slate-400">{descriptor.unit}</span>
       )}
@@ -117,6 +127,7 @@ export function PropertyControl({ projection, objectId, dirty = false, onChange 
     'data-property-control': descriptor.key,
     'data-param-gid': objectId,
     'data-param-prop': prop,
+    ...(controlScope ? { 'data-property-scope': controlScope } : {}),
   };
 
   let control: React.ReactNode;
@@ -126,7 +137,7 @@ export function PropertyControl({ projection, objectId, dirty = false, onChange 
         {...sharedProps}
         data-param-role="number"
         type="number"
-        aria-label={descriptor.label}
+        aria-label={displayLabelText}
         min={descriptor.min}
         max={descriptor.max}
         step={descriptor.step ?? 1}
@@ -151,7 +162,7 @@ export function PropertyControl({ projection, objectId, dirty = false, onChange 
       <select
         {...sharedProps}
         data-param-role="select"
-        aria-label={descriptor.label}
+        aria-label={displayLabelText}
         disabled={!interactive}
         value={mixed ? '' : String(value ?? '')}
         onChange={event => onChange(event.target.value, prop)}
@@ -170,7 +181,7 @@ export function PropertyControl({ projection, objectId, dirty = false, onChange 
           {...sharedProps}
           data-param-role="toggle"
           type="checkbox"
-          aria-label={descriptor.label}
+          aria-label={displayLabelText}
           className="peer sr-only"
           disabled={!interactive}
           checked={Boolean(value)}
@@ -189,7 +200,7 @@ export function PropertyControl({ projection, objectId, dirty = false, onChange 
           {...sharedProps}
           data-param-role="color"
           type="color"
-          aria-label={`${descriptor.label}选择器`}
+          aria-label={`${displayLabelText}选择器`}
           disabled={!interactive}
           value={color}
           onChange={event => onChange(event.target.value, prop)}
@@ -197,8 +208,11 @@ export function PropertyControl({ projection, objectId, dirty = false, onChange 
         />
         <input
           data-property-control={`${descriptor.key}-text`}
+          data-param-gid={objectId}
+          data-param-prop={prop}
+          data-property-scope={controlScope}
           type="text"
-          aria-label={descriptor.label}
+          aria-label={displayLabelText}
           disabled={!interactive}
           value={inputValue}
           placeholder={mixed ? '混合值' : '#000000'}
@@ -221,7 +235,7 @@ export function PropertyControl({ projection, objectId, dirty = false, onChange 
         <select
           {...sharedProps}
           data-param-role="font"
-          aria-label={descriptor.label}
+          aria-label={displayLabelText}
           disabled={!interactive}
           value={mixed ? '' : knownFont ? String(value) : '__custom__'}
           onChange={event => {

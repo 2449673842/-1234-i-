@@ -14,6 +14,7 @@ import { fnv1a, stableStringify } from '../utils/stableJson';
 import type { StandardFigureModel } from '../schemas/standardFigureModel';
 import type { DraftPatch } from '../schemas/draftPatchBatch';
 import { buildCompositionRisks, planCompositionLayout } from '../utils/compositionPlanner';
+import { draftsEligibleForDirectPersistence, draftsRequiringEngineApply } from '../utils/draftTransaction';
 
 interface MainWorkspaceProps {
   spec: FigureSpec;
@@ -1171,14 +1172,23 @@ export function MainWorkspace({
     };
   }, [projectId, showHistoryMenu]);
 
-  const handleSave = async () => {
+  const handleSave = async ({ silentIfBlocked = false }: { silentIfBlocked?: boolean } = {}) => {
+    const engineDrafts = Object.values(projectDrafts).flatMap(drafts => (
+      draftsRequiringEngineApply(Object.values(drafts || {}))
+    ));
+    if (engineDrafts.length > 0) {
+      if (!silentIfBlocked) {
+        alert(`还有 ${engineDrafts.length} 项修改需要先应用并重新渲染；应用完成后才能保存。`);
+      }
+      return;
+    }
     setIsSaving(true);
     try {
       const previewSvg = await generateThumbnail(figSession?.svg);
       const localDraftsByFigure = projectId
         ? Object.fromEntries(Object.entries(projectDrafts).map(([figId, drafts]) => [
           figId,
-          Object.values(drafts || {}).filter(draft => draft.mode === 'local_patch' && draft.type !== 'code_patch'),
+          draftsEligibleForDirectPersistence(Object.values(drafts || {})),
         ]).filter(([, drafts]) => drafts.length > 0))
         : {};
       const figuresToPersist = projectId
@@ -1260,7 +1270,7 @@ export function MainWorkspace({
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     autoSaveTimer.current = setTimeout(() => {
       if (projectId) {
-        void handleSave();
+        void handleSave({ silentIfBlocked: true });
       }
     }, 5000);
     return () => {
@@ -1443,7 +1453,7 @@ export function MainWorkspace({
           <button
             type="button"
             className="scifig-workspace-primary px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-1.5"
-            onClick={handleSave}
+            onClick={() => void handleSave()}
             disabled={isSaving}
           >
             {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}

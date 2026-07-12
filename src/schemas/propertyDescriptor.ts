@@ -94,4 +94,5 @@ export interface PropertyProjectionRequest {
   objects: readonly import('./manifest').ManifestObject[];
   semanticRole?: import('./editingIntent').SemanticTargetRole;
   scope?: ManifestEditScope;
+  resolvedPropByKey?: Partial<Record<CanonicalPropertyKey, Readonly<Record<string, string | undefined>>>>;
 }

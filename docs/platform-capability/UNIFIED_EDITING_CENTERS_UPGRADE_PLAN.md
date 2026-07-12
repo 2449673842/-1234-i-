@@ -1,8 +1,8 @@
 # SciFigure 统一编辑中心与属性能力升级方案
 
-> 状态：Phase 0-5 完成；3200 已启用组件中心 V2 候选；下一阶段为 Phase 6 配色中心
+> 状态：Phase 0-6 完成；3200 已启用配色中心 V2 候选；下一阶段为 Phase 7 布局中心
 > 创建时间：2026-07-12 16:10:44 +08:00
-> 最后更新：2026-07-13 00:08:59 +08:00
+> 最后更新：2026-07-13 01:22:24 +08:00
 > 适用范围：属性编辑、布局中心、组件中心、配色中心、字体中心
 > 实施方式：Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire
 
@@ -1133,6 +1133,38 @@ bar/errorbar/stem/boxplot/violin/annotation/legend 专用控件：全部通过
 ```
 
 Phase 5 不包含 `facecolor/edgecolor` 等专用 descriptor 扩展，也不改变配色 binding。下一步进入 Phase 6 时必须继续保留严格歧义阻止、向量 collection `code_only` 和同色不同组隔离。
+
+### 13.18 Phase 6 配色中心候选状态（2026-07-13 01:04:32 +08:00）
+
+配色中心已在独立 `VITE_SCIFIGURE_PALETTE_CONTROLS_V2` 开关下接入统一颜色 descriptor：
+
+- palette binding、series/layer/scale 身份、selected subset、预设批量和 Python/R patch 分流继续由原配色协议负责；descriptor 不重新猜目标。
+- `resolvedPropByKey` 允许 palette resolver 把每个 target 的真实 `color/facecolor/edgecolor` 注入 descriptor，默认属性别名不因此扩大。
+- 新的 palette 投影适配器统一输出 editable、mixed、partial、readonly、unsupported 和 dirty 状态；向量 `code_only` 使用语义 palette 颜色，不读取整个多色数组作为单一颜色。
+- Python 全局颜色仍生成一次 `code_patch + backend object patches`；R 仍只生成 backend object patches；selected subset 仍只生成对象 patch。
+- `ambiguous/unresolved` 不回退同色猜测；候选 UI 要求完整 binding target、identity 和 property capability，协议缺失时阻止对象 patch。关闭 palette controls flag 后仍可回到原 legacy UI/resolver 兼容路径。
+- `code_only` target 不进入可选对象和 subset 控件，不会把同一个 vector collection 整体染成单色。
+- 保存链路不再吞掉 `code_patch/backend_patch` 草稿：手动保存会明确提示先应用，自动保存静默跳过；只有无失败重试的 local patch 可直接持久化。
+- staging marker 新增 `paletteResolverV2/paletteControlsV2`，Phase 6 build 会显式开启严格 resolver 和新控件。
+
+验证证据：
+
+```text
+全量前端单元测试：26 files / 177 tests 通过
+palette/descriptor/draft 定向测试：5 files / 46 tests 通过
+Python + R renderer：68 tests 通过
+TypeScript 与 production-like build：通过
+Python 五中心语义回归：14 PASS / 0 FAIL
+R 五中心语义回归：6 PASS / 0 FAIL
+同色 Weak/Mixed：目标、patch、runtime 颜色保持隔离
+selected subset：仅 1 条对象 patch，不生成 code patch
+vector collection：仅 1 条 code patch，不生成 facecolor object patch
+保存 engine draft：不发送 PUT、草稿保留并显示先应用提示
+浏览器 console/page error：0
+独立代码审查：2 轮通过，0 个代码级阻断问题
+```
+
+部署门禁：本机 Docker Desktop/BuildKit 在两次构建中均未完成握手，新的 renderer image 尚未生成。3200 当前使用隔离 staging 数据和本地 renderer 验证当前 capability 协议，不能视为生产沙箱验证；3000 保持原 Docker renderer 不变。部署或默认启用前仍必须重建独立 renderer image，并在 Docker 禁网/只读/资源限制模式下复跑同一 Python/R 矩阵。
 
 ## 14. 实施阶段
 

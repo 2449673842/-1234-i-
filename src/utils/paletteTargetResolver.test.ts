@@ -213,6 +213,69 @@ describe('palette target resolver', () => {
     expect(result.targets[0]?.objectId).toBe(line.id);
   });
 
+  it('blocks object patches when the candidate requires a complete binding protocol', () => {
+    const line = object('line.0.0', 'color', 'line-series');
+    const legacy: Binding = {
+      paletteId: 'SERIES',
+      groupId: 'group_SERIES',
+      gids: [line.id],
+      props: ['color'],
+    };
+
+    const result = resolvePaletteTargets(
+      manifest([line], [legacy]),
+      'SERIES',
+      true,
+      undefined,
+      true,
+    );
+
+    expect(result.strategy).toBe('strict');
+    expect(result.fallbackReason).toBe('missing_binding_protocol');
+    expect(result.targetMode).toBe('unresolved');
+    expect(result.targets).toEqual([]);
+    expect(result.ambiguous[0]?.reason).toBe('ambiguous_binding');
+    expect(buildPaletteObjectPatches(result, '#abcdef')).toEqual([]);
+  });
+
+  it('blocks object patches when target objects lack identity capabilities', () => {
+    const line = object('line.0.0', 'color', 'line-series');
+    delete line.propertyCapabilities;
+    const exact = binding('SERIES', [target(line.id, 'color', 'line-series')]);
+
+    const result = resolvePaletteTargets(
+      manifest([line], [exact]),
+      'SERIES',
+      true,
+      undefined,
+      true,
+    );
+
+    expect(result.strategy).toBe('strict');
+    expect(result.fallbackReason).toBe('missing_object_protocol');
+    expect(result.targets).toEqual([]);
+    expect(buildPaletteObjectPatches(result, '#abcdef')).toEqual([]);
+  });
+
+  it('treats unresolved bindings as blocked instead of unused', () => {
+    const unresolved: Binding = {
+      paletteId: 'SERIES',
+      groupId: 'group_SERIES',
+      gids: [],
+      props: [],
+      targetMode: 'unresolved',
+      targets: [],
+      warnings: ['scale target could not be resolved'],
+    };
+
+    const result = resolvePaletteTargets(manifest([], [unresolved]), 'SERIES', true);
+
+    expect(result.targetMode).toBe('unresolved');
+    expect(result.targets).toEqual([]);
+    expect(result.ambiguous[0]?.reason).toBe('ambiguous_binding');
+    expect(buildPaletteObjectPatches(result, '#abcdef')).toEqual([]);
+  });
+
   it('rejects stale series identity instead of patching a reused gid', () => {
     const line = object('line.0.0', 'color', 'new-series');
     const stale = binding('SERIES', [target(line.id, 'color', 'old-series')]);
