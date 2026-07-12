@@ -72,6 +72,48 @@ class TestArtistIntrospection(unittest.TestCase):
         self.assertTrue(all(binding["targetMode"] == "ambiguous" for binding in bindings))
         self.assertTrue(all(binding["gids"] == [] and binding["targets"] == [] for binding in bindings))
 
+    def test_unused_duplicate_constants_do_not_block_vector_color_code_replay(self):
+        script = '''
+PRIMARY_COLOR = "#1F78B4"
+SECONDARY_COLOR = "#D62728"
+PROMOTION = "#1F78B4"
+INHIBITION = "#D62728"
+colors = [PROMOTION, INHIBITION, PROMOTION]
+'''
+        semantic = scan_source(script)
+        palettes = {palette["id"]: palette for palette in semantic["palettes"]}
+        self.assertEqual(palettes["PRIMARY_COLOR"]["usageCount"], 0)
+        self.assertEqual(palettes["SECONDARY_COLOR"]["usageCount"], 0)
+        self.assertEqual(palettes["PROMOTION"]["usageCount"], 2)
+        self.assertEqual(palettes["INHIBITION"]["usageCount"], 1)
+
+        artists = [self._binding_artist(
+            "collection.0.0",
+            "collection",
+            "_nolegend_",
+            {"facecolor": [[0.1215686, 0.4705882, 0.7058823, 1], [0.8392157, 0.1529412, 0.1568627, 1]]},
+            "scatter-series",
+        )]
+        bindings = build_bindings(semantic, artists)
+        by_palette = {binding["paletteId"]: binding for binding in bindings}
+
+        self.assertNotIn("PRIMARY_COLOR", by_palette)
+        self.assertNotIn("SECONDARY_COLOR", by_palette)
+        self.assertEqual(by_palette["PROMOTION"]["targets"][0]["replayMode"], "code_only")
+        self.assertEqual(by_palette["INHIBITION"]["targets"][0]["replayMode"], "code_only")
+
+    def test_unique_unused_constant_keeps_dynamic_artist_fallback(self):
+        semantic = scan_source('DYNAMIC_COLOR = "#123456"\ndynamic_color = "#" + "123456"')
+        artists = [self._binding_artist(
+            "line.0.0", "line", "dynamic", {"color": "#123456"}, "dynamic-series"
+        )]
+
+        binding = build_bindings(semantic, artists)[0]
+
+        self.assertEqual(binding["paletteId"], "DYNAMIC_COLOR")
+        self.assertEqual(binding["gids"], ["line.0.0"])
+        self.assertEqual(binding["targets"][0].get("replayMode"), None)
+
     def test_palette_binding_keeps_per_target_color_property(self):
         semantic = {
             "palettes": [{"id": "SERIES_COLOR", "color": "#116633"}],

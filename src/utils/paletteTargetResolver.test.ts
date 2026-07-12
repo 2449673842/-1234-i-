@@ -83,6 +83,45 @@ describe('palette target resolver', () => {
       op: 'set', mode: 'backend_patch', gid: 'line.0', prop: 'color', value: '#abcdef',
     }]);
   });
+
+  it('uses code replay without flattening a vector-colored collection', () => {
+    const collection = object('collection.0.0', 'facecolor', 'scatter-series');
+    collection.currentProps.facecolor = [
+      [0.1, 0.2, 0.3, 1],
+      [0.8, 0.4, 0.2, 1],
+    ];
+    const resolution = resolvePaletteTargets(
+      manifest([collection], [binding('PROMOTION', [target(collection.id, 'facecolor', 'scatter-series')])]),
+      'PROMOTION',
+      true,
+    );
+
+    expect(resolution.targets[0]?.replayMode).toBe('code_only');
+    expect(buildPaletteObjectPatches(resolution, '#abcdef')).toEqual([]);
+    expect(buildPaletteUpdatePatches(resolution, '#abcdef', 'PROMOTION')).toEqual([{
+      type: 'code_patch',
+      target_id: 'PROMOTION',
+      new_value: '#abcdef',
+      gids: ['collection.0.0'],
+    }]);
+  });
+
+  it('infers code replay for a legacy vector-color binding', () => {
+    const collection = object('collection.0.0', 'facecolor', 'scatter-series');
+    collection.currentProps.facecolor = [
+      [0.1, 0.2, 0.3, 1],
+      [0.8, 0.4, 0.2, 1],
+    ];
+    const result = resolvePaletteTargets(
+      manifest([collection], [binding('PROMOTION', [target(collection.id, 'facecolor', 'scatter-series')])]),
+      'PROMOTION',
+      false,
+    );
+
+    expect(result.strategy).toBe('legacy');
+    expect(result.targets[0]?.replayMode).toBe('code_only');
+    expect(buildPaletteObjectPatches(result, '#abcdef')).toEqual([]);
+  });
   it('keeps same-color Weak and Mixed bindings separate by explicit targets', () => {
     const weak = object('line.0.0', 'color', 'weak-series');
     const mixed = object('line.0.1', 'color', 'mixed-series');
@@ -134,6 +173,28 @@ describe('palette target resolver', () => {
     expect(result.targets).toEqual([]);
     expect(result.ambiguous[0]?.reason).toBe('ambiguous_binding');
     expect(buildPaletteObjectPatches(result, '#ff0000')).toEqual([]);
+  });
+
+  it('preserves renderer ambiguity when the strict resolver flag is disabled', () => {
+    const line = object('line.0.0', 'color', 'line-series');
+    const ambiguous: Binding = {
+      paletteId: 'PROMOTION',
+      groupId: 'palette_PROMOTION',
+      gids: [],
+      props: [],
+      targetMode: 'ambiguous',
+      targets: [],
+      warnings: ['Multiple unbound palettes share this color.'],
+    };
+
+    const result = resolvePaletteTargets(manifest([line], [ambiguous]), 'PROMOTION', false);
+
+    expect(result.strategy).toBe('legacy');
+    expect(result.targetMode).toBe('ambiguous');
+    expect(result.ambiguous[0]?.reason).toBe('ambiguous_binding');
+    expect(buildPaletteUpdatePatches(result, '#33aa77', 'PROMOTION')).toEqual([{
+      type: 'code_patch', target_id: 'PROMOTION', new_value: '#33aa77', gids: [],
+    }]);
   });
 
   it('falls back to the first legacy binding when target metadata is absent', () => {

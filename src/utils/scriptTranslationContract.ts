@@ -450,6 +450,7 @@ os / sys / subprocess / builtins / shutil / socket / urllib / requests / eval / 
 10. \`set_xticks\` / \`set_xticklabels\` 数量必须一致
 11. 如果脚本只需要一张图，就只创建一张图；不要无故拆成多图
 12. 共享坐标轴共享刻度约束 (sharex=True/sharey=True)：当使用 sharex=True 或 sharey=True 共享坐标轴时，切勿在非目标子图上通过 ax.set_xticklabels([]) 或 ax.set_yticklabels([]) 擦除刻度标签，否则这会波及并擦除整个共享列/行的所有标签。如果需要隐藏特定子图的刻度标签，应使用 ax.tick_params(axis="x", labelbottom=show_xlabel) 或 ax.tick_params(axis="y", labelleft=show_ylabel) 控制其可见性。
+13. 每个语义分组只能有一个权威颜色常量或颜色字典条目；不要再定义同色但未使用的别名。若散点通过 \`c=df["Color"]\` 逐点着色，\`Color\` 列必须直接由这些权威常量生成，确保修改一个组只重绘该组，不影响其它组。
 
 
 ### 十、自检清单（这些条件必须在代码层面成立）

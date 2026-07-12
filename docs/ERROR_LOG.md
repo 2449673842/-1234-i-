@@ -1,7 +1,7 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-12 22:12:35 +08:00
+> 最后修改时间：2026-07-12 23:01:50 +08:00
 
 ---
 
@@ -1579,3 +1579,46 @@ build_figure(fl9_data, stats_df, opr_fep_df)
 - palette 常量只能作为代码持久化目标，不能被假设为 artist 的唯一真实颜色来源。
 - 任何触发后端重渲染的 code patch 若依赖对象 fallback，对象 patch 必须参加同一次 backend replay；不能只在前端局部预览。
 - 配色回归必须同时检查视觉颜色、manifest currentProps、binding GID 和刷新后的可再次选择能力。
+
+---
+
+## 2026-07-12 22:50:07 +08:00 向量散点配色无法区分组并可能整体染色
+
+**现象**
+
+- 项目 `3方差线2` 的配色中心提示没有绑定，无法可靠选中 `PROMOTION` 与 `INHIBITION`。
+- 两组颜色位于同一个 Matplotlib scatter collection；选中其中一组时另一组也显示被选中，旧对象 patch 可能把整个 collection 临时染成同色。
+
+**真实项目证据**
+
+- 只读检查项目 `3d90a529-ab92-4b2a-9f03-40d787cfd052`，Figure revision 105，未写入真实数据库。
+- 脚本同时定义 `PRIMARY_COLOR/PROMOTION=#1F78B4` 与 `SECONDARY_COLOR/INHIBITION=#D62728`；前两项未使用，实际 `df["Color"]` 由 `PROMOTION/INHIBITION` 生成。
+- `collection.0.1.facecolor` 包含 33 个蓝色和 9 个红色点，两个语义组共享同一个物理 GID，不能用普通对象级 `facecolor` patch 区分。
+- `3000` 未开启严格 palette resolver；legacy fallback 曾把 renderer 已声明的 `ambiguous` 状态降级成“当前图未使用”。
+
+**责任判断**
+
+- 转义脚本存在重复且未使用的同色常量，增加了歧义，但不是用户无法编辑的充分理由。
+- 主要问题属于平台：binding 协议未区分 collection 整体颜色与逐点向量颜色，legacy resolver 又丢失歧义信息。
+
+**修复**
+
+- semantic scanner 为脚本常量记录 `usageCount`；未使用的重复常量仍可显示，但不再参与 rendered-color owner 竞争。
+- binding target 新增 `replayMode`；多色数组命中标记为 `code_only`，只修改精确 Python 常量并重绘，不生成会覆盖整个 collection 的对象 patch。
+- legacy resolver 保留 `ambiguous/unresolved`，即使严格 resolver flag 关闭，也不再错误显示为未使用。
+- 配色中心不再把共享 vector collection 当作可选颜色组；两个代码颜色组不会因共用 GID 同时进入选中态。
+- AI 转义提示词新增规则：每个语义组只保留一个权威颜色常量，逐点颜色列必须由这些常量生成，禁止同色未使用别名。
+
+**验证**
+
+- 使用真实项目脚本和已保存 manifest 进行 SQLite `mode=ro` 验证：`PRIMARY_COLOR/SECONDARY_COLOR usageCount=0`；`PROMOTION/INHIBITION` 分别生成 `code_only` binding。
+- Python introspection：38 项通过。
+- 全量 Vitest：42 files / 290 tests 通过。
+- `npm run test:semantic-smoke`：11 PASS / 0 FAIL，其中向量颜色用例确认只提交一条目标常量 `code_patch`，另一组颜色和点数保持不变。
+- TypeScript、生产构建与 `git diff --check` 通过；仅保留既有 bundle 体积和 CJS `import.meta` 警告。
+
+**防复发规则**
+
+- 同一个 artist 属性包含多个离散颜色时，不得生成普通对象级颜色 fallback。
+- “相同 GID”不等于“相同语义颜色组”；向量颜色必须保留变量、scale key 或元素掩码级身份。
+- legacy compatibility path 不得抹掉 renderer 已明确声明的歧义或不支持状态。

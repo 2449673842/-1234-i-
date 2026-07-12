@@ -201,6 +201,7 @@ export interface Palette {
   color: string;
   source: "constant" | "dict" | "inline" | string;
   line: number;
+  usageCount?: number;
 }
 
 export interface Binding {
@@ -221,6 +222,7 @@ export interface BindingTarget {
   seriesKey?: string;
   match: "label_and_color" | "exact_label" | "unique_color" | "scale_key";
   confidence: "exact" | "high" | "conditional";
+  replayMode?: "object_patch" | "code_only";
 }
 
 export interface SemanticGroup {

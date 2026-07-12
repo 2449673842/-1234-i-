@@ -16,10 +16,18 @@ def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict
         for p in palettes
         if p.get("id")
     }
+    palette_by_id = {p.get("id"): p for p in palettes if p.get("id")}
     palette_ids_by_color: Dict[str, List[str]] = {}
     for palette_id, color in palette_colors.items():
         if color:
             palette_ids_by_color.setdefault(color, []).append(palette_id)
+    competing_palette_ids_by_color: Dict[str, List[str]] = {}
+    for color, palette_ids in palette_ids_by_color.items():
+        active_ids = [
+            palette_id for palette_id in palette_ids
+            if palette_by_id.get(palette_id, {}).get("usageCount") != 0
+        ]
+        competing_palette_ids_by_color[color] = active_ids or palette_ids
 
     group_signatures: Dict[tuple, List[str]] = {}
     for group in groups:
@@ -83,7 +91,7 @@ def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict
                 "semantic",
                 ["Palette binding used an exact label because rendered color differed."],
             ))
-        elif len(palette_ids_by_color.get(target_color or "", [])) == 1 and color_only:
+        elif len(competing_palette_ids_by_color.get(target_color or "", [])) == 1 and color_only:
             bindings.append(_build_binding(
                 palette_id,
                 group.get("groupId") or f"group_{palette_id}",
@@ -102,7 +110,11 @@ def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict
     for palette_id, target_color in palette_colors.items():
         if palette_id in bound_palette_ids or not target_color:
             continue
-        duplicate_palette_ids = palette_ids_by_color.get(target_color, [])
+        duplicate_palette_ids = competing_palette_ids_by_color.get(target_color, [])
+        if palette_id not in duplicate_palette_ids:
+            # An actually referenced constant with the same color is the
+            # authoritative owner; keep the unused alias visible but unbound.
+            continue
         if len(duplicate_palette_ids) > 1:
             bindings.append(_ambiguous_binding(
                 palette_id,
@@ -175,6 +187,9 @@ def _binding_target(
         target["instanceKey"] = identity["instanceKey"]
     if identity.get("seriesKey"):
         target["seriesKey"] = identity["seriesKey"]
+    props = artist.get("currentProps") or artist.get("props") or {}
+    if _is_multi_color_value(props.get(prop)):
+        target["replayMode"] = "code_only"
     return target
 
 
@@ -257,6 +272,15 @@ def _contains_color(color_val, target_hex: str) -> bool:
             if _normalize_color(row) == target_hex:
                 return True
     return False
+
+def _is_multi_color_value(color_val) -> bool:
+    if not isinstance(color_val, (list, tuple)) or not color_val:
+        return False
+    if not isinstance(color_val[0], (list, tuple)):
+        return False
+    colors = {_normalize_color(row) for row in color_val}
+    colors.discard(None)
+    return len(colors) > 1
 
 def _props_for_gids(gids: List[str], artist_manifest: List[Dict[str, Any]]) -> List[str]:
     artist_by_id = {artist.get("id"): artist for artist in artist_manifest}
