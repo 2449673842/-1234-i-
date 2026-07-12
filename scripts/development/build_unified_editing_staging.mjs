@@ -54,7 +54,11 @@ const gitRevision = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
   cwd: ROOT,
   encoding: 'utf8',
 }).trim();
-const buildId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${gitRevision}`;
+const buildId = process.env.SCIFIGURE_STAGING_BUILD_ID
+  || `${new Date().toISOString().replace(/[:.]/g, '-')}-${gitRevision}`;
+if (!/^[A-Za-z0-9._-]+$/.test(buildId)) {
+  throw new Error(`Invalid SCIFIGURE_STAGING_BUILD_ID: ${buildId}`);
+}
 const candidateRoot = path.join(BUILD_ROOT, buildId);
 const distDir = path.join(candidateRoot, 'dist');
 const markerPath = path.join(distDir, '.unified-editing-staging.json');
