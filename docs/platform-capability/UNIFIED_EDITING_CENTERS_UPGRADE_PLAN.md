@@ -2,7 +2,7 @@
 
 > 状态：规划完成，尚未实施功能迁移
 > 创建时间：2026-07-12 16:10:44 +08:00
-> 最后更新：2026-07-12 16:40:13 +08:00
+> 最后更新：2026-07-12 17:24:57 +08:00
 > 适用范围：属性编辑、布局中心、组件中心、配色中心、字体中心
 > 实施方式：Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire
 
@@ -850,9 +850,9 @@ SCIFIGURE_DB_PATH 可指定独立 SQLite 数据库
 http://localhost:3000
 SCIFIGURE_DATA_DIR=真实 data
 
-升级版：
+升级版（当前本机 `3100-3102` 已被其它服务占用，因此实际使用 `3200`）：
 独立 upgrade worktree
-http://localhost:3100
+http://localhost:3200
 SCIFIGURE_DATA_DIR=独立 staging data
 SCIFIGURE_DB_PATH=独立 staging database
 VITE_SCIFIGURE_*_V2=按中心开启
@@ -861,7 +861,7 @@ VITE_SCIFIGURE_*_V2=按中心开启
 示意启动方式：
 
 ```powershell
-$env:PORT='3100'
+$env:PORT='3200'
 $env:SCIFIGURE_DATA_DIR='E:\ai绘图修改编辑\tmp\unified-editing-staging\data'
 $env:SCIFIGURE_DB_PATH='E:\ai绘图修改编辑\tmp\unified-editing-staging\data\scifigure.db'
 $env:VITE_SCIFIGURE_PROPERTY_DESCRIPTOR_V1='1'
@@ -892,8 +892,8 @@ npm run dev
 
 ```text
 1. 当前 3000 稳定服务继续使用
-2. 在 upgrade worktree 开发并运行 3100
-3. 3100 使用独立数据完成自动测试
+2. 在 upgrade worktree 开发并运行 3200
+3. 3200 使用独立数据完成自动测试
 4. 使用真实项目快照完成浏览器和人工回归
 5. 生成候选提交并执行完整构建/测试/数据审计
 6. 先停止向稳定版提交新的编辑和导出任务
@@ -978,6 +978,51 @@ sticky routing：一个编辑会话在切换完成前保持同一版本
 ```
 
 因此，本次升级推荐从一开始就在独立 worktree、独立端口和独立 staging 数据中完成。测试通过后再以蓝绿方式替换当前服务，这比在正在使用的工作目录中边开发边热更新更适合当前平台，也应成为未来云端发布的默认模式。
+
+### 13.13 当前隔离实施状态（2026-07-12 17:24:57 +08:00）
+
+第一批 Baseline/Shadow 已在独立环境开始实施：
+
+```text
+稳定分支：feature/standard-figure-model-v1
+稳定服务：http://localhost:3000
+升级分支：upgrade/unified-editing-centers
+升级 worktree：tmp/worktrees/unified-editing
+升级服务：http://localhost:3200
+升级数据：升级 worktree 内 tmp/unified-editing-staging/data
+```
+
+已落地：
+
+- 增加统一 `PropertyDescriptor` 类型和中心、属性族、控件、单位、范围、选项定义。
+- 首批登记字体家族、字号、字重、字形、颜色、旋转、水平/垂直对齐、可见性、透明度和线宽。
+- 增加 tick label alias，并明确排除 `tick_color` 作为文字颜色，避免刻度线与刻度文字串改。
+- 增加按属性编辑、布局、组件、配色和字体中心过滤的纯投影函数。
+- 优先消费 renderer `propertyCapabilities`，旧 manifest 才回退 `editable/currentProps`。
+- 输出 editable、partial、readonly、unsupported、mixed、conditional 和 legacy fallback 元数据。
+- `RightSidebar` 在 staging flag 下记录无值 Shadow 诊断，不产生 patch、不改变控件、不触发额外渲染。
+- staging 启动器固定独立端口、数据库、项目目录和单并发 renderer，并拒绝真实 `data/` 或已占用端口。
+- staging 默认运行 production-like 构建，不启动 Vite HMR，接近未来 Green 候选版本。
+- staging 构建使用版本化不可变目录；新包完成后更新 build pointer，运行中的旧候选不受下一次构建影响。
+- 启动器验证候选目录、buildId、显式 Shadow flag 和 `index.html` 后才允许切换。
+
+验证证据：
+
+```text
+属性投影和诊断：14 个针对性 Vitest 通过
+全量前端单元测试：20 files / 144 tests 通过
+TypeScript：通过
+生产构建：通过
+语义中心浏览器回归：9 PASS / 0 FAIL
+真实数据路径阻断：通过
+占用端口阻断：通过
+3200 健康检查：HTTP 200
+3000 并行健康检查：HTTP 200
+staging 数据审计：0 users / 0 projects / 0 assets / 0 issues
+独立代码审查：阻断项修复后复审通过，无剩余 blocking finding
+```
+
+当前尚未切换任何用户控件，也没有修改 Python/R renderer、Draft、历史、保存、导出或真实项目数据。下一步是 Phase 2 的统一控件渲染器，仍先在属性编辑中按 feature flag 单中心接入，不直接替换字体、组件、配色和布局中心。
 
 ## 14. 实施阶段
 

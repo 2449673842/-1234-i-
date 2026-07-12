@@ -44,7 +44,7 @@ function record(id, status, note) {
 
 function isIgnorableDevServerNoise(message) {
   return message.includes('[vite] failed to connect to websocket')
-    || message.includes("WebSocket connection to 'ws://localhost:24678/")
+    || /WebSocket connection to 'ws:\/\/[^']+:24678\//.test(message)
     || message.includes('WebSocket closed without opened');
 }
 

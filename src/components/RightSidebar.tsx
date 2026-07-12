@@ -6,12 +6,14 @@ import { resolveFigureId } from '../utils/figureIdentity';
 import { compileEditingIntent } from '../utils/editingIntentCompiler';
 import { compileEditingIntentWithControlledResolver } from '../utils/targetResolver';
 import { recordTargetResolverShadowDiagnostic } from '../utils/targetResolverDiagnostics';
+import { recordPropertyProjectionShadowDiagnostic } from '../utils/propertyProjectionDiagnostics';
 import { buildPaletteObjectPatches, resolvePaletteTargets } from '../utils/paletteTargetResolver';
 import { computeEqualAxesPhysicalLayout } from '../utils/subplotPhysicalLayout';
 import { resolveExplicitColorbarOwner } from '../utils/colorbarOwnership';
 import type { StandardFigureModel, StandardFigureObject } from '../schemas/standardFigureModel';
 import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent';
 import type { EditingIntentApplyReport, EditingIntentSkippedTarget } from '../schemas/editingIntent';
+import type { EditingCenterId } from '../schemas/propertyDescriptor';
 
 import type { DraftPatch } from '../schemas/draftPatchBatch';
 
@@ -545,6 +547,30 @@ export function RightSidebar({
     () => objects.find(o => o.id === selectedObject) || objects[0],
     [objects, selectedObject]
   );
+
+  useEffect(() => {
+    const manifest = figSession?.manifest;
+    if (!manifest) return;
+    const center: EditingCenterId = activeTab === 'groups' ? 'components' : activeTab;
+    const rawObjects = manifest.objects ?? [];
+    const selectedIds = new Set(selectedGids.length > 0
+      ? selectedGids
+      : selectedObject
+        ? [selectedObject]
+        : []);
+    let shadowObjects = rawObjects;
+    if (center === 'properties') {
+      shadowObjects = selectedIds.size > 0
+        ? rawObjects.filter(object => selectedIds.has(object.id))
+        : rawObjects.slice(0, 1);
+    } else if (center === 'layout') {
+      shadowObjects = rawObjects.filter(object => (
+        selectedIds.has(object.id)
+        || ['subplot', 'colorbar', 'legend'].includes(object.kind)
+      ));
+    }
+    recordPropertyProjectionShadowDiagnostic(manifest, center, shadowObjects);
+  }, [activeTab, figSession?.manifest, figSession?.revision, selectedGids, selectedObject]);
 
   const getObjectSubplotId = (obj: Pick<StandardFigureObject, 'id' | 'kind' | 'subplotId' | 'source' | 'identity'>) => {
     if (obj.kind === 'subplot') return obj.id;
