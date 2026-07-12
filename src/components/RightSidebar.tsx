@@ -4504,6 +4504,8 @@ export function RightSidebar({
                 ? Array.from(new Set(resolution.targets.map(target => target.prop))).join(' / ')
                 : binding?.props?.length ? binding.props.join(' / ') : '未绑定';
               const previewObjects = targetObjects.slice(0, 6);
+              const previewSelectableCount = previewObjects.filter(obj => selectableGids.includes(obj.id)).length;
+              const remainingSelectableCount = Math.max(0, selectableGids.length - previewSelectableCount);
               const getPalettePatchProp = (obj: StandardFigureObject) => {
                 const strictTarget = resolution.targets.find(target => target.objectId === obj.id);
                 if (strictTarget) return strictTarget.prop;
@@ -4666,13 +4668,13 @@ export function RightSidebar({
                               <span className="shrink-0 text-slate-400">{getObjectTypeLabel(obj.kind)}</span>
                             </button>
                           ))}
-                          {targetObjects.length > previewObjects.length && (
+                          {remainingSelectableCount > 0 && (
                             <button
                               type="button"
-                              onClick={() => selectPaletteTargets(gids)}
+                              onClick={() => selectPaletteTargets(selectableGids)}
                               className="w-full rounded px-2 py-1 text-left text-[11px] text-blue-600 hover:bg-blue-50"
                             >
-                              还有 {targetObjects.length - previewObjects.length} 个对象，点击选中整组查看
+                              还有 {remainingSelectableCount} 个可选对象，点击选中整组查看
                             </button>
                           )}
                         </div>

@@ -1,7 +1,7 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-12 23:01:50 +08:00
+> 最后修改时间：2026-07-12 23:20:50 +08:00
 
 ---
 
@@ -1622,3 +1622,41 @@ build_figure(fl9_data, stats_df, opr_fep_df)
 - 同一个 artist 属性包含多个离散颜色时，不得生成普通对象级颜色 fallback。
 - “相同 GID”不等于“相同语义颜色组”；向量颜色必须保留变量、scale key 或元素掩码级身份。
 - legacy compatibility path 不得抹掉 renderer 已明确声明的歧义或不支持状态。
+
+---
+
+## 2026-07-12 23:20:50 +08:00 编辑器横向画布导出后恢复为脚本竖向尺寸
+
+**现象**
+
+- 编辑器中 Figure 显示为横向，导出 PNG 后变成竖向，导出内容与最后一次成功预览不一致。
+
+**真实项目证据**
+
+- 只读检查项目 `3方差线2` revision 118：当前 preview manifest 为 `9 × 7.5 in`，SVG 为 `648 × 540 pt`，明确是横向。
+- 同 revision 最新导出缩略 SVG 为 `590.4 × 633.6 pt`，对应脚本原始 `8.2 × 8.8 in`，明确是竖向。
+- session 保留 28 项图元编辑，但 `gid=global` 的画布宽高编辑已丢失；脚本仍为 `figsize=(8.2, 8.8)`。
+
+**根因**
+
+- `/api/figure/code-patch` 漂移检测只把 `manifest.objects[].id` 视为有效 GID。
+- `global` 是 renderer 支持的可重放虚拟目标，不属于普通 objects；旧逻辑将它误判为 orphan，并在 force code sync 时从 session editLog 删除。
+- preview SVG 在删除前已经按横向 global patch 生成并保存，因此编辑器继续显示横向；导出接口重新执行 session script + session editLog，缺少 global patch 后恢复为脚本竖向尺寸。
+
+**修复**
+
+- 漂移检测保留 `global`、`font-center-xticks` 和 `font-center-yticks` 等可重放虚拟目标，不再把它们当作孤儿清理。
+- 单 Figure 导出和项目 Figure 导出都从最后一次成功 preview manifest 合并 `figure.width_in`、`figure.height_in` 和 `figure.dpi`，兼容已经丢失 global editLog 的历史项目。
+- 导出 bundle 和导出历史锚点使用同一份有效导出 editLog，避免文件内容与元数据再次分叉。
+
+**验证**
+
+- 新增 preview global 恢复单元测试：2 项通过。
+- `npm run test:export-matrix-smoke` 全部通过：`8 × 4 in` 横向预览经过代码同步后导出 viewBox 为 `576 × 288`；SVG/PNG/PDF/TIFF、全部 Figure、子图同格式和导出中阻止均通过。
+- TypeScript 与 `git diff --check` 通过。
+
+**防复发规则**
+
+- drift/orphan 检查必须同时认识真实 artist GID 和 renderer 声明的虚拟可重放 GID。
+- 导出必须以最后一次成功预览状态为基准，不得只相信可能被兼容流程清理过的 session editLog。
+- 导出回归必须比较 preview 与 export 的 viewBox、物理宽高和方向，revision 相同不代表内容天然一致。

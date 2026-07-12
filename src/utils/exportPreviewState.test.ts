@@ -1,0 +1,36 @@
+import { describe, expect, it } from 'vitest';
+import type { EditEntry, Manifest } from '../schemas/manifest';
+import { isDurableVirtualEditGid, mergePreviewGlobalsIntoEditLog } from './exportPreviewState';
+
+const existing: EditEntry[] = [{
+  gid: 'title.0', prop: 'fontsize', value: 14, mode: 'backend_patch', timestamp: 10,
+}];
+
+describe('export preview state recovery', () => {
+  it('restores the last successful preview dimensions for export replay', () => {
+    const manifest = {
+      generatedBy: 'introspection',
+      globals: {
+        'figure.width_in': { type: 'number', value: 9, min: 2, max: 30, step: 0.1 },
+        'figure.height_in': { type: 'number', value: 7.5, min: 2, max: 30, step: 0.1 },
+        'figure.dpi': { type: 'number', value: 150, min: 72, max: 600, step: 1 },
+      },
+      objects: [],
+      capabilities: { localPatch: true, backendPatch: true, codePatch: true },
+    } as Manifest;
+
+    const merged = mergePreviewGlobalsIntoEditLog(existing, manifest);
+
+    expect(merged.slice(-3).map(entry => [entry.gid, entry.prop, entry.value])).toEqual([
+      ['global', 'figure.width_in', 9],
+      ['global', 'figure.height_in', 7.5],
+      ['global', 'figure.dpi', 150],
+    ]);
+  });
+
+  it('keeps global and legacy font-center edits out of drift orphan cleanup', () => {
+    expect(isDurableVirtualEditGid('global')).toBe(true);
+    expect(isDurableVirtualEditGid('font-center-xticks')).toBe(true);
+    expect(isDurableVirtualEditGid('title.0')).toBe(false);
+  });
+});
