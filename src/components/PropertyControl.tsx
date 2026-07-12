@@ -102,7 +102,7 @@ export function PropertyControl({
     setInputValue(displayValue);
   }, [displayValue]);
 
-  if (!prop) return null;
+  if (!prop || descriptor.control === 'position') return null;
 
   const commitNumber = () => {
     const numeric = Number(inputValue);

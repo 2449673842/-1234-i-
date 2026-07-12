@@ -64,6 +64,9 @@ const FONT_CONTROLS_V2_ENABLED = (
 const COMPONENT_CONTROLS_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
 ).env?.VITE_SCIFIGURE_COMPONENT_CONTROLS_V2 === '1';
+const LAYOUT_CONTROLS_V2_ENABLED = (
+  import.meta as ImportMeta & { env?: Record<string, string | undefined> }
+).env?.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 === '1';
 const DEFAULT_PRESETS: Record<string, string[]> = {
   Nature: ['#1F78B4', '#D95F02', '#7570B3', '#E7298A', '#66A61E'],
   Science: ['#E41A1C', '#377EB8', '#4DAF4A', '#984EA3', '#FF7F00'],
@@ -796,6 +799,35 @@ export function RightSidebar({
     }
   };
 
+  const projectLayoutControls = (
+    items: readonly StandardFigureObject[],
+    scope: 'object' | 'group' | 'subplot' | 'figure' = 'object',
+  ) => projectPropertyDescriptors({
+    center: 'layout',
+    objects: items as unknown as readonly ManifestObject[],
+    scope,
+  });
+
+  const supportsLayoutProps = (
+    items: readonly StandardFigureObject[],
+    props: readonly CanonicalPropertyKey[],
+    scope: 'object' | 'group' | 'subplot' | 'figure' = 'object',
+  ) => {
+    if (!LAYOUT_CONTROLS_V2_ENABLED) return true;
+    if (items.length === 0) return false;
+    const projections = projectLayoutControls(items, scope);
+    return props.every(key => {
+      const projection = projections.find(item => item.key === key);
+      const expectedCoordinateSpace = key === 'aspect' ? 'container' : 'figure';
+      return Boolean(projection)
+        && items.every(item => (
+          projection?.stateByObjectId[item.id] === 'editable'
+          && projection.propByObjectId[item.id] === key
+          && projection.coordinateSpaceByObjectId?.[item.id] === expectedCoordinateSpace
+        ));
+    });
+  };
+
   const buildSubplotLayoutPatches = (rows: number, cols: number, settings: SubplotLayoutSettings = subplotLayoutSettings): PatchEntry[] => {
     const ordered = subplotOptions.slice(0, rows * cols);
     if (ordered.length === 0) return [];
@@ -1055,6 +1087,7 @@ export function RightSidebar({
   };
 
   const applySubplotLayout = (rows: number, cols: number, settings: SubplotLayoutSettings = subplotLayoutSettings) => {
+    if (!supportsLayoutProps(subplotOptions, ['left', 'bottom', 'width', 'height'])) return;
     rememberOriginalLayout();
     setSelectedLayout({ rows, cols });
     const patches = buildSubplotLayoutPatches(rows, cols, settings);
@@ -1063,6 +1096,7 @@ export function RightSidebar({
   };
 
   const applyEqualAxesPhysicalLayout = (rows: number, cols: number, settings: PhysicalAxesLayoutSettings = physicalAxesLayout) => {
+    if (!supportsLayoutProps(subplotOptions, ['left', 'bottom', 'width', 'height'])) return;
     rememberOriginalLayout();
     setSelectedLayout({ rows, cols });
     const patches = buildEqualAxesPhysicalLayoutPatches(rows, cols, settings);
@@ -1071,6 +1105,7 @@ export function RightSidebar({
   };
 
   const applyColorbarAlignment = (settings: ColorbarAlignSettings = colorbarAlignSettings) => {
+    if (!supportsLayoutProps(colorbarOptions, ['left', 'bottom', 'width', 'height'])) return;
     rememberOriginalLayout();
     const patches = buildColorbarAlignPatches(settings);
     if (patches.length === 0) return;
@@ -1082,6 +1117,8 @@ export function RightSidebar({
     targetId: string,
     settings: SubplotWidthAlignSettings = subplotWidthAlignSettings,
   ) => {
+    const target = subplotOptions.filter(item => item.id === targetId);
+    if (!supportsLayoutProps(target, settings.mode === 'keep-left' ? ['width'] : ['left', 'width'])) return;
     rememberOriginalLayout();
     const patches = buildAlignSubplotWidthToReferencePatches(referenceId, targetId, settings);
     if (patches.length === 0) return;
@@ -1127,6 +1164,9 @@ export function RightSidebar({
   };
 
   const applySwapSubplotPositions = (firstId: string, secondId: string) => {
+    const targets = subplotOptions.filter(item => item.id === firstId || item.id === secondId);
+    if (!supportsLayoutProps(targets, ['left', 'bottom'])) return;
+    if (colorbarOptions.length > 0 && !supportsLayoutProps(colorbarOptions, ['left', 'bottom'])) return;
     rememberOriginalLayout();
     const patches = buildSwapSubplotPositionPatches(firstId, secondId);
     if (patches.length === 0) return;
@@ -1850,6 +1890,113 @@ export function RightSidebar({
     );
   };
 
+  const renderLayoutObjectPanel = () => {
+    if (!LAYOUT_CONTROLS_V2_ENABLED) return null;
+    const candidates = objects.filter(object => (
+      object.kind === 'subplot'
+      || object.kind === 'colorbar'
+      || object.kind === 'legend'
+    ));
+    if (candidates.length === 0) return null;
+    const selectedIds = new Set([selectedObject, ...selectedGids].filter(Boolean));
+    const target = candidates.find(object => selectedIds.has(object.id))
+      || candidates.find(object => object.kind === 'subplot')
+      || candidates[0];
+    if (!target) return null;
+
+    const scope = manifest.generatedBy === 'r_svg' && target.kind === 'subplot'
+      ? 'figure' as const
+      : 'object' as const;
+    const projections = projectLayoutControls([target], scope);
+    const geometryControls = projections.filter(projection => (
+      projection.descriptor.family === 'layout_geometry'
+      && Boolean(projection.propByObjectId[target.id])
+    ));
+    const positionProjection = projections.find(projection => (
+      projection.key === 'position'
+      && Boolean(projection.propByObjectId[target.id])
+    ));
+    const coordinateLabel = (space: ProjectedPropertyDescriptor['coordinateSpace']) => ({
+      figure: 'Figure 归一化',
+      container: '容器布局',
+      axes: 'Axes',
+      data: '数据坐标',
+      display: '显示坐标',
+      none: '未声明',
+      mixed: '混合坐标',
+    }[String(space)] || '未声明');
+
+    return (
+      <div
+        className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+        data-layout-controls-version="2"
+        data-layout-object-id={target.id}
+      >
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-bold text-slate-900">当前布局对象</div>
+            <div className="mt-1 text-[11px] text-slate-500">
+              {getReadableObjectLabel(target)} · {getObjectTypeLabel(target.kind)}
+            </div>
+          </div>
+          <select
+            aria-label="当前布局对象"
+            value={target.id}
+            onChange={(event) => {
+              onSelectGids?.([event.target.value]);
+              onSelectObject(event.target.value);
+            }}
+            className="max-w-[52%] rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs font-semibold text-slate-700 outline-none focus:border-blue-400"
+          >
+            {candidates.map(candidate => (
+              <option key={candidate.id} value={candidate.id}>
+                {getReadableObjectLabel(candidate)}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {geometryControls.length > 0 ? (
+          <div className="grid grid-cols-2 gap-3">
+            {geometryControls.map(projection => (
+              <React.Fragment key={projection.key}>
+                <PropertyControl
+                  projection={projection}
+                  objectId={target.id}
+                  controlScope={`layout:${target.kind}`}
+                  label={manifest.generatedBy === 'r_svg' && target.kind === 'subplot' && projection.key === 'aspect'
+                    ? '全部 Facet 宽高比'
+                    : projection.descriptor.label}
+                  dirty={Boolean(projection.propByObjectId[target.id]
+                    && isDirty(target.id, projection.propByObjectId[target.id]!))}
+                  onChange={(value, prop) => handlePatch(target.id, prop, value)}
+                />
+              </React.Fragment>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+            当前对象没有可直接输入的布局几何属性。
+          </div>
+        )}
+
+        {positionProjection && (
+          <div
+            className="mt-3 flex items-center justify-between rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs"
+            data-layout-position-state={positionProjection.state}
+          >
+            <span className="font-semibold text-indigo-800">位置</span>
+            <span className="text-indigo-600">
+              {coordinateLabel(positionProjection.coordinateSpace)} · {
+                ['editable', 'mixed', 'partial'].includes(positionProjection.state) ? '拖拽确认' : '不可编辑'
+              }
+            </span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderSubplotLayoutPanel = () => {
     const count = subplotOptions.length;
     if (count === 0) return null;
@@ -1893,10 +2040,19 @@ export function RightSidebar({
       : autoCols;
     const selectedPreset: LayoutPreset = uniquePresets.find(item => item.rows === selectedRows && item.cols === selectedCols)
       || { rows: selectedRows, cols: selectedCols, label: `${selectedRows}×${selectedCols}`, hint: '当前版式' };
+    const subplotBoundsEditable = supportsLayoutProps(subplotOptions, ['left', 'bottom', 'width', 'height']);
+    const colorbarBoundsEditable = colorbarOptions.length > 0
+      && supportsLayoutProps(colorbarOptions, ['left', 'bottom', 'width', 'height']);
+    const subplotLayoutReason = subplotOptions
+      .map(subplot => subplot.currentProps.unsupportedReason)
+      .find(reason => typeof reason === 'string') as string | undefined;
     const selectedSubplotId = selectedObject?.startsWith('subplot.') ? selectedObject : '';
     const swapFirstId = swapSubplotIds.first || selectedSubplotId || subplotOptions[0]?.id || '';
     const swapSecondId = swapSubplotIds.second || subplotOptions.find(subplot => subplot.id !== swapFirstId)?.id || '';
-    const canSwapSubplots = count > 1 && Boolean(swapFirstId && swapSecondId && swapFirstId !== swapSecondId);
+    const canSwapSubplots = subplotBoundsEditable
+      && (colorbarOptions.length === 0 || colorbarBoundsEditable)
+      && count > 1
+      && Boolean(swapFirstId && swapSecondId && swapFirstId !== swapSecondId);
     const colorbarAlignmentTargets = getColorbarAlignmentTargets();
     const explicitColorbarPairCount = colorbarAlignmentTargets.filter(target => target.source === 'relation').length;
     const legacyColorbarPairCount = colorbarAlignmentTargets.filter(target => target.source === 'geometry').length;
@@ -1929,7 +2085,8 @@ export function RightSidebar({
     const widthAlignNextWidth = widthReferenceBounds && widthTargetBounds
       ? clampNumber(widthReferenceBounds.right - widthTargetBounds.left, 0.005, 1 - widthTargetBounds.left)
       : null;
-    const canAlignSubplotWidth = count > 1
+    const canAlignSubplotWidth = subplotBoundsEditable
+      && count > 1
       && Boolean(effectiveWidthAlignSettings.referenceId)
       && Boolean(effectiveWidthAlignSettings.targetId)
       && effectiveWidthAlignSettings.referenceId !== effectiveWidthAlignSettings.targetId
@@ -2090,6 +2247,14 @@ export function RightSidebar({
             原图布局
           </button>
         </div>
+        {!subplotBoundsEditable && (
+          <div
+            className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800"
+            data-layout-subplot-bounds="unsupported"
+          >
+            当前引擎不支持独立修改这些子图的 left / bottom / width / height。{subplotLayoutReason || ''}
+          </div>
+        )}
         {count > 1 && (
           <div className="mb-3 rounded-xl border border-indigo-100 bg-white p-3">
             <div className="mb-2">
@@ -2233,12 +2398,15 @@ export function RightSidebar({
             <button
               type="button"
               key={`${preset.rows}x${preset.cols}`}
+              disabled={!subplotBoundsEditable}
               onClick={() => {
                 setSelectedLayout({ rows: preset.rows, cols: preset.cols });
                 applySubplotLayout(preset.rows, preset.cols);
               }}
               className={`rounded-lg border px-3 py-2 text-left transition-colors ${
-                selectedPreset.rows === preset.rows && selectedPreset.cols === preset.cols
+                !subplotBoundsEditable
+                  ? 'cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300'
+                  : selectedPreset.rows === preset.rows && selectedPreset.cols === preset.cols
                   ? 'border-blue-500 bg-blue-100 ring-1 ring-blue-200'
                   : 'border-blue-200 bg-white hover:border-blue-400 hover:bg-blue-50'
               }`}
@@ -2275,14 +2443,20 @@ export function RightSidebar({
           </div>
           <button
             type="button"
+            disabled={!subplotBoundsEditable}
             onClick={() => applySubplotLayout(selectedPreset.rows, selectedPreset.cols, subplotLayoutSettings)}
-            className="mt-3 w-full rounded-lg border border-blue-200 bg-blue-600 px-2 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-blue-700"
+            className={`mt-3 w-full rounded-lg border px-2 py-1.5 text-[11px] font-semibold shadow-sm ${
+              subplotBoundsEditable
+                ? 'border-blue-200 bg-blue-600 text-white hover:bg-blue-700'
+                : 'cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300'
+            }`}
           >
             应用当前版式：{selectedPreset.label}
           </button>
           <div className="mt-2 grid grid-cols-3 gap-2">
             <button
               type="button"
+              disabled={!subplotBoundsEditable}
               onClick={() => {
                 setSubplotLayoutSettings(compactSettings);
                 applySubplotLayout(selectedPreset.rows, selectedPreset.cols, compactSettings);
@@ -2293,6 +2467,7 @@ export function RightSidebar({
             </button>
             <button
               type="button"
+              disabled={!subplotBoundsEditable}
               onClick={() => {
                 setSubplotLayoutSettings(DEFAULT_SUBPLOT_LAYOUT_SETTINGS);
                 applySubplotLayout(selectedPreset.rows, selectedPreset.cols, DEFAULT_SUBPLOT_LAYOUT_SETTINGS);
@@ -2303,6 +2478,7 @@ export function RightSidebar({
             </button>
             <button
               type="button"
+              disabled={!subplotBoundsEditable}
               onClick={() => {
                 setSubplotLayoutSettings(roomySettings);
                 applySubplotLayout(selectedPreset.rows, selectedPreset.cols, roomySettings);
@@ -2359,12 +2535,15 @@ export function RightSidebar({
               <button
                 type="button"
                 key={`physical-${preset.rows}x${preset.cols}`}
+                disabled={!subplotBoundsEditable}
                 onClick={() => {
                   setSelectedLayout({ rows: preset.rows, cols: preset.cols });
                   applyEqualAxesPhysicalLayout(preset.rows, preset.cols);
                 }}
                 className={`rounded-lg border px-3 py-2 text-left transition-colors ${
-                  selectedPreset.rows === preset.rows && selectedPreset.cols === preset.cols
+                  !subplotBoundsEditable
+                    ? 'cursor-not-allowed border-slate-100 bg-slate-50 text-slate-300'
+                    : selectedPreset.rows === preset.rows && selectedPreset.cols === preset.cols
                     ? 'border-emerald-500 bg-emerald-100 ring-1 ring-emerald-200'
                     : 'border-emerald-200 bg-emerald-50 hover:border-emerald-400 hover:bg-white'
                 }`}
@@ -2448,12 +2627,17 @@ export function RightSidebar({
                 有 {unmatchedColorbars} 个色条没有可靠匹配到主图。通常是色条离主图过远或 manifest 缺少 bounds，可先手动移动到主图右侧再对齐。
               </div>
             )}
+            {!colorbarBoundsEditable && (
+              <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5 text-[10px] leading-relaxed text-amber-700">
+                当前色条缺少可重放的 Figure 坐标 capability，已阻止批量对齐。
+              </div>
+            )}
             <button
               type="button"
               onClick={() => applyColorbarAlignment(colorbarAlignSettings)}
-              disabled={colorbarAlignmentTargets.length === 0}
+              disabled={colorbarAlignmentTargets.length === 0 || !colorbarBoundsEditable}
               className={`mt-3 w-full rounded-lg border px-2 py-1.5 text-[11px] font-semibold shadow-sm ${
-                colorbarAlignmentTargets.length > 0
+                colorbarAlignmentTargets.length > 0 && colorbarBoundsEditable
                   ? 'border-cyan-200 bg-cyan-600 text-white hover:bg-cyan-700'
                   : 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed'
               }`}
@@ -2463,6 +2647,7 @@ export function RightSidebar({
             <div className="mt-2 grid grid-cols-3 gap-2">
               <button
                 type="button"
+                disabled={!colorbarBoundsEditable}
                 onClick={() => {
                   setColorbarAlignSettings(colorbarCompactSettings);
                   applyColorbarAlignment(colorbarCompactSettings);
@@ -2473,6 +2658,7 @@ export function RightSidebar({
               </button>
               <button
                 type="button"
+                disabled={!colorbarBoundsEditable}
                 onClick={() => {
                   setColorbarAlignSettings(colorbarStandardSettings);
                   applyColorbarAlignment(colorbarStandardSettings);
@@ -2483,6 +2669,7 @@ export function RightSidebar({
               </button>
               <button
                 type="button"
+                disabled={!colorbarBoundsEditable}
                 onClick={() => {
                   setColorbarAlignSettings(colorbarRoomySettings);
                   applyColorbarAlignment(colorbarRoomySettings);
@@ -5147,13 +5334,18 @@ export function RightSidebar({
             </>
           )}
 
-          {activeTab === 'layout' && (
-            renderSubplotLayoutPanel() || (
+          {activeTab === 'layout' && (() => {
+            const objectPanel = renderLayoutObjectPanel();
+            const multiPanel = renderSubplotLayoutPanel();
+            if (objectPanel || multiPanel) {
+              return <>{objectPanel}{multiPanel}</>;
+            }
+            return (
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
-                当前 Figure 只识别到 0 或 1 个子图，不需要多子图布局中心。选中单个 `subplot.*` 后可在属性编辑里调整真实绘图区尺寸。
+                当前 Figure 没有可编辑的布局对象。
               </div>
-            )
-          )}
+            );
+          })()}
 
           {activeTab === 'groups' && renderComponentsPanel()}
 

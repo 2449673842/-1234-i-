@@ -35,11 +35,12 @@ let authToken = '';
 
 const script = [
   'library(ggplot2)',
-  'df <- data.frame(x=1:4, y=c(1, 3, 2, 5), group=c("A", "A", "B", "B"))',
+  'df <- data.frame(x=1:4, y=c(1, 3, 2, 5), group=c("A", "A", "B", "B"), facet=c("F1", "F1", "F2", "F2"))',
   'p <- ggplot(df, aes(x, y, color=group)) +',
   '  geom_point(size=3) +',
   '  geom_line(linewidth=0.8) +',
   '  labs(title="R Semantic Centers", x="R X Axis", y="R Y Axis") +',
+  '  facet_wrap(~facet) +',
   '  theme_classic()',
   'p',
 ].join('\n');
@@ -398,6 +399,35 @@ async function run() {
     const palettePatches = patchList(paletteApply.patchBody);
     const paletteOk = paletteChanged && paletteDraft && paletteApply.successful && palettePatches.some((patch) => String(patch.gid).startsWith('r.group.color.') && patch.prop === 'color' && String(patch.value).toLowerCase() === '#2ca02c');
     record('R3-palette-center', paletteOk ? 'PASS' : 'FAIL', `changed=${paletteChanged}, draft=${paletteDraft}, patches=${JSON.stringify(palettePatches)}`);
+
+    await clickText(page, '布局中心');
+    const layoutV2Expected = process.env.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 === '1';
+    const layoutPanel = page.locator('[data-layout-controls-version="2"]').first();
+    const layoutPanelCount = await layoutPanel.count();
+    const aspectControl = layoutPanel.locator('[data-property-control="aspect"]').first();
+    const unsupportedBounds = ['left', 'bottom', 'width', 'height'];
+    const unsupportedBoundStates = layoutPanelCount > 0
+      ? await Promise.all(unsupportedBounds.map(async prop => {
+        const control = layoutPanel.locator(`[data-property-control="${prop}"]`).first();
+        return {
+          prop,
+          count: await control.count(),
+          disabled: await control.isDisabled().catch(() => false),
+        };
+      }))
+      : [];
+    const facetBoundsBlocked = await page.locator('[data-layout-subplot-bounds="unsupported"]').count();
+    const layoutOk = layoutV2Expected
+      ? layoutPanelCount === 1
+        && await aspectControl.isEnabled().catch(() => false)
+        && unsupportedBoundStates.every(item => item.count === 1 && item.disabled)
+        && facetBoundsBlocked === 1
+      : layoutPanelCount === 0;
+    record(
+      'R4-layout-capability-isolation',
+      layoutOk ? 'PASS' : 'FAIL',
+      `expected=${layoutV2Expected}, panel=${layoutPanelCount}, bounds=${JSON.stringify(unsupportedBoundStates)}, blocked=${facetBoundsBlocked}`,
+    );
 
     record(
       'N1',

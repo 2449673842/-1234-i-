@@ -505,6 +505,20 @@ fig.colorbar(im, ax=ax, orientation="vertical", label="Intensity")
         self.assertEqual(cb["currentProps"]["cmap"], "inferno")
         self.assertIsNotNone(cb["currentProps"]["vmin"])
         self.assertIsNotNone(cb["currentProps"]["vmax"])
+        colorbar_capabilities = {
+            capability["prop"]: capability
+            for capability in cb["propertyCapabilities"]
+        }
+        for prop in ("left", "bottom", "width", "height"):
+            self.assertEqual(colorbar_capabilities[prop]["coordinateSpace"], "figure")
+        subplot = next(obj for obj in objects if obj["id"] == "subplot.0")
+        subplot_capabilities = {
+            capability["prop"]: capability
+            for capability in subplot["propertyCapabilities"]
+        }
+        for prop in ("left", "bottom", "width", "height"):
+            self.assertEqual(subplot_capabilities[prop]["coordinateSpace"], "figure")
+        self.assertEqual(subplot_capabilities["aspect"]["coordinateSpace"], "container")
         colorbar_children = [
             obj for obj in objects
             if obj.get("identity", {}).get("relation", {}).get("colorbarId") == cb["id"]

@@ -949,4 +949,50 @@ describe('controlled strict target compiler', () => {
       op: 'set', mode: 'backend_patch', gid: 'annotation_arrow.0.0', prop: 'linewidth', value: 2.2,
     }]);
   });
+
+  it('compiles an explicit drag-confirmed position through the strict resolver', () => {
+    const annotationIdentity = identity('text.0.0', 'subplot.0');
+    annotationIdentity.coordinateSpace = 'data';
+    annotationIdentity.relation = {
+      ...annotationIdentity.relation,
+      annotationId: 'text.0.0',
+    };
+    const positionCapability = {
+      ...capability('position', 'backend_patch', ['object']),
+      coordinateSpace: 'data' as const,
+      replay: 'conditional' as const,
+      preview: 'approximate' as const,
+    };
+    const figure = manifest([{
+      id: 'text.0.0',
+      kind: 'text',
+      label: 'PCoA label',
+      editable: ['position'],
+      currentProps: { x: 1, y: 2, coord_system: 'data' },
+      role: 'annotation_text',
+      subplotId: 'subplot.0',
+      identity: annotationIdentity,
+      propertyCapabilities: [positionCapability],
+    }]);
+    const value = { x: 1.5, y: 2.25, coord_system: 'data' };
+
+    const result = compileEditingIntentWithControlledResolver(figure, {
+      intent: 'layout.position.text',
+      scope: {
+        selectionMode: 'explicit_objects',
+        objectIds: ['text.0.0'],
+        targetKinds: ['text'],
+        targetRole: 'annotation_text',
+        crossFigure: 'deny',
+      },
+      operation: { prop: 'position', value },
+      commit: { mode: 'immediate', applyAsOneHistoryStep: true },
+      fallback: { onUnsupported: 'skip_with_warning' },
+    }, true);
+
+    expect(result.strategy).toBe('strict');
+    expect(result.patches).toEqual([{
+      op: 'set', mode: 'backend_patch', gid: 'text.0.0', prop: 'position', value,
+    }]);
+  });
 });

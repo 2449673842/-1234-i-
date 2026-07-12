@@ -437,6 +437,12 @@ p
         self.assertIn("aspect", subplots[0]["editable"])
         self.assertEqual(subplots[0]["currentProps"]["aspect"], 1)
         self.assertEqual(subplots[1]["currentProps"]["aspect"], 1)
+        aspect_capability = next(
+            capability for capability in subplots[0]["propertyCapabilities"]
+            if capability["prop"] == "aspect"
+        )
+        self.assertEqual(aspect_capability["coordinateSpace"], "container")
+        self.assertEqual(aspect_capability["scopes"], ["figure"])
         self.assertIn("left", subplots[0]["currentProps"]["unsupportedProps"])
         self.assertIn("width", subplots[0]["currentProps"]["unsupportedProps"])
         self.assertIn("#2CA02C".lower(), result["svg"].lower())
@@ -525,6 +531,12 @@ p
         self.assertEqual(colorbar["currentProps"]["bottom"], 0.18)
         self.assertEqual(colorbar["currentProps"]["width"], 0.08)
         self.assertEqual(colorbar["currentProps"]["height"], 0.45)
+        colorbar_capabilities = {
+            capability["prop"]: capability
+            for capability in colorbar["propertyCapabilities"]
+        }
+        for prop in ("left", "bottom", "width", "height"):
+            self.assertEqual(colorbar_capabilities[prop]["coordinateSpace"], "figure")
 
     def test_text_annotation_position_patch(self):
         script = """

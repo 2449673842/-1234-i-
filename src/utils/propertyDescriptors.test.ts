@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ManifestObject, ManifestPropertyCapability } from '../schemas/manifest';
 import {
+  getPropertyDescriptorsForCenter,
   projectPropertyDescriptors,
   resolveCanonicalPropertyAlias,
 } from './propertyDescriptors';
@@ -9,6 +10,7 @@ function capability(
   prop: string,
   replay: ManifestPropertyCapability['replay'] = 'stable',
   unsupportedReason?: string,
+  coordinateSpace?: ManifestPropertyCapability['coordinateSpace'],
 ): ManifestPropertyCapability {
   return {
     prop,
@@ -17,6 +19,7 @@ function capability(
     preview: 'none',
     replay,
     unsupportedReason,
+    coordinateSpace,
   };
 }
 
@@ -380,5 +383,179 @@ describe('property descriptor projection', () => {
 
     expect(projected.state).toBe('editable');
     expect(projected.counts.conditional).toBe(1);
+  });
+
+  it('groups layout center descriptors without leaking text layout controls', () => {
+    const descriptors = getPropertyDescriptorsForCenter('layout');
+    const keys = descriptors.map(descriptor => descriptor.key);
+
+    expect(keys).toEqual(['left', 'bottom', 'width', 'height', 'aspect', 'position']);
+    expect(descriptors.filter(descriptor => descriptor.family === 'layout_geometry').map(descriptor => descriptor.key)).toEqual([
+      'left',
+      'bottom',
+      'width',
+      'height',
+      'aspect',
+    ]);
+    expect(descriptors.find(descriptor => descriptor.key === 'position')?.family).toBe('position');
+    expect(keys).not.toEqual(expect.arrayContaining(['rotation', 'ha', 'va']));
+    expect(descriptors.every(descriptor => descriptor.coordinateSpace)).toBe(true);
+  });
+
+  it('projects subplot geometry through the layout center at subplot scope', () => {
+    const subplot = object({
+      id: 'subplot.0',
+      kind: 'subplot',
+      currentProps: {
+        left: 0.12,
+        bottom: 0.15,
+        width: 0.78,
+        height: 0.72,
+        aspect: 1,
+      },
+      propertyCapabilities: [
+        capability('left', 'stable', undefined, 'figure'),
+        capability('bottom', 'stable', undefined, 'figure'),
+        capability('width', 'stable', undefined, 'figure'),
+        capability('height', 'stable', undefined, 'figure'),
+        capability('aspect', 'stable', undefined, 'container'),
+      ],
+    });
+
+    const projected = projectPropertyDescriptors({
+      center: 'layout',
+      objects: [subplot],
+      scope: 'subplot',
+    });
+
+    for (const key of ['left', 'bottom', 'width', 'height', 'aspect'] as const) {
+      const projection = byKey(projected, key);
+      expect(projection.state).toBe('editable');
+      expect(projection.scope).toBe('subplot');
+      expect(projection.coordinateSpace).toBe(key === 'aspect' ? 'container' : 'figure');
+      expect(projection.coordinateSpaceByObjectId).toEqual({
+        'subplot.0': key === 'aspect' ? 'container' : 'figure',
+      });
+      expect(projection.propByObjectId['subplot.0']).toBe(key);
+    }
+  });
+
+  it('exposes colorbar geometry and honors missing group-scope capability', () => {
+    const colorbar = object({
+      id: 'colorbar.0',
+      kind: 'colorbar',
+      currentProps: {
+        left: 0.84,
+        bottom: 0.18,
+        width: 0.04,
+        height: 0.64,
+      },
+      propertyCapabilities: [
+        { ...capability('left', 'stable', undefined, 'figure'), scopes: ['object'] },
+        capability('bottom', 'stable', undefined, 'figure'),
+        capability('width', 'stable', undefined, 'figure'),
+        capability('height', 'stable', undefined, 'figure'),
+      ],
+    });
+
+    const projected = projectPropertyDescriptors({
+      center: 'layout',
+      objects: [colorbar],
+      scope: 'group',
+    });
+
+    const left = byKey(projected, 'left');
+    expect(left.state).toBe('readonly');
+    expect(left.coordinateSpace).toBe('figure');
+    expect(left.unsupportedReasons['colorbar.0']).toContain('group');
+
+    for (const key of ['bottom', 'width', 'height'] as const) {
+      const projection = byKey(projected, key);
+      expect(projection.state).toBe('editable');
+      expect(projection.propByObjectId['colorbar.0']).toBe(key);
+      expect(projection.coordinateSpace).toBe('figure');
+    }
+  });
+
+  it('keeps explicitly unsupported facet bounds visible with the renderer reason', () => {
+    const facet = object({
+      id: 'subplot.1',
+      kind: 'subplot',
+      editable: ['aspect'],
+      currentProps: {
+        aspect: 'auto',
+        unsupportedProps: ['left', 'bottom', 'width', 'height'],
+        unsupportedReason: 'Facet panels use a shared gtable layout.',
+      },
+      propertyCapabilities: [capability('aspect', 'stable', undefined, 'container')],
+    });
+
+    const projected = projectPropertyDescriptors({
+      center: 'layout',
+      objects: [facet],
+      scope: 'object',
+    });
+
+    for (const key of ['left', 'bottom', 'width', 'height'] as const) {
+      const projection = byKey(projected, key);
+      expect(projection.state).toBe('unsupported');
+      expect(projection.propByObjectId['subplot.1']).toBe(key);
+      expect(projection.unsupportedReasons['subplot.1']).toContain('shared gtable');
+    }
+    expect(byKey(projected, 'aspect').state).toBe('editable');
+  });
+
+  it('projects position coordinate spaces from capability metadata without mixing typography layout', () => {
+    const text = object({
+      id: 'text.0',
+      kind: 'text',
+      currentProps: {
+        position: { x: 0.2, y: 0.8, coord_system: 'axes' },
+        rotation: 15,
+        ha: 'left',
+        va: 'top',
+      },
+      propertyCapabilities: [capability('position', 'stable', undefined, 'axes')],
+    });
+    const legend = object({
+      id: 'legend.0',
+      kind: 'legend',
+      currentProps: { position: { x: 0.9, y: 0.9, coord_system: 'figure' } },
+      propertyCapabilities: [capability('position', 'stable', undefined, 'figure')],
+    });
+
+    const projected = projectPropertyDescriptors({
+      center: 'layout',
+      objects: [text, legend],
+      scope: 'object',
+    });
+    const position = byKey(projected, 'position');
+
+    expect(position.state).toBe('mixed');
+    expect(position.coordinateSpace).toBe('mixed');
+    expect(position.coordinateSpaceByObjectId).toEqual({
+      'text.0': 'axes',
+      'legend.0': 'figure',
+    });
+    expect(projected.map(item => item.key)).not.toEqual(expect.arrayContaining(['rotation', 'ha', 'va']));
+  });
+
+  it('does not reinterpret an explicit unknown position coordinate system as axes', () => {
+    const nativeText = object({
+      id: 'r.text.0',
+      kind: 'text',
+      editable: ['position'],
+      currentProps: { x: 1, y: 2, coord_system: 'native' },
+    });
+
+    const position = byKey(projectPropertyDescriptors({
+      center: 'layout',
+      objects: [nativeText],
+      scope: 'object',
+    }), 'position');
+
+    expect(position.state).toBe('editable');
+    expect(position.coordinateSpace).toBe('none');
+    expect(position.coordinateSpaceByObjectId).toEqual({ 'r.text.0': 'none' });
   });
 });

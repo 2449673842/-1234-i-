@@ -1,5 +1,5 @@
 import type { SemanticTargetRole } from '../schemas/editingIntent';
-import type { ManifestObject, ManifestPropertyCapability } from '../schemas/manifest';
+import type { ManifestCoordinateSpace, ManifestObject, ManifestPropertyCapability } from '../schemas/manifest';
 import type {
   CanonicalPropertyKey,
   EditingCenterId,
@@ -28,6 +28,7 @@ export const PROPERTY_DESCRIPTOR_REGISTRY: readonly PropertyDescriptor[] = [
     unit: 'none',
     centers: ['properties', 'components', 'fonts'],
     props: ['fontfamily'],
+    coordinateSpace: 'none',
     aliases: { tick_label: ['tick_labelfamily', 'tick_fontfamily'] },
   },
   {
@@ -42,6 +43,7 @@ export const PROPERTY_DESCRIPTOR_REGISTRY: readonly PropertyDescriptor[] = [
     step: 0.5,
     centers: ['properties', 'components', 'fonts'],
     props: ['fontsize'],
+    coordinateSpace: 'none',
     aliases: { tick_label: ['tick_labelsize', 'tick_fontsize'] },
   },
   {
@@ -54,6 +56,7 @@ export const PROPERTY_DESCRIPTOR_REGISTRY: readonly PropertyDescriptor[] = [
     options: ['normal', 'bold', 'semibold', 'light'],
     centers: ['properties', 'components', 'fonts'],
     props: ['fontweight'],
+    coordinateSpace: 'none',
     aliases: { tick_label: ['tick_fontweight'] },
   },
   {
@@ -66,6 +69,7 @@ export const PROPERTY_DESCRIPTOR_REGISTRY: readonly PropertyDescriptor[] = [
     options: ['normal', 'italic', 'oblique'],
     centers: ['properties', 'components', 'fonts'],
     props: ['fontstyle'],
+    coordinateSpace: 'none',
     aliases: { tick_label: ['tick_fontstyle'] },
   },
   {
@@ -77,6 +81,7 @@ export const PROPERTY_DESCRIPTOR_REGISTRY: readonly PropertyDescriptor[] = [
     unit: 'none',
     centers: ['properties', 'components', 'palette', 'fonts'],
     props: ['color'],
+    coordinateSpace: 'none',
     aliases: { tick_label: ['tick_labelcolor'] },
   },
   {
@@ -91,27 +96,52 @@ export const PROPERTY_DESCRIPTOR_REGISTRY: readonly PropertyDescriptor[] = [
     step: 1,
     centers: ['properties', 'components', 'fonts'],
     props: ['rotation'],
+    coordinateSpace: 'none',
     aliases: { tick_label: ['tick_rotation'] },
   },
   {
     key: 'ha', label: '水平对齐', family: 'text_layout', valueType: 'select', control: 'select', unit: 'none',
-    options: ['left', 'center', 'right'], centers: ['properties', 'fonts'], props: ['ha'],
+    options: ['left', 'center', 'right'], centers: ['properties', 'fonts'], props: ['ha'], coordinateSpace: 'none',
   },
   {
     key: 'va', label: '垂直对齐', family: 'text_layout', valueType: 'select', control: 'select', unit: 'none',
-    options: ['top', 'center', 'baseline', 'bottom'], centers: ['properties', 'fonts'], props: ['va'],
+    options: ['top', 'center', 'baseline', 'bottom'], centers: ['properties', 'fonts'], props: ['va'], coordinateSpace: 'none',
   },
   {
     key: 'visible', label: '可见', family: 'visibility', valueType: 'boolean', control: 'toggle', unit: 'none',
-    centers: ['properties', 'components', 'fonts'], props: ['visible'],
+    centers: ['properties', 'components', 'fonts'], props: ['visible'], coordinateSpace: 'none',
   },
   {
     key: 'alpha', label: '不透明度', family: 'appearance', valueType: 'number', control: 'number', unit: 'ratio',
-    min: 0, max: 1, step: 0.05, centers: ['properties', 'components', 'palette', 'fonts'], props: ['alpha'],
+    min: 0, max: 1, step: 0.05, centers: ['properties', 'components', 'palette', 'fonts'], props: ['alpha'], coordinateSpace: 'none',
   },
   {
     key: 'linewidth', label: '线宽', family: 'stroke', valueType: 'number', control: 'number', unit: 'pt',
-    min: 0, max: 20, step: 0.1, centers: ['properties', 'components'], props: ['linewidth'],
+    min: 0, max: 20, step: 0.1, centers: ['properties', 'components'], props: ['linewidth'], coordinateSpace: 'none',
+  },
+  {
+    key: 'left', label: '左边距', family: 'layout_geometry', valueType: 'number', control: 'number', unit: 'ratio',
+    min: 0, max: 1, step: 0.01, centers: ['layout'], props: ['left'], coordinateSpace: 'figure',
+  },
+  {
+    key: 'bottom', label: '下边距', family: 'layout_geometry', valueType: 'number', control: 'number', unit: 'ratio',
+    min: 0, max: 1, step: 0.01, centers: ['layout'], props: ['bottom'], coordinateSpace: 'figure',
+  },
+  {
+    key: 'width', label: '宽度', family: 'layout_geometry', valueType: 'number', control: 'number', unit: 'ratio',
+    min: 0, max: 1, step: 0.01, centers: ['layout'], props: ['width'], coordinateSpace: 'figure',
+  },
+  {
+    key: 'height', label: '高度', family: 'layout_geometry', valueType: 'number', control: 'number', unit: 'ratio',
+    min: 0, max: 1, step: 0.01, centers: ['layout'], props: ['height'], coordinateSpace: 'figure',
+  },
+  {
+    key: 'aspect', label: '宽高比', family: 'layout_geometry', valueType: 'select', control: 'select', unit: 'none',
+    options: ['auto', 'equal', '1'], centers: ['layout'], props: ['aspect'], coordinateSpace: 'container',
+  },
+  {
+    key: 'position', label: '位置', family: 'position', valueType: 'object', control: 'position', unit: 'none',
+    centers: ['layout'], props: ['position'], coordinateSpace: 'none',
   },
 ];
 
@@ -182,6 +212,7 @@ export function resolveCanonicalPropertyAlias(
       && object.editable.includes(prop)
       && !unsupported.has(prop)
     ))
+    ?? candidates.find(prop => unsupported.has(prop))
     ?? candidates.find(prop => propIsKnown(object, prop));
 }
 
@@ -204,7 +235,10 @@ function projectObjectState(
     return {
       state: 'unsupported',
       value: object.currentProps?.[prop],
-      unsupportedReason: capability?.unsupportedReason,
+      unsupportedReason: capability?.unsupportedReason
+        ?? (typeof object.currentProps?.unsupportedReason === 'string'
+          ? object.currentProps.unsupportedReason
+          : undefined),
       conditional: false,
       legacyFallback: false,
     };
@@ -255,6 +289,56 @@ function stableValueKey(value: unknown): string {
   return JSON.stringify(value) ?? 'undefined';
 }
 
+function isManifestCoordinateSpace(value: unknown): value is ManifestCoordinateSpace {
+  return value === 'data'
+    || value === 'axes'
+    || value === 'figure'
+    || value === 'display'
+    || value === 'container'
+    || value === 'none';
+}
+
+function coordinateSpaceFromValue(value: unknown): ManifestCoordinateSpace | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as { coord_system?: unknown; coordinateSpace?: unknown };
+  if (!Object.prototype.hasOwnProperty.call(record, 'coord_system')
+    && !Object.prototype.hasOwnProperty.call(record, 'coordinateSpace')) return undefined;
+  const coordSystem = record.coord_system ?? record.coordinateSpace;
+  return isManifestCoordinateSpace(coordSystem) ? coordSystem : 'none';
+}
+
+function coordinateSpaceForObject(
+  descriptor: PropertyDescriptor,
+  object: ManifestObject,
+  prop: string | undefined,
+): ManifestCoordinateSpace {
+  const capability = prop ? capabilityFor(object, prop) : undefined;
+  if (capability?.coordinateSpace) return capability.coordinateSpace;
+
+  if (descriptor.family === 'position') {
+    const currentCoordinateSpace = Object.prototype.hasOwnProperty.call(object.currentProps ?? {}, 'coord_system')
+      ? (isManifestCoordinateSpace(object.currentProps?.coord_system) ? object.currentProps.coord_system : 'none')
+      : undefined;
+    return coordinateSpaceFromValue(prop ? object.currentProps?.[prop] : undefined)
+      ?? currentCoordinateSpace
+      ?? object.identity?.coordinateSpace
+      ?? descriptor.coordinateSpace
+      ?? 'none';
+  }
+
+  return descriptor.coordinateSpace ?? 'none';
+}
+
+function aggregateCoordinateSpace(
+  descriptor: PropertyDescriptor,
+  coordinateSpaceByObjectId: Record<string, ManifestCoordinateSpace | undefined>,
+): ManifestCoordinateSpace | 'mixed' {
+  const spaces = new Set(Object.values(coordinateSpaceByObjectId).filter(isManifestCoordinateSpace));
+  if (spaces.size === 0) return descriptor.coordinateSpace ?? 'none';
+  if (spaces.size === 1) return Array.from(spaces)[0] ?? descriptor.coordinateSpace ?? 'none';
+  return 'mixed';
+}
+
 function aggregateState(
   total: number,
   editable: number,
@@ -285,6 +369,7 @@ export function projectPropertyDescriptors({
   return getPropertyDescriptorsForCenter(center).map((descriptor): ProjectedPropertyDescriptor => {
     const propByObjectId: Record<string, string | undefined> = {};
     const stateByObjectId: Record<string, ProjectedObjectPropertyState> = {};
+    const coordinateSpaceByObjectId: Record<string, ManifestCoordinateSpace | undefined> = {};
     const valuesByObjectId: Record<string, unknown> = {};
     const unsupportedReasons: Record<string, string | undefined> = {};
     const editableValueKeys = new Set<string>();
@@ -301,6 +386,7 @@ export function projectPropertyDescriptors({
       const objectState = projectObjectState(object, prop, scope);
       propByObjectId[object.id] = prop;
       stateByObjectId[object.id] = objectState.state;
+      coordinateSpaceByObjectId[object.id] = coordinateSpaceForObject(descriptor, object, prop);
       valuesByObjectId[object.id] = objectState.value;
       if (objectState.unsupportedReason) unsupportedReasons[object.id] = objectState.unsupportedReason;
       if (objectState.conditional) conditional += 1;
@@ -322,8 +408,10 @@ export function projectPropertyDescriptors({
       key: descriptor.key,
       state: aggregateState(objects.length, editable, readonly, unsupported, editableValueKeys),
       scope,
+      coordinateSpace: aggregateCoordinateSpace(descriptor, coordinateSpaceByObjectId),
       mixed: editableValueKeys.size > 1,
       stateByObjectId,
+      coordinateSpaceByObjectId,
       counts: {
         total: objects.length,
         editable,

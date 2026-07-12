@@ -413,6 +413,25 @@ async function run() {
       `changed=${frameChanged}, draft=${frameDraftVisible}, expected=${JSON.stringify(Array.from(expectedFrameIds))}, patches=${JSON.stringify(frameApplied.patches)}`,
     );
     await clickText(page, '布局中心');
+    const layoutControlsV2Expected = process.env.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 === '1';
+    const layoutV2Panel = page.locator('[data-layout-controls-version="2"]').first();
+    const layoutV2PanelCount = await layoutV2Panel.count();
+    const layoutControlKeys = layoutV2PanelCount > 0
+      ? await layoutV2Panel.locator('[data-property-control]').evaluateAll(nodes => (
+        Array.from(new Set(nodes.map(node => node.getAttribute('data-property-control')).filter(Boolean)))
+      ))
+      : [];
+    const expectedLayoutKeys = ['left', 'bottom', 'width', 'height', 'aspect'];
+    const layoutDescriptorControlsCorrect = layoutControlsV2Expected
+      ? layoutV2PanelCount === 1
+        && expectedLayoutKeys.every(key => layoutControlKeys.includes(key))
+        && ['rotation', 'ha', 'va'].every(key => !layoutControlKeys.includes(key))
+      : layoutV2PanelCount === 0;
+    record(
+      'C6a-layout-descriptor-controls',
+      layoutDescriptorControlsCorrect ? 'PASS' : 'FAIL',
+      `expected=${layoutControlsV2Expected}, panels=${layoutV2PanelCount}, controls=${JSON.stringify(layoutControlKeys)}`,
+    );
     const layoutText = await getBodyText(page);
     const sharedDetected = layoutText.includes('共享色条 1 个');
     const physicalPanelCountCorrect = layoutText.includes('已识别 4 个子图坐标轴框');
@@ -456,5 +475,19 @@ try {
 }
 
 const failed = results.filter(result => result.status === 'FAIL');
-console.log(`Conclusion: ${failed.length === 0 ? 'PASS' : 'FAIL'}, PASS=${results.length - failed.length}, FAIL=${failed.length}`);
+const conclusion = failed.length === 0 ? 'PASS' : 'FAIL';
+const reportLines = [
+  '# Component Container Semantic Smoke Report',
+  '',
+  `Conclusion: ${conclusion}, PASS=${results.length - failed.length}, FAIL=${failed.length}`,
+  '',
+  '| ID | Status | Note |',
+  '|---|---|---|',
+  ...results.map(result => `| ${result.id} | ${result.status} | ${String(result.note).replace(/\|/g, '\\|')} |`),
+  '',
+];
+fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+fs.writeFileSync(path.join(OUTPUT_DIR, 'report.md'), reportLines.join('\n'), 'utf8');
+console.log(`Conclusion: ${conclusion}, PASS=${results.length - failed.length}, FAIL=${failed.length}`);
+console.log(`Report: ${path.join(OUTPUT_DIR, 'report.md')}`);
 if (failed.length > 0) process.exitCode = 1;

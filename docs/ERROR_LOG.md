@@ -1,7 +1,44 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-13 01:22:24 +08:00
+> 最后修改时间：2026-07-13 02:14:35 +08:00
+
+---
+
+## 2026-07-13 02:14:35 +08:00 布局能力缺少坐标空间门禁并误放行未知坐标拖拽
+
+**现象**
+
+- 多子图布局按钮只依赖对象存在和 currentProps，R facet 不支持独立 bounds 时仍可能表现为按钮可点但不生效。
+- `unsupportedProps` 只有声明没有进入 descriptor 投影，用户看不到不支持原因。
+- position 若缺少有效坐标空间，旧兼容路径可能把未知 `native` 坐标误当 axes，拖动后出现确认条但无法可靠重放。
+
+**根因**
+
+- renderer capability 没有为 layout geometry 声明 coordinateSpace。
+- layout center 没有独立 descriptor family 和 capability gate。
+- position 投影使用了过宽的默认 axes fallback，最终 patch 也没有复用严格 Target Resolver。
+
+**修复**
+
+- Python/R 为 bounds 声明 `coordinateSpace=figure`，为 aspect 声明 `coordinateSpace=container`；R facet aspect 限定为 figure scope。
+- 新增 layout geometry/position descriptor，显式投影 editable/readonly/unsupported、scope 和 per-object coordinateSpace。
+- 布局批量操作在应用前验证每个目标的 prop 与坐标空间；R facet bounds 显示 renderer 原因并禁用。
+- 显式未知坐标投影为 `none`；拖拽资格和 patch 构造复用 position descriptor，最终 patch 由严格 Target Resolver 编译。
+
+**验证**
+
+- 全量 Vitest：26 files / 185 tests；Python/R renderer：68 tests。
+- Python 多子图/共享色条：18 PASS；R facet：7 PASS；扩展拖拽：9 PASS。
+- R native coordinate 保护、多个文本连续/同时拖拽、取消零 patch、annotation data coordinate 均通过。
+- TypeScript、staging build/dry-run、diff check 和独立代码审查通过。
+
+**防复发规则**
+
+- layout patch 必须同时满足属性 capability、作用域和 coordinateSpace，不能只检查 `editable`。
+- renderer 明确 unsupported 的属性必须显示原因，不得隐藏后继续走 legacy 按钮。
+- position 不得为未知坐标系猜测 axes；只有 `axes/figure/data` 可进入当前拖拽换算。
+- 拖拽确认状态机可以复用 descriptor/resolver，但不得改成即时提交或拆散多目标批次。
 
 ---
 

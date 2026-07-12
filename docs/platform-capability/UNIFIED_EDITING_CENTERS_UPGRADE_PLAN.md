@@ -1,8 +1,8 @@
 # SciFigure 统一编辑中心与属性能力升级方案
 
-> 状态：Phase 0-6 完成；3200 已启用配色中心 V2 候选；下一阶段为 Phase 7 布局中心
+> 状态：Phase 0-7 完成；3200 已启用布局中心 V2 候选；下一阶段为 Phase 8 默认启用与 Legacy Retire
 > 创建时间：2026-07-12 16:10:44 +08:00
-> 最后更新：2026-07-13 01:22:24 +08:00
+> 最后更新：2026-07-13 02:14:35 +08:00
 > 适用范围：属性编辑、布局中心、组件中心、配色中心、字体中心
 > 实施方式：Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire
 
@@ -1165,6 +1165,35 @@ vector collection：仅 1 条 code patch，不生成 facecolor object patch
 ```
 
 部署门禁：本机 Docker Desktop/BuildKit 在两次构建中均未完成握手，新的 renderer image 尚未生成。3200 当前使用隔离 staging 数据和本地 renderer 验证当前 capability 协议，不能视为生产沙箱验证；3000 保持原 Docker renderer 不变。部署或默认启用前仍必须重建独立 renderer image，并在 Docker 禁网/只读/资源限制模式下复跑同一 Python/R 矩阵。
+
+### 13.19 Phase 7 布局中心候选状态（2026-07-13 02:14:35 +08:00）
+
+布局中心已在独立 `VITE_SCIFIGURE_LAYOUT_CONTROLS_V2` 开关下接入布局 descriptor 和坐标空间协议：
+
+- 新增 `layout_geometry` 与 `position` family；layout center 只包含 `left/bottom/width/height/aspect/position`，不混入文字 `rotation/ha/va`。
+- `left/bottom/width/height` 使用 Figure 归一化坐标，`aspect` 使用 container 布局语义；position 从 property capability、当前位置值或 object identity 解析 `axes/figure/data`。
+- Python subplot 与 Python/R colorbar 按 renderer capability 开放几何控件；axes 不伪装为布局对象；R facet 独立 bounds 明确显示 unsupported，只保留 figure-scope 的统一 aspect。
+- 布局中心 V2 新增当前布局对象选择和统一控件；批量网格、交换、宽度对齐、统一物理尺寸、色条对齐在提交前逐对象检查 prop、scope 与 coordinateSpace。
+- 未知或原生坐标系不再默认解释为 axes；`native` 等显式未知值投影为 `none`，阻止错误拖拽。
+- 拖拽仍累计多个 position patch，并保留确认/取消状态机；可拖拽性由 position descriptor 判断，最终 patch 通过严格 Target Resolver 编译。
+- staging build/run marker 新增 `layoutControlsV2`，可独立关闭布局 V2 并回退 legacy UI。
+
+验证证据：
+
+```text
+全量前端单元测试：26 files / 185 tests 通过
+layout/target resolver/PropertyControl 定向测试：3 files / 50 tests 通过
+Python + R renderer：68 tests 通过
+TypeScript、production-like build、staging dry-run 与 diff check：通过
+Python 多子图/共享色条浏览器回归：18 PASS / 0 FAIL
+R facet 五中心浏览器回归：7 PASS / 0 FAIL
+扩展拖拽回归：9 PASS / 0 FAIL
+独立代码审查：PASS，0 个 blocking finding
+浏览器 console/page error：0
+3000 稳定服务 PID 196020 保持不变
+```
+
+保留限制：R facet 的独立 left/bottom/width/height 与 R legend position 仍不具备可靠 renderer 映射，V2 会显示 unsupported/readonly 而不是伪装可编辑。Docker renderer 新镜像仍未重建，默认启用和生产切换继续受 Phase 6 部署门禁约束。
 
 ## 14. 实施阶段
 

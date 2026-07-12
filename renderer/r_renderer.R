@@ -2500,6 +2500,9 @@ r_manifest_property_capabilities <- function(obj) {
     }
     if (!prop %in% c("position", "left", "bottom", "width", "height")) scopes <- c(scopes, "figure")
     if (!prop %in% unsafe_cross_figure) scopes <- c(scopes, "cross_figure")
+    if (identical(as.character(obj$kind %||% ""), "subplot") && prop == "aspect") {
+      scopes <- c("figure")
+    }
     row_identity_conditional <- grepl("^r\\.text\\.", as.character(obj$id %||% "")) && is.null(relation$dataKey)
     capability <- list(
       prop = as.character(prop),
@@ -2508,7 +2511,13 @@ r_manifest_property_capabilities <- function(obj) {
       preview = if (prop == "position") "approximate" else "none",
       replay = if (prop == "position" || row_identity_conditional) "conditional" else "stable"
     )
-    if (prop == "position") capability$coordinateSpace <- identity$coordinateSpace %||% "none"
+    if (prop == "position") {
+      capability$coordinateSpace <- identity$coordinateSpace %||% "none"
+    } else if (prop %in% c("left", "bottom", "width", "height")) {
+      capability$coordinateSpace <- "figure"
+    } else if (prop == "aspect") {
+      capability$coordinateSpace <- "container"
+    }
     derived_effects <- r_manifest_derived_effects(prop)
     if (length(derived_effects) > 0) capability$derivedEffects <- derived_effects
     capability

@@ -1675,6 +1675,10 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
                 if prop == "anchor_position"
                 else identity.get("coordinateSpace", "none")
             )
+        elif prop in {"left", "bottom", "width", "height"}:
+            capability["coordinateSpace"] = "figure"
+        elif prop == "aspect":
+            capability["coordinateSpace"] = "container"
         derived_effects = _property_derived_effects(prop)
         if derived_effects:
             capability["derivedEffects"] = derived_effects

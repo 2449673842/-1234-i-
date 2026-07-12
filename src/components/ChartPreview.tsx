@@ -4,6 +4,8 @@ import { FigureSpec } from '../types';
 import { sanitizeSvg } from '../utils/svgEditor';
 import { PatchEntry, FigureSession } from '../schemas/manifest';
 import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent';
+import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
+import { compileEditingIntentWithControlledResolver } from '../utils/targetResolver';
 
 const TEXT_GID_RE = /^(r\.text|text|title|xlabel|ylabel|legend_text|legend_title|fig_text)\./;
 const TICK_LABEL_GID_RE = /^(xtick|ytick)\./;
@@ -217,18 +219,25 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const isDraggableTextObject = useCallback((gid: string) => {
     const obj = manifestObjectMap.get(gid);
     const props = obj?.currentProps || {};
+    if (!obj) return false;
     if (TICK_LABEL_GID_RE.test(gid) || obj?.role === 'x_tick_label' || obj?.role === 'y_tick_label') {
       return false;
     }
     if (LEGEND_CHILD_GID_RE.test(gid) || obj?.role === 'legend_text' || obj?.role === 'legend_marker') {
       return false;
     }
+    const positionProjection = projectPropertyDescriptors({
+      center: 'layout',
+      objects: [obj],
+      scope: 'object',
+    }).find(projection => projection.key === 'position');
+    const coordinateSpace = positionProjection?.coordinateSpaceByObjectId?.[gid];
     return (obj?.kind === 'text' || obj?.kind === 'legend')
-      && Array.isArray(obj?.editable)
-      && obj.editable.includes('position')
+      && positionProjection?.stateByObjectId[gid] === 'editable'
+      && positionProjection.propByObjectId[gid] === 'position'
       && typeof props.x === 'number'
       && typeof props.y === 'number'
-      && (props.coord_system === 'axes' || props.coord_system === 'figure' || props.coord_system === 'data');
+      && (coordinateSpace === 'axes' || coordinateSpace === 'figure' || coordinateSpace === 'data');
   }, [manifestObjectMap]);
 
   const getSvgPoint = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
@@ -399,8 +408,15 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const buildPositionPatch = useCallback((gid: string, dx: number, dy: number): PatchEntry | null => {
     const obj = manifestObjectMap.get(gid);
     const props = obj?.currentProps || {};
-    const coordSystem = props.coord_system;
-    if ((obj?.kind !== 'text' && obj?.kind !== 'legend') || typeof props.x !== 'number' || typeof props.y !== 'number') return null;
+    if (!obj || (obj.kind !== 'text' && obj.kind !== 'legend') || typeof props.x !== 'number' || typeof props.y !== 'number') return null;
+    const positionProjection = projectPropertyDescriptors({
+      center: 'layout',
+      objects: [obj],
+      scope: 'object',
+    }).find(projection => projection.key === 'position');
+    const coordSystem = positionProjection?.coordinateSpaceByObjectId?.[gid];
+    if (positionProjection?.stateByObjectId[gid] !== 'editable'
+      || positionProjection.propByObjectId[gid] !== 'position') return null;
     const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
     if (!svgEl) return null;
 
@@ -459,15 +475,16 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       },
     };
 
-    return {
-      op: 'set',
-      mode: 'backend_patch',
-      gid,
-      prop: 'position',
-      value: intent.operation.value,
-      intent,
-    } as PatchEntry & { intent: EditingIntent };
-  }, [getAxesBoxForObject, getDataLimitsForObject, manifestObjectMap, svgSize.viewBox.height, svgSize.viewBox.width]);
+    const currentManifest = figSession?.manifest;
+    if (!currentManifest) return null;
+    const compiled = compileEditingIntentWithControlledResolver(currentManifest, intent, true);
+    const patch = compiled.patches.find(candidate => (
+      'gid' in candidate
+      && candidate.gid === gid
+      && candidate.prop === 'position'
+    ));
+    return patch ? ({ ...patch, intent } as PatchEntry & { intent: EditingIntent }) : null;
+  }, [figSession, getAxesBoxForObject, getDataLimitsForObject, manifestObjectMap, svgSize.viewBox.height, svgSize.viewBox.width]);
 
   const releaseDragCapture = useCallback((pointerId?: number) => {
     const target = dragCaptureTargetRef.current;

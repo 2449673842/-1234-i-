@@ -1,4 +1,4 @@
-import type { ManifestEditScope, ManifestObjectKind } from './manifest';
+import type { ManifestCoordinateSpace, ManifestEditScope, ManifestObjectKind } from './manifest';
 
 export type CanonicalPropertyKey =
   | 'fontfamily'
@@ -11,14 +11,21 @@ export type CanonicalPropertyKey =
   | 'va'
   | 'visible'
   | 'alpha'
-  | 'linewidth';
+  | 'linewidth'
+  | 'left'
+  | 'bottom'
+  | 'width'
+  | 'height'
+  | 'aspect'
+  | 'position';
 
 export type PropertyDescriptorValueType =
   | 'string'
   | 'number'
   | 'boolean'
   | 'color'
-  | 'select';
+  | 'select'
+  | 'object';
 
 export type EditingCenterId =
   | 'properties'
@@ -32,14 +39,17 @@ export type PropertyFamily =
   | 'text_layout'
   | 'appearance'
   | 'visibility'
-  | 'stroke';
+  | 'stroke'
+  | 'layout_geometry'
+  | 'position';
 
 export type PropertyControlType =
   | 'font'
   | 'number'
   | 'select'
   | 'color'
-  | 'toggle';
+  | 'toggle'
+  | 'position';
 
 export type ProjectedPropertyState =
   | 'editable'
@@ -49,6 +59,8 @@ export type ProjectedPropertyState =
   | 'mixed';
 
 export type ProjectedObjectPropertyState = 'editable' | 'readonly' | 'unsupported';
+
+export type ProjectedPropertyCoordinateSpace = ManifestCoordinateSpace | 'mixed';
 
 export interface PropertyDescriptor {
   key: CanonicalPropertyKey;
@@ -63,6 +75,7 @@ export interface PropertyDescriptor {
   options?: readonly string[];
   centers: readonly EditingCenterId[];
   props: readonly string[];
+  coordinateSpace?: ManifestCoordinateSpace;
   aliases?: Partial<Record<ManifestObjectKind | 'text' | 'tick_label', readonly string[]>>;
 }
 
@@ -81,8 +94,10 @@ export interface ProjectedPropertyDescriptor {
   state: ProjectedPropertyState;
   counts: ProjectedPropertyCounts;
   scope: ManifestEditScope;
+  coordinateSpace?: ProjectedPropertyCoordinateSpace;
   mixed: boolean;
   stateByObjectId: Record<string, ProjectedObjectPropertyState>;
+  coordinateSpaceByObjectId?: Record<string, ManifestCoordinateSpace | undefined>;
   propByObjectId: Record<string, string | undefined>;
   value: unknown;
   valuesByObjectId: Record<string, unknown>;

@@ -41,6 +41,7 @@ function runBuild(distDir) {
     VITE_SCIFIGURE_COMPONENT_CONTROLS_V2: '1',
     VITE_SCIFIGURE_PALETTE_TARGET_RESOLVER_V2: '1',
     VITE_SCIFIGURE_PALETTE_CONTROLS_V2: '1',
+    VITE_SCIFIGURE_LAYOUT_CONTROLS_V2: '1',
     DISABLE_HMR: 'true',
   };
   return new Promise((resolve, reject) => {
@@ -82,6 +83,7 @@ const marker = {
   componentControlsV2: true,
   paletteResolverV2: true,
   paletteControlsV2: true,
+  layoutControlsV2: true,
 };
 fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
 fs.writeFileSync(publicMarkerPath, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');

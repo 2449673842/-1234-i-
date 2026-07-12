@@ -92,4 +92,28 @@ describe('PropertyControl', () => {
     expect(html).toContain('统一修改代码颜色');
     expect(html).toContain('data-property-scope="palette:SERIES"');
   });
+
+  it('does not turn drag-confirmed position descriptors into a generic form control', () => {
+    const position = projection({
+      descriptor: {
+        key: 'position',
+        label: '位置',
+        family: 'position',
+        valueType: 'object',
+        control: 'position',
+        unit: 'none',
+        centers: ['layout'],
+        props: ['position'],
+        coordinateSpace: 'axes',
+      },
+      key: 'position',
+      coordinateSpace: 'axes',
+      propByObjectId: { 'title.0': 'position' },
+      valuesByObjectId: { 'title.0': { x: 0.5, y: 0.9, coord_system: 'axes' } },
+    });
+
+    expect(renderToStaticMarkup(
+      <PropertyControl projection={position} objectId="title.0" onChange={vi.fn()} />,
+    )).toBe('');
+  });
 });
