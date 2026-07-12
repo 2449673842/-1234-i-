@@ -105,7 +105,8 @@ const script = [
   'ax.plot([0, 1, 2, 3], [2.0, 2.4, 2.1, 2.8], color=SERIES_COLORS["Weak"], label="Weak")',
   'ax.plot([0, 1, 2, 3], [2.8, 2.1, 2.6, 2.2], color=SERIES_COLORS["Mixed"], label="Mixed")',
   'ax.plot([0, 1, 2, 3], [3.2, 3.0, 3.4, 3.1], color=dynamic_color, label="Data driven")',
-  'ax.scatter([0.2, 1.2, 2.2, 3.2], [0.4, 0.7, 0.5, 0.8], c=vector_colors, s=35)',
+  'for vector_idx in range(7):',
+  '    ax.scatter([0.2, 1.2, 2.2, 3.2], [0.25 + vector_idx * 0.06, 0.28 + vector_idx * 0.06, 0.25 + vector_idx * 0.06, 0.28 + vector_idx * 0.06], c=vector_colors, s=35)',
   'ax.set_title("Semantic Centers")',
   'ax.set_xlabel("X Axis")',
   'ax.set_ylabel("Y Axis")',
@@ -536,7 +537,7 @@ async function run() {
     const pointOk = pointSizeChanged
       && pointDraft
       && pointApply.successful
-      && pointPatches.length === 2
+      && pointPatches.length >= 2
       && pointPatches.every((patch) => (
         /^collection\.\d+\.\d+$/.test(String(patch?.gid || ''))
         && patch?.prop === 'size'
@@ -632,13 +633,15 @@ async function run() {
     );
 
     await clickText(page, '配色中心');
+    const vectorPaletteBody = await getBodyText(page);
+    const codeOnlyOverflowHidden = !vectorPaletteBody.includes('点击选中整组查看');
     const vectorChanged = await setColorByScope(page, 'palette:VECTOR_A', '#33AA77');
     const vectorDraft = (await getBodyText(page)).includes('已暂存');
     const vectorApply = vectorChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const vectorPatches = patchList(vectorApply.patchBody);
     const vectorRuntimeA = await readRuntimePaletteBinding(page, 'VECTOR_A');
     const vectorRuntimeB = await readRuntimePaletteBinding(page, 'VECTOR_B');
-    const vectorColors = (vectorRuntimeA?.objectColors?.[0]?.color || []).map((row) => (
+    const vectorColors = (vectorRuntimeA?.objectColors || []).flatMap((item) => item.color || []).map((row) => (
       `#${row.slice(0, 3).map((value) => Math.round(Number(value) * 255).toString(16).padStart(2, '0')).join('')}`
     ));
     const vectorIsolationOk = vectorChanged
@@ -647,11 +650,12 @@ async function run() {
       && vectorPatches.length === 1
       && vectorPatches[0]?.type === 'code_patch'
       && vectorPatches[0]?.target_id === 'VECTOR_A'
+      && codeOnlyOverflowHidden
       && vectorRuntimeA?.targets?.every((target) => target.replayMode === 'code_only')
       && String(vectorRuntimeA?.color).toLowerCase() === '#33aa77'
       && String(vectorRuntimeB?.color).toLowerCase() === '#e76f51'
-      && vectorColors.filter((color) => color === '#33aa77').length === 2
-      && vectorColors.filter((color) => color === '#e76f51').length === 2;
+      && vectorColors.filter((color) => color === '#33aa77').length === 14
+      && vectorColors.filter((color) => color === '#e76f51').length === 14;
     record(
       'H1d-vector-color-group-isolation',
       vectorIsolationOk ? 'PASS' : 'FAIL',

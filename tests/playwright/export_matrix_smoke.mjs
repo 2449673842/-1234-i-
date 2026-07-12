@@ -152,10 +152,54 @@ async function createProjectAndRender() {
     body: JSON.stringify({ script, editLogs: { fig_1: [], fig_2: [] }, language: 'python', requestId: `export-matrix-${Date.now()}` }),
   });
   if (rendered.status !== 'success') throw new Error(rendered.message || 'render failed');
-  return { projectId: created.id, spec, rendered };
+  const resized = await requestJson('/api/figure/patch', {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId: `${created.id}_fig_1`,
+      projectId: created.id,
+      figureId: 'fig_1',
+      baseRevision: rendered.figures?.[0]?.revision || 1,
+      patches: [
+        { op: 'set', mode: 'backend_patch', gid: 'global', prop: 'figure.width_in', value: 8 },
+        { op: 'set', mode: 'backend_patch', gid: 'global', prop: 'figure.height_in', value: 4 },
+      ],
+      requestId: `export-matrix-resize-${Date.now()}`,
+    }),
+  });
+  if (resized.status !== 'success') throw new Error(resized.message || 'resize failed');
+  const codeSynced = await requestJson('/api/figure/code-patch', {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId: `${created.id}_fig_1`,
+      projectId: created.id,
+      figureId: 'fig_1',
+      script,
+      force: true,
+    }),
+  });
+  if (codeSynced.status !== 'success') throw new Error(codeSynced.message || 'code sync failed');
+  return { projectId: created.id, spec, rendered, resized, codeSynced };
 }
 
 async function runApiExportMatrix(projectId) {
+  const landscape = await requestJson(`/api/projects/${projectId}/export`, {
+    method: 'POST',
+    body: JSON.stringify({ figureId: 'fig_1', format: 'svg', dpi: 300, saveToLibrary: false }),
+  });
+  const landscapeSvg = landscape.figures?.[0]?.svg || '';
+  const viewBox = landscapeSvg.match(/viewBox="0 0 ([\d.]+) ([\d.]+)"/);
+  const projectState = await requestJson(`/api/projects/${projectId}`);
+  const globalEdits = projectState.project?.figures?.[0]?.editLog?.filter((entry) => entry.gid === 'global') || [];
+  const landscapeOk = landscape.status === 'success'
+    && Number(viewBox?.[1]) > Number(viewBox?.[2])
+    && globalEdits.some((entry) => entry.prop === 'figure.width_in' && Number(entry.value) === 8)
+    && globalEdits.some((entry) => entry.prop === 'figure.height_in' && Number(entry.value) === 4);
+  record(
+    'X0-preview-export-orientation',
+    landscapeOk ? 'PASS' : 'FAIL',
+    `viewBox=${JSON.stringify(viewBox?.slice(1) || [])}, globalEdits=${JSON.stringify(globalEdits)}`,
+  );
+
   const formats = ['svg', 'png', 'pdf', 'tiff'];
   const matrix = {};
   for (const format of formats) {

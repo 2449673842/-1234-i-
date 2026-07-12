@@ -22,6 +22,7 @@ import { performance } from 'node:perf_hooks';
 import Papa from 'papaparse';
 import { createRequire } from 'module';
 import { applyColorCodePatch } from './src/utils/codeColorPatch';
+import { isDurableVirtualEditGid, mergePreviewGlobalsIntoEditLog } from './src/utils/exportPreviewState';
 let archiver: any;
 try {
   // @ts-ignore
@@ -3495,7 +3496,9 @@ ${inner}
       // 3. Detect drift
       const returnedGids = new Set((result.manifest?.objects || []).map((o: any) => o.id));
       const requestedGids = new Set(editLog.map(e => e.gid));
-      const orphanedGids = [...requestedGids].filter(gid => !returnedGids.has(gid));
+      const orphanedGids = [...requestedGids].filter(gid => (
+        !returnedGids.has(gid) && !isDurableVirtualEditGid(gid)
+      ));
 
       if (orphanedGids.length > 0 && !force) {
         return res.json({
@@ -3510,7 +3513,9 @@ ${inner}
         session.script = script;
         if (orphanedGids.length > 0) {
           // Clean up orphaned edits
-          session.editLog = session.editLog.filter(e => returnedGids.has(e.gid));
+          session.editLog = session.editLog.filter(e => (
+            returnedGids.has(e.gid) || isDurableVirtualEditGid(e.gid)
+          ));
         }
         session.revision++;
         session.updatedAt = Date.now();
@@ -3564,13 +3569,18 @@ ${inner}
       }
 
       const reqFormat = (format || 'svg').toLowerCase();
+      const linkedFigure = getDb().prepare('SELECT manifest FROM project_figures WHERE session_id = ?').get(sessionId) as { manifest?: string } | undefined;
+      const exportEditLog = compressEditLog(mergePreviewGlobalsIntoEditLog(
+        session.editLog,
+        linkedFigure?.manifest,
+      ));
 
       let result: any;
       if (session.language === 'r') {
         result = await spawnRWithPayload({
           script: session.script,
           dataPayload: session.dataPayload || null,
-          editLog: compressEditLog(session.editLog),
+          editLog: exportEditLog,
           renderOptions: { width_in: 7, height_in: 5 },
         }, { req, label: 'r-export', maxOutputMb: 64 });
       } else {
@@ -3584,7 +3594,7 @@ ${inner}
         result = await spawnPythonWithPayload('introspector.py', {
           script: session.script,
           dataPayload: session.dataPayload || null,
-          editLog: compressEditLog(session.editLog),
+          editLog: exportEditLog,
           renderOptions: { dpi: dpi || 300 },
           export_format: reqFormat !== 'svg' ? reqFormat : undefined,
         }, { req, label: 'export', maxOutputMb: 64 });
@@ -3618,10 +3628,10 @@ ${inner}
       // 3. Reproducible bundle
       const dataSnapshot = session.dataPayload || null;
       const dataFingerprint = crypto.createHash('sha256').update(JSON.stringify(dataSnapshot ?? null)).digest('hex');
-      const exportAnchor = buildExportEditLogAnchor(session.editLog || []);
+      const exportAnchor = buildExportEditLogAnchor(exportEditLog);
       const bundle = {
         script: session.script,
-        editLog: session.editLog,
+        editLog: exportEditLog,
         dataSnapshot,
         dataFingerprint,
         metadata: {
@@ -4738,6 +4748,10 @@ ${inner}
       for (const fig of targetFigs) {
         const session = loadSession(fig.session_id, userId);
         if (!session) continue;
+        const exportEditLog = compressEditLog(mergePreviewGlobalsIntoEditLog(
+          session.editLog,
+          fig.manifest,
+        ));
 
         const targetFigId = `fig_${fig.figure_index + 1}`;
         const result = await spawnPythonWithPayload('introspector.py', {
@@ -4745,7 +4759,7 @@ ${inner}
           dataPayload: projectDataPayload || session.dataPayload || null,
           cwd: cwd.replace(/\\/g, '/'),
           uploaded_file_paths,
-          editLogs: { [targetFigId]: compressEditLog(session.editLog) },
+          editLogs: { [targetFigId]: exportEditLog },
           renderOptions: { dpi: dpi || 300 },
           export_format: reqFormat !== 'svg' ? reqFormat : undefined,
         }, { req, label: 'project-export', maxOutputMb: 64 });
@@ -4753,7 +4767,7 @@ ${inner}
         if (result.status === 'success') {
           const matchedFig = result.figures?.find((f: any) => f.figureId === targetFigId) || result;
           const assetName = figureId ? (name || targetFigId) : targetFigId;
-          const exportAnchor = buildExportEditLogAnchor(session.editLog || []);
+          const exportAnchor = buildExportEditLogAnchor(exportEditLog);
           const effectiveFigureFormat = matchedFig.binary_b64 ? reqFormat : 'svg';
           const asset = saveToLibrary !== false ? persistProjectExportAsset({
             projectId,
