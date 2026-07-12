@@ -1,7 +1,7 @@
 # SciFigure Studio 当前主文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-12 15:25:57 +08:00  
+> 更新时间：2026-07-12 16:10:44 +08:00
 > 复核范围：当前本地工作区；尚未等同于已提交发布版本  
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
@@ -316,9 +316,12 @@ R facet、heatmap、连续色标和 layer 细粒度
 
 ```text
 docs/platform-capability/SCIFIGURE_CAPABILITY_EVOLUTION_AND_REGRESSION_GUARD_PLAN.md
+docs/platform-capability/UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md
 ```
 
 该方案采用增量协议、影子比对、按能力域切换和成功后提交，避免为了补图元识别或编辑功能而破坏现有选择、拖拽、保存和按 Figure 渲染链路。
+
+`UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md` 专门处理属性编辑、布局中心、组件中心、配色中心和字体中心的交叉属性与精细度不一致。当前状态为方案完成、功能尚未迁移；目标是统一属性描述、能力判断和 patch 语义，各中心继续保留不同职责与默认作用范围。
 
 当前专项方案已补充“能力增强列车”：每项能力必须依次证明 renderer 事实、对象身份、属性能力、目标解析、PatchPlan、Figure 事务、项目级持久化以及 Python/R/真实项目回归。禁止从协议设计直接跳到默认启用。
 
