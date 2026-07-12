@@ -50,7 +50,7 @@ function record(id, status, note) {
 
 function isIgnorableDevServerNoise(message) {
   return message.includes('[vite] failed to connect to websocket')
-    || message.includes("WebSocket connection to 'ws://localhost:24678/")
+    || /WebSocket connection to 'ws:\/\/[^']+:24678\//.test(message)
     || message.includes('WebSocket closed without opened');
 }
 
@@ -172,17 +172,19 @@ async function controlInExactCard(page, cardText, selector, attribute, expected,
     const rightSide = (node) => node.getBoundingClientRect().left > window.innerWidth * 0.70;
     const semanticCard = Array.from(document.querySelectorAll('[data-component-group-label]'))
       .find((node) => node.getAttribute('data-component-group-label') === cardText);
+    const findControl = (root) => Array.from(root.querySelectorAll(selector))
+      .find((node) => {
+        if (!rendered(node) || node.disabled) return false;
+        const actual = String(node.getAttribute(attribute) || '');
+        return endsWith ? actual.endsWith(expected) : actual === expected;
+      });
+    if (semanticCard) return findControl(semanticCard) || null;
     const heading = semanticCard || Array.from(document.querySelectorAll('span, div, p, h4'))
       .find((node) => rendered(node) && rightSide(node) && normalize(node.textContent) === normalize(cardText));
     if (!heading) return null;
-    let current = semanticCard || heading.parentElement;
+    let current = heading.parentElement;
     while (current && rightSide(current)) {
-      const control = Array.from(current.querySelectorAll(selector))
-        .find((node) => {
-          if (!rendered(node) || node.disabled) return false;
-          const actual = String(node.getAttribute(attribute) || '');
-          return endsWith ? actual.endsWith(expected) : actual === expected;
-        });
+      const control = findControl(current);
       if (control) return control;
       current = current.parentElement;
     }
@@ -198,13 +200,7 @@ async function setNumberInCard(page, cardText, prop, value) {
     'data-param-prop',
     prop,
   );
-  let element = handle.asElement();
-  if (!element) {
-    const fallback = page.locator(`input[data-param-role="number"][data-param-prop="${prop}"]`);
-    if (await fallback.count() > 0) {
-      element = await fallback.first().elementHandle();
-    }
-  }
+  const element = handle.asElement();
   if (!element) return false;
   await element.scrollIntoViewIfNeeded().catch(() => {});
   await element.fill(String(value));
@@ -269,6 +265,10 @@ async function run() {
   const containerKinds = ['bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container'];
   const containers = manifest.objects.filter(object => containerKinds.includes(object.kind));
   const childIds = new Set(containers.flatMap(container => container.children || []));
+  const spineGroups = manifest.objects.filter(object => object.kind === 'spine_group');
+  const frameTargets = spineGroups.length > 0
+    ? spineGroups
+    : manifest.objects.filter(object => object.kind === 'spine');
   const annotationText = manifest.objects.find(object => object.role === 'annotation_text');
   const annotationArrow = manifest.objects.find(object => object.role === 'annotation_arrow');
   const sharedColorbar = manifest.objects.find(object => object.kind === 'colorbar');
@@ -341,6 +341,31 @@ async function run() {
       initialComponentText.includes('茎叶图系列') && initialStemControlCount > 0 && initialComponentText.includes('双轴') ? 'PASS' : 'FAIL',
       `clicked=${componentTabClicked}, card=${initialComponentText.includes('茎叶图系列')}, controls=${initialStemControlCount}, labels=${JSON.stringify(rightPanelLabels.slice(0, 20))}`,
     );
+    const componentControlsV2Expected = process.env.VITE_SCIFIGURE_COMPONENT_CONTROLS_V2 === '1';
+    const componentControlsV2Count = await page.locator('[data-component-controls-version="2"]').count();
+    const barLinewidthControls = page.locator('[data-component-group-id="bars"] input[data-property-control="linewidth"][data-param-prop="linewidth"]');
+    const barLinewidthCount = await barLinewidthControls.count();
+    const barLinewidthContract = barLinewidthCount === 1
+      ? await barLinewidthControls.first().evaluate(node => ({
+          min: node.getAttribute('min'),
+          max: node.getAttribute('max'),
+          step: node.getAttribute('step'),
+          state: node.closest('[data-property-state]')?.getAttribute('data-property-state') || null,
+        }))
+      : null;
+    const componentControlsV2Ok = componentControlsV2Expected
+      ? componentControlsV2Count > 0
+        && barLinewidthCount === 1
+        && barLinewidthContract?.min === '0'
+        && barLinewidthContract?.max === '20'
+        && barLinewidthContract?.step === '0.1'
+        && barLinewidthContract?.state === 'editable'
+      : componentControlsV2Count === 0;
+    record(
+      'C0g-component-descriptor-controls',
+      componentControlsV2Ok ? 'PASS' : 'FAIL',
+      `expected=${componentControlsV2Expected}, groups=${componentControlsV2Count}, barLinewidth=${barLinewidthCount}, contract=${JSON.stringify(barLinewidthContract)}`,
+    );
     const cases = [
       { id: 'C1-bar-container', card: '柱形系列', prop: 'linewidth', value: 1.8, prefix: 'container.bar.' },
       { id: 'C2-errorbar-container', card: '误差棒系列', prop: 'capsize', value: 7, prefix: 'container.errorbar.' },
@@ -366,6 +391,27 @@ async function run() {
         && !childIds.has(applied.patches[0]?.gid);
       record(item.id, correct ? 'PASS' : 'FAIL', `changed=${changed}, draft=${draftVisible}, requests=${applied.requestCount || 0}, responses=${applied.responseCount || 0}, patches=${JSON.stringify(applied.patches)}`);
     }
+    await clickText(page, '组件中心');
+    const frameChanged = await setNumberInCard(page, '子图边框 / 坐标轴框线', 'linewidth', 1.7);
+    const frameDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const frameApplied = frameChanged ? await applyAndRead(page) : { successful: false, patches: [] };
+    const expectedFrameIds = new Set(frameTargets.map(object => object.id));
+    const appliedFrameIds = new Set(frameApplied.patches.map(patch => patch.gid));
+    const frameFanoutCorrect = frameChanged
+      && frameDraftVisible
+      && frameApplied.successful
+      && frameApplied.patches.length === expectedFrameIds.size
+      && frameApplied.patches.every(patch => (
+        expectedFrameIds.has(patch.gid)
+        && patch.prop === 'linewidth'
+        && Number(patch.value) === 1.7
+      ))
+      && Array.from(expectedFrameIds).every(id => appliedFrameIds.has(id));
+    record(
+      'C5c-frame-group-fanout',
+      frameFanoutCorrect ? 'PASS' : 'FAIL',
+      `changed=${frameChanged}, draft=${frameDraftVisible}, expected=${JSON.stringify(Array.from(expectedFrameIds))}, patches=${JSON.stringify(frameApplied.patches)}`,
+    );
     await clickText(page, '布局中心');
     const layoutText = await getBodyText(page);
     const sharedDetected = layoutText.includes('共享色条 1 个');
@@ -392,7 +438,11 @@ async function run() {
       sharedAlignmentCorrect ? 'PASS' : 'FAIL',
       `detected=${sharedDetected}, physicalPanels=${physicalPanelCountCorrect}, clicked=${alignClicked}, patches=${JSON.stringify(alignPatches)}`,
     );
-    record('N1', consoleErrors.length === 0 && pageErrors.length === 0 ? 'PASS' : 'FAIL', `console=${consoleErrors.length}, page=${pageErrors.length}`);
+    record(
+      'N1',
+      consoleErrors.length === 0 && pageErrors.length === 0 ? 'PASS' : 'FAIL',
+      `console=${JSON.stringify(consoleErrors)}, page=${JSON.stringify(pageErrors)}`,
+    );
   } finally {
     await browser.close();
     await requestJson(`/api/projects/${fixture.projectId}`, { method: 'DELETE' }).catch(() => null);

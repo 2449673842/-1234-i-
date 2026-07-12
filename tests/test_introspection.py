@@ -196,6 +196,25 @@ ax.plot([0, 1, 2], [1, 3, 2], label="response")
         self.assertEqual(color_capability["replay"], "stable")
         self.assertIn("object", color_capability["scopes"])
         self.assertIn("cross_figure", color_capability["scopes"])
+
+    def test_spine_group_declares_axis_frame_group_capability(self):
+        rendered = replay_render("""
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1], [0, 1])
+""")
+
+        spine_group = next(
+            obj for obj in rendered["figures"][0]["manifest"]["objects"]
+            if obj["id"] == "spine_group.0"
+        )
+        linewidth = next(
+            capability for capability in spine_group["propertyCapabilities"]
+            if capability["prop"] == "linewidth"
+        )
+
+        self.assertEqual(spine_group["role"], "axis_frame")
+        self.assertIn("group", linewidth["scopes"])
     
     def test_dict_palette_ids_include_dict_name_to_avoid_cross_group_color_edits(self):
         script = """

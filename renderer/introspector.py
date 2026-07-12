@@ -1409,6 +1409,8 @@ def _determine_role(gid: str, parent_kind: Optional[str] = None) -> Optional[str
         return "legend_text"
     if gid.startswith("legend_line.") or gid.startswith("legend_patch.") or gid.startswith("legend_collection."):
         return "legend_marker"
+    if gid.startswith("spine_group."):
+        return "axis_frame"
     if gid.startswith("spine."):
         return "spine"
     if gid.startswith("grid."):

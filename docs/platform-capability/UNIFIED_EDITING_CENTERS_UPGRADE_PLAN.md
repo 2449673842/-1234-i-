@@ -1,8 +1,8 @@
 # SciFigure 统一编辑中心与属性能力升级方案
 
-> 状态：Phase 0-4 完成；3200 已同步配色与导出热修复；下一阶段为 Phase 5 组件中心
+> 状态：Phase 0-5 完成；3200 已启用组件中心 V2 候选；下一阶段为 Phase 6 配色中心
 > 创建时间：2026-07-12 16:10:44 +08:00
-> 最后更新：2026-07-12 23:27:32 +08:00
+> 最后更新：2026-07-13 00:08:59 +08:00
 > 适用范围：属性编辑、布局中心、组件中心、配色中心、字体中心
 > 实施方式：Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire
 
@@ -1100,6 +1100,39 @@ X 刻度旋转实际 patch：仅 axis.x.0:tick_rotation=25、backend_patch 一�
 - 稳定隔离语义回归：11 PASS / 0 FAIL；导出矩阵包含 `8 × 4 in -> 576 × 288` 方向一致性用例并通过。
 
 当前限制不变：3200 renderer image 仍是 legacy capability manifest，因此以上结果不能替代 capability-backed 强制门验证。
+
+### 13.17 Phase 5 组件中心候选状态（2026-07-12 23:56:37 +08:00）
+
+组件中心已在独立 `VITE_SCIFIGURE_COMPONENT_CONTROLS_V2` 开关下接入统一 descriptor：
+
+- `componentGroups` 继续只负责对象分类、子图范围、选中整组和容器优先，不再决定公共属性的可编辑能力。
+- 字体家族、字号、字重、字形、颜色、旋转、可见性、透明度和线宽统一通过 capability descriptor 投影，显示 mixed、partial、readonly 和 unsupported 状态。
+- V2 写回按每个对象的真实 prop alias 和 editable 状态分桶，再作为一次 Draft batch 提交；代表对象只负责控件显示，不会成为唯一写回目标。
+- `facecolor/edgecolor`、误差棒、茎叶图、箱线图、图例符号布局、subplot/colorbar 几何和轴刻度专用参数继续保留 legacy 专用控件。
+- container `children` 与 child 自身 `parentId/identity.relation.parentId` 同时参与 owned child 排除，避免容器内部图元重新混入 line/point/patch 分组。
+- Python renderer 为 `spine_group.*` 补齐 `role=axis_frame`，其 `linewidth` capability 正确声明 `group` scope；前端不再用 kind 白名单掩盖协议缺口。
+- staging marker 增加 `componentControlsV2: true`，旧候选不能被误认为 Phase 5 build；关闭该开关可回退 descriptor UI，目标解析和容器分组仍由既有 `VITE_SCIFIGURE_COMPONENT_TARGET_RESOLVER_V2` 独立控制。
+
+验证证据：
+
+```text
+全量前端单元测试：25 files / 166 tests 通过
+Python introspector：39 tests 通过
+TypeScript：通过
+Phase 5 production-like staging 构建：通过
+组件容器浏览器回归：17 PASS / 0 FAIL
+Python 五中心语义回归：12 PASS / 0 FAIL
+R 五中心语义回归：5 PASS / 0 FAIL
+line 整组线宽：4 个目标全部生成 backend patch
+descriptor-only 文本旋转：28 个目标全部生成 backend patch
+多子图边框整组线宽：6 个 spine_group 全部生成 backend patch
+bar/errorbar/stem/boxplot/violin/annotation/legend 专用控件：全部通过
+浏览器 console/page error：0
+3000 与 3200：均为 HTTP 200，3000 PID 未变化
+3200 build：phase5-component-controls-20260712-2352
+```
+
+Phase 5 不包含 `facecolor/edgecolor` 等专用 descriptor 扩展，也不改变配色 binding。下一步进入 Phase 6 时必须继续保留严格歧义阻止、向量 collection `code_only` 和同色不同组隔离。
 
 ## 14. 实施阶段
 

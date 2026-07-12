@@ -154,6 +154,7 @@ function assertProductionAssetsExist() {
     || marker?.propertyDescriptorV1 !== true
     || marker?.propertyInspectorV2 !== true
     || marker?.fontControlsV2 !== true
+    || marker?.componentControlsV2 !== true
     || marker?.buildId !== pointer?.buildId) {
     throw new Error(`Invalid unified editing staging build marker: ${markerPath}`);
   }
@@ -202,6 +203,7 @@ function stagingEnv(port) {
     VITE_SCIFIGURE_PROPERTY_DESCRIPTOR_V1: '1',
     VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2: '1',
     VITE_SCIFIGURE_FONT_CONTROLS_V2: '1',
+    VITE_SCIFIGURE_COMPONENT_CONTROLS_V2: '1',
   };
 }
 
@@ -217,7 +219,7 @@ function printConfig(port) {
   console.log('Renderer concurrency: 1 (override with SCIFIGURE_STAGING_RENDER_CONCURRENCY)');
   console.log(`Node environment: ${STAGING_NODE_ENV}`);
   console.log(`Vite HMR: ${STAGING_NODE_ENV === 'production' ? 'not started' : 'disabled'}`);
-  console.log('Feature flags: descriptor=1, property-inspector=1, font-controls=1');
+  console.log('Feature flags: descriptor=1, property-inspector=1, font-controls=1, component-controls=1');
 }
 
 async function startServer(port) {

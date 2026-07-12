@@ -1,7 +1,44 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-12 23:20:50 +08:00
+> 最后修改时间：2026-07-13 00:08:59 +08:00
+
+---
+
+## 2026-07-12 23:56:37 +08:00 组件中心 V2 边框组被判为只读，整组编辑可能回退到错误控件
+
+**现象**
+
+- 组件中心统一控件启用后，`子图边框 / 坐标轴框线` 卡片没有可编辑线宽控件。
+- 自动化测试若使用全局 fallback，会误命中上一张图例卡片的线宽控件，表现为想改边框却生成 `legend.0:linewidth`。
+- 旧组件中心依赖 kind 白名单，曾掩盖这一协议缺口。
+
+**根因**
+
+- Python renderer `_determine_role()` 识别 `spine.*`，但遗漏虚拟对象 `spine_group.*`。
+- `_build_property_capabilities()` 只有对象具备 role 时才为普通样式属性声明 `group` scope；因此 `spine_group.linewidth` 只声明 `object`。
+- descriptor 按 capability 正确显示 readonly，而旧 `supportsBatchProp()` 白名单仍允许整组写入，两条能力判断不一致。
+
+**修复**
+
+- renderer 将 `spine_group.*` 识别为 `role=axis_frame`，线宽、颜色、显隐等稳定属性获得 group scope。
+- 组件中心 V2 只对 projection 中逐对象 `editable` 的目标写回，并按真实 prop alias 分桶后一次提交。
+- owned child 排除同时读取 container `children` 和 child `parentId`，降低单侧 ownership 元数据缺失造成的重复分组风险。
+- 浏览器 smoke 改用 `data-component-group-id + data-param-prop` 精确定位，不再使用会跨卡片命中的全局 fallback。
+
+**验证**
+
+- Python 内省新增 `spine_group role/group capability` 回归并通过；完整 introspector 39 项通过。
+- 组件容器 smoke：17 PASS / 0 FAIL；6 个 `spine_group` 均生成 `linewidth=1.7` backend patch。
+- Python 五中心语义 smoke：12 PASS / 0 FAIL；4 条 line 均生成 `linewidth=2.5`，28 个文本均生成 `rotation=17` backend patch。
+- R 五中心语义 smoke：5 PASS / 0 FAIL；`r.layer.1:linewidth=2.2` 正确写入。
+- 全量 Vitest：25 files / 166 tests；TypeScript 和 production-like build 通过。
+
+**防复发规则**
+
+- 虚拟组对象必须在 renderer 明确声明语义 role 和组级 capability，前端不得用 kind 白名单扩大 capability。
+- 组控件的 representative 只用于显示，写回目标必须来自完整 projection，禁止只取第一个对象。
+- 自动化控件定位必须使用中心、分组和 prop 的稳定 DOM 协议；不得在精确卡片失败后静默回退到全局第一个同类型控件。
 
 ---
 

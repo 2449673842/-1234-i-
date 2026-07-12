@@ -233,6 +233,96 @@ describe('property descriptor projection', () => {
     expect(componentKeys).toContain('linewidth');
   });
 
+  it('projects capability-backed component controls without a kind property whitelist', () => {
+    const line = object({
+      id: 'line.0',
+      kind: 'line',
+      editable: [],
+      currentProps: {
+        color: '#225577',
+        linewidth: 1.5,
+        alpha: 0.8,
+        visible: true,
+      },
+      propertyCapabilities: [
+        capability('color'),
+        capability('linewidth'),
+        capability('alpha'),
+        capability('visible'),
+      ],
+    });
+
+    const projected = projectPropertyDescriptors({
+      center: 'components',
+      objects: [line],
+      scope: 'group',
+    });
+
+    for (const key of ['color', 'linewidth', 'alpha', 'visible']) {
+      const projection = byKey(projected, key);
+      expect(projection.state).toBe('editable');
+      expect(projection.propByObjectId['line.0']).toBe(key);
+      expect(projection.counts.editable).toBe(1);
+    }
+  });
+
+  it('reuses typography descriptors for text objects in the component center', () => {
+    const text = object({
+      id: 'text.0',
+      kind: 'text',
+      editable: [],
+      currentProps: {
+        fontfamily: 'Arial',
+        fontsize: 11,
+        fontweight: 'bold',
+        fontstyle: 'italic',
+        color: '#333333',
+      },
+      propertyCapabilities: [
+        capability('fontfamily'),
+        capability('fontsize'),
+        capability('fontweight'),
+        capability('fontstyle'),
+        capability('color'),
+      ],
+    });
+
+    const projected = projectPropertyDescriptors({
+      center: 'components',
+      objects: [text],
+      scope: 'group',
+    });
+
+    expect(byKey(projected, 'fontfamily').value).toBe('Arial');
+    expect(byKey(projected, 'fontsize').value).toBe(11);
+    expect(byKey(projected, 'fontweight').value).toBe('bold');
+    expect(byKey(projected, 'fontstyle').value).toBe('italic');
+    expect(byKey(projected, 'color').value).toBe('#333333');
+  });
+
+  it('keeps a component property readonly when group replay is not declared', () => {
+    const line = object({
+      id: 'line.0',
+      kind: 'line',
+      currentProps: { linewidth: 1.5 },
+      propertyCapabilities: [{
+        ...capability('linewidth'),
+        scopes: ['object'],
+      }],
+    });
+
+    const projected = byKey(projectPropertyDescriptors({
+      center: 'components',
+      objects: [line],
+      scope: 'group',
+    }), 'linewidth');
+
+    expect(projected.state).toBe('readonly');
+    expect(projected.stateByObjectId).toEqual({ 'line.0': 'readonly' });
+    expect(projected.counts.readonly).toBe(1);
+    expect(projected.unsupportedReasons['line.0']).toContain('group');
+  });
+
   it('keeps a supported property readonly when the requested scope is not declared', () => {
     const title = object({
       id: 'title.0',

@@ -57,6 +57,9 @@ const PROPERTY_INSPECTOR_V2_ENABLED = (
 const FONT_CONTROLS_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
 ).env?.VITE_SCIFIGURE_FONT_CONTROLS_V2 === '1';
+const COMPONENT_CONTROLS_V2_ENABLED = (
+  import.meta as ImportMeta & { env?: Record<string, string | undefined> }
+).env?.VITE_SCIFIGURE_COMPONENT_CONTROLS_V2 === '1';
 const DEFAULT_PRESETS: Record<string, string[]> = {
   Nature: ['#1F78B4', '#D95F02', '#7570B3', '#E7298A', '#66A61E'],
   Science: ['#E41A1C', '#377EB8', '#4DAF4A', '#984EA3', '#FF7F00'],
@@ -3238,8 +3241,18 @@ export function RightSidebar({
         ...violinContainerObjects,
       ].flatMap(container => container.children || []),
     );
+    const claimedContainerIds = new Set([
+      ...barContainerObjects,
+      ...errorbarContainerObjects,
+      ...stemContainerObjects,
+      ...boxplotContainerObjects,
+      ...violinContainerObjects,
+    ].map(container => container.id));
     const isClaimedContainerChild = (obj: ManifestObject) => (
-      COMPONENT_TARGET_RESOLVER_V2_ENABLED && claimedChildIds.has(obj.id)
+      COMPONENT_TARGET_RESOLVER_V2_ENABLED && (
+        claimedChildIds.has(obj.id)
+        || claimedContainerIds.has(String(obj.parentId || obj.identity?.relation?.parentId || ''))
+      )
     );
     const lineObjects = scopedObjects.filter(obj => obj.kind === 'line' && !isLegendChild(obj) && !isMarkerLine(obj) && !isClaimedContainerChild(obj));
     const pointObjects = scopedObjects.filter(obj => !isLegendChild(obj) && !isClaimedContainerChild(obj) && (isMarkerLine(obj) || isScatterCollection(obj)));
@@ -3442,8 +3455,16 @@ export function RightSidebar({
       return undefined;
     };
 
-    const patchComponentGroup = (items: ManifestObject[], prop: string, value: unknown) => {
-      const supportedItems = items.filter(obj => supportsBatchProp(obj, prop));
+    const buildComponentGroupPatches = (
+      items: ManifestObject[],
+      prop: string,
+      value: unknown,
+      capabilityResolved = false,
+    ) => {
+      const supportedItems = capabilityResolved
+        ? items
+        : items.filter(obj => supportsBatchProp(obj, prop));
+      if (supportedItems.length === 0) return [];
       const migratedRole = componentRoleForItems(supportedItems);
       const intent: EditingIntent = {
         intent: prop === 'visible' ? 'visibility.component' : 'style.component',
@@ -3463,6 +3484,38 @@ export function RightSidebar({
       if (prop === 'fontsize') {
         patches.push(...buildLegendMarkerScalePatches(supportedItems, value));
       }
+      return patches;
+    };
+
+    const patchComponentGroup = (items: ManifestObject[], prop: string, value: unknown) => {
+      const patches = buildComponentGroupPatches(items, prop, value);
+      if (patches.length > 0) void onPatch(patches);
+    };
+
+    const projectComponentGroupControls = (items: ManifestObject[]) => (
+      projectPropertyDescriptors({
+        center: 'components',
+        objects: items,
+        semanticRole: componentRoleForItems(items),
+        scope: 'group',
+      }).filter(projection => Object.values(projection.propByObjectId).some(Boolean))
+    );
+
+    const patchProjectedComponentGroup = (
+      items: ManifestObject[],
+      projection: ProjectedPropertyDescriptor,
+      value: unknown,
+    ) => {
+      const itemsByProp = new Map<string, ManifestObject[]>();
+      items.forEach(object => {
+        if (projection.stateByObjectId[object.id] !== 'editable') return;
+        const prop = projection.propByObjectId[object.id];
+        if (!prop) return;
+        itemsByProp.set(prop, [...(itemsByProp.get(prop) ?? []), object]);
+      });
+      const patches = Array.from(itemsByProp.entries()).flatMap(([prop, propItems]) => (
+        buildComponentGroupPatches(propItems, prop, value, true)
+      ));
       if (patches.length > 0) void onPatch(patches);
     };
 
@@ -3564,6 +3617,9 @@ export function RightSidebar({
           const axisOffsetTargets = selectedTargets.length > 0 ? targetObjects : group.objects;
           const xAxisOffsetTargets = axisOffsetTargets.filter(obj => obj.kind === 'axis_x');
           const yAxisOffsetTargets = axisOffsetTargets.filter(obj => obj.kind === 'axis_y');
+          const projectedControls = COMPONENT_CONTROLS_V2_ENABLED
+            ? projectComponentGroupControls(targetObjects)
+            : [];
           return (
             <div
               key={group.id}
@@ -3642,7 +3698,36 @@ export function RightSidebar({
                     当前将统一修改 {targetObjects.length} 个子图边框组；不会改变数据点、拟合线或网格线。
                   </div>
                 )}
-                {group.colorProp && colorValue && (
+                {COMPONENT_CONTROLS_V2_ENABLED && (
+                  <div
+                    className="space-y-3"
+                    data-component-controls-version="2"
+                    data-component-control-group={group.id}
+                  >
+                    {projectedControls.map(projection => {
+                      const representative = targetObjects.find(object => (
+                        projection.stateByObjectId[object.id] === 'editable'
+                        && Boolean(projection.propByObjectId[object.id])
+                      )) || targetObjects.find(object => Boolean(projection.propByObjectId[object.id]));
+                      if (!representative) return null;
+                      const dirty = targetObjects.some(object => {
+                        const prop = projection.propByObjectId[object.id];
+                        return Boolean(prop && isDirty(object.id, prop));
+                      });
+                      return (
+                        <React.Fragment key={projection.key}>
+                          <PropertyControl
+                            projection={projection}
+                            objectId={representative.id}
+                            dirty={dirty}
+                            onChange={(value) => patchProjectedComponentGroup(targetObjects, projection, value)}
+                          />
+                        </React.Fragment>
+                      );
+                    })}
+                  </div>
+                )}
+                {group.colorProp && colorValue && (!COMPONENT_CONTROLS_V2_ENABLED || group.colorProp !== 'color') && (
                   renderColorInput(['points', 'patches', 'bars', 'violins'].includes(group.id) ? '填充色' : '颜色', colorValue, (value) => {
                     if (group.id === 'points') {
                       patchPointFillColor(targetObjects, value);
@@ -3684,10 +3769,10 @@ export function RightSidebar({
                 {group.id === 'stems' && targetObjects.some(obj => supportsBatchProp(obj, 'baseline_visible')) && (
                   renderBoolInput('显示基线', stemBaselineVisible, (value) => patchComponentGroup(targetObjects, 'baseline_visible', value))
                 )}
-                {targetObjects.some(obj => supportsBatchProp(obj, 'fontsize')) && (
+                {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'fontsize')) && (
                   renderNumberInput(`component-${group.id}`, 'fontsize', commonComponentProp(targetObjects, 'fontsize', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'fontsize', value), { min: 4, max: 48, step: 0.5 })
                 )}
-                {targetObjects.some(obj => supportsBatchProp(obj, 'linewidth')) && (
+                {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'linewidth')) && (
                   renderNumberInput(`component-${group.id}`, 'linewidth', linewidth, (value) => patchComponentGroup(targetObjects, 'linewidth', value), { min: 0, max: 20, step: 0.25, displayLabel: linewidthLabel })
                 )}
                 {targetObjects.some(obj => supportsBatchProp(obj, 'markersize')) && (
@@ -3708,10 +3793,10 @@ export function RightSidebar({
                 {targetObjects.some(obj => supportsBatchProp(obj, 'size')) && (
                   renderNumberInput(`component-${group.id}`, 'size', pointSize, (value) => patchComponentGroup(targetObjects.filter(obj => obj.kind === 'collection'), 'size', value), { min: 1, max: 2000, step: 1 })
                 )}
-                {targetObjects.some(obj => supportsBatchProp(obj, 'fontweight')) && (
+                {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'fontweight')) && (
                   renderSelectInput('字重', commonComponentProp(targetObjects, 'fontweight', 'normal') as string, ['normal', 'bold', 'semibold', 'light'], (value) => patchComponentGroup(targetObjects, 'fontweight', value))
                 )}
-                {targetObjects.some(obj => supportsBatchProp(obj, 'fontstyle')) && (
+                {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'fontstyle')) && (
                   renderSelectInput('字形', commonComponentProp(targetObjects, 'fontstyle', 'normal') as string, ['normal', 'italic', 'oblique'], (value) => patchComponentGroup(targetObjects, 'fontstyle', value))
                 )}
                 {targetObjects.some(obj => obj.kind === 'subplot' && supportsBatchProp(obj, 'width')) && (
@@ -3779,7 +3864,7 @@ export function RightSidebar({
                     {renderNumberInput(`component-${group.id}`, 'tick_fontsize', commonComponentProp(targetObjects, 'tick_fontsize', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'tick_fontsize', value), { min: 4, max: 48, step: 0.5 })}
                   </div>
                 )}
-                {targetObjects.some(obj => supportsBatchProp(obj, 'alpha')) && (
+                {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'alpha')) && (
                   <div className="grid grid-cols-[88px_1fr] items-center gap-2 text-sm">
                     <span className="text-xs text-slate-500 font-medium">透明度</span>
                     <input
@@ -3793,7 +3878,7 @@ export function RightSidebar({
                     />
                   </div>
                 )}
-                <div className="flex items-center justify-between text-xs">
+                {!COMPONENT_CONTROLS_V2_ENABLED && <div className="flex items-center justify-between text-xs">
                   <span className="text-slate-500 font-medium">{selectedTargets.length > 0 ? '显示选中对象' : '显示整组'}</span>
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
@@ -3804,7 +3889,7 @@ export function RightSidebar({
                     />
                     <div className="w-8 h-4 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
                   </label>
-                </div>
+                </div>}
               </div>
             </div>
           );

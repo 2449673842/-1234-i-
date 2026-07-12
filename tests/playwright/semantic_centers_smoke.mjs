@@ -298,6 +298,18 @@ async function setNumberByParam(page, gid, prop, value) {
   return true;
 }
 
+async function setComponentNumberByGroup(page, groupId, prop, value) {
+  const input = page.locator(
+    `[data-component-group-id="${groupId}"] input[data-param-role="number"][data-param-prop="${prop}"]`,
+  ).first();
+  if (!(await input.isVisible({ timeout: 4000 }).catch(() => false))) return false;
+  await input.fill(String(value));
+  await input.press('Enter').catch(() => {});
+  await input.evaluate((node) => node.blur());
+  await page.waitForTimeout(700);
+  return true;
+}
+
 async function setColorControl(page, sectionText, labelText, value) {
   const directHandle = await page.evaluateHandle(({ sectionText, labelText }) => {
     const normalize = (text) => String(text || '').replace(/\s+/g, '');
@@ -522,12 +534,28 @@ async function run() {
     record('F1', fontOk ? 'PASS' : 'FAIL', `changed=${fontChanged}, draft=${fontDraft}, patches=${JSON.stringify(fontPatches)}`);
 
     await clickText(page, '组件中心');
-    const componentChanged = await setNumberControl(page, '线条', '线宽', 2.5);
+    const componentChanged = await setComponentNumberByGroup(page, 'lines', 'linewidth', 2.5);
     const componentDraft = (await getBodyText(page)).includes('已暂存');
     const componentApply = componentChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const componentPatches = patchList(componentApply.patchBody);
     const componentOk = componentChanged && componentDraft && componentApply.successful && componentPatches.some((patch) => patch.prop === 'linewidth' && Number(patch.value) === 2.5);
     record('G1', componentOk ? 'PASS' : 'FAIL', `changed=${componentChanged}, draft=${componentDraft}, patches=${JSON.stringify(componentPatches)}`);
+
+    await clickText(page, '组件中心');
+    const componentDescriptorOnlyChanged = await setComponentNumberByGroup(page, 'texts', 'rotation', 17);
+    const componentDescriptorOnlyDraft = (await getBodyText(page)).includes('已暂存');
+    const componentDescriptorOnlyApply = componentDescriptorOnlyChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const componentDescriptorOnlyPatches = patchList(componentDescriptorOnlyApply.patchBody);
+    const componentDescriptorOnlyOk = componentDescriptorOnlyChanged
+      && componentDescriptorOnlyDraft
+      && componentDescriptorOnlyApply.successful
+      && componentDescriptorOnlyPatches.length > 1
+      && componentDescriptorOnlyPatches.every((patch) => patch.prop === 'rotation' && Number(patch.value) === 17);
+    record(
+      'G1b-component-descriptor-only-fanout',
+      componentDescriptorOnlyOk ? 'PASS' : 'FAIL',
+      `changed=${componentDescriptorOnlyChanged}, draft=${componentDescriptorOnlyDraft}, patches=${JSON.stringify(componentDescriptorOnlyPatches)}`,
+    );
 
     await clickText(page, '组件中心');
     const pointSizeChanged = await setNumberByParam(page, 'component-points', 'size', 90);

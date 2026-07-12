@@ -65,7 +65,7 @@ function interestingApi(request) {
 
 function isIgnorableDevServerNoise(message) {
   return message.includes('[vite] failed to connect to websocket')
-    || message.includes("WebSocket connection to 'ws://localhost:24678/")
+    || /WebSocket connection to 'ws:\/\/[^']+:24678\//.test(message)
     || message.includes('WebSocket closed without opened');
 }
 
@@ -180,6 +180,18 @@ async function setNumberControl(page, sectionText, labelText, value) {
   await element.fill(String(value));
   await element.press('Enter').catch(() => {});
   await element.evaluate((node) => node.blur());
+  await page.waitForTimeout(700);
+  return true;
+}
+
+async function setComponentNumberByGroup(page, groupId, prop, value) {
+  const input = page.locator(
+    `[data-component-group-id="${groupId}"] input[data-param-role="number"][data-param-prop="${prop}"]`,
+  ).first();
+  if (!(await input.isVisible({ timeout: 4000 }).catch(() => false))) return false;
+  await input.fill(String(value));
+  await input.press('Enter').catch(() => {});
+  await input.evaluate((node) => node.blur());
   await page.waitForTimeout(700);
   return true;
 }
@@ -355,7 +367,7 @@ async function run() {
     record('R1-font-center', fontOk ? 'PASS' : 'FAIL', `changed=${fontChanged}, draft=${fontDraft}, patches=${JSON.stringify(fontPatches)}`);
 
     await clickText(page, '组件中心');
-    const componentChanged = await setNumberControl(page, '线条', '线宽', 2.2);
+    const componentChanged = await setComponentNumberByGroup(page, 'lines', 'linewidth', 2.2);
     const componentDraft = (await getBodyText(page)).includes('已暂存');
     const componentApply = componentChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const componentPatches = patchList(componentApply.patchBody);
