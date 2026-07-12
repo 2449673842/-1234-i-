@@ -299,3 +299,27 @@ export function buildPaletteObjectPatches(
     value,
   }));
 }
+
+export function buildPaletteUpdatePatches(
+  resolution: PaletteTargetResolution,
+  value: unknown,
+  codeTargetId?: string,
+): Array<LocalPatchEntry | {
+  type: 'code_patch';
+  target_id: string;
+  new_value: unknown;
+  gids: string[];
+}> {
+  const objectPatches = buildPaletteObjectPatches(resolution, value);
+  if (!codeTargetId) return objectPatches;
+  const replayedObjectPatches = objectPatches.map(patch => ({
+    ...patch,
+    mode: 'backend_patch' as const,
+  }));
+  return [{
+    type: 'code_patch',
+    target_id: codeTargetId,
+    new_value: value,
+    gids: Array.from(new Set(resolution.targets.map(target => target.objectId))),
+  }, ...replayedObjectPatches];
+}

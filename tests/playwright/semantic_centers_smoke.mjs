@@ -44,7 +44,7 @@ function record(id, status, note) {
 
 function isIgnorableDevServerNoise(message) {
   return message.includes('[vite] failed to connect to websocket')
-    || message.includes("WebSocket connection to 'ws://localhost:24678/")
+    || /WebSocket connection to 'ws:\/\/(?:localhost|127\.0\.0\.1):24678\//.test(message)
     || message.includes('WebSocket closed without opened');
 }
 
@@ -93,12 +93,15 @@ const script = [
   'import matplotlib.pyplot as plt',
   'LINE_COLOR = "#225577"',
   'POINT_COLOR = "#cc5500"',
+  'DYNAMIC_COLOR = "#123456"',
   'SERIES_COLORS = {"Weak": "#446688", "Mixed": "#446688"}',
+  'dynamic_color = "#" + "123456"',
   'fig, ax = plt.subplots(figsize=(5, 3.5))',
   'ax.plot([0, 1, 2, 3], [1, 3, 2, 4], color=LINE_COLOR, linewidth=1.5, marker="o", label="Line A")',
   'ax.scatter([0, 1, 2, 3], [1.2, 2.8, 2.2, 3.7], c=POINT_COLOR, s=55, label="Points")',
   'ax.plot([0, 1, 2, 3], [2.0, 2.4, 2.1, 2.8], color=SERIES_COLORS["Weak"], label="Weak")',
   'ax.plot([0, 1, 2, 3], [2.8, 2.1, 2.6, 2.2], color=SERIES_COLORS["Mixed"], label="Mixed")',
+  'ax.plot([0, 1, 2, 3], [3.2, 3.0, 3.4, 3.1], color=dynamic_color, label="Data driven")',
   'ax.set_title("Semantic Centers")',
   'ax.set_xlabel("X Axis")',
   'ax.set_ylabel("Y Axis")',
@@ -167,6 +170,7 @@ async function prepareProject(page) {
       bindingCount: rendered.figures[0]?.manifest?.bindings?.length || 0,
       weakBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'dict_SERIES_COLORS__Weak') || null,
       mixedBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'dict_SERIES_COLORS__Mixed') || null,
+      dynamicBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'DYNAMIC_COLOR') || null,
     };
   }, { baseUrl: BASE_URL, script });
   await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
@@ -358,6 +362,30 @@ async function readRuntimePaletteColors(page, paletteIds) {
   }, paletteIds);
 }
 
+async function readRuntimePaletteBinding(page, paletteId) {
+  return page.evaluate((id) => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    if (!raw) return null;
+    const state = JSON.parse(raw);
+    const figure = state.projectFigures?.[state.activeFigureId || 'fig_1'];
+    const manifest = figure?.manifest || {};
+    const palette = (manifest.palettes || []).find((item) => item.id === id);
+    const binding = (manifest.bindings || []).find((item) => item.paletteId === id);
+    const objects = new Map((manifest.objects || []).map((item) => [item.id, item]));
+    return {
+      color: palette?.color || null,
+      gids: binding?.gids || [],
+      editLog: figure?.editLog || [],
+      objectColors: (binding?.gids || []).map((gid) => {
+        const object = objects.get(gid);
+        const prop = (binding?.props || []).find((candidate) => object?.currentProps?.[candidate] !== undefined)
+          || 'color';
+        return { gid, prop, color: object?.currentProps?.[prop] || null };
+      }),
+    };
+  }, paletteId);
+}
+
 async function clickFirstPaletteAffectedObject(page, sectionText) {
   const clicked = await page.evaluate((section) => {
     const normalize = (value) => String(value || '').replace(/\s+/g, '');
@@ -543,21 +571,54 @@ async function run() {
     const weakApply = weakChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const weakPatches = patchList(weakApply.patchBody);
     const weakCodePatch = weakPatches.find((patch) => patch.type === 'code_patch');
+    const weakObjectPatches = weakPatches.filter((patch) => patch.type !== 'code_patch');
     const runtimePaletteColors = await readRuntimePaletteColors(page, [weakPaletteId, mixedPaletteId]);
     const weakIsolationOk = weakChanged
       && weakDraft
       && weakApply.successful
-      && weakPatches.length === 1
       && weakCodePatch?.target_id === weakPaletteId
       && Array.isArray(weakCodePatch?.gids)
       && weakCodePatch.gids.length === weakGids.length
       && weakCodePatch.gids.every((gid) => weakGids.includes(gid) && !mixedGids.includes(gid))
+      && weakObjectPatches.length === weakGids.length
+      && weakObjectPatches.every((patch) => weakGids.includes(patch.gid) && !mixedGids.includes(patch.gid))
       && String(runtimePaletteColors[weakPaletteId]).toLowerCase() === '#22aa66'
       && String(runtimePaletteColors[mixedPaletteId]).toLowerCase() === '#446688';
     record(
       'H1b-same-color-weak-only',
       weakIsolationOk ? 'PASS' : 'FAIL',
       `changed=${weakChanged}, draft=${weakDraft}, patch=${JSON.stringify(weakCodePatch)}, colors=${JSON.stringify(runtimePaletteColors)}`,
+    );
+
+    await clickText(page, '配色中心');
+    const dynamicGids = fixture.dynamicBinding?.gids || [];
+    const dynamicChanged = await setColorByScope(page, 'palette:DYNAMIC_COLOR', '#654321');
+    const dynamicDraft = (await getBodyText(page)).includes('已暂存');
+    const dynamicApply = dynamicChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const dynamicPatches = patchList(dynamicApply.patchBody);
+    const dynamicCodePatch = dynamicPatches.find((patch) => patch.type === 'code_patch' && patch.target_id === 'DYNAMIC_COLOR');
+    const dynamicObjectPatches = dynamicPatches.filter((patch) => patch.type !== 'code_patch');
+    const dynamicRuntime = await readRuntimePaletteBinding(page, 'DYNAMIC_COLOR');
+    const dynamicFallbackOk = dynamicChanged
+      && dynamicDraft
+      && dynamicApply.successful
+      && dynamicGids.length > 0
+      && dynamicCodePatch?.new_value === '#654321'
+      && dynamicObjectPatches.length === dynamicGids.length
+      && dynamicObjectPatches.every((patch) => dynamicGids.includes(patch.gid) && String(patch.value).toLowerCase() === '#654321')
+      && String(dynamicRuntime?.color).toLowerCase() === '#654321'
+      && dynamicRuntime?.gids?.length === dynamicGids.length
+      && dynamicRuntime?.objectColors?.every((item) => String(item.color).toLowerCase() === '#654321')
+      && dynamicGids.every((gid) => dynamicRuntime?.editLog?.some((entry) => (
+        entry.gid === gid
+        && ['color', 'facecolor', 'edgecolor'].includes(entry.prop)
+        && String(entry.value).toLowerCase() === '#654321'
+        && entry.mode === 'backend_patch'
+      )));
+    record(
+      'H1c-data-driven-color-fallback',
+      dynamicFallbackOk ? 'PASS' : 'FAIL',
+      `changed=${dynamicChanged}, draft=${dynamicDraft}, patches=${JSON.stringify(dynamicPatches)}, runtime=${JSON.stringify(dynamicRuntime)}`,
     );
 
     await clickText(page, '配色中心');

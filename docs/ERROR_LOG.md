@@ -1,7 +1,7 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-12 15:25:57 +08:00
+> 最后修改时间：2026-07-12 22:12:35 +08:00
 
 ---
 
@@ -1533,3 +1533,49 @@ build_figure(fl9_data, stats_df, opr_fep_df)
 - 页面显示为空时先区分“账号级/项目级查询”“数据库记录”“物理文件”“运行 session”，不能直接判断数据丢失。
 - 测试数据隔离必须同时隔离数据库和项目文件根目录，仅换账号或仅换数据库都不够。
 - 升级前后必须执行数据完整性审计；恢复默认 dry-run，apply 必须非覆盖、可追溯、有哈希和数据库备份。
+
+---
+
+## 2026-07-12 22:06:47 +08:00 Python 数据驱动颜色整组修改无效并导致后续 palette 失去目标
+
+**现象**
+
+- 配色中心首次可以选中一组图元，修改颜色并应用后画面没有变化。
+- 重渲染后该 palette 变成 0 个目标，界面提示“当前 Figure 没有使用这个脚本颜色”，无法再次选中整组。
+
+**真实项目证据**
+
+- 只读检查最新项目 `1排序图`：Figure revision 为 71，项目和 session 在问题发生时继续更新，但成功预览时间停留在更早时刻。
+- manifest 中 `BLUE`、`RED` 和 `ZERO` 原本均有 binding；脚本虽然定义 `BLUE/RED`，实际循环绘图使用 `row["Color"]`。
+- 修改 `BLUE` 常量不会改变已经存在的数据列颜色，因此旧的纯 `code_patch` 不能改变实际 artist；常量颜色与 artist 颜色分离后，下一次 binding 得到 0 个 GID。
+
+**为什么旧版正常、后来退化**
+
+- 旧路径更偏向直接修改已识别图元，所以数据列控制颜色时仍能立即生效。
+- 后续为了让颜色修改写回 Python 常量并在刷新后可复现，整组改色改成只提交 `code_patch`。
+- 该升级错误地假设“扫描到的脚本颜色常量一定是当前 artist 的真实控制源”，遗漏了数据列、计算结果和动态映射控制颜色的脚本。
+- 这不是文本、边框、拖拽或整体图元识别失效，而是 palette 整组写回策略缺少对象级 fallback。
+
+**修复**
+
+- Python 单组改色和配色预设统一生成一个批次：`code_patch + binding 精确对象 patch`。
+- 与 `code_patch` 同批的对象颜色强制使用 `backend_patch`，确保 renderer 在 introspection 和 binding 重建前 replay 颜色；仅修改已选图元仍保持 local patch。
+- 代码常量、字典和内联颜色替换迁移到可测试的 `applyColorCodePatch()`；目标不存在时明确报错，不再静默返回成功。
+- 字典替换支持带下划线名称和类型注解，并限制在目标字典作用域内。
+- R 语言继续使用对象 patch，不引入不受支持的 R code patch。
+
+**验证**
+
+- 新增数据驱动 fixture：`DYNAMIC_COLOR` 与实际绘图颜色初值相同，但 artist 不读取该常量。
+- 浏览器回归确认应用请求包含 1 个 code patch 和全部目标对象 backend patch。
+- 重渲染后 palette 颜色、对象颜色和 binding GID 均保持为新颜色，可继续选中整组。
+- `npm run test:semantic-smoke`：10 PASS / 0 FAIL，console/page error 为 0。
+- 全量 Vitest：41 files / 285 tests 通过。
+- TypeScript 和生产构建通过；仅保留既有 bundle 体积和 CJS `import.meta` 警告。
+- 独立代码审查发现并修复 project code-patch 顶层 `editLog/revision/script` 缺口；复审 PASS，无剩余 blocking finding。
+
+**防复发规则**
+
+- palette 常量只能作为代码持久化目标，不能被假设为 artist 的唯一真实颜色来源。
+- 任何触发后端重渲染的 code patch 若依赖对象 fallback，对象 patch 必须参加同一次 backend replay；不能只在前端局部预览。
+- 配色回归必须同时检查视觉颜色、manifest currentProps、binding GID 和刷新后的可再次选择能力。
