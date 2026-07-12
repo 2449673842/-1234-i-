@@ -128,6 +128,8 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
      COLOR_GROUP_B = "#ff7f0e"
      ```
      配色中心可以识别这些常量定义并在右侧一键更新代码变量值。
+   - 每个语义组只能保留一个权威颜色常量或颜色字典条目，不要再定义同色但未使用的别名。
+   - 使用 `c=df["Color"]` 等逐点颜色数组时，该列必须直接由上述权威常量生成；不要另建一套重复常量，否则平台无法可靠区分颜色归属。
 
 3. **Colorbar 的绑定规范**：
    - 绘制色条时，务必将绘图 API 返回的 mappable 对象传递给 colorbar 函数：

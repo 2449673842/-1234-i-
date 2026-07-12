@@ -4545,15 +4545,21 @@ export function RightSidebar({
         PALETTE_TARGET_RESOLVER_V2_ENABLED,
       );
       const gids = Array.from(new Set(resolution.targets.map(target => target.objectId)));
+      const selectableGids = Array.from(new Set(
+        resolution.targets
+          .filter(target => target.replayMode !== 'code_only')
+          .map(target => target.objectId),
+      ));
       const targetObjects = gids
         .map((gid: string) => objects.find(obj => obj.id === gid))
         .filter(Boolean) as any[];
-      const selectedCount = gids.filter((gid: string) => selectedGids.includes(gid)).length;
+      const selectedCount = selectableGids.filter((gid: string) => selectedGids.includes(gid)).length;
       return {
         palette,
         binding,
         resolution,
         gids,
+        selectableGids,
         targetObjects,
         selectedCount,
         isActive: selectedCount > 0,
@@ -4623,7 +4629,7 @@ export function RightSidebar({
           <p className="text-xs text-slate-400 mb-4">按脚本颜色常量/字典分组，先看命中的真实图元，再统一改色。</p>
           
           <div className="space-y-4">
-            {paletteGroups.map(({ palette: p, binding, resolution, gids, targetObjects, selectedCount, isActive }) => {
+            {paletteGroups.map(({ palette: p, binding, resolution, gids, selectableGids, targetObjects, selectedCount, isActive }) => {
               const count = targetObjects.length;
               const source = typeof p.source === 'string' ? p.source : 'script';
               const propText = resolution.targets.length > 0
@@ -4638,14 +4644,22 @@ export function RightSidebar({
                 if (obj.kind === 'patch' || obj.kind === 'collection') return 'facecolor';
                 return 'color';
               };
-              const selectedGidsOfPalette = gids.filter((gid: string) => selectedGids.includes(gid));
+              const selectedGidsOfPalette = selectableGids.filter((gid: string) => selectedGids.includes(gid));
+              const objectPatchableGids = new Set(
+                resolution.targets
+                  .filter(target => target.replayMode !== 'code_only')
+                  .map(target => target.objectId),
+              );
+              const selectedPatchableGids = selectedGidsOfPalette.filter((gid: string) => objectPatchableGids.has(gid));
               const selectedObjectsOfPalette = selectedGidsOfPalette
                 .map((gid: string) => objects.find(obj => obj.id === gid))
                 .filter(Boolean) as StandardFigureObject[];
               const subsetPreviewObject = selectedObjectsOfPalette[0];
               const subsetPreviewProp = subsetPreviewObject ? getPalettePatchProp(subsetPreviewObject) : 'color';
               const subsetPreviewColor = subsetPreviewObject?.currentProps?.[subsetPreviewProp] || p.color;
-              const bindingBlocked = resolution.strategy === 'strict' && resolution.ambiguous.length > 0;
+              const bindingBlocked = resolution.ambiguous.length > 0;
+              const codeReplayOnly = resolution.targets.length > 0
+                && resolution.targets.every(target => target.replayMode === 'code_only');
               return (
                 <div
                   key={p.id}
@@ -4661,11 +4675,11 @@ export function RightSidebar({
                     <div className="flex items-start gap-3 min-w-0">
                       <button
                         type="button"
-                        onClick={() => selectPaletteTargets(gids)}
-                        disabled={count === 0}
+                        onClick={() => selectPaletteTargets(selectableGids)}
+                        disabled={selectableGids.length === 0}
                         className="w-9 h-9 rounded shrink-0 shadow-sm border border-white ring-1 ring-slate-200 disabled:opacity-60 disabled:cursor-not-allowed"
                         style={{ backgroundColor: resolvePickerColor(p.color) }}
-                        title={count > 0 ? '选中这组颜色影响的对象' : '当前 Figure 未使用此颜色'}
+                        title={codeReplayOnly ? '逐点颜色通过代码变量独立重绘，不按整个 collection 选中' : count > 0 ? '选中这组颜色影响的对象' : '当前 Figure 未使用此颜色'}
                       />
                       <div className="min-w-0">
                         <div className="text-sm font-semibold text-slate-800 truncate">{p.label}</div>
@@ -4692,7 +4706,7 @@ export function RightSidebar({
                                   ? 'bg-amber-100 text-amber-700'
                                   : 'bg-emerald-100 text-emerald-700'
                             }`}>
-                              {bindingBlocked ? '绑定歧义' : resolution.targetMode === 'conditional' ? '条件绑定' : '精确绑定'}
+                              {bindingBlocked ? '绑定歧义' : codeReplayOnly ? '代码重绘绑定' : resolution.targetMode === 'conditional' ? '条件绑定' : '精确绑定'}
                             </span>
                           )}
                         </div>
@@ -4700,8 +4714,8 @@ export function RightSidebar({
                     </div>
                     <button
                       type="button"
-                      onClick={() => selectPaletteTargets(gids)}
-                      disabled={count === 0}
+                      onClick={() => selectPaletteTargets(selectableGids)}
+                      disabled={selectableGids.length === 0}
                       className="text-xs font-semibold text-blue-600 hover:text-blue-700 disabled:text-slate-300 disabled:cursor-not-allowed whitespace-nowrap"
                     >
                       选中整组
@@ -4715,17 +4729,17 @@ export function RightSidebar({
 
                   {count > 0 && (
                     <div className="space-y-2 pt-2 border-t border-slate-100">
-                      {selectedCount > 0 ? (
+                      {selectedPatchableGids.length > 0 ? (
                         <>
                           {renderColorInput(
-                            `仅修改已选的 ${selectedCount} 个图元`,
+                            `仅修改已选的 ${selectedPatchableGids.length} 个图元`,
                             resolvePickerColor(String(subsetPreviewColor || p.color)),
                             (value) => {
                               const selectedResolution = resolvePaletteTargets(
                                 manifest,
                                 p.id,
                                 PALETTE_TARGET_RESOLVER_V2_ENABLED,
-                                selectedGidsOfPalette,
+                                selectedPatchableGids,
                               );
                               const patches = buildPaletteObjectPatches(selectedResolution, value).map((patch) => {
                                 const object = manifest.objects.find(item => item.id === patch.gid);
@@ -4769,11 +4783,12 @@ export function RightSidebar({
                             <button
                               type="button"
                               key={obj.id}
+                              disabled={codeReplayOnly}
                               onClick={() => {
                                 onSelectGids?.([obj.id]);
                                 onSelectObject(obj.id);
                               }}
-                              className={`w-full flex items-center justify-between gap-2 rounded px-2 py-1 text-left text-[11px] transition-colors ${
+                              className={`w-full flex items-center justify-between gap-2 rounded px-2 py-1 text-left text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                                 selectedGids.includes(obj.id)
                                   ? 'bg-blue-100 text-blue-800'
                                   : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
@@ -4797,6 +4812,11 @@ export function RightSidebar({
                       {bindingBlocked && (
                         <div className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] leading-relaxed text-red-700">
                           当前颜色绑定存在歧义，平台不会按相同颜色猜测影响对象。Python 代码常量仍可按唯一变量名修改；R 图元修改已阻止。
+                        </div>
+                      )}
+                      {codeReplayOnly && (
+                        <div className="rounded-md border border-blue-100 bg-blue-50 px-2 py-1.5 text-[11px] leading-relaxed text-blue-700">
+                          该组属于同一散点集合内的逐点颜色。平台将按代码变量独立重绘，不会把整个集合统一染色。
                         </div>
                       )}
                     </div>

@@ -22,6 +22,7 @@ export interface ResolvedPaletteTarget {
   match: BindingTarget['match'] | 'legacy';
   confidence: BindingTarget['confidence'] | 'legacy';
   patchMode: EditMode;
+  replayMode: NonNullable<BindingTarget['replayMode']>;
 }
 
 export interface PaletteTargetIssue {
@@ -57,6 +58,27 @@ function matchingBindings(manifest: Manifest, paletteId: string): Binding[] {
 
 function objectById(manifest: Manifest, gid: string): ManifestObject | undefined {
   return (manifest.objects ?? []).find(object => object.id === gid);
+}
+
+function isMultiColorValue(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length === 0 || !Array.isArray(value[0])) return false;
+  const colors = new Set<string>();
+  value.forEach((row) => {
+    if (!Array.isArray(row) || row.length < 3) return;
+    const rgb = row.slice(0, 3).map(component => Number(component));
+    if (rgb.some(component => !Number.isFinite(component))) return;
+    colors.add(rgb.map(component => Math.round(component * 255)).join(','));
+  });
+  return colors.size > 1;
+}
+
+function replayModeForTarget(
+  object: ManifestObject,
+  prop: string,
+  declared?: BindingTarget['replayMode'],
+): NonNullable<BindingTarget['replayMode']> {
+  if (declared) return declared;
+  return isMultiColorValue(object.currentProps?.[prop]) ? 'code_only' : 'object_patch';
 }
 
 function fallbackProp(binding: Binding, object: ManifestObject): string {
@@ -111,6 +133,21 @@ function legacyResolution(
       warnings: [],
     };
   }
+  if (binding.targetMode === 'ambiguous' || binding.targetMode === 'unresolved') {
+    return {
+      paletteId,
+      strategy: 'legacy',
+      fallbackReason,
+      targetMode: binding.targetMode,
+      targets: [],
+      skipped: [],
+      ambiguous: [{
+        reason: 'ambiguous_binding',
+        detail: binding.warnings?.[0] || `${paletteId} binding is ${binding.targetMode}.`,
+      }],
+      warnings: binding.warnings ?? [],
+    };
+  }
   const selected = selectedObjectIds ? new Set(selectedObjectIds) : null;
   const targets: ResolvedPaletteTarget[] = [];
   const skipped: PaletteTargetIssue[] = [];
@@ -130,6 +167,7 @@ function legacyResolution(
       match: 'legacy',
       confidence: 'legacy',
       patchMode: resolvePatchMode(manifest, object, prop),
+      replayMode: replayModeForTarget(object, prop),
     });
   });
   return {
@@ -271,6 +309,7 @@ export function resolvePaletteTargets(
         match: target.match,
         confidence: target.confidence,
         patchMode: capability.patchMode,
+        replayMode: replayModeForTarget(object, target.prop, target.replayMode),
       });
     });
   });
@@ -291,7 +330,7 @@ export function buildPaletteObjectPatches(
   value: unknown,
 ): LocalPatchEntry[] {
   if (resolution.strategy === 'strict' && resolution.ambiguous.length > 0) return [];
-  return resolution.targets.map(target => ({
+  return resolution.targets.filter(target => target.replayMode !== 'code_only').map(target => ({
     op: 'set',
     mode: target.patchMode,
     gid: target.objectId,

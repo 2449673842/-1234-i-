@@ -94,14 +94,18 @@ const script = [
   'LINE_COLOR = "#225577"',
   'POINT_COLOR = "#cc5500"',
   'DYNAMIC_COLOR = "#123456"',
+  'VECTOR_A = "#2A9D8F"',
+  'VECTOR_B = "#E76F51"',
   'SERIES_COLORS = {"Weak": "#446688", "Mixed": "#446688"}',
   'dynamic_color = "#" + "123456"',
+  'vector_colors = [VECTOR_A, VECTOR_B, VECTOR_A, VECTOR_B]',
   'fig, ax = plt.subplots(figsize=(5, 3.5))',
   'ax.plot([0, 1, 2, 3], [1, 3, 2, 4], color=LINE_COLOR, linewidth=1.5, marker="o", label="Line A")',
   'ax.scatter([0, 1, 2, 3], [1.2, 2.8, 2.2, 3.7], c=POINT_COLOR, s=55, label="Points")',
   'ax.plot([0, 1, 2, 3], [2.0, 2.4, 2.1, 2.8], color=SERIES_COLORS["Weak"], label="Weak")',
   'ax.plot([0, 1, 2, 3], [2.8, 2.1, 2.6, 2.2], color=SERIES_COLORS["Mixed"], label="Mixed")',
   'ax.plot([0, 1, 2, 3], [3.2, 3.0, 3.4, 3.1], color=dynamic_color, label="Data driven")',
+  'ax.scatter([0.2, 1.2, 2.2, 3.2], [0.4, 0.7, 0.5, 0.8], c=vector_colors, s=35)',
   'ax.set_title("Semantic Centers")',
   'ax.set_xlabel("X Axis")',
   'ax.set_ylabel("Y Axis")',
@@ -171,6 +175,8 @@ async function prepareProject(page) {
       weakBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'dict_SERIES_COLORS__Weak') || null,
       mixedBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'dict_SERIES_COLORS__Mixed') || null,
       dynamicBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'DYNAMIC_COLOR') || null,
+      vectorABinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'VECTOR_A') || null,
+      vectorBBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'VECTOR_B') || null,
     };
   }, { baseUrl: BASE_URL, script });
   await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
@@ -382,6 +388,7 @@ async function readRuntimePaletteBinding(page, paletteId) {
           || 'color';
         return { gid, prop, color: object?.currentProps?.[prop] || null };
       }),
+      targets: binding?.targets || [],
     };
   }, paletteId);
 }
@@ -529,9 +536,12 @@ async function run() {
     const pointOk = pointSizeChanged
       && pointDraft
       && pointApply.successful
-      && pointPatches.length === 1
-      && /^collection\.\d+\.\d+$/.test(String(pointPatches[0]?.gid || ''))
-      && pointPatches[0]?.prop === 'size'
+      && pointPatches.length === 2
+      && pointPatches.every((patch) => (
+        /^collection\.\d+\.\d+$/.test(String(patch?.gid || ''))
+        && patch?.prop === 'size'
+        && Number(patch?.value) === 90
+      ))
       && Number(pointPatches[0]?.value) === 90;
     record('G2-scatter-excludes-legend', pointOk ? 'PASS' : 'FAIL', `changed=${pointSizeChanged}, draft=${pointDraft}, patches=${JSON.stringify(pointPatches)}`);
 
@@ -619,6 +629,33 @@ async function run() {
       'H1c-data-driven-color-fallback',
       dynamicFallbackOk ? 'PASS' : 'FAIL',
       `changed=${dynamicChanged}, draft=${dynamicDraft}, patches=${JSON.stringify(dynamicPatches)}, runtime=${JSON.stringify(dynamicRuntime)}`,
+    );
+
+    await clickText(page, '配色中心');
+    const vectorChanged = await setColorByScope(page, 'palette:VECTOR_A', '#33AA77');
+    const vectorDraft = (await getBodyText(page)).includes('已暂存');
+    const vectorApply = vectorChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const vectorPatches = patchList(vectorApply.patchBody);
+    const vectorRuntimeA = await readRuntimePaletteBinding(page, 'VECTOR_A');
+    const vectorRuntimeB = await readRuntimePaletteBinding(page, 'VECTOR_B');
+    const vectorColors = (vectorRuntimeA?.objectColors?.[0]?.color || []).map((row) => (
+      `#${row.slice(0, 3).map((value) => Math.round(Number(value) * 255).toString(16).padStart(2, '0')).join('')}`
+    ));
+    const vectorIsolationOk = vectorChanged
+      && vectorDraft
+      && vectorApply.successful
+      && vectorPatches.length === 1
+      && vectorPatches[0]?.type === 'code_patch'
+      && vectorPatches[0]?.target_id === 'VECTOR_A'
+      && vectorRuntimeA?.targets?.every((target) => target.replayMode === 'code_only')
+      && String(vectorRuntimeA?.color).toLowerCase() === '#33aa77'
+      && String(vectorRuntimeB?.color).toLowerCase() === '#e76f51'
+      && vectorColors.filter((color) => color === '#33aa77').length === 2
+      && vectorColors.filter((color) => color === '#e76f51').length === 2;
+    record(
+      'H1d-vector-color-group-isolation',
+      vectorIsolationOk ? 'PASS' : 'FAIL',
+      `patches=${JSON.stringify(vectorPatches)}, A=${JSON.stringify(vectorRuntimeA)}, B=${JSON.stringify(vectorRuntimeB)}`,
     );
 
     await clickText(page, '配色中心');

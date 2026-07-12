@@ -70,6 +70,18 @@ def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict
     # 2. AST parsing to find dictionaries (Pattern B) and plotting calls
     try:
         tree = ast.parse(source)
+
+        # A color constant can share a value with the real plotting constant
+        # while never being referenced after its declaration.  Preserve it in
+        # the palette list for code editing, but mark it unused so the binding
+        # engine does not treat it as a competing rendered-color owner.
+        constant_usage = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                constant_usage[node.id] = constant_usage.get(node.id, 0) + 1
+        for palette in palettes:
+            if palette.get("source") == "constant":
+                palette["usageCount"] = constant_usage.get(str(palette.get("id") or ""), 0)
         
         # Look for color dictionary definitions.  Older versions only scanned
         # SEMANTIC_COLORS, but real converted scripts commonly use names such
