@@ -21,6 +21,7 @@ import os from 'os';
 import { performance } from 'node:perf_hooks';
 import Papa from 'papaparse';
 import { createRequire } from 'module';
+import { applyColorCodePatch } from './src/utils/codeColorPatch';
 let archiver: any;
 try {
   // @ts-ignore
@@ -376,10 +377,6 @@ async function startServer() {
       }
     }
     return null;
-  }
-
-  function escapeRegExp(s: string): string {
-    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   function countCjkChars(value: string): number {
@@ -2963,77 +2960,6 @@ ${inner}
     };
   }
 
-  function applyCodePatch(script: string, patch: any): string {
-    const lines = script.split('\n');
-    if (!/^#[0-9A-Fa-f]{6}$/.test(patch.new_value)) {
-      throw new Error(`无效的颜色值: ${patch.new_value}`);
-    }
-    const inlineMatch = String(patch.target_id || '').match(/^inline_(\d+)_(\d+)_([0-9a-fA-F]{6})$/);
-    if (inlineMatch) {
-      const lineIndex = Number(inlineMatch[1]) - 1;
-      const occurrenceIndex = Number(inlineMatch[2]);
-      const originalHex = `#${inlineMatch[3]}`;
-      if (lineIndex < 0 || lineIndex >= lines.length) {
-        throw new Error(`内联颜色行号无效: ${patch.target_id}`);
-      }
-      let seen = 0;
-      lines[lineIndex] = lines[lineIndex].replace(/#[0-9A-Fa-f]{6}/g, (match) => {
-        if (match.toLowerCase() !== originalHex.toLowerCase()) return match;
-        seen += 1;
-        return seen === occurrenceIndex ? patch.new_value : match;
-      });
-      if (seen < occurrenceIndex) {
-        throw new Error(`未找到内联颜色: ${patch.target_id}`);
-      }
-      return lines.join('\n');
-    }
-    const safeTarget = escapeRegExp(patch.target_id);
-    const regexConstant = new RegExp(`^(${safeTarget})\\s*=\\s*["\'](#[0-9A-Fa-f]{6})["\']`);
-    const targetId = String(patch.target_id || '');
-    const scopedDictMatch = /^dict_([^_][\w]*)__(.*)$/.exec(targetId);
-    const cleanKey = targetId.replace(/^dict_/, '');
-    const safeKey = escapeRegExp(scopedDictMatch ? scopedDictMatch[2] : cleanKey);
-    const regexDict = new RegExp(`(["\']${safeKey}["\']\\s*:\\s*)["\'](#[0-9A-Fa-f]{6})["\']`);
-    const scopedDictName = scopedDictMatch ? scopedDictMatch[1] : null;
-    let insideScopedDict = false;
-    let scopedBraceDepth = 0;
-    const replaceDictColor = (line: string) => line.replace(regexDict, (_match, prefix) => `${prefix}"${patch.new_value}"`);
-
-    const updatedLines = lines.map(line => {
-      const trimmed = line.trim();
-      if (regexConstant.test(trimmed)) {
-        return line.replace(/(#[0-9A-Fa-f]{6})/, patch.new_value);
-      }
-
-      if (scopedDictName) {
-        const startsScopedDict = new RegExp(`^${escapeRegExp(scopedDictName)}\\s*=\\s*\\{`).test(trimmed);
-        if (startsScopedDict) {
-          insideScopedDict = true;
-          scopedBraceDepth = 0;
-        }
-        if (insideScopedDict) {
-          scopedBraceDepth += (line.match(/\{/g) || []).length;
-          scopedBraceDepth -= (line.match(/\}/g) || []).length;
-          const nextLine = regexDict.test(trimmed)
-            ? replaceDictColor(line)
-            : line;
-          if (scopedBraceDepth <= 0) {
-            insideScopedDict = false;
-          }
-          return nextLine;
-        }
-        return line;
-      }
-
-      if (regexDict.test(trimmed)) {
-        return replaceDictColor(line);
-      }
-      return line;
-    });
-    
-    return updatedLines.join('\n');
-  }
-
   // POST /api/figure/render — introspection-based render
   app.post('/api/figure/render', renderRateLimit, async (req, res) => {
     try {
@@ -3256,7 +3182,7 @@ ${inner}
       // Apply code patches if any
       if (codePatches.length > 0) {
         codePatches.forEach((cp: any) => {
-          session.script = applyCodePatch(session.script, cp);
+          session.script = applyColorCodePatch(session.script, cp);
           if (cp.gids && Array.isArray(cp.gids)) {
             session.editLog = session.editLog.filter((e: any) => {
               const isColorProp = e.prop === 'facecolor' || e.prop === 'color' || e.prop === 'edgecolor';
@@ -3374,7 +3300,10 @@ ${inner}
           result.svg = matchedFig.svg;
           result.manifest = matchedFig.manifest;
           result.codeSlice = matchedFig.codeSlice;
+          result.editLog = matchedFig.editLog || effectiveEditLogs[projectContext.figureId] || [];
+          result.revision = matchedFig.revision;
         }
+        result.script = session.script;
 
         const response = { ...result, applied: newEdits, requestId };
         processedIds.add(requestId);

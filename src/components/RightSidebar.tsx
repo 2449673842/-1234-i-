@@ -9,7 +9,7 @@ import { recordTargetResolverShadowDiagnostic } from '../utils/targetResolverDia
 import { recordPropertyProjectionShadowDiagnostic } from '../utils/propertyProjectionDiagnostics';
 import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
 import { resolvePropertyPatchMode } from '../utils/propertyPatchMode';
-import { buildPaletteObjectPatches, resolvePaletteTargets } from '../utils/paletteTargetResolver';
+import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolvePaletteTargets } from '../utils/paletteTargetResolver';
 import { computeEqualAxesPhysicalLayout } from '../utils/subplotPhysicalLayout';
 import { resolveExplicitColorbarOwner } from '../utils/colorbarOwnership';
 import type { StandardFigureModel, StandardFigureObject } from '../schemas/standardFigureModel';
@@ -1131,9 +1131,6 @@ export function RightSidebar({
       paletteId,
       PALETTE_TARGET_RESOLVER_V2_ENABLED,
     );
-    const gids = Array.from(new Set(resolution.targets.map(target => target.objectId)));
-    const figureId = currentFigureId;
-
     if (resolution.fallbackReason && resolution.fallbackReason !== 'feature_disabled') {
       console.info('[PaletteTargetResolverV2] compatibility fallback', {
         paletteId,
@@ -1148,38 +1145,29 @@ export function RightSidebar({
       });
     }
 
-    if (manifest.generatedBy === 'r_svg') {
-      const draftPatchesList = buildPaletteObjectPatches(resolution, newColor).map((patch) => {
-        const object = manifest.objects.find(item => item.id === patch.gid);
-        const intent: EditingIntent = {
-          intent: 'style.component',
-          scope: {
-            selectionMode: 'explicit_objects',
-            objectIds: [patch.gid],
-            targetKinds: object ? [object.kind] : undefined,
-            crossFigure: 'deny',
-          },
-          operation: { prop: patch.prop, value: newColor },
-          commit: { mode: 'draft', applyAsOneHistoryStep: true },
-          fallback: { onUnsupported: 'skip_with_warning' },
-        };
-        return { ...patch, intent };
-      });
-      if (draftPatchesList.length === 0) return;
-      onUpdateDraftsBatch(figureId, draftPatchesList);
-      return;
-    }
-    
-    onUpdateDraft(figureId, {
-      gid: 'code_patch',
-      prop: paletteId,
-      value: newColor,
-      mode: 'backend_patch',
-      type: 'code_patch',
-      target_id: paletteId,
-      new_value: newColor,
-      gids
+    const patchBatch = buildPaletteUpdatePatches(
+      resolution,
+      newColor,
+      manifest.generatedBy === 'r_svg' ? undefined : paletteId,
+    ).map((patch) => {
+      if ('type' in patch) return patch;
+      const object = manifest.objects.find(item => item.id === patch.gid);
+      const intent: EditingIntent = {
+        intent: 'style.component',
+        scope: {
+          selectionMode: 'explicit_objects',
+          objectIds: [patch.gid],
+          targetKinds: object ? [object.kind] : undefined,
+          crossFigure: 'deny',
+        },
+        operation: { prop: patch.prop, value: newColor },
+        commit: { mode: 'draft', applyAsOneHistoryStep: true },
+        fallback: { onUnsupported: 'skip_with_warning' },
+      };
+      return { ...patch, intent };
     });
+    if (patchBatch.length === 0) return;
+    void onPatch(patchBatch as PatchEntry[]);
   };
 
   const getObjectTypeLabel = (kind: string) => {
@@ -4596,18 +4584,17 @@ export function RightSidebar({
         void onPatch(patchArray);
         return;
       }
-      const patchArray = palettes.map((p: any, idx: number) => {
+      const patchArray = palettes.flatMap((p: any, idx: number) => {
         const resolution = resolvePaletteTargets(
           manifest,
           p.id,
           PALETTE_TARGET_RESOLVER_V2_ENABLED,
         );
-        return {
-          type: 'code_patch' as const,
-          target_id: p.id,
-          new_value: colors[idx % colors.length],
-          gids: Array.from(new Set(resolution.targets.map(target => target.objectId))),
-        };
+        return buildPaletteUpdatePatches(
+          resolution,
+          colors[idx % colors.length],
+          p.id,
+        );
       });
       void onPatch(patchArray);
     };

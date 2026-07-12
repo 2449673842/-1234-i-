@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Binding, Manifest, ManifestObject } from '../schemas/manifest';
-import { buildPaletteObjectPatches, resolvePaletteTargets } from './paletteTargetResolver';
+import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolvePaletteTargets } from './paletteTargetResolver';
 
 function object(
   id: string,
@@ -64,6 +64,25 @@ function manifest(objects: ManifestObject[], bindings: Binding[]): Manifest {
 }
 
 describe('palette target resolver', () => {
+  it('keeps code persistence and exact object colors in one Python batch', () => {
+    const line = object('line.0', 'color', 'weak-series');
+    const resolution = resolvePaletteTargets(
+      manifest([line], [binding('Weak', [target(line.id, 'color', 'weak-series')])]),
+      'Weak',
+      true,
+    );
+    const patches = buildPaletteUpdatePatches(resolution, '#abcdef', 'Weak');
+
+    expect(patches[0]).toEqual({
+      type: 'code_patch',
+      target_id: 'Weak',
+      new_value: '#abcdef',
+      gids: ['line.0'],
+    });
+    expect(patches.slice(1)).toEqual([{
+      op: 'set', mode: 'backend_patch', gid: 'line.0', prop: 'color', value: '#abcdef',
+    }]);
+  });
   it('keeps same-color Weak and Mixed bindings separate by explicit targets', () => {
     const weak = object('line.0.0', 'color', 'weak-series');
     const mixed = object('line.0.1', 'color', 'mixed-series');
