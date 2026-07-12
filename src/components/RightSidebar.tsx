@@ -7,6 +7,8 @@ import { compileEditingIntent } from '../utils/editingIntentCompiler';
 import { compileEditingIntentWithControlledResolver } from '../utils/targetResolver';
 import { recordTargetResolverShadowDiagnostic } from '../utils/targetResolverDiagnostics';
 import { recordPropertyProjectionShadowDiagnostic } from '../utils/propertyProjectionDiagnostics';
+import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
+import { resolvePropertyPatchMode } from '../utils/propertyPatchMode';
 import { buildPaletteObjectPatches, resolvePaletteTargets } from '../utils/paletteTargetResolver';
 import { computeEqualAxesPhysicalLayout } from '../utils/subplotPhysicalLayout';
 import { resolveExplicitColorbarOwner } from '../utils/colorbarOwnership';
@@ -14,6 +16,7 @@ import type { StandardFigureModel, StandardFigureObject } from '../schemas/stand
 import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent';
 import type { EditingIntentApplyReport, EditingIntentSkippedTarget } from '../schemas/editingIntent';
 import type { EditingCenterId } from '../schemas/propertyDescriptor';
+import { PropertyControl } from './PropertyControl';
 
 import type { DraftPatch } from '../schemas/draftPatchBatch';
 
@@ -48,6 +51,9 @@ const COMPONENT_TARGET_RESOLVER_V2_ENABLED = (
 const PALETTE_TARGET_RESOLVER_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
 ).env?.VITE_SCIFIGURE_PALETTE_TARGET_RESOLVER_V2 === '1';
+const PROPERTY_INSPECTOR_V2_ENABLED = (
+  import.meta as ImportMeta & { env?: Record<string, string | undefined> }
+).env?.VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2 === '1';
 const DEFAULT_PRESETS: Record<string, string[]> = {
   Nature: ['#1F78B4', '#D95F02', '#7570B3', '#E7298A', '#66A61E'],
   Science: ['#E41A1C', '#377EB8', '#4DAF4A', '#984EA3', '#FF7F00'],
@@ -651,9 +657,6 @@ export function RightSidebar({
     const unsupported = obj?.currentProps?.unsupportedProps;
     return Array.isArray(unsupported) ? unsupported.map(String) : [];
   };
-  const resolvePatchMode = (prop: string) => (
-    manifest.generatedBy === 'r_svg' || !LOCAL_PROPS.has(prop) ? 'backend_patch' as const : 'local_patch' as const
-  );
   const getSemanticObjectLabel = (obj: ManifestObject) => {
     const id = obj.id;
     if (id.startsWith('title.')) return '主标题';
@@ -690,17 +693,23 @@ export function RightSidebar({
     const currentObject = manifest.objects.find((item) => item.id === gid);
     const figureId = currentFigureId;
 
-    const mode = manifest.generatedBy === 'r_svg'
-      ? 'backend_patch'
-      : isLocalPatch(currentObject?.kind || '', prop) ? 'local_patch' : 'backend_patch';
+    const mode = resolvePropertyPatchMode({
+      generatedBy: manifest.generatedBy,
+      object: currentObject,
+      prop,
+      legacyLocal: isLocalPatch(currentObject?.kind || '', prop),
+    });
     onUpdateDraft(figureId, { gid, prop, value, mode });
   };
 
   const buildPatchEntry = (gid: string, prop: string, value: unknown): PatchEntry => {
     const currentObject = manifest.objects.find((item) => item.id === gid);
-    const mode = manifest.generatedBy === 'r_svg'
-      ? 'backend_patch'
-      : isLocalPatch(currentObject?.kind || '', prop) ? 'local_patch' : 'backend_patch';
+    const mode = resolvePropertyPatchMode({
+      generatedBy: manifest.generatedBy,
+      object: currentObject,
+      prop,
+      legacyLocal: isLocalPatch(currentObject?.kind || '', prop),
+    });
     return { op: 'set', gid, prop, value, mode };
   };
 
@@ -2660,6 +2669,19 @@ export function RightSidebar({
       });
     };
 
+    const descriptorProjections = PROPERTY_INSPECTOR_V2_ENABLED
+      ? projectPropertyDescriptors({ center: 'properties', objects: [obj], scope: 'object' })
+        .filter(projection => Boolean(projection.propByObjectId[obj.id]))
+      : [];
+    const descriptorProps = new Set(descriptorProjections
+      .map(projection => projection.propByObjectId[obj.id])
+      .filter((prop): prop is string => Boolean(prop)));
+    const legacyEditable = obj.editable.filter(prop => (
+      prop !== 'position'
+      && prop !== 'anchor_position'
+      && !descriptorProps.has(prop)
+    ));
+
     return (
       <div className="space-y-6">
         {renderPanelTitle(`对象属性：${getReadableObjectLabel(obj)}`)}
@@ -2668,6 +2690,24 @@ export function RightSidebar({
           <div className="font-mono truncate" title={obj.id}>GID：{obj.id}</div>
         </div>
         <div className="space-y-4">
+          {descriptorProjections.length > 0 && (
+            <div className="space-y-3" data-property-inspector-version="2">
+              {descriptorProjections.map(projection => {
+                const prop = projection.propByObjectId[obj.id];
+                if (!prop) return null;
+                return (
+                  <React.Fragment key={projection.key}>
+                    <PropertyControl
+                      projection={projection}
+                      objectId={obj.id}
+                      dirty={isDirty(obj.id, prop)}
+                      onChange={(value, resolvedProp) => handlePatch(obj.id, resolvedProp, value)}
+                    />
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )}
           {annotationAnchor && Number.isFinite(anchorX) && Number.isFinite(anchorY) && (
             <div className="space-y-2 rounded-md border border-sky-100 bg-sky-50/60 p-3">
               <div className="text-xs font-semibold text-sky-900">箭头锚点</div>
@@ -2704,7 +2744,7 @@ export function RightSidebar({
               </select>
             </div>
           )}
-          {obj.editable.filter(prop => prop !== 'position' && prop !== 'anchor_position').map((prop) => {
+          {legacyEditable.map((prop) => {
             const val = obj.currentProps[prop];
             return renderField(obj.id, prop, typeof val, val);
           })}

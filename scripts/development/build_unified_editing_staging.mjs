@@ -36,6 +36,7 @@ function runBuild(distDir) {
     ...process.env,
     ...stableFeatureEnv(),
     VITE_SCIFIGURE_PROPERTY_DESCRIPTOR_V1: '1',
+    VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2: '1',
     DISABLE_HMR: 'true',
   };
   return new Promise((resolve, reject) => {
@@ -62,6 +63,7 @@ if (!/^[A-Za-z0-9._-]+$/.test(buildId)) {
 const candidateRoot = path.join(BUILD_ROOT, buildId);
 const distDir = path.join(candidateRoot, 'dist');
 const markerPath = path.join(distDir, '.unified-editing-staging.json');
+const publicMarkerPath = path.join(distDir, 'unified-editing-build.json');
 
 fs.mkdirSync(candidateRoot, { recursive: true });
 await runBuild(distDir);
@@ -71,8 +73,10 @@ const marker = {
   builtAt: new Date().toISOString(),
   gitRevision,
   propertyDescriptorV1: true,
+  propertyInspectorV2: true,
 };
 fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
+fs.writeFileSync(publicMarkerPath, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
 fs.mkdirSync(path.dirname(POINTER_PATH), { recursive: true });
 fs.writeFileSync(POINTER_PATH, `${JSON.stringify({ ...marker, distDir }, null, 2)}\n`, 'utf8');
 console.log(`Unified editing candidate build: ${distDir}`);

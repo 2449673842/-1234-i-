@@ -238,6 +238,9 @@ async function startServer() {
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    if (process.env.SCIFIGURE_STAGING_INSTANCE === 'unified-editing') {
+      res.setHeader('X-SciFigure-Runtime-Profile', 'unified-editing-staging');
+    }
     if (process.env.NODE_ENV === 'production') {
       res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
     }

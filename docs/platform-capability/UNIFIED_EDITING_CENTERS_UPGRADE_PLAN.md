@@ -1,8 +1,8 @@
 # SciFigure 统一编辑中心与属性能力升级方案
 
-> 状态：规划完成，尚未实施功能迁移
+> 状态：Phase 0/1 完成；Phase 2 统一控件与 Phase 3 属性编辑首批接入已在 3200 候选环境完成
 > 创建时间：2026-07-12 16:10:44 +08:00
-> 最后更新：2026-07-12 17:24:57 +08:00
+> 最后更新：2026-07-12 21:34:43 +08:00
 > 适用范围：属性编辑、布局中心、组件中心、配色中心、字体中心
 > 实施方式：Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire
 
@@ -979,7 +979,7 @@ sticky routing：一个编辑会话在切换完成前保持同一版本
 
 因此，本次升级推荐从一开始就在独立 worktree、独立端口和独立 staging 数据中完成。测试通过后再以蓝绿方式替换当前服务，这比在正在使用的工作目录中边开发边热更新更适合当前平台，也应成为未来云端发布的默认模式。
 
-### 13.13 当前隔离实施状态（2026-07-12 17:24:57 +08:00）
+### 13.13 隔离实施基线（2026-07-12 17:24:57 +08:00）
 
 第一批 Baseline/Shadow 已在独立环境开始实施：
 
@@ -1023,6 +1023,44 @@ staging 数据审计：0 users / 0 projects / 0 assets / 0 issues
 ```
 
 当前尚未切换任何用户控件，也没有修改 Python/R renderer、Draft、历史、保存、导出或真实项目数据。下一步是 Phase 2 的统一控件渲染器，仍先在属性编辑中按 feature flag 单中心接入，不直接替换字体、组件、配色和布局中心。
+
+### 13.14 Phase 2/3 属性编辑候选状态（2026-07-12 21:34:43 +08:00）
+
+已在 `upgrade/unified-editing-centers` 的 `3200` 候选环境完成首个可见迁移：
+
+- 新增共享 `PropertyControl`，统一渲染 font、number、select、color 和 toggle 控件。
+- 普通单对象属性编辑已通过 `VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2` 接入 descriptor 投影。
+- 首批接管字体家族、字号、字重、字形、颜色、旋转、水平/垂直对齐、可见性、透明度和线宽。
+- descriptor 使用 renderer 解析出的真实 prop 写回；tick label alias 不会把 `tick_color` 当作文字颜色。
+- patch mode 优先使用 renderer `propertyCapabilities.patchMode`，只在旧 manifest 中回退 Python/R 旧规则。
+- 已接管属性从 legacy 通用循环中排除，避免重复控件和重复 patch。
+- 文本内容、上下标、换行、annotation anchor、subplot、axis、grid、legend 等专用面板保持原路径。
+- 所有修改继续进入现有 Draft Batch；未建立第二套 patch、历史、保存或重绘链路。
+- readonly、unsupported、mixed、partial 和 conditional 状态由同一控件表达；legacy fallback 只保留为 DOM 元数据，不挤占正常标签。
+- staging 构建 marker 新增 `propertyInspectorV2: true`，旧候选不满足 marker 时拒绝启动。
+- staging 服务仅暴露不含路径和密钥的 runtime profile；浏览器测试在创建测试数据前校验 profile 和公开 build marker，指向 `3000` 会直接拒绝。
+
+验证证据：
+
+```text
+全量前端单元测试：22 files / 150 tests 通过
+PropertyControl + descriptor + patch mode 针对测试：3 files / 16 tests 通过
+TypeScript：通过
+普通生产构建：通过
+3200 descriptor + inspector V2 候选构建：通过
+Python introspector：36 tests 通过
+属性编辑 V2 浏览器回归：6 PASS / 0 FAIL
+单标题字号修改实际 patch：仅 title.0:fontsize=17、backend_patch 一条
+错误目标防护：测试指向 3000 时在认证和数据操作前拒绝
+浏览器 console/page error：0
+staging 数据审计：0 projects / 0 assets / 0 issues
+3000 与 3200 健康检查：均为 HTTP 200
+独立代码审查：3 项 finding 修复后复审 PASS，无 blocking finding
+```
+
+当前 `3200` 沿用的 renderer Docker 镜像仍输出旧 manifest：对象缺少 `propertyCapabilities`，palette binding 缺少 `targetMode`。因此浏览器候选当前验证的是 legacy fallback；新 renderer 代码的 capability、同色语义绑定、单 tick 精确修改和 tick line/tick label 隔离已由 `tests.test_introspection` 验证。此差异不得被描述为前端 V2 已完成 capability 端到端验证；进入默认启用前必须重建 renderer 候选镜像并复跑同一浏览器矩阵。
+
+下一步按独立 flag 迁移字体中心。属性编辑专用面板继续保留，待公共控件逐项通过真实项目回归后再减少 legacy 重复实现。
 
 ## 14. 实施阶段
 

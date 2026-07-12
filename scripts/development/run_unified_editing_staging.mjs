@@ -144,13 +144,15 @@ function assertProductionAssetsExist() {
     throw new Error(`Candidate build is outside the staging build root: ${resolvedDistDir}`);
   }
   const markerPath = path.join(resolvedDistDir, '.unified-editing-staging.json');
+  const publicMarkerPath = path.join(resolvedDistDir, 'unified-editing-build.json');
   const indexPath = path.join(resolvedDistDir, 'index.html');
-  if (!fs.existsSync(indexPath) || !fs.existsSync(markerPath)) {
+  if (!fs.existsSync(indexPath) || !fs.existsSync(markerPath) || !fs.existsSync(publicMarkerPath)) {
     throw new Error(`Candidate build is incomplete: ${resolvedDistDir}`);
   }
   const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
   if (marker?.kind !== 'unified-editing-staging'
     || marker?.propertyDescriptorV1 !== true
+    || marker?.propertyInspectorV2 !== true
     || marker?.buildId !== pointer?.buildId) {
     throw new Error(`Invalid unified editing staging build marker: ${markerPath}`);
   }
@@ -193,9 +195,11 @@ function stagingEnv(port) {
     SCIFIGURE_DATA_DIR: STAGING_DATA_DIR,
     SCIFIGURE_DB_PATH: STAGING_DB_PATH,
     SCIFIGURE_DIST_DIR: stagingDistDir,
+    SCIFIGURE_STAGING_INSTANCE: 'unified-editing',
     SCIFIGURE_RENDER_CONCURRENCY: process.env.SCIFIGURE_STAGING_RENDER_CONCURRENCY || '1',
     DISABLE_HMR: 'true',
     VITE_SCIFIGURE_PROPERTY_DESCRIPTOR_V1: '1',
+    VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2: '1',
   };
 }
 
@@ -211,7 +215,7 @@ function printConfig(port) {
   console.log('Renderer concurrency: 1 (override with SCIFIGURE_STAGING_RENDER_CONCURRENCY)');
   console.log(`Node environment: ${STAGING_NODE_ENV}`);
   console.log(`Vite HMR: ${STAGING_NODE_ENV === 'production' ? 'not started' : 'disabled'}`);
-  console.log('Feature flags: VITE_SCIFIGURE_PROPERTY_DESCRIPTOR_V1=1');
+  console.log('Feature flags: VITE_SCIFIGURE_PROPERTY_DESCRIPTOR_V1=1, VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2=1');
 }
 
 async function startServer(port) {
