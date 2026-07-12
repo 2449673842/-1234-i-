@@ -1,8 +1,8 @@
 # SciFigure 统一编辑中心与属性能力升级方案
 
-> 状态：Phase 0-3 完成；Phase 4 字体中心统一控件已在 3200 候选环境完成
+> 状态：Phase 0-4 完成；3200 已同步配色与导出热修复；下一阶段为 Phase 5 组件中心
 > 创建时间：2026-07-12 16:10:44 +08:00
-> 最后更新：2026-07-12 22:33:04 +08:00
+> 最后更新：2026-07-12 23:27:32 +08:00
 > 适用范围：属性编辑、布局中心、组件中心、配色中心、字体中心
 > 实施方式：Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire
 
@@ -1060,7 +1060,7 @@ staging 数据审计：0 projects / 0 assets / 0 issues
 
 当前 `3200` 沿用的 renderer Docker 镜像仍输出旧 manifest：对象缺少 `propertyCapabilities`，palette binding 缺少 `targetMode`。因此浏览器候选当前验证的是 legacy fallback；新 renderer 代码的 capability、同色语义绑定、单 tick 精确修改和 tick line/tick label 隔离已由 `tests.test_introspection` 验证。此差异不得被描述为前端 V2 已完成 capability 端到端验证；进入默认启用前必须重建 renderer 候选镜像并复跑同一浏览器矩阵。
 
-下一步按独立 flag 迁移字体中心。属性编辑专用面板继续保留，待公共控件逐项通过真实项目回归后再减少 legacy 重复实现。
+下一步按独立 flag 迁移组件中心。属性编辑和字体中心 legacy 面板继续保留，待公共控件逐项通过真实项目回归后再减少重复实现。
 
 ### 13.15 Phase 4 字体中心候选状态（2026-07-12 22:33:04 +08:00）
 
@@ -1089,6 +1089,17 @@ X 刻度旋转实际 patch：仅 axis.x.0:tick_rotation=25、backend_patch 一�
 ```
 
 当前浏览器候选仍使用 legacy renderer image，因此 capability-backed 强制门尚未放行；`SCIFIGURE_REQUIRE_CAPABILITY_MANIFEST=1` 会在旧镜像下明确失败。重建 renderer 候选镜像后必须复跑同一用例，再决定字体中心默认启用。
+
+### 13.16 Phase 4 热修复同步与不可变候选（2026-07-12 23:27:32 +08:00）
+
+- 稳定分支数据驱动颜色 fallback、向量 collection `code_only` 配色隔离和 legacy ambiguity 保留已同步到升级分支。
+- 代码同步不再删除 `global` 等虚拟可重放 GID；导出会从最后成功 preview manifest 恢复画布宽高，避免横向预览导出为脚本原始竖向尺寸。
+- 当前不可变候选 build：`phase4-font-palette-export-20260712-2325`，Git revision `077eb81`。
+- 3200 provenance、属性/字体联合浏览器回归：9 PASS / 0 FAIL；console/page error 为 0。
+- 升级分支 Vitest：25 files / 163 tests；TypeScript 通过。
+- 稳定隔离语义回归：11 PASS / 0 FAIL；导出矩阵包含 `8 × 4 in -> 576 × 288` 方向一致性用例并通过。
+
+当前限制不变：3200 renderer image 仍是 legacy capability manifest，因此以上结果不能替代 capability-backed 强制门验证。
 
 ## 14. 实施阶段
 
