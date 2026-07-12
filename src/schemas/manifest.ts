@@ -66,8 +66,76 @@ export type ManifestObjectKind =
   | "boxplot_container"
   | "violinplot_container"
   | "container"
+  | "unsupported"
   | "heatmap"
   | "colorbar";
+
+export type ManifestCoordinateSpace =
+  | "data"
+  | "axes"
+  | "figure"
+  | "display"
+  | "container"
+  | "none";
+
+export type ManifestEditScope =
+  | "object"
+  | "group"
+  | "subplot"
+  | "figure"
+  | "cross_figure";
+
+export interface ManifestObjectRelation {
+  parentId?: string;
+  subplotId?: string;
+  subplotIds?: string[];
+  layerId?: string;
+  layerIds?: string[];
+  groupIds?: string[];
+  scaleId?: string;
+  guideId?: string;
+  aesthetic?: string;
+  groupKey?: string;
+  dataKey?: string;
+  legendId?: string;
+  legendTitleId?: string;
+  legendTextId?: string;
+  legendTextIds?: string[];
+  legendMarkerIds?: string[];
+  colorbarId?: string;
+  mappableId?: string;
+  mappableIds?: string[];
+  annotationId?: string;
+  arrowId?: string;
+  textId?: string;
+  twinSubplotIds?: string[];
+  sharedXSubplotIds?: string[];
+  sharedYSubplotIds?: string[];
+}
+
+/**
+ * Additive v1.1 identity metadata. Existing gid/stableKey fields remain the
+ * compatibility path until the shadow identity checks pass on real projects.
+ */
+export interface ManifestObjectIdentity {
+  semanticKey?: string;
+  instanceKey?: string;
+  seriesKey?: string;
+  scope?: "figure" | "subplot" | "container";
+  coordinateSpace?: ManifestCoordinateSpace;
+  relation?: ManifestObjectRelation;
+}
+
+export interface ManifestPropertyCapability {
+  prop: string;
+  patchMode: EditMode;
+  scopes: ManifestEditScope[];
+  preview: "exact" | "approximate" | "none";
+  replay: "stable" | "conditional" | "unsupported";
+  coordinateSpace?: ManifestCoordinateSpace;
+  derivedEffects?: string[];
+  unsupportedReason?: string;
+}
 
 export interface ManifestObject {
   id: string;
@@ -77,13 +145,18 @@ export interface ManifestObject {
   currentProps: Record<string, unknown>;
   role?: string;
   subplotId?: string;
+  subplotIds?: string[];
   parentId?: string;
   children?: string[];
   stableKey?: string;
   fingerprint?: string;
+  identity?: ManifestObjectIdentity;
+  propertyCapabilities?: ManifestPropertyCapability[];
   source?: {
     artistClass: string;
     axesIndex: number;
+    ownerAxesIndex?: number;
+    ownerAxesIndices?: number[];
     zorder?: number;
   };
 }
@@ -135,6 +208,19 @@ export interface Binding {
   groupId: string;
   gids: string[];
   props: string[];
+  groupIds?: string[];
+  targetMode?: "exact" | "semantic" | "conditional" | "ambiguous" | "unresolved";
+  targets?: BindingTarget[];
+  warnings?: string[];
+}
+
+export interface BindingTarget {
+  gid: string;
+  prop: string;
+  instanceKey?: string;
+  seriesKey?: string;
+  match: "label_and_color" | "exact_label" | "unique_color" | "scale_key";
+  confidence: "exact" | "high" | "conditional";
 }
 
 export interface SemanticGroup {
@@ -142,6 +228,10 @@ export interface SemanticGroup {
   label: string;
   paletteId: string;
   kind: "bar" | "line" | "scatter";
+  aesthetic?: string;
+  scaleId?: string;
+  layerIds?: string[];
+  subplotIds?: string[];
 }
 
 export interface Manifest {
@@ -178,6 +268,13 @@ export interface HistorySnapshot {
   script?: string;
   label: string;
   timestamp: number;
+  changeType?: "figure" | "code" | "mixed" | "system";
+  codeSummary?: {
+    previousLines: number;
+    nextLines: number;
+    addedLines: number;
+    removedLines: number;
+  };
 }
 
 export interface ProjectHistoryState {
@@ -214,6 +311,49 @@ export interface RenderRequest {
   };
 }
 
+export interface RendererPerformanceV1 {
+  staticScanMs?: number;
+  scriptExecutionMs?: number;
+  dynamicScanMs?: number;
+  figureDiscoveryMs?: number;
+  editApplyMs?: number;
+  introspectionMs?: number;
+  svgSerializeMs?: number;
+  binaryExportMs?: number;
+  manifestBuildMs?: number;
+  svgPostprocessMs?: number;
+  totalMs: number;
+}
+
+export interface RuntimePerformanceV1 {
+  mode: "local" | "docker";
+  queueMs?: number;
+  payloadStageMs?: number;
+  processMs?: number;
+  outputParseMs?: number;
+  totalMs: number;
+}
+
+export interface ServerPerformanceV1 {
+  cacheLookupMs?: number;
+  persistMs?: number;
+  cacheWriteMs?: number;
+  totalMs: number;
+}
+
+export interface RenderPerformanceV1 {
+  schemaVersion: "1.0";
+  cacheHit: boolean;
+  renderer: RendererPerformanceV1 | null;
+  runtime: RuntimePerformanceV1 | null;
+  server: ServerPerformanceV1;
+}
+
+export interface RenderCacheStatus {
+  hit: boolean;
+  key: string;
+}
+
 export interface RenderResponse {
   status: "success" | "error";
   sessionId: string;
@@ -224,6 +364,8 @@ export interface RenderResponse {
   editLog?: EditEntry[];
   coverageReport?: CoverageReport;
   timingMs: number;
+  performance?: RenderPerformanceV1;
+  cache?: RenderCacheStatus;
   message?: string;
   traceback?: string;
 }
@@ -258,6 +400,8 @@ export interface PatchResponse {
   message?: string;
   script?: string;
   requestId?: string;
+  performance?: RenderPerformanceV1;
+  cache?: RenderCacheStatus;
 }
 
 export interface CodePatchRequest {
@@ -276,6 +420,8 @@ export interface CodePatchResponse {
   orphanedGids?: string[];
   traceback?: string;
   errors?: string[];
+  performance?: RenderPerformanceV1;
+  cache?: RenderCacheStatus;
 }
 
 /* ---- Export ---- */

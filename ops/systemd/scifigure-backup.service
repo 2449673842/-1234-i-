@@ -1,0 +1,19 @@
+[Unit]
+Description=SciFig encrypted data backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=scifigure
+Group=scifigure
+EnvironmentFile=/etc/scifigure/backup.env
+ExecStart=/opt/scifigure/ops/backup/scifigure-backup.sh
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/srv/scifigure/data
+
+[Install]
+WantedBy=multi-user.target

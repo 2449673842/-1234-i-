@@ -340,6 +340,157 @@ describe('editing intent compiler', () => {
     ]);
   });
 
+  it('keeps legend title, legend text, and legend marker roles separate', () => {
+    const manifest = baseManifest([
+      {
+        id: 'legend_title.0',
+        kind: 'text',
+        label: 'Legend title',
+        editable: ['fontsize'],
+        currentProps: { fontsize: 10 },
+      },
+      {
+        id: 'legend_text.0.0',
+        kind: 'text',
+        label: 'Legend text',
+        editable: ['fontsize'],
+        currentProps: { fontsize: 9 },
+      },
+      {
+        id: 'legend_line.0.0',
+        kind: 'line',
+        label: 'Legend handle',
+        editable: ['linewidth'],
+        currentProps: { linewidth: 1 },
+        role: 'legend_marker',
+      },
+    ]);
+
+    const titleResult = compileEditingIntent(manifest, {
+      intent: 'style.text.legend',
+      scope: {
+        selectionMode: 'role_in_figure',
+        targetRole: 'legend_title',
+      },
+      operation: { prop: 'fontsize', value: 12 },
+    });
+    const markerResult = compileEditingIntent(manifest, {
+      intent: 'style.component',
+      scope: {
+        selectionMode: 'role_in_figure',
+        targetRole: 'legend_marker',
+      },
+      operation: { prop: 'linewidth', value: 2 },
+    });
+
+    expect(titleResult.patches).toEqual([
+      { op: 'set', mode: 'backend_patch', gid: 'legend_title.0', prop: 'fontsize', value: 12 },
+    ]);
+    expect(markerResult.patches).toEqual([
+      { op: 'set', mode: 'backend_patch', gid: 'legend_line.0.0', prop: 'linewidth', value: 2 },
+    ]);
+  });
+
+  it('compiles explicit spine-group batch edits for every selected subplot frame', () => {
+    const manifest = baseManifest(Array.from({ length: 8 }, (_, index) => ({
+      id: `spine_group.${index}`,
+      kind: 'spine_group',
+      label: `Frame ${index + 1}`,
+      editable: ['visible', 'color', 'linewidth'],
+      currentProps: { linewidth: 0.8, color: '#000000' },
+      subplotId: `subplot.${index}`,
+    })));
+
+    const result = compileEditingIntent(manifest, {
+      intent: 'style.component',
+      scope: {
+        selectionMode: 'explicit_objects',
+        objectIds: manifest.objects.map(object => object.id),
+        targetKinds: ['spine_group'],
+        targetRole: 'axis_frame',
+      },
+      operation: { prop: 'linewidth', value: 1.5 },
+    });
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toHaveLength(8);
+    expect(result.patches).toEqual(
+      manifest.objects.map(object => ({
+        op: 'set',
+        mode: 'backend_patch',
+        gid: object.id,
+        prop: 'linewidth',
+        value: 1.5,
+      })),
+    );
+  });
+
+  it('separates colorbar label and colorbar tick label roles', () => {
+    const manifest = baseManifest([
+      {
+        id: 'colorbar_label.0',
+        kind: 'text',
+        label: 'Colorbar label',
+        editable: ['fontsize'],
+        currentProps: { fontsize: 10 },
+        role: 'colorbar_label',
+      },
+      {
+        id: 'colorbar_tick.0.0',
+        kind: 'text',
+        label: '0.5',
+        editable: ['fontsize'],
+        currentProps: { fontsize: 8 },
+        role: 'colorbar_tick_label',
+      },
+    ]);
+
+    const result = compileEditingIntent(manifest, {
+      intent: 'style.text.tick_label',
+      scope: {
+        selectionMode: 'role_in_figure',
+        targetRole: 'colorbar_tick_label',
+      },
+      operation: { prop: 'fontsize', value: 9 },
+    });
+
+    expect(result.patches).toEqual([
+      { op: 'set', mode: 'backend_patch', gid: 'colorbar_tick.0.0', prop: 'fontsize', value: 9 },
+    ]);
+  });
+
+  it('keeps axis_frame compatible with concrete spine objects', () => {
+    const manifest = baseManifest([
+      {
+        id: 'spine.left.0',
+        kind: 'spine',
+        label: 'Left spine',
+        editable: ['linewidth'],
+        currentProps: { linewidth: 1 },
+      },
+      {
+        id: 'grid.0',
+        kind: 'grid',
+        label: 'Grid',
+        editable: ['linewidth'],
+        currentProps: { linewidth: 0.5 },
+      },
+    ]);
+
+    const result = compileEditingIntent(manifest, {
+      intent: 'style.component',
+      scope: {
+        selectionMode: 'role_in_figure',
+        targetRole: 'axis_frame',
+      },
+      operation: { prop: 'linewidth', value: 2 },
+    });
+
+    expect(result.patches).toEqual([
+      { op: 'set', mode: 'backend_patch', gid: 'spine.left.0', prop: 'linewidth', value: 2 },
+    ]);
+  });
+
   it('does not retarget drag position intents across figures', () => {
     const targetManifest = baseManifest([
       {
@@ -369,6 +520,59 @@ describe('editing intent compiler', () => {
     };
 
     const result = compileEditingIntent(targetManifest, retargetEditingIntentForFigure(sourceDragIntent));
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped[0]?.reason).toBe('not_found');
+  });
+
+  it('denies content intents across figures by default even when a matching role exists', () => {
+    const targetManifest = baseManifest([
+      {
+        id: 'ylabel.0',
+        kind: 'text',
+        label: 'Target Y',
+        editable: ['text'],
+        currentProps: { text: 'Target Y' },
+        subplotId: 'subplot.0',
+      },
+    ]);
+    const sourceContentIntent = {
+      intent: 'content.text' as const,
+      scope: {
+        selectionMode: 'explicit_objects' as const,
+        objectIds: ['ylabel.0'],
+        targetRole: 'y_axis_label' as const,
+      },
+      operation: { prop: 'text', value: 'Source Y' },
+    };
+
+    const result = compileEditingIntent(targetManifest, retargetEditingIntentForFigure(sourceContentIntent));
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped[0]?.reason).toBe('not_found');
+  });
+
+  it('denies layout intents across figures by default', () => {
+    const targetManifest = baseManifest([
+      {
+        id: 'subplot.0',
+        kind: 'subplot',
+        label: 'Panel',
+        editable: ['width'],
+        currentProps: { width: 0.5 },
+      },
+    ]);
+    const sourceLayoutIntent = {
+      intent: 'layout.subplot.axes_box' as const,
+      scope: {
+        selectionMode: 'explicit_objects' as const,
+        objectIds: ['subplot.0'],
+        targetRole: 'subplot_axes_box' as const,
+      },
+      operation: { prop: 'width', value: 0.7 },
+    };
+
+    const result = compileEditingIntent(targetManifest, retargetEditingIntentForFigure(sourceLayoutIntent));
 
     expect(result.patches).toHaveLength(0);
     expect(result.skipped[0]?.reason).toBe('not_found');

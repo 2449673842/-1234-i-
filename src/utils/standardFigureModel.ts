@@ -30,10 +30,13 @@ export function normalizeFigureObject(object: ManifestObject): StandardFigureObj
     currentProps,
     role: object.role,
     subplotId: object.subplotId,
+    subplotIds: object.subplotIds,
     parentId: object.parentId,
     children: object.children,
     stableKey: object.stableKey,
     fingerprint: object.fingerprint,
+    identity: object.identity,
+    propertyCapabilities: object.propertyCapabilities,
     source: object.source,
   };
 }

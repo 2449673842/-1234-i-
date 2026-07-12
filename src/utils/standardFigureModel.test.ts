@@ -148,6 +148,21 @@ describe('normalizeFigureObject', () => {
       children: ['child.0'],
       stableKey: 'sk_title_0',
       fingerprint: 'fp_abc',
+      identity: {
+        semanticKey: 'figure_title:subplot.0',
+        instanceKey: 'subplot:title.0',
+        scope: 'subplot',
+        coordinateSpace: 'axes',
+        relation: { subplotId: 'subplot.0' },
+      },
+      propertyCapabilities: [{
+        prop: 'fontsize',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'group', 'subplot', 'figure', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+        derivedEffects: ['text_bounds'],
+      }],
       source: { artistClass: 'Text', axesIndex: 0 },
     };
     const result = normalizeFigureObject(obj);
@@ -163,6 +178,8 @@ describe('normalizeFigureObject', () => {
     expect(result.children).toEqual(['child.0']);
     expect(result.stableKey).toBe('sk_title_0');
     expect(result.fingerprint).toBe('fp_abc');
+    expect(result.identity?.instanceKey).toBe('subplot:title.0');
+    expect(result.propertyCapabilities?.[0]?.prop).toBe('fontsize');
   });
 
   it('handles missing optional fields gracefully', () => {

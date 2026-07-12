@@ -590,6 +590,16 @@ async function run() {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
 
+  await page.route('**/api/auth/me', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      status: 'success',
+      user: { id: 'behavior-smoke-user', email: 'behavior-smoke@example.test' },
+      license: { status: 'free' },
+    }),
+  }));
+
   await page.route('**/api/figure/patch', async (route) => {
     if (delayNextPatchRequest) {
       delayNextPatchRequest = false;

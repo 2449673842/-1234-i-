@@ -1,6 +1,313 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
+> 最后修改时间：2026-07-12 15:25:57 +08:00
+
+---
+
+## 2026-07-12 12:32:39 +08:00 R 复杂坐标被整体禁用、文本重排串对象和未知 geom 伪装可编辑
+
+**状态与级别**
+
+- 状态：可逆坐标与稳定数据键已修复；不可证明扩展对象改为明确降级。
+- 级别：P1。旧逻辑过度禁用了可逆坐标，同时可能在代码重排行后按旧行号命中错误文本。
+- 证据等级：E5。
+
+**根因**
+
+- 文本位置只使用 panel min/max 线性换算，没有消费 ggplot coordinate transform 和 scale inverse。
+- `r.text.L.R` 永久依赖 build 后行号，源数据即使有唯一 `id/key` 也没有进入身份。
+- 应用文本 patch 时重建 layer 会丢失源数据键。
+- 未知 ggplot geom 退化为普通 container，并错误暴露颜色和线宽控件。
+
+**修复**
+
+- `CoordCartesian/CoordFlip` 使用三点仿射逆解，X/Y log 调用 scale inverse 恢复原始数据。
+- `CoordPolar` 使用 theta/r、start 和 direction 精确逆解；圆外请求拒绝且 manifest 不回显未应用目标。
+- 唯一 `.scifigure_id/scifigure_id/id/ID/key/label_id` 转为稳定文本 gid；layer 重建保留内部 `.scifigure_id`。
+- 无稳定键继续使用行号和 conditional capability，不虚报稳定。
+- 未知 geom 改为 readonly/unsupported；重命名多 scale aesthetic 单独报告，不错误合并。
+
+**验证**
+
+- `npm run lint`：通过。
+- `npm test`：18 files / 130 tests 通过。
+- `tests/test_r_renderer.py`：29 项通过。
+- `npm run test:capability-matrix`：Python/R 通过。
+- `npm run test:r-semantic-smoke`：5/5 通过。
+- `npm run test:drag-extended-smoke`：全部通过。
+- `npm run build`：通过；保留既有 bundle 大小与 CJS `import.meta` 警告。
+
+---
+
+## 2026-07-12 05:09:45 +08:00 R 默认离散色标退化为整层选择且 guide 标题来源错误
+
+**状态与级别**
+
+- 状态：已修复并完成 renderer、能力矩阵和浏览器回归。
+- 级别：P1；会导致 R 同一 layer 多组无法精确选择，或改色后 manifest 图例标题与实际图不一致。
+- 证据等级：E5。
+
+**现象与根因**
+
+- 显式 `scale_color_manual()` 能生成 `r.group.*`，但 ggplot2 默认离散色标在 SVG 中仍统一写成 `r.layer.N`。
+- 旧检测只遍历原始 `plot_obj$scales`；默认 scale 由 `ggplot_build()` 补充，因此写回和 SVG 映射阶段看不到。
+- group 没有显式 layer、facet panel、aesthetic、scale 和 guide 关系。
+- manifest 图例标题只读 `plot_obj$labels$colour/fill`，忽略 `scale_*(name=...)` 的真实 guide 标题。
+
+**修复**
+
+- 基于 build 后 scale catalog 统一处理默认和显式离散 color/fill scale。
+- group identity 使用与样式无关的 aesthetic + group key，并关联 layer、全部 panel、scale、guide 和 legend。
+- 单组改色通过 ggplot scale 重放，保留 limits、breaks、labels、name、NA、drop 和 guide 配置。
+- SVG 仅在颜色到语义组唯一时写入 group ID；重复颜色退回 layer ID。
+- scale/guide 对象记录 panel 归属但不声明 subplot 写回能力，避免“选一个 facet 实际改全部”的错误承诺。
+- guide 标题优先读取实际 scale name。
+- text layer 行身份标记 conditional；base R/grid 输出明确报告 semantic editing unsupported。
+
+**验证**
+
+- `npm run lint`：通过。
+- `npm test`：18 files / 130 tests 通过。
+- `tests/test_r_renderer.py`：25 项通过。
+- `npm run test:capability-matrix`：Python/R 通过，R 2×2 facet fixture 校验 group/layer/panel 双向关系。
+- `npm run test:r-semantic-smoke`：5/5 通过，fixture 使用默认离散 scale。
+- `npm run build`：通过；保留既有 bundle 大小与 CJS `import.meta` 警告。
+
+---
+
+## 2026-07-12 04:44:30 +08:00 轴样式 smoke 被公开首页认证拦截
+
+**状态与级别**
+
+- 状态：已修复测试隔离，产品代码无需回退。
+- 级别：测试基础设施 P1；不影响真实登录用户编辑结果。
+- 证据等级：E5，已完成独立 smoke、复杂 renderer、跨 Figure 和完整构建回归。
+
+**现象**
+
+- `test:axis-style-semantics-smoke` 恢复了内存 Figure fixture，但页面停留在公开宣传页。
+- 失败诊断显示 `/api/auth/me` 返回 401，右侧属性编辑器没有挂载。
+
+**根因**
+
+- 宣传页和注册入口升级后，未认证访问工作台会被顶层访问控制正确拦截。
+- 该测试只 mock 了项目和 patch API，没有 mock 当前认证用户；它把旧的“匿名可直接进入编辑器”误当成测试前提。
+- 这是测试隔离缺口，不是复杂图元协议、React 渲染或项目数据故障。
+
+**修复**
+
+- 在测试中增加隔离的 `/api/auth/me` mock，使用固定测试用户和 free license。
+- 不读取真实账号、真实数据库或 `data/` 项目，不降低公开首页访问控制。
+
+**关联完成项**
+
+- legend 标题、文字、handle 关系显式化。
+- shared colorbar 关联全部 mappable 和 owner subplot，子对象继承真实归属。
+- twinx/twiny/sharex/sharey 输出对称关系，secondary twin 不计入物理布局 panel。
+- tick line 和 tick label 的颜色编辑目标分离。
+
+**验证**
+
+- `npm run test:axis-style-semantics-smoke`：5/5 通过。
+- `npm run test:component-container-smoke`：15/15 通过。
+- `npm run test:semantic-smoke`：9/9 通过。
+- `npm run test:multisubplot-smoke`：4/4 通过。
+- `npm run test:drag-extended-smoke`：通过，包含连续双目标和三目标拖拽。
+- `npm run test:cross-figure-smoke`：9/9 通过。
+- `npm run lint`、`npm test`（18 files / 129 tests）、Python 内省 36 项、Python/R capability matrix、`npm run build` 和 `git diff --check`：通过。
+
+---
+
+## 2026-07-12 02:32:07 +08:00 导出资产返回错误与重新配置进入旧导入流程
+
+**状态与级别**
+
+- 状态：已修复并完成浏览器级保存、渲染和返回回归。
+- 级别：P1。旧流程会让已有项目脱离 `projectId`，存在用户误以为修改原项目、实际进入临时导入状态的风险。
+- 证据等级：E5，已完成源码定位、单元测试、生产构建和真实 Playwright 流程验证。
+
+**现象**
+
+- 导出资产页返回按钮写死为导出设置，无法回到用户真正进入资产页之前的页面。
+- 编辑器顶栏“重新配置”直接进入旧 `DataImportPage`。
+- 旧导入完成时 `handleImportSpec()` 会把 `projectId` 设为 `null`、项目名改为未命名并重置渲染状态，不适合作为已有项目重新配置。
+- 新项目流程要求先猜测上传数据，再放入脚本，无法根据代码中的具名文件依赖提示用户补齐表格。
+
+**修复**
+
+- App 在进入导出资产库时记录来源 View，资产页返回按钮调用真实返回处理；“去配置导出”仍保留为明确命令。
+- 新增独立 `project_reconfigure` 页面。默认保留项目 ID、名称、现有数据、Figure editLog/history/revision、导出资产和当前脚本。
+- 重新配置只追加用户选择的新文件，不静默删除旧数据；保存时携带现有 Figure 历史，再按用户选择的 Python/R 语言执行项目级重绘。
+- 新增脚本数据依赖提取器，识别 Python/R 中常见 CSV/Excel 文件引用，并展示“已提供/待上传”。
+- 新建项目增加脚本先行入口；所有额外上传表格仍使用现有 `buildTranslationPrompt`，没有新建或分叉 AI 提示词协议。
+- 顶栏普通“导入数据”进入新版项目创建页；旧单文件导入路由保留兼容，但从主入口隐藏。
+
+**数据保留约束**
+
+- 重新配置不是新建项目，不得调用 `handleImportSpec()`。
+- 默认保留所有现有文件；删除和同名替换必须留在显式危险操作中。
+- 脚本或数据变化可能造成 Figure 数量和 gid 漂移，重绘必须继续携带 editLog，并由现有 renderer 返回漂移诊断。
+- 脚本依赖提取只做静态提示，不作为安全边界，也不能替代 renderer 的真实缺列/缺文件错误。
+
+**验证**
+
+- `npm run lint`：通过。
+- `npm test`：17 files / 123 tests 通过，其中新增 4 项 Python/R 文件依赖提取测试。
+- `npm run build`：通过；保留既有 bundle 大小与 CJS `import.meta` 警告。
+- `npm run test:public-auth-smoke`：通过。
+- `npm run test:workspace-visual-smoke`：桌面和移动端无水平溢出。
+- `npm run test:navigation-reconfigure-smoke`：通过，覆盖资产来源返回、重新配置取消、当前脚本与已有数据恢复、保存 Figure 历史 payload、按语言重绘并返回编辑器。
+
+---
+
+## 2026-07-12 01:56:15 +08:00 编辑器重复渲染提示、无效工具轨与状态标签截断
+
+**状态与级别**
+
+- 状态：已修复并完成真实编辑器回归。
+- 级别：P1，影响操作理解与入口可用性，但未改变渲染结果和保存数据。
+- 证据等级：E5，已完成源码检查、实现、类型/单元/构建验证及真实 Playwright 编辑器交互。
+
+**现象**
+
+- 顶部已有渲染进度条和画布内进度浮层，预览工具条仍重复显示“正在应用 N 个参数”和耗时，挤占 Figure 操作空间。
+- 编辑器最左侧项目资源、图层、资产、字体、历史和设置图标只有本地高亮状态，点击后不执行对应动作。
+- 黑色“当前对象 / 右侧编辑”和绿色“实时渲染”状态块在窄工作区被压缩换行，文字显示不完整。
+
+**根因**
+
+- 渲染状态在命令层、工具层和画布层重复表达，没有明确唯一主状态位置。
+- `IconSidebar` 只维护 `activeIndex`，没有连接 App 导航、左栏定位、右栏 tab 或历史菜单。
+- 状态块缺少 `shrink-0` 和 `white-space: nowrap`，对象名称截断与固定动作标签共用同一收缩空间。
+
+**修复**
+
+- 删除预览工具条内重复的渲染过程 chip，保留已有进度条和画布内渲染反馈。
+- 建立 `scifigure:editor-rail-action` 工作区事件：项目资源与图层结构定位左栏，图层按钮聚焦搜索框，字体按钮切换字体中心，历史按钮打开历史菜单；导出资产与设置使用现有 App 导航。
+- 当前对象名称可以截断，但“右侧编辑”和“实时渲染”固定保持完整单行；工具条空间不足时横向滚动。
+- 保留 SVG 命中、拖拽、Draft、历史、保存和 renderer 数据流不变。
+
+**验证**
+
+- `npm run lint`：通过。
+- `npm test`：16 files / 119 tests 通过。
+- `npm run build`：通过；保留既有 bundle 大小与 CJS `import.meta` 警告。
+- `npm run test:public-auth-smoke`：通过。
+- `npm run test:workspace-visual-smoke`：桌面 1440×960 与移动端 390×844 无水平溢出。
+- `npm run test:drag-extended-smoke`：全部通过，覆盖连续拖拽、多选拖拽、取消、不支持对象、annotation 与 R native 保护。
+- `npm run test:multi-figure-ui-state-smoke`：全部通过，并新增图层搜索聚焦和字体中心切换断言。
+
+---
+
+## 2026-07-12 01:34:47 +08:00 工作区视觉升级后窄画布工具条与右侧中心标签换行
+
+**状态与级别**
+
+- 状态：已修复并完成类型、单元、构建和认证浏览器回归。
+- 级别：P2，布局可读性问题，不涉及图元、保存或渲染数据错误。
+- 证据等级：E4，浏览器截图发现并完成源码与自动化验证；复杂编辑器拖拽矩阵仍有既有测试基线问题待单独处理。
+
+**现象**
+
+- 编辑器左右栏保持默认宽度时，中间画布工具条中的长按钮会逐字换行并拉高工具条。
+- 右侧栏同时显示属性、布局、组件、配色和字体五个中心时，图标与四字标签在 320px 内被压成竖排。
+
+**根因**
+
+- 工具条按钮允许 flex 收缩且未声明 `white-space: nowrap`。
+- 右侧中心 tab 同时保留图标、文字和等分宽度，最小内容宽度超过默认右栏宽度。
+
+**修复与约束**
+
+- 工作区工具条按钮使用稳定单行尺寸，容器继续横向滚动，不改变按钮事件和状态。
+- 右侧中心 tab 设置最小宽度与横向滚动；常规桌面宽度下隐藏重复图标以保留完整文字。
+- 本次视觉升级只改容器类名和 CSS token，不修改 SVG 命中、拖拽 patch、Draft Batch、保存、历史、Figure identity 或 renderer 路径。
+- 后续任何工作区视觉调整都必须遵循根目录 `DESIGN.md` 并检查窄工作区下的文字换行和控件遮挡。
+
+**验证**
+
+- `npm run lint`：通过。
+- `npm test`：16 files / 119 tests 通过。
+- `npm run build`：通过；保留既有 bundle 大小和 CJS `import.meta` 警告。
+- `npm run test:public-auth-smoke`：通过。
+
+---
+
+## 2026-07-12 00:18:03 +08:00 宣传页未形成匿名访问门禁，注册入口隐藏在工作台设置页
+
+**状态与级别**
+
+- 状态：Gap，已修复并完成浏览器回归。
+- 级别：P1。未登录用户可以看到工作台外壳并尝试导航，产品访问顺序不符合公开服务要求；后端 API 已有认证和所有权检查，因此不是数据越权型 P0。
+- 证据等级：E5，已完成源码检查、实现、类型检查、生产构建和真实浏览器自动化验证。
+
+**现象**
+
+- 项目已经存在 `LandingPage`，但它只是 `currentView === 'landing'` 时显示的工作台内部页面。
+- `Navbar` 对所有访问者始终渲染，匿名用户仍可看到项目、导入、创建项目和账号设置入口。
+- 注册和登录表单只位于设置页，宣传页的主按钮会直接跳转项目创建或项目列表。
+- access token 失效时，前端原行为是跳到设置页账号标签，而不是退出到公开宣传页。
+
+**根因**
+
+- 后端 `/api/auth/register`、`/api/auth/login`、`/api/auth/me` 和 refresh cookie 链路已经存在，缺口位于前端顶层访问控制。
+- `App.tsx` 没有 `checking/authenticated/anonymous` 认证状态，宣传页和工作台共用同一渲染外壳。
+- 项目预览恢复 effect 只判断 `projectId` 和本地 Figure 状态，未把认证成功作为启动条件。
+
+**修复**
+
+- `App.tsx` 新增顶层认证状态检查：加载时检查 access token，并在需要时尝试 refresh cookie。
+- 匿名状态只渲染公开宣传页，不渲染工作台 `Navbar`、项目页、编辑器或导出入口。
+- 宣传页新增注册/登录对话框，注册或登录成功后保存 access token 并进入工作台首页。
+- `scifigure:auth-required` 和退出登录统一返回公开宣传页；设置页登录/退出通过 `scifigure:auth-changed` 同步顶层状态。
+- 项目预览恢复渲染增加 `authenticated` 前置条件，匿名访问不会根据旧 session 自动请求项目或渲染。
+- 新增 `test:public-auth-smoke`，锁定“匿名宣传页 -> 注册 -> 工作台 -> 刷新保持登录”流程；接口在浏览器测试中使用 mock，不向真实数据库写入测试账号。
+
+**防复发规则**
+
+```text
+宣传页不是工作台内部普通 tab，而是匿名用户唯一可见的应用入口。
+任何新增工作台页面必须位于 authenticated 分支内。
+任何恢复项目、自动渲染或项目数据请求必须等待认证状态确定。
+认证失效和退出登录必须清除访问入口并返回宣传页，不能只跳到设置页。
+浏览器测试不得直接向真实 data/scifigure.db 创建测试账号。
+```
+
+**验证**
+
+- `npm run lint`：通过。
+- `npm run build`：通过；保留既有主 bundle 大于 500 kB 和 CJS `import.meta` warning。
+- `npm run test:public-auth-smoke`：通过。
+- 桌面 2048×1152 截图检查：宣传页品牌、登录和免费注册入口可见，工作台导航不可见。
+- 移动端 390×844 截图检查：登录和免费注册按钮保持单行，无首屏遮挡。
+- 测试服务使用独立 `SCIFIGURE_DATA_DIR` 和备用端口，未读取或修改真实用户项目数据库。
+
+**2026-07-12 00:46:12 +08:00 宣传页视觉与安全口径复核**
+
+- 宣传页主视觉由独立 `SCIFIGURE_DATA_DIR`、临时测试账号和代码内合成数据生成 2×2 Figure，再从真实编辑器截图裁剪；不使用现有用户项目、研究数据、文件路径或导出资产。
+- 主定位从“AI 生成代码”调整为“Python / R 科研 Figure 可编辑工作台”，避免把尚未接入的 AI 自动改图宣传为现有能力。
+- 删除“¥10/月建议”等内部规划文案，公开页面不展示尚未形成真实收费闭环的承诺。
+- 新增数据与代码安全区块，只陈述已实现的所有权、路径边界和 renderer 隔离能力。
+- 云端加密数据盘、备份恢复和生产容器调用链明确标记为上线前仍需部署复测，避免把代码准备误写成在线生效。
+- 桌面 1440×1000、移动端 390×844 检查无横向溢出；首屏、编辑能力、安全区块和注册 CTA 均完成截图复核。
+- `npm run lint`、`npm test`（16 files / 119 tests）、`npm run build` 和 `npm run test:public-auth-smoke` 均通过。
+
+**2026-07-12 01:03:44 +08:00 用户安全文案与内部实现脱敏复核**
+
+- 安全标题改为“你的数据如何被保护”，不再使用 renderer、挂载目录、环境变量或攻击方式解释平台安全。
+- 用户侧分为“数据加密方案”和“服务器安全保护”：传输加密、存储加密、备份加密、账号隔离、受限绘图环境、最小权限与访问记录。
+- 页面只承诺正式生产服务经过部署验收后启用的保护结果；内部文档继续保留真实路径、配置、阈值、隔离参数和测试证据。
+- 明确禁止在公开页面展示内部目录、服务地址、端口、容器配置、精确资源阈值、拦截规则、管理员接口和告警条件。
+- 桌面 1440×1000 和移动端 390×844 浏览器检查无横向溢出，注册、刷新登录和退出回退流程保持通过。
+
+**2026-07-12 01:14:58 +08:00 宣传页动态效果回归保护**
+
+- 首屏真实编辑器背景增加滚动纵深，最大位移受限，不改变文字和按钮几何位置。
+- 工作流、编辑能力、安全区块和最终 CTA 首次进入视口时分层显现，不重复闪烁。
+- 安全区块增加“加密传输 -> 加密存储 -> 加密备份 -> 受限计算”的连续生命周期提示。
+- 浏览器启用 `prefers-reduced-motion: reduce` 时，滚动纵深、循环提示和进入动画全部关闭，内容立即可见。
+- `test:public-auth-smoke` 新增进入视口显现检查；浏览器计算样式验证滚动前后背景 transform 变化、生命周期动画存在、减少动态模式不隐藏内容。
 
 ---
 
@@ -651,3 +958,578 @@ build_figure(fl9_data, stats_df, opr_fep_df)
   - `npm test`
   - `npm run build`
   - `npm run test:composition-code-project`
+
+---
+
+## 2026-07-08 语义层升级后本地颜色修改保存刷新丢失
+
+**现象**
+
+- 用户在配色中心/属性面板中只修改某个散点、线条或图例对象颜色。
+- 页面预览能立即看到颜色变化，点击顶部“保存”后也没有报错。
+- 刷新或重新进入项目后，该颜色修改消失，表现为“保存功能受限”。
+
+**根因**
+
+- 语义编辑意图层引入 Draft Patch Batch 后，`local_patch` 不再立即走后端重绘，而是先保存在前端 `projectDrafts` 并直接作用于 SVG 预览。
+- 旧保存链路只保存项目 `spec.editLog` 或当前 Figure 的已有 `editLog`，没有把尚未“应用重绘”的 `local_patch` 草稿写入对应 `project_figures` 的 Figure session。
+- 后端 `PUT /api/projects/:id` 旧实现只更新 `projects` 表，没有同步更新每张 Figure session 的 `editLog`。因此保存 payload 即使包含草稿，刷新时 `GET /api/projects/:id` 仍从旧 session 读回，导致修改丢失。
+- 实测中还发现 3000 端口运行的是升级前启动的旧 `tsx server.ts` 进程；后端保存接口代码修复后，如果不重启服务，测试仍会命中旧逻辑并继续失败。
+
+**修复**
+
+- 前端保存按钮在项目模式下构建 `figures` payload：
+  - 遍历 `projectFigures`。
+  - 将每张图已有 `editLog` 与该图未应用的 `local_patch` 草稿合并。
+  - 保存成功后把已落库的本地草稿合并回前端 `projectFigures`，并从 `projectDrafts` 清除，避免刷新前状态不一致。
+- `App` 的 sessionStorage 持久化补充 `projectDrafts`，避免短暂刷新或页面恢复时丢失未应用草稿上下文。
+- 后端 `PUT /api/projects/:id` 支持 `figures` 字段：
+  - 根据 `figureId` 找到对应 `project_figures.session_id`。
+  - 合并服务端现有 session `editLog` 与前端提交的 Figure `editLog`。
+  - 使用 `compressEditLog` 保留每个 `(gid, prop)` 的最新值。
+  - 调用 `saveSession` 写回 Figure session，并同步 revision。
+- 修复后重启 3000 端口服务，确保运行中的后端加载最新 `server.ts`。
+
+**验证**
+
+- 复现测试（旧服务进程）：`npm run test:semantic-smoke`
+  - `H2-save-local-draft` 失败。
+  - 证据：保存 PUT payload 中 `savedLocalColor=true`，但保存后 GET 项目 `persistedLocalColor=false`。
+- 重启服务后回归：`npm run test:semantic-smoke`
+  - 通过。
+  - `H2-save-local-draft` 证据：`savedLocalColor=true`、`persistedLocalColor=true`、`draftCleared=true`。
+  - 最新报告：`output/playwright/semantic-centers-2026-07-08T01-05-58-545Z/report.md`
+- `npx tsc --noEmit`：通过。
+- `npm test`：通过，7 files / 59 tests。
+
+**经验规则**
+
+- 任何引入前端草稿、前端 SVG 预览或语义中间层的修改，都必须同步检查三段链路：
+  - 预览态：前端是否能看到草稿效果。
+  - 保存态：项目保存 payload 是否包含草稿。
+  - 恢复态：刷新后 `GET /api/projects/:id` 是否能从 Figure session 读回同一条 `editLog`。
+- 修改 `server.ts` 后必须重启当前 3000 端口服务再做网页回归；否则会出现“代码已修但浏览器仍命中旧后端”的假失败。
+
+---
+
+## 2026-07-08 Figure-level 共享图例无法识别
+
+**现象**
+
+- 用户生成 2×4 多子图后，在底部用 `fig.legend(...)` 放置四个共享图例项。
+- SVG 中肉眼可见底部图例，但图层结构、字体中心、组件中心无法选中或批量编辑这些图例。
+- 诊断文件 `示例_render_diagnostic_2026-07-08T01-19-36-712Z.md` 显示：
+  - `coverageReport.byKind` 没有 `legend`。
+  - `unsupportedArtists` 中有 `Legend count=1`。
+
+**根因**
+
+- Python 内省器只遍历每个 Axes 的 `ax.get_legend()`。
+- `fig.legend(...)` 创建的是 Figure-level shared legend，挂在 `fig.legends`，不属于任何单个 Axes。
+- 因此平台 coverage 能发现一个未支持的 `Legend` Artist，但没有把它注册为 manifest 对象，也就无法进入语义层、图层结构、字体中心或拖拽系统。
+
+**修复**
+
+- 在 `renderer/introspector.py` 中额外遍历 `fig.legends`。
+- 为 Figure-level 图例分配稳定且不和 Axes-level 图例冲突的 gid：
+  - `legend.figure.{i}`：共享图例容器。
+  - `legend_title.figure.{i}`：共享图例标题。
+  - `legend_text.figure.{i}.{j}`：共享图例文字。
+  - `legend_line.figure.{i}.{j}` / `legend_patch.figure.{i}.{j}`：共享图例标记。
+- 保留现有 `legend.{ax_idx}` 命名给 `ax.legend(...)`，避免破坏旧项目和已有测试。
+- 更新 `ChartPreview` 的图例子项拖拽映射：
+  - 点击 `legend_text.figure.0.0`、`legend_line.figure.0.0` 等子项时，映射回 `legend.figure.0` 容器移动。
+- 更新 `LeftSidebar`：
+  - Figure-level 共享图例归入画布级对象，避免错误挂到某个子图下面。
+
+**验证**
+
+- 新增 `tests.test_introspection.TestArtistIntrospection.test_figure_level_shared_legend_is_introspected_and_patchable`：
+  - `fig.legend(...)` 生成的共享图例进入 manifest。
+  - `legend.figure.0` 支持 `position`。
+  - `legend_text.figure.0.*` 正确读出 `"Promoted"` / `"Suppressed"`。
+  - `Legend` 不再出现在 unsupportedArtists。
+  - 回放 `legend.figure.0 position` 与 `legend_text.figure.0.0 fontsize` patch 成功。
+- `python -m unittest tests.test_introspection.TestArtistIntrospection.test_figure_level_shared_legend_is_introspected_and_patchable`：通过。
+- `python -m unittest tests.test_introspection`：通过，23 tests。
+- `npx tsc --noEmit`：通过。
+- `npm test`：通过，7 files / 59 tests。
+- `npm run build`：通过；仍存在既有 chunk size warning 与 `server.ts import.meta` CJS warning。
+
+**经验规则**
+
+- 图例识别不能只覆盖 `ax.legend()`；科研多面板图常用 `fig.legend()` 做共享图例，必须把 `fig.legends` 作为一等图元来源。
+- 任何 Figure-level 对象都应使用独立 gid 命名空间，避免和 Axes index 冲突，并在图层结构中归入画布级对象。
+
+---
+
+## 2026-07-08 组件中心“选中整组”仍只修改首个子图边框
+
+**现象**
+
+- 在 2×4 或类似多子图 Figure 中，用户进入组件中心，点击“子图边框 / 坐标轴框线”的“选中整组”。
+- UI 看起来进入了整组操作，但调整边框线宽/颜色后，实际只修改左上角第一个子图边框。
+- 用户感知为“语义层升级后仍没有整组生效”。
+
+**根因**
+
+- 语义层编译器本身支持显式对象列表：多个 `spine_group.*` 可以编译为多条 `backend_patch`。
+- 问题出在右侧面板的选择状态更新顺序：
+  - `onSelectGids(gids)` 已经把整组 gid 写入多选状态。
+  - 但同一个点击处理器随后又调用 `onSelectObject(gids[0])`。
+  - `App.handleSelectObject()` 会把 `selectedGids` 重置为 `[obj]`，因此整组状态被立即覆盖成首个对象。
+- 配色中心公共函数 `selectPaletteTargets()` 也存在同样模式，会让“选中整组”退化为首个目标。
+
+**修复**
+
+- 组件中心整组选中按钮只调用 `onSelectGids(gids)`，不再额外调用 `onSelectObject(gids[0])`。
+- 配色中心 `selectPaletteTargets()` 同步修复，只保留多选 gid 状态。
+- 保留单个对象点击的单选行为，不影响用户精确编辑某一个对象。
+- 新增语义编译回归测试：8 个 `spine_group.*` 批量修改 `linewidth` 必须生成 8 条 patch。
+
+**验证**
+
+- `npx tsc --noEmit`：通过。
+- `npm test`：通过，7 files / 60 tests。
+- `npm run build`：通过；仍存在既有 chunk size warning 与 `server.ts import.meta` CJS warning。
+
+**经验规则**
+
+- 多选语义必须只通过 `onSelectGids()` 表达；不能在同一事件中再调用会重置多选的单选入口。
+- 语义层只能保证“给定一组目标时”正确编译 patch，不能自动修复前端在进入语义层之前把整组目标压缩成一个目标的问题。
+
+---
+
+## 2026-07-11 保存项目的改图历史被 session 过期清理
+
+**现象**
+
+- 项目和 Figure 条目仍然存在，但重新打开后编辑历史为空。
+- 用户已经保存和修改过图，刷新或隔一段时间重新进入后，需要重新调整。
+- 数据库中大量 `project_figures.session_id` 已找不到对应 `sessions` 行。
+
+**根因**
+
+- `sessions` 同时承担了两种互相冲突的职责：
+  - 临时单图渲染会话。
+  - 已保存项目 Figure 的唯一 `edit_log` 存储。
+- 服务启动时无条件执行 `cleanExpiredSessions(120)`，删除超过 2 小时的所有 session。
+- 清理 SQL 没有排除被 `project_figures` 引用的 session。
+- `project_figures` 原来只持久化 revision、preview、manifest 等信息，没有独立保存 `edit_log` 和历史快照。
+- 前端 `projectHistory` 只保存在浏览器 sessionStorage；重新打开项目时还会执行 `setProjectHistory({})`。
+
+**影响范围**
+
+- 临时历史时间线可能永久丢失。
+- 部分旧项目的最终修改仍保存在 `projects.spec.editLog`，可以恢复。
+- 多 Figure 旧项目只有一份项目级 editLog 时，无法证明属于哪个 Figure，不能自动猜测套用。
+
+**修复**
+
+- `cleanExpiredSessions()` 只删除未被 `project_figures` 引用的临时 session。
+- `project_figures` 新增：
+  - `edit_log TEXT NOT NULL DEFAULT '[]'`
+  - `history TEXT NOT NULL DEFAULT '{"past":[],"future":[]}'`
+- patch 成功后同步 revision 时，同时把 session editLog 写入项目 Figure。
+- 全项目重渲染替换 Figure 前先保留旧 history，避免 delete/insert 清空历史。
+- 手动保存项目时，每张 Figure 同时保存 editLog、revision 和 projectHistory。
+- 重新打开项目时：
+  - 优先读取持久化 history。
+  - history 缺失但 editLog 存在时，按 editLog 顺序重建可撤销时间线。
+  - 单 Figure 旧项目自动从 `spec.editLog` 回填。
+  - 多 Figure 归属不明确时只报告恢复候选，不自动应用。
+
+**数据保护与恢复结果**
+
+- 修复前创建一致性备份：
+  - `data/backups/scifigure-before-history-fix-2026-07-11T10-08-56-914Z.db`
+- 迁移后：
+  - 91 个项目 Figure 中，32 个已有独立持久化 editLog。
+  - 29 个 session 已缺失的旧单 Figure 项目从 `spec.editLog` 自动回填。
+  - 4 个旧多 Figure 项目存在归属歧义，等待用户指定目标 Figure：`水库2`、`二维交互ORP`、`老金图3`、`3`。
+
+**验证**
+
+- `npm run test:project-history-persistence`：通过。
+  - 过期但被保存项目引用的 session 保留。
+  - 过期且未被项目引用的临时 session 删除。
+  - 全项目 Figure 替换后 history 保持不变。
+- `npm run lint`：通过。
+- `npm test`：15 files / 116 tests 通过。
+- `npm run build`：通过。
+- 服务已使用新代码重启并监听 `http://localhost:3000`。
+
+**经验规则**
+
+- 临时运行缓存不能作为用户项目数据的唯一持久化来源。
+- 任何清理任务必须排除被项目、导出资产或历史记录引用的数据。
+- 多 Figure editLog 归属不明确时必须拒绝自动恢复，不能因为 gid 相同就套用到第一张或全部 Figure。
+
+---
+
+## 2026-07-11 用户登录后看不到原有项目
+
+**现象**
+
+- 用户使用真实账号 `2449673842@qq.com` 登录后，项目列表为空。
+- 数据目录和 SQLite 数据库仍存在，项目文件没有被删除。
+
+**根因**
+
+- 用户隔离升级为旧数据增加 `user_id` 后，`claimLegacyOwnership()` 会把无归属项目自动分配给数据库中最早创建的账号。
+- 最早创建的账号是自动化测试产生的 `Smoke User`，不是真实用户账号。
+- 结果是 100 个旧项目全部归到测试账号，真实账号项目数为 0；这是数据归属错误，不是项目删除。
+
+**修复**
+
+- `claimLegacyOwnership()` 不再根据账号创建顺序推断旧数据所有者。
+- 只有显式配置 `SCIFIGURE_LEGACY_OWNER_EMAIL`，并且当前请求者正是该账号时，才允许认领仍无 `user_id` 的旧数据。
+- 将 `Smoke User` 名下 100 个旧项目迁移到 `2449673842@qq.com`，并同步迁移这些项目仍存在的 Figure session 归属。
+- `capability-regression-smoke@example.test` 名下 3 个测试项目保持不动。
+
+**数据保护与迁移结果**
+
+- 迁移前一致性备份：
+  - `data/backups/scifigure-before-owner-repair-2026-07-11T10-26-37-521Z.db`
+- 迁移前：真实账号 0 个项目，Smoke User 100 个项目，总计 103 个项目。
+- 迁移后：真实账号 100 个项目，Smoke User 0 个项目，能力测试账号 3 个项目，总计仍为 103 个项目。
+- SQLite `integrity_check`：`ok`；`foreign_key_check`：0 条异常。
+
+**验证**
+
+- `npm run test:project-history-persistence`：通过，并新增以下边界检查：
+  - 未配置旧数据所有者时，任何账号都不能自动认领旧项目。
+  - 非配置账号不能触发认领。
+  - 只有显式配置的目标账号可以认领无归属项目及其 session。
+- `npm run lint`：通过。
+
+**经验规则**
+
+- 用户数据所有权不能通过“最早账号”“第一个登录账号”或测试账号命名规则推断。
+- 旧数据迁移必须使用显式目标账号、事务、迁移前备份和迁移后数量守恒检查。
+- 自动化测试账号必须使用独立数据库；不得在真实数据数据库中运行会创建账号或项目的隔离测试。
+
+---
+
+## 2026-07-11 自定义数据目录在 Windows 被误判为协议路径
+
+**现象**
+
+- 使用 `SCIFIGURE_DATA_DIR=C:\\...\\Temp\\...` 启动隔离测试服务后，项目可以创建，但渲染返回“禁止的路径格式”。
+- 修正第一处后，导出又因内部仍拼接固定 `data/projects/...` 而返回“路径越界已拦截”。
+
+**根因**
+
+- `safeResolveUnder()` 使用通用 URI scheme 正则检查路径，错误地把 Windows 盘符 `C:` 当成 `file:`、`http:` 一类协议。
+- 项目根目录已切换到自定义数据目录，但导出目录和组合项目复制仍使用固定 `data/projects/...` 相对路径，导致新旧根目录混用。
+
+**修复**
+
+- 增加统一 `DATA_ROOT` 和 `PROJECTS_ROOT`：默认仍为 `./data`，显式设置时数据库、项目文件和导出共同切换。
+- 原生绝对路径先由 `path.isAbsolute()` 识别；仅对非原生绝对路径拦截协议格式。
+- 导出目录改为当前项目根目录下的 `exports`。
+- 组合项目复制目标改为当前项目 `files` 目录，不再重新拼接固定仓库路径。
+- 最终路径、真实路径和符号链接边界检查保持不变。
+
+**验证**
+
+- 临时数据根目录中的两 Figure 项目真实渲染通过。
+- SVG、PNG、PDF、TIFF 导出通过。
+- 主图与两个子图同格式导出通过，导出资产库元数据正确。
+- 渲染进行中导出被阻断。
+- 字体/组件/配色语义中心及 local draft 保存持久化浏览器测试通过。
+- 编辑器 A4 旁览真实截图通过，示例文字、字号、Word 缩放和最小字号统计可见。
+- 真实 `data/scifigure.db` 项目归属和项目数量未被隔离测试修改。
+
+**经验规则**
+
+- 测试隔离必须覆盖数据库、项目文件、上传、导出和临时资产，不能只替换 SQLite 路径。
+- Windows 盘符绝对路径与 URI scheme 必须使用平台路径 API 区分，不能只靠正则。
+- 数据根目录切换必须由一个配置源派生所有子目录，禁止局部继续拼接固定 `data/projects`。
+
+---
+
+## 2026-07-11 项目代码修改没有可持久化的撤销记录
+
+**现象**
+
+- Monaco 编辑器内部可以临时撤销输入，但点击“同步至引擎并预览 SVG”后，平台历史主要记录图元 editLog。
+- 用户修改代码并成功重绘后，顶部撤销无法可靠恢复上一版代码；刷新后也没有“这是一次代码修改”的记录。
+
+**根因**
+
+- `specHistory` 在项目模式下不是主要撤销来源，项目使用 per-Figure `projectHistory`。
+- 代码同步成功只更新 `spec.custom_script`，没有在 `projectHistory` 中写入同步前脚本。
+- 编辑器输入会立即更新 `spec.custom_script`，因此不能用当前 spec 作为“上次成功代码”基线。
+- 历史快照只有 `editLog/script/label/timestamp`，无法区分图元编辑和代码版本。
+
+**修复**
+
+- 增加最后成功渲染代码基线 `committedScriptRef`；键盘输入只改变草稿，不改变提交基线。
+- 仅在代码同步或项目代码重绘成功后记录历史；失败和漂移取消不记录。
+- `HistorySnapshot` 增加 `changeType` 和 `codeSummary`，历史菜单显示“代码版本”和 `+N/-N 行`摘要。
+- 撤销/重做同时重放 snapshot 中的脚本和 editLog，并保留代码版本元数据。
+- 代码面板 Python code-patch、顶部项目同步和 R 项目同步统一使用成功后提交规则。
+- Monaco 输入和文件载入不再向 `specHistory` 写入每次字符变化。
+- 修复编辑器顶部工具栏和视图标签栏在窄工作区下互相覆盖的问题。
+
+**验证**
+
+- 成功同步新代码后历史出现“代码版本”。
+- 撤销后 SVG 恢复旧标题，重做后恢复新标题。
+- 保存请求和项目 GET 均保留代码快照、脚本和差异摘要。
+- `npm run test:code-history-smoke`：通过。
+- `npm run lint`、`npm test`、`npm run build`：通过。
+
+**经验规则**
+
+- 编辑器草稿和成功渲染代码必须是两个状态；不能从同一 `spec.custom_script` 推断代码是否已提交。
+- 代码历史以成功渲染为事务提交点，不以键盘输入、按钮点击或请求发出为提交点。
+- 图元和代码共享时间线时，快照必须同时保存脚本和 editLog，不能只恢复其中一半。
+
+---
+
+## 2026-07-12 03:35:38 +08:00 组合代码项目选择器 C1-C5 验收问题
+
+**现象**
+
+- 初版 UI smoke 使用不完整 manifest，编辑器读取 `currentProps.label` 时进入错误边界。
+- 后端代码修改后，旧 `tsx server.ts` 进程仍返回缺少 `language` 等字段的旧 Figure picker 响应。
+- 900 px 窗口下双栏退化为隐式 grid 行，左侧内容与右侧创建检查发生重叠，创建按钮难以到达。
+- 30 Figure 虽使用 `content-visibility`，但 React `useMemo` 仍立即 sanitize 全部 SVG。
+- 全 R 来源被识别为 R 项目，但提示词仍包含 `fig.add_axes`、`plt.subplots` 等 Matplotlib 指令。
+- 缺失数据依赖只在前端提示，初始来源或直接 API 调用可以绕过。
+- 直接 API 可以保存 `auto` 或容量不足的布局，导致项目 spec 与 panel 位置计划不一致。
+
+**根因**
+
+- 测试 fixture 没有遵守 StandardFigureModel 最小对象契约。
+- `tsx` 开发进程不会自动重载后端文件。
+- 窄窗口继续使用隐式 grid 行并保留 `min-h-0/overflow-hidden`。
+- CSS 离屏渲染只减少布局绘制，不会推迟 JavaScript SVG 清洗。
+- 组合提示词的语言目标和布局 helper 没有分支。
+- 数据依赖和布局正确性错误地依赖前端预检，没有在创建事务入口复核。
+
+**修复**
+
+- UI smoke 改用完整 manifest fixture，并模拟项目恢复、资产读取和认证链路。
+- Figure picker 增加语言、子图数、宽高比、图例、色条、数据文件与依赖状态。
+- 窄窗口使用纵向 flex 和弹窗级滚动；宽屏继续使用双栏独立滚动。
+- `SanitizedSvgPreview` 增加 64 项 LRU 和 IntersectionObserver 可见区预加载。
+- Python 与 R 分别生成 Matplotlib `fig.add_axes` 和 R `ggplotGrob + grid::unit` 物理绘图区提示词。
+- 创建 API 按用户所有权重新读取来源脚本和文件，缺少引用数据时返回 400。
+- 后端复用共享 composition planner，将 `auto` 保存为具体布局，并拒绝容量不足的显式布局。
+
+**验证**
+
+- `npm run lint`：通过。
+- `npm test`：18 个测试文件、127 项测试通过。
+- `npm run build`：通过；保留既有 bundle 体积和 CJS `import.meta` 警告。
+- `npm run test:composition-selector-ui-smoke`：通过；覆盖 30 Figure、可见区清洗、最近使用、排序、布局、风险和 900/1680 px。
+- `npm run test:composition-code-project`：通过；覆盖 Python/R 组合、数据复制、动态标签、后端布局、重复来源和缺失依赖。
+- 多 Figure 状态、拖拽和公开注册门禁回归通过。
+
+**经验规则**
+
+- `content-visibility` 不等于延迟执行 JavaScript；大 SVG 必须量化 sanitize 次数。
+- 创建项目的布局、依赖和所有权必须由后端最终校验，前端检查只用于解释和提前反馈。
+- 语言目标、脚手架和提示词 helper 必须作为同一协议分支测试，不能只改其中一处。
+- 响应式验收不能只使用 `isVisible()`；必须确认关键操作能滚入真实视口且截图无重叠。
+
+---
+
+## 2026-07-12 13:44:49 +08:00 帮助中心动态图标崩溃与开发服务旧模块缓存
+
+**现象**
+
+- 从公开宣传页点击“帮助中心”后页面变空，React 报 `Element type is invalid`，调用栈指向 `HelpCenterPage` 内的按钮。
+- 修复源代码分类文案后，浏览器截图仍显示旧分类，静态类型检查和生产构建均正常。
+
+**根因**
+
+- 帮助页在按钮映射中直接渲染动态图标组件；图标包经开发服务器预打包后存在导出未定义的运行时可能，TypeScript 无法发现该类浏览器模块差异。
+- 3000 端口运行的是较早启动的 `tsx server.ts`，Vite 模块图未可靠消费外部并行写入后的内容模块更新。
+
+**修复**
+
+- 动态图标映射统一增加语义相近的稳定回退图标，单个图标导出异常不再击穿整页。
+- 确认端口进程属于当前项目后重启开发服务，再执行全新浏览器上下文回归。
+- Playwright 回归覆盖公开入口、登录后入口、搜索、模板切换、复制反馈、FAQ 多项同时展开和移动端横向溢出。
+
+**验证**
+
+- `npm run lint`：通过。
+- `npm test`：18 个测试文件、130 项测试通过。
+- `npm run build`：通过；保留既有 bundle 体积和 CJS `import.meta` 警告。
+- `npm run test:help-center-smoke`：通过。
+
+**经验规则**
+
+- 由数据驱动的 React 组件映射必须为外部图标或插件组件提供回退，不允许一个装饰性组件导致整页不可用。
+- 并行代理或外部工具写入前端模块后，真实浏览器验收前必须确认开发服务已加载最新模块；静态构建通过不能证明当前常驻进程没有旧缓存。
+
+---
+
+## 2026-07-12 13:56:33 +08:00 科研模板图片路径与内容契约不一致
+
+**现象**
+
+- 散点回归模板的数据记录引用 `/help-template-scatter-regression.png`，实际生成文件为 `/help-template-regression.png`。
+- 帮助页本身可正常打开，但切换到该模板时示例图加载失败。
+
+**根因**
+
+- 初版浏览器测试只验证了热图模板，没有遍历全部模板图片。
+- 模板内容数据和图片生成脚本使用了不同的文件命名，没有共享的逐条资产验收。
+
+**修复**
+
+- 统一散点回归模板图片路径。
+- 模板库扩展到 7 套，并保持每套同时提供示例图、Python、R、CSV 和说明。
+- Playwright 回归遍历全部模板，逐条检查图片完成加载且 `naturalWidth > 0`。
+
+**验证**
+
+- 7 张模板 PNG 均为 `1600 x 1000 px`。
+- `npm run lint`：通过。
+- `npm run test:help-center-smoke`：通过。
+
+**经验规则**
+
+- 内容驱动的静态资产不能只检查文件是否存在；必须从真实页面按内容记录逐条加载。
+- 模板示例图与复制代码应表达同一视觉语义；示例图包含置信椭圆时，Python/R 模板也应包含对应绘制逻辑。
+
+---
+
+## 2026-07-12 14:05:43 +08:00 帮助页会话状态导致宣传页被误认为替换
+
+**现象**
+
+- 匿名用户进入帮助中心后刷新，仍停留在帮助页。
+- 帮助页复用了宣传页视觉系统，且返回宣传页入口只绑定在品牌标识上，用户容易认为原宣传页被替换。
+
+**根因**
+
+- `help` 被作为普通 `ViewState` 保存到会话状态，匿名认证完成后没有恢复公开默认首页。
+- 返回入口缺少明确文字，只靠品牌点击行为表达导航关系。
+
+**修复**
+
+- 匿名认证检查完成或失败时，公开默认视图统一恢复为 `landing`。
+- 帮助页桌面顶部增加“返回官网”，移动端菜单增加同名入口；品牌标识补充可访问名称。
+- 浏览器回归增加“匿名帮助页刷新后回到宣传页”和登录用户返回工作区检查。
+
+**验证**
+
+- `npm run lint`：通过。
+- `npm run test:help-center-smoke`：通过。
+
+**经验规则**
+
+- 共享视觉语言不等于共享页面身份；二级公开页面必须有明确返回主站的文字入口。
+- 没有 URL 路由的公开二级页面不得覆盖匿名根入口的默认恢复行为。
+
+---
+
+## 2026-07-12 14:24:55 +08:00 帮助内容受众越界与忽略目录热更新失效
+
+**现象**
+
+- 用户帮助页出现面向开发者的内省、patch、服务端和核心实现保护说明，不符合最终用户阅读对象。
+- 帮助内容位于 `src/data/`，受到仓库通用 `data/` 忽略规则影响；新增导出后开发服务器继续使用旧模块，导致页面入口无法加载。
+
+**根因**
+
+- 产品帮助、开发架构和知识产权保护没有按受众拆分。
+- 将前端内容模块放入了与用户数据目录同名且被忽略的路径。
+
+**修复**
+
+- 用户帮助页只保留操作流程、模板、公开提示词和用户问答。
+- 核心实现与知识产权保护迁移到内部开发文档。
+- 帮助内容模块从 `src/data/helpContent.ts` 迁移到 `src/content/helpContent.ts`，恢复可靠文件监听。
+
+**经验规则**
+
+- 写任何文案前必须先标明受众：最终用户、管理员、开发者或安全运维；不同受众内容不得混写。
+- `src/data`、`tmp`、`output` 等可能被忽略的路径不得承载前端源码模块。
+
+---
+
+## 2026-07-12 14:57:42 +08:00 历史导出资产看似丢失
+
+**现象**
+
+- 用户进入“历史导出资产”后看不到过去保存的图片，认为导出记录被清空。
+
+**证据与根因**
+
+- 数据库仍有 81 条 `export_assets` 记录，全部关联到账号 `2449673842@qq.com` 拥有的项目。
+- 原页面只请求当前 `projectId` 的资产；最近项目没有导出记录时，页面显示“当前项目没有资产”，造成全部历史丢失的错觉。
+- 磁盘检查发现 78 个原文件存在，`10聚类` 的 2 个 PNG 和 1 个组合 SVG 缺失，但数据库仍保留完整 SVG 缩略内容。
+
+**修复与恢复**
+
+- 使用 `scripts/recover_missing_export_assets.mjs` 在不修改数据库记录的前提下重建 3 个缺失文件。
+- 恢复报告和 SHA-256 写入 `data/backups/export-assets-recovery-*.json`。
+- 新增账号级 `/api/export-assets` 查询、跨项目 ZIP 和跨项目删除接口，所有数据继续按认证用户项目所有权限定。
+- 资产库默认汇总账号全部项目，显示来源项目并支持项目筛选。
+- 单项删除不再依赖异步 selection state，直接按明确资产 ID 执行。
+
+**验证**
+
+- 数据库记录：81 条；磁盘文件存在：81 个。
+- `npm run lint`：通过。
+- `npm run test:export-library-global-smoke`：通过。
+
+**经验规则**
+
+- 名为“历史资产库”的入口默认作用域必须与用户理解一致；项目级视图必须明确标注，不能把空项目解释为账号无历史。
+- 导出记录与物理文件需要定期一致性检查，缩略内容可作为最后恢复来源，但不能替代原始文件备份。
+
+---
+
+## 2026-07-12 15:25:57 +08:00 升级测试污染正式数据与持久化状态检查不完整
+
+**现象**
+
+- 升级后多次出现项目、上传文件、Figure 历史或导出资产“突然没有了”的现象。
+- 数据库记录有时仍在，但页面只查询当前项目；另一些记录存在，但物理文件或 Figure session 已缺失。
+
+**根因**
+
+- 旧烟雾测试默认连接 `localhost:3000`，在正式开发服务运行时会把测试账号、测试项目和删除清理请求写入真实 `data/`。
+- 升级回归只关注当前页面和 SVG，没有统一检查 `projects`、`project_files`、`project_figures`、`sessions`、`export_assets` 与物理文件的一致性。
+- 旧 session 清理逻辑曾删除已保存 Figure 引用的 session；页面读取有 `project_figures` 回退，因此问题未立即暴露，但继续 patch、组合和导出链路存在降级风险。
+- 账号级历史与项目级历史的 UI/API 作用域没有统一标注，空项目造成“全部历史丢失”的错觉。
+
+**修复与恢复**
+
+- 新增 `scripts/testing/run_with_isolated_server.mjs`，会写数据的 npm 烟雾测试统一使用临时数据根目录、临时数据库和随机端口。
+- 新增 `scripts/audit_data_integrity.mjs`，检查所有权、计数、物理文件、Figure JSON、session 引用和历史测试账号。
+- 新增 `scripts/recover_missing_project_files.mjs`：23 个缺失文件均通过同名、列结构、行数和候选 SHA-256 校验后非覆盖恢复。
+- 新增 `scripts/recover_missing_figure_sessions.mjs`：先创建 SQLite 在线备份，再从 `project_figures + projects` 事务重建 78 个 session。
+- 发现 23 个历史测试账号，其中一个账号持有 12 个测试项目；按用户数据红线仅记录警告，未删除账号或项目。
+
+**恢复证据**
+
+- `data/backups/project-files-recovery-2026-07-12T07-16-41-202Z.json`
+- `data/backups/pre-session-recovery-2026-07-12T07-21-58-748Z.db`
+- `data/backups/figure-session-recovery-2026-07-12T07-21-58-748Z.json`
+- 恢复后 `npm run data:audit`：`issueCount=0`，保留 23 条历史测试账号警告。
+
+**验证**
+
+- `npm run test:data-integrity-tools`：通过，dry-run 不写文件、apply 哈希一致、session 重建后审计归零。
+- `npm run test:cache-smoke`：通过；正式数据库大小、修改时间和项目文件数量测试前后不变。
+- `npm run test:export-matrix-smoke`：12/12 通过，控制台和页面错误均为 0。
+- `npm run test:export-library-global-smoke`、`npm run test:public-auth-smoke`：通过且运行于隔离服务。
+- `npm run lint`：通过。
+- `npm test`：18 个测试文件、130 项测试通过。
+- `npm run build`：通过；保留既有 bundle 体积和 CJS `import.meta` 警告。
+
+**经验规则**
+
+- 页面显示为空时先区分“账号级/项目级查询”“数据库记录”“物理文件”“运行 session”，不能直接判断数据丢失。
+- 测试数据隔离必须同时隔离数据库和项目文件根目录，仅换账号或仅换数据库都不够。
+- 升级前后必须执行数据完整性审计；恢复默认 dry-run，apply 必须非覆盖、可追溯、有哈希和数据库备份。

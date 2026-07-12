@@ -12,6 +12,11 @@ import { chromium } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  authenticateCapabilitySmokeUser,
+  bearerHeaders,
+  installBrowserAuthentication,
+} from './smokeAuth.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -24,7 +29,9 @@ const apiRequests = [];
 const apiResponses = [];
 const consoleErrors = [];
 const pageErrors = [];
+const failedRequests = [];
 const diagnostics = {};
+let authToken = '';
 
 const script = [
   'library(ggplot2)',
@@ -32,7 +39,6 @@ const script = [
   'p <- ggplot(df, aes(x, y, color=group)) +',
   '  geom_point(size=3) +',
   '  geom_line(linewidth=0.8) +',
-  '  scale_color_manual(values=c(A="#1F78B4", B="#D62728")) +',
   '  labs(title="R Semantic Centers", x="R X Axis", y="R Y Axis") +',
   '  theme_classic()',
   'p',
@@ -68,6 +74,7 @@ async function requestJson(pathname, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...bearerHeaders(authToken),
       ...(options.headers || {}),
     },
   });
@@ -299,10 +306,12 @@ async function prepareProject(page) {
 
 async function run() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'R semantic centers');
   await cleanupSmokeProjects();
 
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await installBrowserAuthentication(context, authToken);
   const page = await context.newPage();
 
   page.on('console', (msg) => {
@@ -310,6 +319,9 @@ async function run() {
   });
   page.on('pageerror', (err) => {
     if (!isIgnorableDevServerNoise(err.message)) pageErrors.push(err.message);
+  });
+  page.on('requestfailed', (request) => {
+    failedRequests.push({ url: request.url(), errorText: request.failure()?.errorText || '' });
   });
   page.on('request', (request) => {
     if (interestingApi(request)) {
@@ -391,7 +403,7 @@ function generateReport() {
     '## Diagnostics',
     '',
     '```json',
-    JSON.stringify({ diagnostics, consoleErrors, pageErrors }, null, 2),
+    JSON.stringify({ diagnostics, consoleErrors, pageErrors, failedRequests }, null, 2),
     '```',
   ];
   const file = path.join(OUTPUT_DIR, 'report.md');

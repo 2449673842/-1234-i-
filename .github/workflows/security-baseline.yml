@@ -1,0 +1,98 @@
+name: Security baseline
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  repository-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Reject tracked runtime data and common secrets
+        run: node scripts/security/check-repo-boundary.mjs
+      - name: Verify ignored runtime directories
+        run: |
+          git check-ignore data tmp output test-results test-results-v3
+          test -z "$(git ls-files data tmp output test-results test-results-v3)"
+
+  data-persistence-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Type-check
+        run: npm run lint
+      - name: Run unit regressions
+        run: npm test
+      - name: Verify project ownership and history persistence
+        run: npm run test:project-history-persistence
+
+  capability-matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: r-lib/actions/setup-r@v2
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::ggplot2
+            any::jsonlite
+            any::svglite
+      - name: Install Python renderer dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify synthetic Python/R capability matrix
+        run: python -m unittest tests/test_capability_matrix.py -v
+
+  editor-history-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          npm ci
+          python -m pip install -r requirements.txt
+          npx playwright install --with-deps chromium
+      - name: Start isolated application
+        env:
+          PORT: "3109"
+          SCIFIGURE_DATA_DIR: ${{ runner.temp }}/scifigure-code-history
+          SCIFIGURE_RENDER_MODE: local
+        run: |
+          npm run dev > ${{ runner.temp }}/scifigure-code-history.log 2>&1 &
+          for attempt in {1..60}; do
+            curl --fail --silent http://localhost:3109 >/dev/null && exit 0
+            sleep 1
+          done
+          cat ${{ runner.temp }}/scifigure-code-history.log
+          exit 1
+      - name: Verify committed code history undo/redo and persistence
+        env:
+          SCIFIGURE_URL: http://localhost:3109
+        run: npm run test:code-history-smoke

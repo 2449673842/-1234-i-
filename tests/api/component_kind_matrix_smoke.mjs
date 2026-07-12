@@ -6,7 +6,10 @@
  * falling back to full project render.
  */
 
+import { authenticateCapabilitySmokeUser, bearerHeaders } from '../playwright/smokeAuth.mjs';
+
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
+let authToken = '';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -17,6 +20,7 @@ async function requestJson(path, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...bearerHeaders(authToken),
       ...(options.headers || {}),
     },
   });
@@ -71,9 +75,11 @@ const script = [
 
 const checks = [
   { id: 'line', kind: 'line', gidPrefix: 'line.', prop: 'linewidth', value: 2.4, expected: (props) => Number(props.linewidth) === 2.4 },
-  { id: 'collection', kind: 'collection', prop: 'alpha', value: 0.55, expected: (props) => Math.abs(Number(props.alpha) - 0.55) < 0.01 },
+  { id: 'collection', kind: 'collection', excludeRole: 'legend_marker', prop: 'alpha', value: 0.55, expected: (props) => Math.abs(Number(props.alpha) - 0.55) < 0.01 },
   { id: 'bar-container', kind: 'bar_container', prop: 'linewidth', value: 1.8, expected: (props) => Number(props.linewidth) === 1.8 },
   { id: 'errorbar-container', kind: 'errorbar_container', prop: 'elinewidth', value: 2.1, expected: (props) => Number(props.elinewidth) === 2.1 },
+  { id: 'errorbar-capsize', kind: 'errorbar_container', prop: 'capsize', value: 7, expected: (props) => Math.abs(Number(props.capsize) - 7) < 0.01 },
+  { id: 'stem-container', kind: 'stem_container', prop: 'stem_linewidth', value: 2.6, expected: (props) => Math.abs(Number(props.stem_linewidth) - 2.6) < 0.01 },
   { id: 'boxplot-container', kind: 'boxplot_container', prop: 'median_color', value: '#d62728', expected: (props) => String(props.median_color).toLowerCase() === '#d62728' },
   { id: 'violinplot-container', kind: 'violinplot_container', prop: 'alpha', value: 0.45, expected: (props) => Math.abs(Number(props.alpha) - 0.45) < 0.01 },
   { id: 'heatmap', kind: 'heatmap', prop: 'alpha', value: 0.6, expected: (props) => Math.abs(Number(props.alpha) - 0.6) < 0.01 },
@@ -116,6 +122,7 @@ function findObject(rendered, check) {
   const objects = rendered.figures?.[0]?.manifest?.objects || [];
   return objects.find((object) => (
     object?.kind === check.kind &&
+    (!check.excludeRole || object.role !== check.excludeRole) &&
     (!check.gidPrefix || String(object.id || '').startsWith(check.gidPrefix)) &&
     Array.isArray(object.editable) &&
     object.editable.length > 0
@@ -150,6 +157,7 @@ async function patchObject(projectId, gid, prop, value, label, baseRevision) {
 }
 
 async function main() {
+  authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'component kind matrix');
   await cleanupSmokeProjects();
   let projectId = null;
   const summary = [];
@@ -164,6 +172,21 @@ async function main() {
       acc[object.kind] = (acc[object.kind] || 0) + 1;
       return acc;
     }, {});
+    const containerKinds = new Set(['bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container']);
+    const containerOwnership = objects
+      .filter((object) => containerKinds.has(object.kind))
+      .map((container) => ({
+        id: container.id,
+        kind: container.kind,
+        children: container.children || [],
+      }));
+    containerOwnership.forEach((container) => {
+      assert(container.children.length > 0, `${container.id} has no owned children`);
+      container.children.forEach((childId) => {
+        const child = objects.find((object) => object.id === childId);
+        assert(child?.parentId === container.id, `${childId} is not linked back to ${container.id}`);
+      });
+    });
 
     for (const check of checks) {
       const target = findObject(rendered, check);
@@ -182,6 +205,7 @@ async function main() {
       status: 'PASS',
       projectId,
       kindCounts,
+      containerOwnership,
       checks: summary,
     }, null, 2));
   } finally {

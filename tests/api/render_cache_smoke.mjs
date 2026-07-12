@@ -9,6 +9,7 @@
  */
 
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
+let authToken = '';
 
 function assert(condition, message) {
   if (!condition) {
@@ -21,6 +22,7 @@ async function requestJson(path, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       ...(options.headers || {}),
     },
   });
@@ -131,10 +133,30 @@ async function patchFontSize(projectId, gid, value, label) {
   assert(patched.status === 'success', `Patch ${label} failed: ${patched.message || 'unknown'}`);
   assert(typeof patched.cache?.hit === 'boolean', `Patch ${label} did not expose cache.hit`);
   assert(typeof patched.cache?.key === 'string' && patched.cache.key.length > 0, `Patch ${label} did not expose cache.key`);
+  assert(patched.performance?.schemaVersion === '1.0', `Patch ${label} did not expose performance schema v1.0`);
+  assert(patched.performance?.cacheHit === patched.cache.hit, `Patch ${label} performance cacheHit disagrees with cache.hit`);
+  assert(patched.performance?.server?.totalMs >= 0, `Patch ${label} did not expose server total timing`);
+  assert(patched.performance?.server?.cacheLookupMs >= 0, `Patch ${label} did not expose cache lookup timing`);
+  if (patched.cache.hit) {
+    assert(patched.performance.renderer === null, `Patch ${label} cache hit fabricated renderer timing`);
+    assert(patched.performance.runtime === null, `Patch ${label} cache hit fabricated runtime timing`);
+  } else {
+    assert(patched.performance.renderer?.totalMs >= 0, `Patch ${label} cache miss omitted renderer timing`);
+    assert(patched.performance.runtime?.totalMs >= 0, `Patch ${label} cache miss omitted runtime timing`);
+  }
   return patched;
 }
 
 async function main() {
+  const auth = await requestJson('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      email: `cache-${Date.now()}-${Math.random().toString(36).slice(2)}@example.test`,
+      password: 'Cache-Smoke-Password-2026',
+    }),
+  });
+  assert(typeof auth.token === 'string' && auth.token.length > 0, 'Cache smoke registration did not return a token');
+  authToken = auth.token;
   await cleanupSmokeProjects();
   let projectId = null;
   try {

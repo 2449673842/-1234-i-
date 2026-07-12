@@ -15,6 +15,11 @@ import { chromium } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  authenticateCapabilitySmokeUser,
+  bearerHeaders,
+  installBrowserAuthentication,
+} from './smokeAuth.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -27,6 +32,7 @@ const apiRequests = [];
 const consoleErrors = [];
 const pageErrors = [];
 const diagnostics = {};
+let authToken = '';
 
 function record(id, status, note) {
   results.push({ id, status, note });
@@ -52,6 +58,7 @@ async function requestJson(pathname, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...bearerHeaders(authToken),
       ...(options.headers || {}),
     },
   });
@@ -194,6 +201,8 @@ async function preparePythonProject(page) {
     'ax.set_ylabel("Y Axis")',
     'ax.text(0.34, 0.72, "DRAG_A", transform=ax.transAxes, ha="center", va="center", fontsize=14)',
     'ax.text(0.66, 0.42, "DRAG_B", transform=ax.transAxes, ha="center", va="center", fontsize=14)',
+    'ax.text(0.50, 0.25, "DRAG_C", transform=ax.transAxes, ha="center", va="center", fontsize=14)',
+    'ax.annotate("DRAG_ANN", xy=(1.0, 3.0), xytext=(1.55, 3.25), arrowprops=dict(arrowstyle="->"), fontsize=12)',
     'plt.tight_layout()',
   ].join('\n');
 
@@ -255,7 +264,15 @@ async function preparePythonProject(page) {
       currentView: 'workspace',
       subView: 'home',
     }));
-    return { projectId: created.id, objectCount: rendered.figures[0]?.manifest?.objects?.length || 0 };
+    const objects = rendered.figures[0]?.manifest?.objects || [];
+    const annotation = objects.find(object => object?.currentProps?.text === 'DRAG_ANN');
+    return {
+      projectId: created.id,
+      objectCount: objects.length,
+      annotationId: annotation?.id || null,
+      annotationArrowId: annotation?.identity?.relation?.arrowId || null,
+      annotationRole: annotation?.role || null,
+    };
   }, { baseUrl: BASE_URL, script });
 
   await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
@@ -354,10 +371,13 @@ async function injectRNativeCoordinateFixture(page) {
 
 async function run() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'drag extended');
   await cleanupSmokeProjects();
 
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 950 } });
+  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 950 } });
+  await installBrowserAuthentication(context, authToken);
+  const page = await context.newPage();
 
   page.on('console', (msg) => {
     if (['error'].includes(msg.type())) consoleErrors.push(msg.text());
@@ -371,13 +391,22 @@ async function run() {
 
   try {
     await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
-    await preparePythonProject(page);
+    const fixture = await preparePythonProject(page);
     const boxA = await findBoxByText(page, 'DRAG_A');
     const boxB = await findBoxByText(page, 'DRAG_B');
+    const boxC = await findBoxByText(page, 'DRAG_C');
     const lineBox = await findUnsupportedLineBox(page);
     diagnostics.boxA = boxA;
     diagnostics.boxB = boxB;
+    diagnostics.boxC = boxC;
     diagnostics.lineBox = lineBox;
+    diagnostics.annotation = fixture;
+
+    record(
+      'D0-annotation-relation',
+      fixture.annotationId && fixture.annotationArrowId && fixture.annotationRole === 'annotation_text' ? 'PASS' : 'FAIL',
+      `text=${fixture.annotationId}, arrow=${fixture.annotationArrowId}, role=${fixture.annotationRole}`,
+    );
 
     if (!boxA || !boxB) {
       record('D0-fixture', 'BLOCKED', `missing draggable text boxes: A=${Boolean(boxA)}, B=${Boolean(boxB)}`);
@@ -411,12 +440,12 @@ async function run() {
         `dragMode=${sequentialDragModeOn}, firstPending=${firstSequentialPending}, secondPending=${secondSequentialPending}, confirmed=${sequentialConfirmed}, patchRequests=${sequentialPatchRequests.length}, positionPatches=${sequentialPositionPatches.length}, gids=${sequentialGids.join(',')}`,
       );
 
-      await setSelectedGidsAndReload(page, [boxA.id, boxB.id]);
+      await setSelectedGidsAndReload(page, [boxA.id, boxB.id, boxC?.id].filter(Boolean));
       const dragModeOn = await ensureDragMode(page, true);
       const freshBoxA = await findBoxByText(page, 'DRAG_A');
       await dragBox(page, freshBoxA || boxA, 70, 25);
       const bodyAfterMultiDrag = await getBodyText(page);
-      const multiConfirm = bodyAfterMultiDrag.includes('已累计移动 2 个文本对象');
+      const multiConfirm = bodyAfterMultiDrag.includes(`已累计移动 ${boxC ? 3 : 2} 个文本对象`);
       const confirmStart = apiRequests.length;
       const confirmed = multiConfirm && await clickVisibleText(page, '确认位置', 3000);
       if (confirmed) {
@@ -428,9 +457,10 @@ async function run() {
       const positionPatches = Array.isArray(patchBody?.patches)
         ? patchBody.patches.filter((patch) => patch?.prop === 'position')
         : [];
+      const expectedMultiCount = boxC ? 3 : 2;
       record(
         'D1-multi-drag',
-        dragModeOn && multiConfirm && confirmed && patchRequests.length === 1 && positionPatches.length === 2 ? 'PASS' : 'FAIL',
+        dragModeOn && multiConfirm && confirmed && patchRequests.length === 1 && positionPatches.length === expectedMultiCount ? 'PASS' : 'FAIL',
         `dragMode=${dragModeOn}, confirmBar=${multiConfirm}, confirmed=${confirmed}, patchRequests=${patchRequests.length}, positionPatches=${positionPatches.length}`,
       );
 
@@ -463,6 +493,32 @@ async function run() {
         'D3-unsupported',
         body.includes('当前对象不支持拖拽') && unsupportedPatches.length === 0 && !body.includes('确认位置') ? 'PASS' : 'FAIL',
         `hint=${body.includes('当前对象不支持拖拽')}, patchRequests=${unsupportedPatches.length}, confirm=${body.includes('确认位置')}`,
+      );
+    }
+
+    const annotationBox = await findBoxByText(page, 'DRAG_ANN');
+    if (!annotationBox) {
+      record('D3b-annotation-drag', 'BLOCKED', 'missing annotation text box');
+    } else {
+      await ensureDragMode(page, true);
+      const annotationStart = apiRequests.length;
+      await dragBox(page, annotationBox, 50, -16);
+      const annotationPending = (await getBodyText(page)).includes('确认位置');
+      const annotationConfirmed = annotationPending && await clickVisibleText(page, '确认位置', 3000);
+      if (annotationConfirmed) await waitForApiSettle(page, annotationStart, 30000);
+      const annotationRequests = apiRequests.slice(annotationStart).filter(request => request.url.includes('/api/figure/patch'));
+      const annotationBody = annotationRequests[0]?.postData ? parseJson(annotationRequests[0].postData) : null;
+      const annotationPatches = Array.isArray(annotationBody?.patches) ? annotationBody.patches : [];
+      const positionPatches = annotationPatches.filter(patch => patch?.prop === 'position');
+      const arrowPatches = annotationPatches.filter(patch => String(patch?.gid || '').startsWith('annotation_arrow.'));
+      record(
+        'D3b-annotation-drag',
+        annotationConfirmed
+          && annotationRequests.length === 1
+          && positionPatches.length === 1
+          && positionPatches[0]?.gid === fixture.annotationId
+          && arrowPatches.length === 0 ? 'PASS' : 'FAIL',
+        `confirmed=${annotationConfirmed}, requests=${annotationRequests.length}, position=${JSON.stringify(positionPatches)}, arrowPatches=${arrowPatches.length}`,
       );
     }
 

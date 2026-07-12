@@ -6,7 +6,6 @@ import {
   ChevronRight,
   ClipboardCopy,
   FileCode2,
-  FileDown,
   FileSpreadsheet,
   Play,
   Star,
@@ -22,6 +21,7 @@ import {
   type TranslationPromptDataset,
   normalizeValue,
 } from '../utils/scriptTranslationContract';
+import { extractReferencedDataFiles, matchesReferencedDataFile } from '../utils/scriptDataDependencies';
 
 const DEFAULT_TEMPLATE = `import matplotlib.pyplot as plt
 import pandas as pd
@@ -250,8 +250,10 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
   const hasData = pendingDatasets.length > 0;
   const dataReady = hasData && pendingDatasets.every(item => Boolean(parsedDatasets[item.id])) && headers.length > 0;
   const hasScript = script.trim().length > 0;
-  const activeStep = !dataReady ? 1 : !hasScript ? 2 : 3;
+  const activeStep = !hasScript ? 1 : !dataReady ? 2 : 3;
   const scriptLineCount = useMemo(() => script.split(/\r?\n/).length, [script]);
+  const expectedDataFiles = useMemo(() => extractReferencedDataFiles(script), [script]);
+  const providedDataFileNames = useMemo(() => pendingDatasets.map(item => item.file.name), [pendingDatasets]);
   const additionalPromptDatasets = useMemo<TranslationPromptDataset[]>(() => {
     return pendingDatasets
       .filter(item => item.id !== primaryDatasetId)
@@ -287,8 +289,8 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
   }, [additionalPromptDatasets, allData, errField, groupField, headers, previewData, primaryDataset, script, scriptLanguage, xField, yField]);
 
   const steps = [
-    { num: 1, label: '上传数据' },
-    { num: 2, label: '准备脚本' },
+    { num: 1, label: '准备脚本' },
+    { num: 2, label: '补齐数据' },
     { num: 3, label: '创建项目并进入编辑器' },
   ];
 
@@ -530,7 +532,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
         <div>
           <h2 className="font-bold text-slate-800 mb-1">流程状态</h2>
           <p className="text-sm text-slate-500 leading-6">
-            新路径必须补回旧版最关键的东西：真实数据预览、字段识别、以及基于真实列名的脚本改写提示。
+            脚本先确定需要哪些文件；所有已上传表格仍会独立解析字段，并进入同一份 AI 改写提示。
           </p>
         </div>
 
@@ -558,21 +560,14 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
         </div>
 
         <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
-          <div className="text-sm font-semibold text-blue-800 mb-2">为什么旧版更稳</div>
+          <div className="text-sm font-semibold text-blue-800 mb-2">脚本先行，但不跳过数据检查</div>
           <ul className="space-y-2 text-sm text-blue-700 leading-6">
-            <li>旧版先解析真实数据，再生成带列名上下文的提示词。</li>
-            <li>旧版让你先看到前几行，不会盲目把数值列当文本列。</li>
-            <li>现在这个新页也补回了这条路径。</li>
+            <li>先从代码中列出可能需要的数据文件名。</li>
+            <li>上传后继续显示真实表头、前几行与字段类型。</li>
+            <li>额外表格不会被丢弃，仍会进入 AI 数据上下文。</li>
           </ul>
         </div>
 
-        <button
-          onClick={() => onNavigate('data_import')}
-          className="w-full py-2.5 border border-slate-300 bg-white rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors"
-          type="button"
-        >
-          切换到旧版数据导入流程
-        </button>
       </div>
     </div>
   );
@@ -611,13 +606,65 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
             <div>
               <h1 className="text-xl font-bold text-slate-800">新建图形项目</h1>
               <p className="text-sm text-slate-500 mt-0.5">
-                先解析真实数据，再改脚本。不要让 AI 在不知道列名和数据类型的情况下盲改。
+                先放入 Python / R 脚本，平台会列出它引用的数据文件；随后可一次补齐或继续上传其他表格。
               </p>
             </div>
           </div>
 
+          <section className="rounded-xl border border-emerald-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">1. 先读取绘图脚本</h2>
+                <p className="mt-1 text-sm leading-6 text-slate-500">支持上传、拖入或直接在下方脚本区粘贴。这里只提取数据文件名，不执行脚本。</p>
+              </div>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-800">
+                <Upload className="h-4 w-4" /> 上传 .py / .R
+                <input
+                  type="file"
+                  accept=".py,.r,.R"
+                  className="hidden"
+                  onChange={event => {
+                    const file = event.target.files?.[0];
+                    if (file) readScriptFile(file);
+                    event.target.value = '';
+                  }}
+                />
+              </label>
+            </div>
+            <div className="mt-5 grid gap-4 lg:grid-cols-[0.55fr,1.45fr]">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <div className="text-xs font-semibold text-slate-700">脚本状态</div>
+                <div className="mt-2 flex items-center justify-between text-sm">
+                  <span className="font-medium text-slate-900">{scriptLanguage === 'r' ? 'R / ggplot2' : 'Python / Matplotlib'}</span>
+                  <span className="text-xs text-slate-500">约 {scriptLineCount} 行</span>
+                </div>
+                <p className="mt-3 text-xs leading-5 text-slate-500">完整脚本仍可在“检查脚本与 AI 提示”区域继续修改。</p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-white p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-xs font-semibold text-slate-700">脚本中识别到的数据文件</div>
+                  <div className="text-[11px] text-slate-400">仅提示，不限制额外上传</div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {expectedDataFiles.length === 0 && <span className="text-xs text-slate-500">未发现固定 CSV / Excel 文件名，可继续上传任意数据表。</span>}
+                  {expectedDataFiles.map(fileName => {
+                    const supplied = providedDataFileNames.some(actual => matchesReferencedDataFile(fileName, actual));
+                    return (
+                      <span key={fileName} className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold ${supplied ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                        {supplied ? <CheckCircle2 className="h-3.5 w-3.5" /> : <FileSpreadsheet className="h-3.5 w-3.5" />}
+                        {fileName}
+                        <span className="font-normal opacity-75">{supplied ? '已提供' : '待上传'}</span>
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </section>
+
           <section className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-            <h2 className="text-lg font-bold text-slate-800 mb-4">1. 上传并识别数据文件</h2>
+            <h2 className="text-lg font-bold text-slate-800 mb-1">2. 补齐并识别数据文件</h2>
+            <p className="mb-4 text-sm text-slate-500">脚本需要的文件和额外分析表都可以一起上传；所有表格结构都会继续进入现有 AI 提示词。</p>
             <div className="grid lg:grid-cols-[1.05fr,0.95fr] gap-6">
               <div
                 className={`border-2 border-dashed rounded-lg p-10 flex flex-col items-center justify-center transition-colors cursor-pointer ${
@@ -812,7 +859,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
           <section className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-lg font-bold text-slate-800 mb-2">2. 准备绘图脚本</h2>
+                <h2 className="text-lg font-bold text-slate-800 mb-2">3. 检查脚本与 AI 提示</h2>
                 <p className="text-sm text-slate-500 leading-6">
                   现在脚本有真实数据上下文。你可以直接粘贴现有脚本、拖入 `.py / .R` 文件，或者先走网页 AI 改写。
                 </p>
@@ -965,7 +1012,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
           <section className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
               <div>
-                <h2 className="text-lg font-bold text-slate-800 mb-2">3. 创建项目并进入编辑器</h2>
+                <h2 className="text-lg font-bold text-slate-800 mb-2">4. 创建项目并进入编辑器</h2>
                 <p className="text-sm text-slate-500 leading-6">
                   这里才真正创建项目。平台会按顺序完成：创建项目、上传数据、保存脚本、载入编辑器。主数据文件会优先上传并作为 `_uploaded_data` 注入。
                 </p>
@@ -1016,14 +1063,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
             </div>
 
             <div className="mt-6 flex items-center justify-between gap-3 flex-wrap">
-              <button
-                onClick={() => onNavigate('data_import')}
-                className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 transition-colors"
-                type="button"
-              >
-                <FileDown className="w-4 h-4" />
-                改走旧版数据导入流程
-              </button>
+              <div className="text-xs text-slate-500">旧版单文件导入流程已从主入口移除。</div>
 
               <div className="flex items-center gap-3">
                 <button

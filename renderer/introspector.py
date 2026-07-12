@@ -20,6 +20,7 @@ import re
 import hashlib
 import traceback
 import ast
+import time
 from typing import Any, Optional
 from contextlib import contextmanager
 
@@ -350,9 +351,23 @@ def iter_artists(fig):
                 if i < len(texts):
                     patch.set_label(texts[i].get_text())
                 yield f"legend_patch.{ax_idx}.{i}", "patch", patch
+            for i, handle in enumerate(_get_legend_handles(legend)):
+                if not hasattr(handle, "get_sizes"):
+                    continue
+                if i < len(texts):
+                    handle.set_label(texts[i].get_text())
+                yield f"legend_collection.{ax_idx}.{i}", "collection", handle
 
+        annotation_arrow_patches = set()
         for i, text in enumerate(ax.texts):
             yield f"text.{ax_idx}.{i}", "text", text
+            try:
+                from matplotlib.text import Annotation
+                if isinstance(text, Annotation) and text.arrow_patch is not None:
+                    annotation_arrow_patches.add(text.arrow_patch)
+                    yield f"annotation_arrow.{ax_idx}.{i}", "patch", text.arrow_patch
+            except Exception:
+                pass
 
         for i, line in enumerate(ax.lines):
             yield f"line.{ax_idx}.{i}", "line", line
@@ -387,9 +402,40 @@ def iter_artists(fig):
                     pass
 
         for i, patch in enumerate(ax.patches):
+            if patch in annotation_arrow_patches:
+                continue
             if patch in patch_labels:
                 patch.set_label(patch_labels[patch])
             yield f"patch.{ax_idx}.{i}", "patch", patch
+
+    # Figure-level shared legends created by fig.legend(...) are not attached
+    # to any Axes, so ax.get_legend() cannot see them. Expose them separately
+    # with a non-conflicting gid namespace while keeping the same legend roles.
+    for fig_legend_idx, legend in enumerate(getattr(fig, "legends", []) or []):
+        if legend is None:
+            continue
+        yield f"legend.figure.{fig_legend_idx}", "legend", legend
+        title = legend.get_title()
+        if title is not None and title.get_text():
+            yield f"legend_title.figure.{fig_legend_idx}", "text", title
+
+        texts = legend.get_texts()
+        for i, text in enumerate(texts):
+            yield f"legend_text.figure.{fig_legend_idx}.{i}", "text", text
+        for i, line in enumerate(legend.get_lines()):
+            if i < len(texts):
+                line.set_label(texts[i].get_text())
+            yield f"legend_line.figure.{fig_legend_idx}.{i}", "line", line
+        for i, patch in enumerate(legend.get_patches()):
+            if i < len(texts):
+                patch.set_label(texts[i].get_text())
+            yield f"legend_patch.figure.{fig_legend_idx}.{i}", "patch", patch
+        for i, handle in enumerate(_get_legend_handles(legend)):
+            if not hasattr(handle, "get_sizes"):
+                continue
+            if i < len(texts):
+                handle.set_label(texts[i].get_text())
+            yield f"legend_collection.figure.{fig_legend_idx}.{i}", "collection", handle
 
 
 def _snapshot_text_style(text):
@@ -531,6 +577,20 @@ def _freeze_ticklabels_preserving_style(ax):
 # ---------------------------------------------------------------------------
 
 def _get_text_coord_system(artist) -> str:
+    try:
+        from matplotlib.text import Annotation
+        if isinstance(artist, Annotation):
+            anncoords = getattr(artist, "anncoords", None)
+            if anncoords == "data":
+                return "data"
+            if anncoords in {"axes fraction", "axes"}:
+                return "axes"
+            if anncoords in {"figure fraction", "figure"}:
+                return "figure"
+            return "native"
+    except Exception:
+        pass
+
     transform = artist.get_transform()
     ax = artist.axes
     if ax is not None:
@@ -544,6 +604,28 @@ def _get_text_coord_system(artist) -> str:
             return "figure"
     return "axes"
 
+
+def _annotation_coord_system(value: Any) -> str:
+    if not isinstance(value, str):
+        return "native"
+    if value == "data":
+        return "data"
+    if value in {"axes fraction", "axes"}:
+        return "axes"
+    if value in {"figure fraction", "figure"}:
+        return "figure"
+    return "native"
+
+
+def _matplotlib_annotation_coord(value: str) -> Optional[str]:
+    if value == "data":
+        return "data"
+    if value == "axes":
+        return "axes fraction"
+    if value == "figure":
+        return "figure fraction"
+    return None
+
 def _read_text_props(artist) -> dict:
     x, y = artist.get_position()
     
@@ -554,7 +636,7 @@ def _read_text_props(artist) -> dict:
         except Exception:
             return "#000000"
 
-    return {
+    props = {
         "text": artist.get_text(),
         "fontsize": artist.get_fontsize(),
         "color": to_hex_safe(artist.get_color()),
@@ -568,6 +650,25 @@ def _read_text_props(artist) -> dict:
         "va": artist.get_verticalalignment(),
         "rotation": float(artist.get_rotation()),
     }
+    try:
+        from matplotlib.text import Annotation
+        if isinstance(artist, Annotation):
+            anchor_x, anchor_y = artist.xy
+            props.update({
+                "is_annotation": True,
+                "anchor_x": float(anchor_x),
+                "anchor_y": float(anchor_y),
+                "anchor_coord_system": _annotation_coord_system(getattr(artist, "xycoords", None)),
+                "anchor_position": {
+                    "x": float(anchor_x),
+                    "y": float(anchor_y),
+                    "coord_system": _annotation_coord_system(getattr(artist, "xycoords", None)),
+                },
+                "has_arrow": artist.arrow_patch is not None,
+            })
+    except Exception:
+        pass
+    return props
 
 
 def _read_spine_props(artist) -> dict:
@@ -616,6 +717,9 @@ def _read_legend_props(artist) -> dict:
         "loc": _legend_loc_to_string(getattr(artist, "_loc", None)),
         "ncol": getattr(artist, "_ncols", 1),
         "markerscale": getattr(artist, "markerscale", 1.0) or 1.0,
+        "marker_yoffset": getattr(artist, "_scifigure_marker_yoffset", 0.0) or 0.0,
+        "handletextpad": getattr(artist, "handletextpad", 0.8),
+        "labelspacing": getattr(artist, "labelspacing", 0.5),
         "title": artist.get_title().get_text() if artist.get_title() is not None else "",
         "fontfamily": artist.get_texts()[0].get_fontname() if artist.get_texts() else "",
         "x": position["x"],
@@ -822,6 +926,11 @@ def _read_axis_props(axis, axis_name: str) -> dict:
         label_color = mcolors.to_hex(label_color, keep_alpha=False)
     except Exception:
         pass
+    tick_label_color = labels[0].get_color() if labels else "#000000"
+    try:
+        tick_label_color = mcolors.to_hex(tick_label_color, keep_alpha=False)
+    except Exception:
+        pass
 
     return {
         "limits": list(axis.axes.get_xlim() if axis_name == "x" else axis.axes.get_ylim()),
@@ -839,7 +948,7 @@ def _read_axis_props(axis, axis_name: str) -> dict:
         "minor_tick_color": _get_tick_metric(minor_tick, "color", "#000000"),
         "show_minor_ticks": len(minor_ticks) > 0,
         "tick_labelsize": labels[0].get_fontsize() if labels else 10,
-        "tick_labelcolor": _get_tick_metric(major_tick, "color", "#000000"),
+        "tick_labelcolor": tick_label_color,
         "tick_labelfamily": labels[0].get_fontname() if labels else "",
         "tick_fontweight": labels[0].get_fontweight() if labels else "normal",
         "tick_fontstyle": labels[0].get_fontstyle() if labels else "normal",
@@ -942,6 +1051,7 @@ def _read_errorbar_container_props(container) -> dict:
     # Capthick
     if cap_lines:
         props["capthick"] = cap_lines[0].get_linewidth()
+        props["capsize"] = cap_lines[0].get_markersize() / 2.0
         
     # Alpha
     if data_line is not None:
@@ -1008,6 +1118,42 @@ def _read_boxplot_container_props(container) -> dict:
     if bp.get("medians"):
         props["median_color"] = _artist_color_hex(bp["medians"][0], "color")
         
+    return props
+
+
+def _read_stem_container_props(container) -> dict:
+    from matplotlib import colors as mcolors
+
+    markerline = getattr(container, "markerline", None)
+    stemlines = getattr(container, "stemlines", None)
+    baseline = getattr(container, "baseline", None)
+    props = {}
+
+    def color_hex(value, fallback=None):
+        try:
+            if hasattr(value, "ndim") and value.ndim > 1 and len(value) > 0:
+                value = value[0]
+            return mcolors.to_hex(value, keep_alpha=False)
+        except Exception:
+            return fallback
+
+    if markerline is not None:
+        props["marker"] = markerline.get_marker()
+        props["markersize"] = float(markerline.get_markersize())
+        props["marker_color"] = color_hex(markerline.get_color(), "#000000")
+        props["alpha"] = markerline.get_alpha()
+    if stemlines is not None:
+        colors = stemlines.get_colors() if hasattr(stemlines, "get_colors") else []
+        linewidths = stemlines.get_linewidths() if hasattr(stemlines, "get_linewidths") else []
+        if len(colors) > 0:
+            props["stem_color"] = color_hex(colors[0], "#000000")
+            props.setdefault("color", props["stem_color"])
+        if len(linewidths) > 0:
+            props["stem_linewidth"] = float(linewidths[0])
+    if baseline is not None:
+        props["baseline_color"] = color_hex(baseline.get_color(), "#000000")
+        props["baseline_linewidth"] = float(baseline.get_linewidth())
+        props["baseline_visible"] = bool(baseline.get_visible())
     return props
 
 
@@ -1167,6 +1313,7 @@ _READERS = {
     "axis_y": lambda artist: _read_axis_props(artist, "y"),
     "bar_container": _read_bar_container_props,
     "errorbar_container": _read_errorbar_container_props,
+    "stem_container": _read_stem_container_props,
     "boxplot_container": _read_boxplot_container_props,
     "violinplot_container": _read_violinplot_container_props,
     "heatmap": _read_heatmap_props,
@@ -1219,7 +1366,7 @@ _EDITABLE = {
     "subplot": ["left", "bottom", "width", "height", "aspect", "zorder"],
     "spine": ["visible", "color", "linewidth", "zorder"],
     "spine_group": ["visible", "color", "linewidth", "zorder"],
-    "legend": ["visible", "fontsize", "frameon", "facecolor", "edgecolor", "linewidth", "alpha", "loc", "ncol", "markerscale", "title", "fontfamily", "position", "zorder"],
+    "legend": ["visible", "fontsize", "frameon", "facecolor", "edgecolor", "linewidth", "alpha", "loc", "ncol", "markerscale", "marker_yoffset", "handletextpad", "labelspacing", "title", "fontfamily", "position", "zorder"],
     "line": ["color", "linewidth", "linestyle", "alpha", "marker", "markersize", "zorder"],
     "patch": ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
     "collection": ["facecolor", "edgecolor", "alpha", "linewidth", "size", "zorder"],
@@ -1229,6 +1376,7 @@ _EDITABLE = {
     "axis_y": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "tick_label_dx", "tick_label_dy", "sci_notation", "use_math_text", "offset_text_size"],
     "bar_container": ["color", "facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
     "errorbar_container": ["color", "linewidth", "elinewidth", "capsize", "capthick", "alpha", "marker", "markersize", "zorder"],
+    "stem_container": ["color", "stem_color", "stem_linewidth", "marker", "marker_color", "markersize", "baseline_color", "baseline_linewidth", "baseline_visible", "alpha"],
     "boxplot_container": ["color", "linewidth", "alpha", "box_color", "median_color", "zorder"],
     "violinplot_container": ["color", "facecolor", "edgecolor", "linewidth", "alpha", "zorder"],
     "heatmap": ["cmap", "vmin", "vmax", "alpha"],
@@ -1259,7 +1407,7 @@ def _determine_role(gid: str, parent_kind: Optional[str] = None) -> Optional[str
         return "legend"
     if gid.startswith("legend_title.") or gid.startswith("legend_text."):
         return "legend_text"
-    if gid.startswith("legend_line.") or gid.startswith("legend_patch."):
+    if gid.startswith("legend_line.") or gid.startswith("legend_patch.") or gid.startswith("legend_collection."):
         return "legend_marker"
     if gid.startswith("spine."):
         return "spine"
@@ -1269,6 +1417,8 @@ def _determine_role(gid: str, parent_kind: Optional[str] = None) -> Optional[str
         return "bar_series"
     if gid.startswith("container.errorbar."):
         return "errorbar_series"
+    if gid.startswith("container.stem."):
+        return "stem_series"
     if gid.startswith("container.boxplot."):
         return "boxplot_group"
     if gid.startswith("container.violinplot."):
@@ -1278,6 +1428,8 @@ def _determine_role(gid: str, parent_kind: Optional[str] = None) -> Optional[str
         return "bar_series"
     if parent_kind == "errorbar_container":
         return "errorbar_series"
+    if parent_kind == "stem_container":
+        return "stem_series"
     if parent_kind == "boxplot_container":
         return "boxplot_group"
     if parent_kind == "violinplot_container":
@@ -1293,6 +1445,8 @@ def _determine_role(gid: str, parent_kind: Optional[str] = None) -> Optional[str
         return "heatmap_series"
     if gid.startswith("colorbar."):
         return "colorbar"
+    if gid.startswith("annotation_arrow."):
+        return "annotation_arrow"
         
     return None
 
@@ -1338,6 +1492,194 @@ def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) ->
     return stable_key, fingerprint
 
 
+_LOCAL_PREVIEW_PROPS = {
+    "text", "color", "facecolor", "edgecolor", "alpha", "visible"
+}
+
+_CROSS_FIGURE_UNSAFE_PROPS = {
+    "text", "label", "title", "position", "left", "bottom", "width",
+    "height", "limits", "aspect", "cmap", "vmin", "vmax"
+}
+
+_SERIES_KINDS = {
+    "line", "collection", "patch", "bar_container", "errorbar_container",
+    "stem_container", "boxplot_container", "violinplot_container", "heatmap"
+}
+
+
+def _legend_container_gid(gid: str) -> Optional[str]:
+    figure_match = re.match(
+        r"^legend_(?:title|text|line|patch|collection)\.figure\.(\d+)", gid
+    )
+    if figure_match:
+        return f"legend.figure.{figure_match.group(1)}"
+    axes_match = re.match(
+        r"^legend_(?:title|text|line|patch|collection)\.(\d+)", gid
+    )
+    if axes_match:
+        return f"legend.{axes_match.group(1)}"
+    return None
+
+
+def _identity_coordinate_space(obj: dict) -> str:
+    gid = obj.get("id", "")
+    kind = obj.get("kind", "")
+    coord_system = str(obj.get("currentProps", {}).get("coord_system") or "")
+    if coord_system in {"data", "axes", "figure", "display"}:
+        return coord_system
+    if gid.startswith((
+        "legend.", "legend_title.", "legend_text.", "legend_line.",
+        "legend_patch.", "legend_collection."
+    )):
+        return "container"
+    if kind in {"subplot", "colorbar"}:
+        return "figure"
+    if kind in {"line", "collection", "patch", "heatmap"}:
+        return "data"
+    if obj.get("subplotId"):
+        return "axes"
+    return "none"
+
+
+def _is_figure_level_object(obj: dict) -> bool:
+    gid = obj.get("id", "")
+    return (
+        obj.get("kind") == "figure"
+        or gid.startswith("fig_text.")
+        or gid.startswith("legend.figure.")
+        or bool(re.match(
+            r"^legend_(?:title|text|line|patch|collection)\.figure\.", gid
+        ))
+    )
+
+
+def _build_object_identity(obj: dict) -> dict:
+    gid = obj.get("id", "")
+    kind = obj.get("kind", "component")
+    role = obj.get("role") or kind
+    figure_level = _is_figure_level_object(obj)
+    relation = {}
+    if obj.get("parentId"):
+        relation["parentId"] = obj["parentId"]
+    if obj.get("subplotId") and not figure_level:
+        relation["subplotId"] = obj["subplotId"]
+    if obj.get("subplotIds") and not figure_level:
+        relation["subplotIds"] = list(obj["subplotIds"])
+    legend_id = _legend_container_gid(gid)
+    if legend_id:
+        relation["legendId"] = legend_id
+    if obj.get("legendTitleId"):
+        relation["legendTitleId"] = obj["legendTitleId"]
+    if obj.get("legendTextId"):
+        relation["legendTextId"] = obj["legendTextId"]
+    if obj.get("legendTextIds"):
+        relation["legendTextIds"] = list(obj["legendTextIds"])
+    if obj.get("legendMarkerIds"):
+        relation["legendMarkerIds"] = list(obj["legendMarkerIds"])
+    if obj.get("colorbarId"):
+        relation["colorbarId"] = obj["colorbarId"]
+    if obj.get("mappableId"):
+        relation["mappableId"] = obj["mappableId"]
+    if obj.get("mappableIds"):
+        relation["mappableIds"] = list(obj["mappableIds"])
+    if obj.get("annotationId"):
+        relation["annotationId"] = obj["annotationId"]
+    if obj.get("arrowId"):
+        relation["arrowId"] = obj["arrowId"]
+    if obj.get("textId"):
+        relation["textId"] = obj["textId"]
+    if obj.get("twinSubplotIds"):
+        relation["twinSubplotIds"] = list(obj["twinSubplotIds"])
+    if obj.get("sharedXSubplotIds"):
+        relation["sharedXSubplotIds"] = list(obj["sharedXSubplotIds"])
+    if obj.get("sharedYSubplotIds"):
+        relation["sharedYSubplotIds"] = list(obj["sharedYSubplotIds"])
+
+    shared_subplots = relation.get("subplotIds", [])
+    scope = (
+        "figure" if figure_level
+        else "container" if legend_id or obj.get("_colorbarChild") or obj.get("parentId") or len(shared_subplots) > 1
+        else "subplot"
+    )
+    semantic_suffix = relation.get("subplotId") or "+".join(shared_subplots) or "figure"
+    if kind == "spine":
+        side_match = re.match(r"^spine\.([^.]+)\.", gid)
+        if side_match:
+            semantic_suffix = f"{semantic_suffix}:{side_match.group(1)}"
+
+    identity = {
+        "semanticKey": f"{role}:{semantic_suffix}",
+        "instanceKey": f"{scope}:{gid}",
+        "scope": scope,
+        "coordinateSpace": _identity_coordinate_space(obj),
+    }
+    if kind in _SERIES_KINDS and role != "annotation_arrow":
+        identity["seriesKey"] = obj.get("stableKey") or f"{kind}:{gid}"
+    if relation:
+        identity["relation"] = relation
+    return identity
+
+
+def _property_derived_effects(prop: str) -> list[str]:
+    if prop in {"text", "fontsize", "fontfamily", "fontweight", "fontstyle", "rotation"}:
+        return ["text_bounds"]
+    if prop == "position":
+        return ["object_bounds"]
+    if prop == "anchor_position":
+        return ["annotation_arrow_geometry"]
+    if prop in {"left", "bottom", "width", "height", "aspect"}:
+        return ["child_display_position"]
+    if prop in {"markerscale", "marker_yoffset", "handletextpad", "labelspacing", "ncol"}:
+        return ["container_layout"]
+    return []
+
+
+def _build_property_capabilities(obj: dict) -> list[dict]:
+    identity = obj.get("identity", {})
+    relation = identity.get("relation", {})
+    capabilities = []
+    for prop in obj.get("editable", []):
+        scopes = ["object"]
+        if obj.get("role") and prop not in {"position", "anchor_position"}:
+            scopes.append("group")
+        if relation.get("subplotId"):
+            scopes.append("subplot")
+        if prop not in {"position", "left", "bottom", "width", "height"}:
+            scopes.append("figure")
+        if prop not in _CROSS_FIGURE_UNSAFE_PROPS:
+            scopes.append("cross_figure")
+
+        preview = "exact" if prop in _LOCAL_PREVIEW_PROPS else "none"
+        replay = "stable"
+        capability = {
+            "prop": prop,
+            "patchMode": (
+                "backend_patch"
+                if obj.get("kind") == "stem_container"
+                else "local_patch" if prop in _LOCAL_PREVIEW_PROPS
+                else "backend_patch"
+            ),
+            "scopes": list(dict.fromkeys(scopes)),
+            "preview": preview,
+            "replay": replay,
+        }
+        if obj.get("kind") == "stem_container":
+            capability["preview"] = "none"
+        if prop in {"position", "anchor_position"}:
+            capability["preview"] = "approximate"
+            capability["replay"] = "conditional"
+            capability["coordinateSpace"] = (
+                obj.get("currentProps", {}).get("anchor_coord_system", "none")
+                if prop == "anchor_position"
+                else identity.get("coordinateSpace", "none")
+            )
+        derived_effects = _property_derived_effects(prop)
+        if derived_effects:
+            capability["derivedEffects"] = derived_effects
+        capabilities.append(capability)
+    return capabilities
+
+
 # ---------------------------------------------------------------------------
 # Kind from gid prefix
 # ---------------------------------------------------------------------------
@@ -1352,6 +1694,8 @@ def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) ->
 def introspect_figure(fig, semantic_manifest=None) -> dict:
     """Accept a fully rendered Figure, return {svg, manifest}."""
 
+    introspection_started = time.perf_counter()
+
     # 1. Bind gids and build initial artist-to-gid mapping
     artist_to_gid = {}
     raw_elements = []
@@ -1365,6 +1709,116 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         raw_elements.append((gid, kind, artist))
 
     subplot_meta = _build_subplot_layout_meta(raw_elements)
+
+    # Colorbar Axes have their own figure index, which is not the subplot that
+    # owns the data. Resolve ownership from Colorbar.mappable and preserve the
+    # old gid/source axes index only as compatibility metadata.
+    axes_to_subplot_gid = {
+        artist: gid
+        for gid, kind, artist in raw_elements
+        if kind == "subplot"
+    }
+    subplot_relationships = {}
+    for axes, subplot_gid in axes_to_subplot_gid.items():
+        def related_subplot_ids(siblings):
+            return sorted({
+                axes_to_subplot_gid[sibling]
+                for sibling in siblings
+                if sibling is not axes and sibling in axes_to_subplot_gid
+            })
+
+        twinned_group = getattr(axes, "_twinned_axes", None)
+        twin_axes = twinned_group.get_siblings(axes) if twinned_group is not None else []
+        subplot_relationships[subplot_gid] = {
+            "twinSubplotIds": related_subplot_ids(twin_axes),
+            "sharedXSubplotIds": related_subplot_ids(axes.get_shared_x_axes().get_siblings(axes)),
+            "sharedYSubplotIds": related_subplot_ids(axes.get_shared_y_axes().get_siblings(axes)),
+        }
+    colorbar_links = {}
+    mappable_to_colorbars = {}
+    annotation_links = {}
+    for gid, kind, artist in raw_elements:
+        if kind != "colorbar":
+            continue
+        mappable = getattr(artist, "mappable", None)
+        mappable_gid = artist_to_gid.get(mappable)
+        owner_axes = getattr(mappable, "axes", None) if mappable is not None else None
+        owner_subplot_ids = []
+        colorbar_axes = getattr(artist, "ax", None)
+        colorbar_info = getattr(colorbar_axes, "_colorbar_info", {}) if colorbar_axes is not None else {}
+        owner_axes_list = list(colorbar_info.get("parents", [])) if isinstance(colorbar_info, dict) else []
+        for parent_axes in owner_axes_list:
+            subplot_id = axes_to_subplot_gid.get(parent_axes)
+            if subplot_id and subplot_id not in owner_subplot_ids:
+                owner_subplot_ids.append(subplot_id)
+        fallback_subplot_id = axes_to_subplot_gid.get(owner_axes)
+        if not owner_subplot_ids and fallback_subplot_id:
+            owner_subplot_ids.append(fallback_subplot_id)
+            owner_axes_list.append(owner_axes)
+        mappable_ids = [mappable_gid] if mappable_gid else []
+        explicit_norm = getattr(mappable, "norm", None)
+        explicit_cmap = getattr(getattr(mappable, "cmap", None), "name", None)
+        for candidate_gid, candidate_kind, candidate in raw_elements:
+            if candidate_gid == mappable_gid or candidate_kind not in {"heatmap", "collection"}:
+                continue
+            if getattr(candidate, "axes", None) not in owner_axes_list:
+                continue
+            candidate_cmap = getattr(getattr(candidate, "cmap", None), "name", None)
+            if explicit_norm is not None and getattr(candidate, "norm", None) is explicit_norm and candidate_cmap == explicit_cmap:
+                mappable_ids.append(candidate_gid)
+        colorbar_links[gid] = {
+            "mappableId": mappable_gid,
+            "mappableIds": list(dict.fromkeys(mappable_ids)),
+            "subplotId": owner_subplot_ids[0] if len(owner_subplot_ids) == 1 else None,
+            "subplotIds": owner_subplot_ids,
+        }
+        for linked_mappable_gid in colorbar_links[gid]["mappableIds"]:
+            mappable_to_colorbars.setdefault(linked_mappable_gid, []).append(gid)
+    colorbar_axes_to_gid = {
+        getattr(colorbar, "ax", None): colorbar_gid
+        for colorbar_gid, kind, colorbar in raw_elements
+        if kind == "colorbar" and getattr(colorbar, "ax", None) is not None
+    }
+    for gid, kind, artist in raw_elements:
+        if kind != "text":
+            continue
+        try:
+            from matplotlib.text import Annotation
+            if not isinstance(artist, Annotation):
+                continue
+            arrow_gid = artist_to_gid.get(artist.arrow_patch) if artist.arrow_patch is not None else None
+            annotation_links[gid] = {
+                "role": "annotation_text",
+                "annotationId": gid,
+                "arrowId": arrow_gid,
+            }
+            if arrow_gid:
+                annotation_links[arrow_gid] = {
+                    "role": "annotation_arrow",
+                    "annotationId": gid,
+                    "textId": gid,
+                }
+        except Exception:
+            continue
+
+    legend_relationships = {}
+    for legend_gid, kind, legend in raw_elements:
+        if kind != "legend":
+            continue
+        title_gid = artist_to_gid.get(legend.get_title())
+        text_gids = [artist_to_gid.get(text) for text in legend.get_texts()]
+        handles = _get_legend_handles(legend)
+        marker_gids = [artist_to_gid.get(handle) for handle in handles]
+        legend_relationships[legend_gid] = {
+            "legendTitleId": title_gid,
+            "legendTextIds": [child_gid for child_gid in text_gids if child_gid],
+            "legendMarkerIds": [child_gid for child_gid in marker_gids if child_gid],
+        }
+        for entry_index, text_gid in enumerate(text_gids):
+            marker_gid = marker_gids[entry_index] if entry_index < len(marker_gids) else None
+            if text_gid and marker_gid:
+                legend_relationships.setdefault(text_gid, {})["legendMarkerIds"] = [marker_gid]
+                legend_relationships.setdefault(marker_gid, {})["legendTextId"] = text_gid
 
     # Build objects manifest list
     objects = []
@@ -1384,6 +1838,17 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 "label": label,
             }
         editable = _get_editable(kind)
+        annotation_link = annotation_links.get(gid)
+        if annotation_link and annotation_link.get("role") == "annotation_text":
+            anchor_coord_system = current_props.get("anchor_coord_system")
+            if anchor_coord_system in {"data", "axes", "figure"}:
+                editable = [*editable, "anchor_position"]
+            else:
+                current_props = {
+                    **current_props,
+                    "anchorPositionEditable": False,
+                    "anchorPositionUnsupportedReason": "This annotation anchor uses a non-linear or callable coordinate system.",
+                }
         if gid.startswith(("xtick.", "ytick.")):
             # Tick labels are owned by Matplotlib's axis/tick layout engine.
             # Free-position patches are visually previewable in SVG but are not
@@ -1403,6 +1868,13 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 "positionEditable": False,
                 "positionUnsupportedReason": "Legend text is controlled by the legend container; move legend.* instead.",
             }
+        if kind == "text" and current_props.get("coord_system") not in {"axes", "figure", "data"}:
+            editable = [prop for prop in editable if prop != "position"]
+            current_props = {
+                **current_props,
+                "positionEditable": False,
+                "positionUnsupportedReason": "This text uses a non-linear or offset coordinate system; move labels by editing source code or using a stable axes/data annotation.",
+            }
         objects.append({
             "id": gid,
             "kind": kind,
@@ -1420,7 +1892,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 for child in artist:
                     if child in artist_to_gid:
                         children_gids.append(artist_to_gid[child])
-            elif kind in ("errorbar_container", "boxplot_container", "violinplot_container"):
+            elif kind in ("errorbar_container", "stem_container", "boxplot_container", "violinplot_container"):
                 for child in artist.get_children():
                     if child in artist_to_gid:
                         children_gids.append(artist_to_gid[child])
@@ -1448,8 +1920,20 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             
         # Determine semantic role
         role = _determine_role(gid, parent_kind)
+        annotation_link = annotation_links.get(gid)
+        if annotation_link:
+            role = annotation_link["role"]
+            obj["annotationId"] = annotation_link.get("annotationId")
+            if annotation_link.get("arrowId"):
+                obj["arrowId"] = annotation_link["arrowId"]
+            if annotation_link.get("textId"):
+                obj["textId"] = annotation_link["textId"]
         if role:
             obj["role"] = role
+
+        for relation_name, relation_value in legend_relationships.get(gid, {}).items():
+            if relation_value:
+                obj[relation_name] = relation_value
             
         # Extract axes index from gid or container parts
         ax_idx = 0
@@ -1467,15 +1951,56 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 except ValueError:
                     pass
 
-        if kind != "figure" and not gid.startswith("fig_text."):
+        artist_obj = next(art for g, k, art in raw_elements if g == gid)
+        artist_axes = artist_obj if isinstance(artist_obj, Axes) else getattr(artist_obj, "axes", None)
+        container_colorbar_gid = colorbar_axes_to_gid.get(artist_axes)
+        colorbar_link = colorbar_links.get(gid)
+        owner_colorbar_link = colorbar_link or colorbar_links.get(container_colorbar_gid)
+        if colorbar_link:
+            if colorbar_link.get("mappableId"):
+                obj["mappableId"] = colorbar_link["mappableId"]
+            if colorbar_link.get("mappableIds"):
+                obj["mappableIds"] = colorbar_link["mappableIds"]
+            if colorbar_link.get("subplotId"):
+                obj["subplotId"] = colorbar_link["subplotId"]
+            if colorbar_link.get("subplotIds"):
+                obj["subplotIds"] = colorbar_link["subplotIds"]
+        elif container_colorbar_gid:
+            obj["colorbarId"] = container_colorbar_gid
+            obj["_colorbarChild"] = True
+            if owner_colorbar_link and owner_colorbar_link.get("subplotId"):
+                obj["subplotId"] = owner_colorbar_link["subplotId"]
+            if owner_colorbar_link and owner_colorbar_link.get("subplotIds"):
+                obj["subplotIds"] = owner_colorbar_link["subplotIds"]
+        elif kind != "figure" and not gid.startswith("fig_text."):
             obj["subplotId"] = f"subplot.{ax_idx}"
 
+        if kind in {"subplot", "axes", "axis_x", "axis_y"}:
+            for relation_name, related_ids in subplot_relationships.get(f"subplot.{ax_idx}", {}).items():
+                if related_ids:
+                    obj[relation_name] = related_ids
+
+        linked_colorbars = mappable_to_colorbars.get(gid, [])
+        if len(linked_colorbars) == 1:
+            obj["colorbarId"] = linked_colorbars[0]
+
         # Add source metadata
-        artist_obj = next(art for g, k, art in raw_elements if g == gid)
         source_meta = {
             "artistClass": type(artist_obj).__name__,
             "axesIndex": ax_idx,
         }
+        if owner_colorbar_link and owner_colorbar_link.get("subplotId"):
+            owner_match = re.match(r"^subplot\.(\d+)$", owner_colorbar_link["subplotId"])
+            if owner_match:
+                source_meta["ownerAxesIndex"] = int(owner_match.group(1))
+        if owner_colorbar_link and owner_colorbar_link.get("subplotIds"):
+            owner_axes_indices = []
+            for subplot_id in owner_colorbar_link["subplotIds"]:
+                owner_match = re.match(r"^subplot\.(\d+)$", subplot_id)
+                if owner_match:
+                    owner_axes_indices.append(int(owner_match.group(1)))
+            if owner_axes_indices:
+                source_meta["ownerAxesIndices"] = owner_axes_indices
         if hasattr(artist_obj, "get_zorder"):
             try:
                 source_meta["zorder"] = int(artist_obj.get_zorder())
@@ -1487,6 +2012,22 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         stable_key, fingerprint = _generate_stable_key_and_fingerprint(obj, artist_obj, ax_idx)
         obj["stableKey"] = stable_key
         obj["fingerprint"] = fingerprint
+        obj["identity"] = _build_object_identity(obj)
+        obj.pop("colorbarId", None)
+        obj.pop("_colorbarChild", None)
+        obj.pop("mappableId", None)
+        obj.pop("mappableIds", None)
+        obj.pop("legendTitleId", None)
+        obj.pop("legendTextId", None)
+        obj.pop("legendTextIds", None)
+        obj.pop("legendMarkerIds", None)
+        obj.pop("annotationId", None)
+        obj.pop("arrowId", None)
+        obj.pop("textId", None)
+        obj.pop("twinSubplotIds", None)
+        obj.pop("sharedXSubplotIds", None)
+        obj.pop("sharedYSubplotIds", None)
+        obj["propertyCapabilities"] = _build_property_capabilities(obj)
 
     # 2. Build color groups (same-colored artists → batch editing)
     def _normalize_color(val):
@@ -1539,12 +2080,14 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
     matplotlib.rcParams["svg.hashsalt"] = "scifigure-v1"
     matplotlib.rcParams["svg.fonttype"] = "none"
     buf = io.BytesIO()
+    svg_serialize_started = time.perf_counter()
     fig.savefig(
         buf,
         format="svg",
         metadata={"Date": None},
     )
     svg = buf.getvalue().decode("utf-8")
+    svg_serialize_ms = max(0, round((time.perf_counter() - svg_serialize_started) * 1000))
 
     # Integrate binding engine
     bindings_list = []
@@ -1653,7 +2196,16 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         ],
     }
 
-    return {"svg": svg, "manifest": manifest}
+    introspection_total_ms = max(0, round((time.perf_counter() - introspection_started) * 1000))
+    return {
+        "svg": svg,
+        "manifest": manifest,
+        "timingBreakdown": {
+            "introspectionMs": max(0, introspection_total_ms - svg_serialize_ms),
+            "svgSerializeMs": svg_serialize_ms,
+            "totalMs": introspection_total_ms,
+        },
+    }
 
 
 
@@ -1696,6 +2248,69 @@ def _set_legend_loc(artist, loc: Any) -> None:
         private_setter(normalized)
         return
     artist._loc = normalized
+
+
+def _get_legend_handles(legend) -> list:
+    """Return legend handle artists across Matplotlib versions."""
+    handles = getattr(legend, "legend_handles", None)
+    if handles is None:
+        handles = getattr(legend, "legendHandles", None)
+    if handles is None:
+        handles = []
+    result = list(handles)
+    for handle in list(legend.get_lines()) + list(legend.get_patches()):
+        if handle not in result:
+            result.append(handle)
+    return result
+
+
+def _apply_legend_marker_scale(legend, value: Any) -> None:
+    """Scale already-created legend handles.
+
+    Matplotlib applies ``markerscale`` while constructing a legend.  Updating
+    the attribute after construction is not enough to change the visible
+    marker handles, so replay patches must mutate the existing handle artists.
+    """
+    new_scale = float(value)
+    old_scale = float(getattr(legend, "markerscale", 1.0) or 1.0)
+    if old_scale == 0:
+        old_scale = 1.0
+    ratio = new_scale / old_scale
+    legend.markerscale = new_scale
+
+    for handle in _get_legend_handles(legend):
+        try:
+            if hasattr(handle, "get_markersize") and hasattr(handle, "set_markersize"):
+                handle.set_markersize(float(handle.get_markersize()) * ratio)
+            if hasattr(handle, "get_sizes") and hasattr(handle, "set_sizes"):
+                sizes = handle.get_sizes()
+                if sizes is not None and len(sizes) > 0:
+                    handle.set_sizes([float(size) * ratio * ratio for size in sizes])
+        except Exception:
+            continue
+
+
+def _apply_legend_marker_yoffset(legend, value: Any) -> None:
+    """Move legend handle markers vertically without moving text labels."""
+    new_offset = float(value)
+    old_offset = float(getattr(legend, "_scifigure_marker_yoffset", 0.0) or 0.0)
+    delta = new_offset - old_offset
+    setattr(legend, "_scifigure_marker_yoffset", new_offset)
+
+    for handle in _get_legend_handles(legend):
+        try:
+            if hasattr(handle, "get_ydata") and hasattr(handle, "set_ydata"):
+                handle.set_ydata([float(y) + delta for y in handle.get_ydata()])
+            if hasattr(handle, "get_offsets") and hasattr(handle, "set_offsets"):
+                offsets = handle.get_offsets()
+                if offsets is not None and len(offsets) > 0:
+                    next_offsets = offsets.copy()
+                    next_offsets[:, 1] = next_offsets[:, 1] + delta
+                    handle.set_offsets(next_offsets)
+            if hasattr(handle, "get_y") and hasattr(handle, "set_y"):
+                handle.set_y(float(handle.get_y()) + delta)
+        except Exception:
+            continue
 
 # Map manifest prop names → matplotlib setter method names
 _PROP_TO_SETTER = {
@@ -1854,6 +2469,9 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         elif prop == "capthick":
             for cap in cap_lines:
                 cap.set_linewidth(float(value))
+        elif prop == "capsize":
+            for cap in cap_lines:
+                cap.set_markersize(float(value) * 2.0)
         elif prop == "alpha":
             if data_line is not None:
                 data_line.set_alpha(float(value))
@@ -1867,6 +2485,41 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         elif prop == "markersize":
             if data_line is not None:
                 data_line.set_markersize(float(value))
+        return
+
+    if gid.startswith("container.stem."):
+        markerline = getattr(artist, "markerline", None)
+        stemlines = getattr(artist, "stemlines", None)
+        baseline = getattr(artist, "baseline", None)
+
+        if prop == "color":
+            if markerline is not None:
+                markerline.set_color(value)
+            if stemlines is not None:
+                stemlines.set_color(value)
+        elif prop == "stem_color" and stemlines is not None:
+            stemlines.set_color(value)
+        elif prop == "stem_linewidth" and stemlines is not None:
+            stemlines.set_linewidth(float(value))
+        elif prop == "marker" and markerline is not None:
+            markerline.set_marker(value)
+        elif prop == "marker_color" and markerline is not None:
+            markerline.set_color(value)
+        elif prop == "markersize" and markerline is not None:
+            markerline.set_markersize(float(value))
+        elif prop == "baseline_color" and baseline is not None:
+            baseline.set_color(value)
+        elif prop == "baseline_linewidth" and baseline is not None:
+            baseline.set_linewidth(float(value))
+        elif prop == "baseline_visible" and baseline is not None:
+            baseline.set_visible(bool(value))
+        elif prop == "alpha":
+            if markerline is not None:
+                markerline.set_alpha(float(value))
+            if stemlines is not None:
+                stemlines.set_alpha(float(value))
+            if baseline is not None:
+                baseline.set_alpha(float(value))
         return
 
     if gid.startswith("container.boxplot."):
@@ -2048,7 +2701,7 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             parent_ax.tick_params(axis=axis_name, which="major", width=float(value))
             return
         if prop == "tick_color":
-            parent_ax.tick_params(axis=axis_name, which="major", colors=value)
+            parent_ax.tick_params(axis=axis_name, which="major", color=value)
             return
         if prop == "tick_pad":
             parent_ax.tick_params(axis=axis_name, which="major", pad=float(value))
@@ -2060,7 +2713,7 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             parent_ax.tick_params(axis=axis_name, which="minor", width=float(value))
             return
         if prop == "minor_tick_color":
-            parent_ax.tick_params(axis=axis_name, which="minor", colors=value)
+            parent_ax.tick_params(axis=axis_name, which="minor", color=value)
             return
         if prop == "show_minor_ticks":
             if value:
@@ -2105,7 +2758,13 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         elif prop == "ncol":
             artist.set_ncols(int(value))
         elif prop == "markerscale":
-            artist.markerscale = float(value)
+            _apply_legend_marker_scale(artist, value)
+        elif prop == "marker_yoffset":
+            _apply_legend_marker_yoffset(artist, value)
+        elif prop == "handletextpad":
+            artist.handletextpad = float(value)
+        elif prop == "labelspacing":
+            artist.labelspacing = float(value)
         elif prop == "title":
             artist.set_title(str(value))
         elif prop == "fontfamily":
@@ -2139,18 +2798,48 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
     if gid.startswith(("legend_text.", "legend_title.")) and prop == "position":
         return "unsupported_legend_child_position"
 
+    if prop == "anchor_position":
+        try:
+            from matplotlib.text import Annotation
+            if not isinstance(artist, Annotation):
+                return "unsupported_annotation_anchor"
+            x = float(value["x"])
+            y = float(value["y"])
+            coord_system = value.get("coord_system", "data")
+            mpl_coord = _matplotlib_annotation_coord(coord_system)
+            if mpl_coord is None:
+                return "unsupported_annotation_anchor_coord"
+            artist.xycoords = mpl_coord
+            artist.xy = (x, y)
+            return
+        except Exception:
+            return "unsupported_annotation_anchor"
+
     if prop == "position":
         x = float(value["x"])
         y = float(value["y"])
         coord_system = value.get("coord_system", "axes")
         ax = artist.axes
         fig = artist.figure
+        try:
+            from matplotlib.text import Annotation
+            if isinstance(artist, Annotation):
+                mpl_coord = _matplotlib_annotation_coord(coord_system)
+                if mpl_coord is None:
+                    return "unsupported_text_position_coord"
+                artist.anncoords = mpl_coord
+                artist.set_position((x, y))
+                return
+        except Exception:
+            pass
         if coord_system == "axes" and ax is not None:
             artist.set_transform(ax.transAxes)
         elif coord_system == "data" and ax is not None:
             artist.set_transform(ax.transData)
         elif coord_system == "figure" and fig is not None:
             artist.set_transform(fig.transFigure)
+        else:
+            return "unsupported_text_position_coord"
         artist.set_position((x, y))
         return
 
@@ -2489,13 +3178,25 @@ def replay_render(
 
     Supports single or multiple figures.
     """
-    import time
     import io
     import os
     import base64
     import matplotlib.pyplot as plt
 
-    start = time.time()
+    start = time.perf_counter()
+    timing_breakdown = {
+        "staticScanMs": 0,
+        "scriptExecutionMs": 0,
+        "dynamicScanMs": 0,
+        "figureDiscoveryMs": 0,
+        "editApplyMs": 0,
+        "introspectionMs": 0,
+        "svgSerializeMs": 0,
+        "binaryExportMs": 0,
+    }
+
+    def elapsed_ms(since: float) -> int:
+        return max(0, round((time.perf_counter() - since) * 1000))
     
     # Clear the figure registry for this run
     _figure_registry.clear()
@@ -2503,12 +3204,14 @@ def replay_render(
 
     # Parse AST / regex static scan
     semantic_manifest = None
+    static_scan_started = time.perf_counter()
     try:
         from semantic_scanner import scan_source
         semantic_manifest = scan_source(script)
     except Exception as e:
         import sys
         print(f"Error scanning source statically: {e}", file=sys.stderr)
+    timing_breakdown["staticScanMs"] = elapsed_ms(static_scan_started)
 
     # --- 1. Switch working directory if provided ---
     original_cwd = os.getcwd()
@@ -2522,19 +3225,25 @@ def replay_render(
         "_uploaded_file_paths": uploaded_file_paths or {},
     }
 
+    script_execution_started = time.perf_counter()
     try:
         with _guard_user_script_io(cwd, uploaded_file_paths=uploaded_file_paths, original_cwd=original_cwd):
             exec(script, ns, ns)
     except Exception as exc:
         os.chdir(original_cwd)
+        timing_breakdown["scriptExecutionMs"] = elapsed_ms(script_execution_started)
+        total_ms = elapsed_ms(start)
         return {
             "status": "error",
             "message": _build_script_error_message(exc, data),
             "traceback": traceback.format_exc(),
-            "timingMs": int((time.time() - start) * 1000),
+            "timingMs": total_ms,
+            "timingBreakdown": {**timing_breakdown, "totalMs": total_ms},
         }
+    timing_breakdown["scriptExecutionMs"] = elapsed_ms(script_execution_started)
 
     # Fallback/dynamic updates from namespace
+    dynamic_scan_started = time.perf_counter()
     if semantic_manifest:
         try:
             from semantic_scanner import scan_source
@@ -2542,8 +3251,10 @@ def replay_render(
         except Exception as e:
             import sys
             print(f"Error scanning source dynamically: {e}", file=sys.stderr)
+    timing_breakdown["dynamicScanMs"] = elapsed_ms(dynamic_scan_started)
 
     # --- 3. Fallback scan for active figures ---
+    figure_discovery_started = time.perf_counter()
     for num in plt.get_fignums():
         try:
             fig = plt.figure(num)
@@ -2563,16 +3274,20 @@ def replay_render(
 
     if not unique_figures:
         os.chdir(original_cwd)
+        timing_breakdown["figureDiscoveryMs"] = elapsed_ms(figure_discovery_started)
+        total_ms = elapsed_ms(start)
         return {
             "status": "error",
             "message": "脚本未创建任何 matplotlib Figure",
-            "timingMs": int((time.time() - start) * 1000),
+            "timingMs": total_ms,
+            "timingBreakdown": {**timing_breakdown, "totalMs": total_ms},
         }
 
     # --- 4. Process each Figure ---
     figures_data = []
     all_warnings: list[dict] = []
     code_slices = extract_figure_code_slices(script, len(unique_figures))
+    timing_breakdown["figureDiscoveryMs"] = elapsed_ms(figure_discovery_started)
     for idx, fig in enumerate(unique_figures):
         fig_id = f"fig_{idx + 1}"
         
@@ -2585,13 +3300,18 @@ def replay_render(
 
         # Apply edit log
         if fig_edit_log:
+            edit_apply_started = time.perf_counter()
             fig_warnings = apply_edit_log(fig, fig_edit_log)
+            timing_breakdown["editApplyMs"] += elapsed_ms(edit_apply_started)
             for w in fig_warnings:
                 w["figureId"] = fig_id
             all_warnings.extend(fig_warnings)
 
         # Introspect
         result = introspect_figure(fig, semantic_manifest=semantic_manifest)
+        figure_timing = result.get("timingBreakdown", {})
+        timing_breakdown["introspectionMs"] += int(figure_timing.get("introspectionMs", 0) or 0)
+        timing_breakdown["svgSerializeMs"] += int(figure_timing.get("svgSerializeMs", 0) or 0)
 
         # Compute figure fingerprint for identity tracking
         manifest = result.get("manifest", {})
@@ -2624,6 +3344,7 @@ def replay_render(
         # Render and export to binary format if requested
         binary_b64 = None
         if export_format and export_format.lower() in ['png', 'pdf', 'tiff', 'eps']:
+            binary_export_started = time.perf_counter()
             buf = io.BytesIO()
             fmt = export_format.lower()
             if fmt == 'tiff':
@@ -2636,6 +3357,7 @@ def replay_render(
             else:
                 fig.savefig(buf, format=fmt, dpi=dpi, bbox_inches='tight')
             binary_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+            timing_breakdown["binaryExportMs"] += elapsed_ms(binary_export_started)
 
         fig_entry = {
             "figureId": fig_id,
@@ -2656,12 +3378,14 @@ def replay_render(
     plt.close("all")
     os.chdir(original_cwd)
     
-    elapsed = int((time.time() - start) * 1000)
+    elapsed = elapsed_ms(start)
+    timing_breakdown["totalMs"] = elapsed
 
     # Return unified response ensuring backward compatibility
     ret = {
         "status": "success",
         "timingMs": elapsed,
+        "timingBreakdown": timing_breakdown,
         "message": "Replay render completed.",
     }
     

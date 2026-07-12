@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Blocks, CheckCircle2, Cpu, CreditCard, KeyRound, LogOut, Settings, Shield, User } from 'lucide-react';
+import { AUTH_TOKEN_STORAGE_KEY } from '../utils/authenticatedFetch';
 
-const TOKEN_KEY = 'scifigure:auth-token';
+const TOKEN_KEY = AUTH_TOKEN_STORAGE_KEY;
 const DEVICE_KEY = 'scifigure:device-fingerprint';
 
 interface AuthUser {
@@ -91,6 +92,7 @@ export function SettingsPage({ subView }: { subView: string }) {
       const data = await res.json();
       if (data.status !== 'success') throw new Error(data.message || '认证失败');
       window.localStorage.setItem(TOKEN_KEY, data.token);
+      window.dispatchEvent(new CustomEvent('scifigure:auth-changed', { detail: { authenticated: true } }));
       setAuth({ user: data.user, license: data.license, deviceCount: data.deviceCount ?? 1 });
       setPassword('');
       setMessage(mode === 'login' ? '登录成功' : '注册成功，已创建免费版账号');
@@ -125,6 +127,7 @@ export function SettingsPage({ subView }: { subView: string }) {
   const logout = async () => {
     await fetch('/api/auth/logout', { method: 'POST', headers: getAuthHeaders() }).catch(() => {});
     window.localStorage.removeItem(TOKEN_KEY);
+    window.dispatchEvent(new CustomEvent('scifigure:auth-changed', { detail: { authenticated: false } }));
     setAuth({ user: null, license: defaultLicense() });
     setMessage('已退出登录');
   };

@@ -16,6 +16,11 @@ import { chromium } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  authenticateCapabilitySmokeUser,
+  bearerHeaders,
+  installBrowserAuthentication,
+} from './smokeAuth.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -29,6 +34,9 @@ const apiResponses = [];
 const consoleErrors = [];
 const pageErrors = [];
 const diagnostics = {};
+let failNextPatchFigureId = null;
+let injectedPatchFailures = 0;
+let authToken = '';
 
 function record(id, status, note) {
   results.push({ id, status, note });
@@ -60,6 +68,7 @@ async function requestJson(pathname, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...bearerHeaders(authToken),
       ...(options.headers || {}),
     },
   });
@@ -317,6 +326,47 @@ async function applySelectedAndReadPatches(page) {
   return { clicked, patchRequests, patchBodies, successful, start };
 }
 
+async function seedContentTextDraft(page, figId, gid, nextText) {
+  const seeded = await page.evaluate(({ figId, gid, nextText }) => {
+    const key = 'scifigure:app-state:v2';
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return false;
+    const state = JSON.parse(raw);
+    state.activeFigureId = figId;
+    state.projectDrafts = {
+      ...(state.projectDrafts || {}),
+      [figId]: {
+        [`${gid}:text`]: {
+          gid,
+          prop: 'text',
+          value: nextText,
+          mode: 'backend_patch',
+          intent: {
+            intent: 'content.text',
+            scope: {
+              selectionMode: 'explicit_objects',
+              objectIds: [gid],
+              targetKinds: ['text'],
+              targetRole: 'title',
+            },
+            operation: { prop: 'text', value: nextText },
+            commit: { mode: 'draft', applyAsOneHistoryStep: true },
+            fallback: { onUnsupported: 'skip_with_warning' },
+          },
+        },
+      },
+    };
+    window.sessionStorage.setItem(key, JSON.stringify(state));
+    window.location.reload();
+    return true;
+  }, { figId, gid, nextText });
+  if (!seeded) return false;
+  await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+  await waitForPreviewReady(page);
+  await page.waitForTimeout(500);
+  return true;
+}
+
 async function selectBatchTargetFigure(page, figureNumber, checked = true) {
   const checkbox = page.getByLabel(`选择 Figure ${figureNumber} 作为批量应用目标`).first();
   if (!(await checkbox.isVisible({ timeout: 5000 }).catch(() => false))) return false;
@@ -339,14 +389,36 @@ async function selectActiveFigure(page, figureNumber) {
 
 async function run() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'cross-figure apply');
   await cleanupSmokeProjects();
 
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await installBrowserAuthentication(context, authToken);
   const page = await context.newPage();
 
+  await page.route('**/api/figure/patch', async (route) => {
+    const body = parseJson(route.request().postData());
+    if (failNextPatchFigureId && body?.figureId === failNextPatchFigureId) {
+      failNextPatchFigureId = null;
+      injectedPatchFailures += 1;
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'error', message: 'Injected draft transaction failure' }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
   page.on('console', (msg) => {
-    if (msg.type() === 'error' && !isIgnorableDevServerNoise(msg.text())) consoleErrors.push(msg.text());
+    if (msg.type() !== 'error' || isIgnorableDevServerNoise(msg.text())) return;
+    if (injectedPatchFailures > 0 && msg.text().includes('500 (Internal Server Error)')) {
+      injectedPatchFailures -= 1;
+      return;
+    }
+    consoleErrors.push(msg.text());
   });
   page.on('pageerror', (err) => {
     if (!isIgnorableDevServerNoise(err.message)) pageErrors.push(err.message);
@@ -398,6 +470,31 @@ async function run() {
       allPatchesAreTickSize;
     record('X1-apply-all', applyAllOk ? 'PASS' : 'FAIL', `changed=${changed}, draft=${draftVisible}, enabled=${allButtonEnabled}, figureIds=${JSON.stringify(figureIds)}, patches=${JSON.stringify(patches)}, fullRenderCalls=${fullRenderCalls.length}`);
 
+    const reportBodyAfterApplyAll = await getBodyText(page);
+    const intentReportVisible = reportBodyAfterApplyAll.includes('最近语义应用结果')
+      && reportBodyAfterApplyAll.includes('全部图')
+      && reportBodyAfterApplyAll.includes(`修改 ${patches.length} 项`);
+    record('X1-report-visible', intentReportVisible ? 'PASS' : 'FAIL', `visible=${intentReportVisible}, expectedApplied=${patches.length}`);
+
+    const contentEdited = await seedContentTextDraft(page, 'fig_1', 'title.0', 'Figure One Edited');
+    const contentDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const applyContentAll = contentEdited ? await applyAllAndReadPatches(page) : { clicked: false, patchBodies: [], successful: false, start: apiRequests.length };
+    const contentFigureIds = applyContentAll.patchBodies.map((body) => body?.figureId).sort();
+    const contentPatches = applyContentAll.patchBodies.flatMap((body) => patchList(body));
+    const contentReportBody = await getBodyText(page);
+    const contentSkippedVisible = contentReportBody.includes('最近语义应用结果')
+      && contentReportBody.includes('部分跳过')
+      && contentReportBody.includes('跳过 2');
+    const contentOnlyCurrentFigure = contentFigureIds.length === 1 && contentFigureIds[0] === 'fig_1';
+    const contentPatchOk = contentPatches.length === 1
+      && contentPatches[0]?.prop === 'text'
+      && contentPatches[0]?.value === 'Figure One Edited';
+    record(
+      'X1-content-deny-cross-figure',
+      contentEdited && contentDraftVisible && applyContentAll.clicked && applyContentAll.successful && contentOnlyCurrentFigure && contentPatchOk && contentSkippedVisible ? 'PASS' : 'FAIL',
+      `edited=${contentEdited}, draft=${contentDraftVisible}, figureIds=${JSON.stringify(contentFigureIds)}, patches=${JSON.stringify(contentPatches)}, reportSkipped=${contentSkippedVisible}`,
+    );
+
     await clickText(page, '字体中心');
     const changedSelected = await setNumberControl(page, 'X 轴刻度文字', 'fontsize', 16);
     const selectedDraftVisible = (await getBodyText(page)).includes('已暂存');
@@ -430,37 +527,93 @@ async function run() {
 
     const selectedFig2AsActive = await selectActiveFigure(page, 2);
     await clickText(page, '组件中心');
-    const changedFrame = await setNumberControlInCardByText(page, '坐标轴边框和网格线', 'linewidth', 2.25);
+    const changedFrame = await setNumberControlInCardByText(page, '子图边框 / 坐标轴框线', 'linewidth', 2.25);
     const frameDraftVisible = (await getBodyText(page)).includes('已暂存');
     const applyFrameAll = changedFrame ? await applyAllAndReadPatches(page) : { clicked: false, patchBodies: [], successful: false, start: apiRequests.length };
     const fig3Body = applyFrameAll.patchBodies.find((body) => body?.figureId === 'fig_3');
     const fig3Patches = patchList(fig3Body);
-    const fig3GridPatches = fig3Patches.filter((patch) => (
-      String(patch.gid || '').startsWith('grid.') &&
+    const fig3FramePatches = fig3Patches.filter((patch) => (
+      String(patch.gid || '').startsWith('spine_group.') &&
       patch.prop === 'linewidth' &&
       Number(patch.value) === 2.25
     ));
-    const fig3SpinePatches = fig3Patches.filter((patch) => (
-      String(patch.gid || '').startsWith('spine.') &&
-      patch.prop === 'linewidth' &&
-      Number(patch.value) === 2.25
-    ));
-    const uniqueFig3GridGids = [...new Set(fig3GridPatches.map((patch) => patch.gid))].sort();
-    const uniqueFig3SpineGids = [...new Set(fig3SpinePatches.map((patch) => patch.gid))].sort();
-    const expectedSpineGids = ['bottom', 'left', 'right', 'top']
-      .flatMap(side => [0, 1, 2, 3].map(index => `spine.${side}.${index}`))
-      .sort();
+    const uniqueFig3FrameGids = [...new Set(fig3FramePatches.map((patch) => patch.gid))].sort();
+    const unexpectedGridPatches = fig3Patches.filter((patch) => String(patch.gid || '').startsWith('grid.'));
     const frameFullRenderCalls = apiRequests.slice(applyFrameAll.start || 0).filter((request) => request.url.includes('/figures/render'));
     const frameFanoutOk = selectedFig2AsActive &&
       changedFrame &&
       frameDraftVisible &&
       applyFrameAll.clicked &&
       applyFrameAll.successful &&
-      uniqueFig3GridGids.join(',') === 'grid.0,grid.1,grid.2,grid.3' &&
-      uniqueFig3SpineGids.length === 16 &&
-      uniqueFig3SpineGids.join(',') === expectedSpineGids.join(',') &&
+      uniqueFig3FrameGids.join(',') === 'spine_group.0,spine_group.1,spine_group.2,spine_group.3' &&
+      unexpectedGridPatches.length === 0 &&
       frameFullRenderCalls.length === 0;
-    record('X3-single-to-multisubplot-style-fanout', frameFanoutOk ? 'PASS' : 'FAIL', `activeFig2=${selectedFig2AsActive}, changed=${changedFrame}, draft=${frameDraftVisible}, fig3GridGids=${JSON.stringify(uniqueFig3GridGids)}, fig3SpineGids=${JSON.stringify(uniqueFig3SpineGids)}, fig3Patches=${JSON.stringify(fig3Patches)}, fullRenderCalls=${frameFullRenderCalls.length}`);
+    record('X3-single-to-multisubplot-style-fanout', frameFanoutOk ? 'PASS' : 'FAIL', `activeFig2=${selectedFig2AsActive}, changed=${changedFrame}, draft=${frameDraftVisible}, fig3FrameGids=${JSON.stringify(uniqueFig3FrameGids)}, unexpectedGridPatches=${unexpectedGridPatches.length}, fig3Patches=${JSON.stringify(fig3Patches)}, fullRenderCalls=${frameFullRenderCalls.length}`);
+
+    await clickText(page, '组件中心');
+    const changedDataLine = await setNumberControlInCardByText(page, '线条 / 拟合线', 'linewidth', 2.75);
+    const dataLineDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const applyDataLineAll = changedDataLine
+      ? await applyAllAndReadPatches(page)
+      : { clicked: false, patchBodies: [], successful: false, start: apiRequests.length };
+    const dataLinePatches = applyDataLineAll.patchBodies.flatMap((body) => patchList(body));
+    const actualDataLinePatches = dataLinePatches.filter((patch) => (
+      /^line\.\d+\.\d+$/.test(String(patch.gid || ''))
+      && patch.prop === 'linewidth'
+      && Number(patch.value) === 2.75
+    ));
+    const legendLinePatches = dataLinePatches.filter((patch) => String(patch.gid || '').startsWith('legend_line.'));
+    const dataLineFigureIds = applyDataLineAll.patchBodies.map((body) => body?.figureId).filter(Boolean).sort();
+    const dataLineFullRenderCalls = apiRequests.slice(applyDataLineAll.start || 0).filter((request) => request.url.includes('/figures/render'));
+    const dataLineIsolationOk = changedDataLine
+      && dataLineDraftVisible
+      && applyDataLineAll.clicked
+      && applyDataLineAll.successful
+      && dataLineFigureIds.join(',') === 'fig_1,fig_2,fig_3'
+      && actualDataLinePatches.length === 6
+      && legendLinePatches.length === 0
+      && dataLinePatches.length === actualDataLinePatches.length
+      && dataLineFullRenderCalls.length === 0;
+    record(
+      'X3b-data-line-excludes-legend-marker',
+      dataLineIsolationOk ? 'PASS' : 'FAIL',
+      `changed=${changedDataLine}, draft=${dataLineDraftVisible}, figureIds=${JSON.stringify(dataLineFigureIds)}, dataLines=${actualDataLinePatches.length}, legendLines=${legendLinePatches.length}, patches=${JSON.stringify(dataLinePatches)}, fullRenderCalls=${dataLineFullRenderCalls.length}`,
+    );
+
+    const activeFig1ForRetry = await selectActiveFigure(page, 1);
+    await clickText(page, '字体中心');
+    const retryDraftChanged = await setNumberControl(page, 'X 轴刻度文字', 'fontsize', 17);
+    const retryDraftInitiallyVisible = (await getBodyText(page)).includes('已暂存');
+    failNextPatchFigureId = 'fig_2';
+    const partialApply = retryDraftChanged
+      ? await applyAllAndReadPatches(page)
+      : { clicked: false, patchBodies: [], successful: false, start: apiRequests.length };
+    const partialFigureIds = partialApply.patchBodies.map((body) => body?.figureId).filter(Boolean).sort();
+    const bodyAfterPartial = await getBodyText(page);
+    const draftRetainedAfterPartial = bodyAfterPartial.includes('已暂存');
+    const partialFailureVisible = bodyAfterPartial.includes('上次应用部分失败') && bodyAfterPartial.includes('fig_2');
+    const retryApply = draftRetainedAfterPartial
+      ? await applyAllAndReadPatches(page)
+      : { clicked: false, patchBodies: [], successful: false, start: apiRequests.length };
+    const retryFigureIds = retryApply.patchBodies.map((body) => body?.figureId).filter(Boolean).sort();
+    const draftClearedAfterRetry = !(await getBodyText(page)).includes('已暂存');
+    const transactionRetryOk = activeFig1ForRetry
+      && retryDraftChanged
+      && retryDraftInitiallyVisible
+      && partialApply.clicked
+      && !partialApply.successful
+      && partialFigureIds.join(',') === 'fig_1,fig_2,fig_3'
+      && draftRetainedAfterPartial
+      && partialFailureVisible
+      && retryApply.clicked
+      && retryApply.successful
+      && retryFigureIds.join(',') === 'fig_2'
+      && draftClearedAfterRetry;
+    record(
+      'X4-partial-failure-retries-only-failed-figure',
+      transactionRetryOk ? 'PASS' : 'FAIL',
+      `initialDraft=${retryDraftInitiallyVisible}, partialFigures=${JSON.stringify(partialFigureIds)}, retained=${draftRetainedAfterPartial}, failureVisible=${partialFailureVisible}, retryFigures=${JSON.stringify(retryFigureIds)}, retrySuccess=${retryApply.successful}, cleared=${draftClearedAfterRetry}`,
+    );
 
     if (consoleErrors.length > 0 || pageErrors.length > 0) {
       record('N1', 'FAIL', `console=${consoleErrors.length}, page=${pageErrors.length}`);

@@ -34,10 +34,23 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.id.startsWith('ylabel.') || object.id.startsWith('supylabel.')) return 'y_axis_label';
   if (object.id.startsWith('xtick.') || object.kind === 'axis_x') return 'x_tick_label';
   if (object.id.startsWith('ytick.') || object.kind === 'axis_y') return 'y_tick_label';
-  if (object.id.startsWith('legend_text.') || object.id.startsWith('legend_title.')) return 'legend_text';
+  if (object.role === 'legend_title' || object.id.startsWith('legend_title.')) return 'legend_title';
+  if (object.role === 'legend_marker' || /^legend_(?:line|patch|collection|marker)\./.test(object.id)) return 'legend_marker';
+  if (object.id.startsWith('legend_text.')) return 'legend_text';
   if (object.kind === 'legend') return 'legend_container';
+  if (object.role === 'colorbar_label' || object.id.startsWith('colorbar_label.')) return 'colorbar_label';
+  if (object.role === 'colorbar_tick_label' || object.id.startsWith('colorbar_tick.')) return 'colorbar_tick_label';
+  if (object.role === 'bar_series' || object.kind === 'bar_container') return 'data_bar';
+  if (object.role === 'errorbar_series' || object.kind === 'errorbar_container') return 'data_errorbar';
+  if (object.role === 'stem_series' || object.kind === 'stem_container') return 'data_stem';
+  if (object.role === 'boxplot_group' || object.kind === 'boxplot_container') return 'data_boxplot';
+  if (object.role === 'violin_group' || object.kind === 'violinplot_container') return 'data_violin';
   if (object.kind === 'subplot') return 'subplot_axes_box';
-  if (object.kind === 'spine' || object.kind === 'spine_group') return 'axis_frame';
+  if (object.kind === 'spine') return 'axis_spine';
+  if (object.kind === 'spine_group') return 'axis_frame';
+  if (object.role === 'tick_line' || object.id.startsWith('tick_line.')) return 'tick_line';
+  if (object.role === 'annotation_text' || object.role === 'ggplot_text_annotation') return 'annotation_text';
+  if (object.role === 'annotation_arrow') return 'annotation_arrow';
   if (object.kind === 'grid') return 'grid';
   if (object.kind === 'line') return 'data_line';
   if (object.kind === 'collection') return 'data_point';
@@ -93,6 +106,22 @@ function uniqueByGidAndProp(patches: PatchEntry[]): PatchEntry[] {
   return result;
 }
 
+export function isStyleIntent(intentName: EditingIntent['intent']): boolean {
+  return intentName.startsWith('style.') || intentName === 'visibility.component';
+}
+
+export function isContentIntent(intentName: EditingIntent['intent']): boolean {
+  return intentName.startsWith('content.');
+}
+
+export function isPositionIntent(intentName: EditingIntent['intent']): boolean {
+  return intentName.startsWith('layout.position.');
+}
+
+export function isLayoutIntent(intentName: EditingIntent['intent']): boolean {
+  return intentName.startsWith('layout.') && !isPositionIntent(intentName);
+}
+
 function resolveTickAxisObjects(
   manifest: Manifest,
   role: 'x_tick_label' | 'y_tick_label',
@@ -132,7 +161,10 @@ function selectCandidates(manifest: Manifest, intent: EditingIntent): ManifestOb
   }
 
   if (scope.targetRole) {
-    candidates = candidates.filter(object => inferRole(object) === scope.targetRole);
+    candidates = candidates.filter(object => {
+      const role = inferRole(object);
+      return role === scope.targetRole || (scope.targetRole === 'axis_frame' && role === 'axis_spine');
+    });
   }
 
   if (scope.subplotIds && scope.subplotIds !== '*') {
@@ -216,7 +248,11 @@ export function inferEditingTargetRole(object: ManifestObject): SemanticTargetRo
 }
 
 export function retargetEditingIntentForFigure(intent: EditingIntent): EditingIntent {
-  if (intent.scope.crossFigure === 'deny') {
+  const deniedByDefault = isContentIntent(intent.intent)
+    || isPositionIntent(intent.intent)
+    || isLayoutIntent(intent.intent);
+
+  if (intent.scope.crossFigure === 'deny' || (deniedByDefault && intent.scope.crossFigure !== 'allow')) {
     return {
       ...intent,
       scope: {

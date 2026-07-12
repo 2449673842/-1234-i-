@@ -9,8 +9,151 @@ sys.path.insert(0, os.path.join(project_root, "renderer"))
 
 from introspector import replay_render
 from semantic_scanner import scan_source
+from binding_engine import build_bindings
 
 class TestArtistIntrospection(unittest.TestCase):
+
+    @staticmethod
+    def _binding_artist(gid, kind, label, props, series_key):
+        return {
+            "id": gid,
+            "kind": kind,
+            "label": label,
+            "currentProps": props,
+            "identity": {
+                "instanceKey": f"subplot:{gid}",
+                "seriesKey": series_key,
+            },
+        }
+
+    def test_palette_binding_separates_same_color_semantic_groups(self):
+        semantic = {
+            "palettes": [
+                {"id": "dict_COLORS__Weak", "color": "#225588"},
+                {"id": "dict_COLORS__Mixed", "color": "#225588"},
+            ],
+            "groups": [
+                {"groupId": "group_Weak", "label": "Weak", "paletteId": "dict_COLORS__Weak"},
+                {"groupId": "group_Mixed", "label": "Mixed", "paletteId": "dict_COLORS__Mixed"},
+            ],
+        }
+        artists = [
+            self._binding_artist("line.0.0", "line", "Weak", {"color": "#225588"}, "weak-series"),
+            self._binding_artist("legend_line.0.0", "line", "Weak", {"color": "#225588"}, "weak-legend"),
+            self._binding_artist("line.0.1", "line", "Mixed", {"color": "#225588"}, "mixed-series"),
+            self._binding_artist("legend_line.0.1", "line", "Mixed", {"color": "#225588"}, "mixed-legend"),
+        ]
+
+        bindings = build_bindings(semantic, artists)
+        weak = next(binding for binding in bindings if binding["paletteId"] == "dict_COLORS__Weak")
+        mixed = next(binding for binding in bindings if binding["paletteId"] == "dict_COLORS__Mixed")
+
+        self.assertEqual(weak["targetMode"], "exact")
+        self.assertEqual(weak["gids"], ["line.0.0", "legend_line.0.0"])
+        self.assertEqual(mixed["gids"], ["line.0.1", "legend_line.0.1"])
+        self.assertTrue(all(target["match"] == "label_and_color" for target in weak["targets"]))
+        self.assertEqual({target["seriesKey"] for target in weak["targets"]}, {"weak-series", "weak-legend"})
+
+    def test_palette_binding_rejects_duplicate_color_without_semantics(self):
+        semantic = {
+            "palettes": [
+                {"id": "COLOR_A", "color": "#335577"},
+                {"id": "COLOR_B", "color": "#335577"},
+            ],
+            "groups": [],
+        }
+        artists = [
+            self._binding_artist("line.0.0", "line", "series", {"color": "#335577"}, "series-0"),
+        ]
+
+        bindings = build_bindings(semantic, artists)
+
+        self.assertEqual(len(bindings), 2)
+        self.assertTrue(all(binding["targetMode"] == "ambiguous" for binding in bindings))
+        self.assertTrue(all(binding["gids"] == [] and binding["targets"] == [] for binding in bindings))
+
+    def test_palette_binding_keeps_per_target_color_property(self):
+        semantic = {
+            "palettes": [{"id": "SERIES_COLOR", "color": "#116633"}],
+            "groups": [{"groupId": "group_series", "label": "Series", "paletteId": "SERIES_COLOR"}],
+        }
+        artists = [
+            self._binding_artist("line.0.0", "line", "Series", {"color": "#116633"}, "line-series"),
+            self._binding_artist("patch.0.0", "patch", "Series", {"facecolor": "#116633", "edgecolor": "#000000"}, "patch-series"),
+        ]
+
+        binding = build_bindings(semantic, artists)[0]
+        target_props = {target["gid"]: target["prop"] for target in binding["targets"]}
+
+        self.assertEqual(target_props, {"line.0.0": "color", "patch.0.0": "facecolor"})
+        self.assertEqual(binding["props"], ["facecolor", "color"])
+
+    def test_palette_binding_rejects_duplicate_exact_label_and_color_signature(self):
+        semantic = {
+            "palettes": [
+                {"id": "DICT_A__Weak", "color": "#778899"},
+                {"id": "DICT_B__Weak", "color": "#778899"},
+            ],
+            "groups": [
+                {"groupId": "group_a", "label": "Weak", "paletteId": "DICT_A__Weak"},
+                {"groupId": "group_b", "label": "Weak", "paletteId": "DICT_B__Weak"},
+            ],
+        }
+        artists = [
+            self._binding_artist("line.0.0", "line", "Weak", {"color": "#778899"}, "weak-series"),
+        ]
+
+        bindings = build_bindings(semantic, artists)
+
+        self.assertEqual(len(bindings), 2)
+        self.assertTrue(all(binding["targetMode"] == "ambiguous" for binding in bindings))
+
+    def test_shadow_identity_is_stable_across_style_edits(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 3, 2], label="response")
+"""
+        baseline = replay_render(script)
+        patched = replay_render(script, edit_log=[
+            {"gid": "line.0.0", "prop": "color", "value": "#cc0000", "mode": "local_patch"}
+        ])
+
+        baseline_line = next(
+            obj for obj in baseline["figures"][0]["manifest"]["objects"]
+            if obj["id"] == "line.0.0"
+        )
+        baseline_objects = baseline["figures"][0]["manifest"]["objects"]
+        instance_keys = [obj["identity"]["instanceKey"] for obj in baseline_objects]
+        self.assertEqual(len(instance_keys), len(set(instance_keys)))
+        for obj in baseline_objects:
+            capability_props = [item["prop"] for item in obj["propertyCapabilities"]]
+            self.assertEqual(sorted(obj["editable"]), sorted(capability_props))
+        patched_line = next(
+            obj for obj in patched["figures"][0]["manifest"]["objects"]
+            if obj["id"] == "line.0.0"
+        )
+
+        self.assertEqual(
+            baseline_line["identity"]["instanceKey"],
+            patched_line["identity"]["instanceKey"]
+        )
+        self.assertEqual(
+            baseline_line["identity"]["semanticKey"],
+            patched_line["identity"]["semanticKey"]
+        )
+        self.assertEqual(
+            baseline_line["identity"]["seriesKey"],
+            patched_line["identity"]["seriesKey"]
+        )
+        color_capability = next(
+            capability for capability in patched_line["propertyCapabilities"]
+            if capability["prop"] == "color"
+        )
+        self.assertEqual(color_capability["patchMode"], "local_patch")
+        self.assertEqual(color_capability["replay"], "stable")
+        self.assertIn("object", color_capability["scopes"])
+        self.assertIn("cross_figure", color_capability["scopes"])
     
     def test_dict_palette_ids_include_dict_name_to_avoid_cross_group_color_edits(self):
         script = """
@@ -83,7 +226,7 @@ fig, ax = plt.subplots()
 x = [1, 2, 3]
 y = [10, 20, 15]
 yerr = [1, 2, 1.5]
-ax.errorbar(x, y, yerr=yerr, fmt='o-', label="growth")
+ax.errorbar(x, y, yerr=yerr, fmt='o-', capsize=4, label="growth")
 """
         res = replay_render(script)
         self.assertEqual(res.get("status"), "success")
@@ -101,12 +244,31 @@ ax.errorbar(x, y, yerr=yerr, fmt='o-', label="growth")
         container = eb_containers[0]
         self.assertEqual(container["role"], "errorbar_series")
         self.assertTrue(len(container.get("children", [])) > 0)
+        self.assertAlmostEqual(container["currentProps"]["capsize"], 4.0)
+        self.assertEqual(container["identity"]["seriesKey"], container["stableKey"])
+        capsize_capability = next(
+            item for item in container["propertyCapabilities"]
+            if item["prop"] == "capsize"
+        )
+        self.assertEqual(capsize_capability["patchMode"], "backend_patch")
         
         # Verify children parentId link
         child_id = container["children"][0]
         child_obj = next(o for o in objects if o["id"] == child_id)
         self.assertEqual(child_obj["parentId"], container["id"])
         self.assertEqual(child_obj["role"], "errorbar_series")
+
+        patched = replay_render(script, edit_log=[{
+            "gid": container["id"],
+            "prop": "capsize",
+            "value": 7,
+            "mode": "backend_patch",
+        }])
+        patched_container = next(
+            obj for obj in patched["figures"][0]["manifest"]["objects"]
+            if obj["id"] == container["id"]
+        )
+        self.assertAlmostEqual(patched_container["currentProps"]["capsize"], 7.0)
 
     def test_coverage_report_details(self):
         script = """
@@ -282,6 +444,17 @@ fig.colorbar(im, ax=ax, orientation="vertical", label="Intensity")
         self.assertEqual(cb["currentProps"]["cmap"], "inferno")
         self.assertIsNotNone(cb["currentProps"]["vmin"])
         self.assertIsNotNone(cb["currentProps"]["vmax"])
+        colorbar_children = [
+            obj for obj in objects
+            if obj.get("identity", {}).get("relation", {}).get("colorbarId") == cb["id"]
+            and obj.get("source", {}).get("axesIndex") == cb["source"]["axesIndex"]
+        ]
+        self.assertTrue(colorbar_children)
+        for child in colorbar_children:
+            relation = child["identity"]["relation"]
+            self.assertEqual(relation.get("subplotId"), "subplot.0")
+            self.assertNotEqual(relation.get("subplotId"), f"subplot.{cb['source']['axesIndex']}")
+            self.assertEqual(child["identity"]["scope"], "container")
 
     def test_raster_image_not_heatmap_introspection(self):
         script = """
@@ -363,6 +536,142 @@ fig.colorbar(im, ax=ax, orientation="vertical", label="Intensity")
         self.assertAlmostEqual(cb["currentProps"]["width"], 0.05)
         self.assertAlmostEqual(cb["currentProps"]["height"], 0.5)
 
+    def test_dual_heatmaps_have_explicit_colorbar_mappable_and_owner_relationships(self):
+        script = """
+import matplotlib.pyplot as plt
+import numpy as np
+fig, axes = plt.subplots(1, 2)
+left = axes[0].imshow(np.arange(16).reshape(4, 4), cmap="viridis")
+right = axes[1].imshow(np.arange(16, 32).reshape(4, 4), cmap="magma")
+fig.colorbar(left, ax=axes[0], label="Left scale")
+fig.colorbar(right, ax=axes[1], label="Right scale")
+"""
+        res = replay_render(script)
+        self.assertEqual(res.get("status"), "success")
+        objects = res["figures"][0]["manifest"]["objects"]
+        by_id = {obj["id"]: obj for obj in objects}
+
+        left_heatmap = by_id["heatmap.image.0.0"]
+        right_heatmap = by_id["heatmap.image.1.0"]
+        left_colorbar = by_id[left_heatmap["identity"]["relation"]["colorbarId"]]
+        right_colorbar = by_id[right_heatmap["identity"]["relation"]["colorbarId"]]
+
+        self.assertNotEqual(left_colorbar["id"], right_colorbar["id"])
+        self.assertEqual(left_colorbar["identity"]["relation"]["mappableId"], left_heatmap["id"])
+        self.assertEqual(right_colorbar["identity"]["relation"]["mappableId"], right_heatmap["id"])
+        self.assertEqual(left_colorbar["identity"]["relation"]["subplotId"], "subplot.0")
+        self.assertEqual(right_colorbar["identity"]["relation"]["subplotId"], "subplot.1")
+        self.assertEqual(left_colorbar["subplotId"], "subplot.0")
+        self.assertEqual(right_colorbar["subplotId"], "subplot.1")
+        self.assertEqual(left_colorbar["source"]["ownerAxesIndex"], 0)
+        self.assertEqual(right_colorbar["source"]["ownerAxesIndex"], 1)
+        self.assertNotEqual(left_colorbar["source"]["axesIndex"], left_colorbar["source"]["ownerAxesIndex"])
+        self.assertNotEqual(right_colorbar["source"]["axesIndex"], right_colorbar["source"]["ownerAxesIndex"])
+
+        patched = replay_render(script, edit_log=[
+            {"gid": left_colorbar["id"], "prop": "label", "value": "Left updated", "mode": "backend_patch"},
+            {"gid": left_colorbar["id"], "prop": "width", "value": 0.04, "mode": "backend_patch"},
+        ])
+        self.assertEqual(patched.get("status"), "success")
+        patched_by_id = {obj["id"]: obj for obj in patched["figures"][0]["manifest"]["objects"]}
+        self.assertEqual(patched_by_id[left_colorbar["id"]]["currentProps"]["label"], "Left updated")
+        self.assertEqual(patched_by_id[right_colorbar["id"]]["currentProps"]["label"], "Right scale")
+        self.assertEqual(
+            patched_by_id[left_colorbar["id"]]["identity"]["relation"]["mappableId"],
+            left_heatmap["id"],
+        )
+        self.assertEqual(
+            patched_by_id[right_colorbar["id"]]["identity"]["relation"]["mappableId"],
+            right_heatmap["id"],
+        )
+
+    def test_shared_colorbar_preserves_all_owner_subplots(self):
+        script = """
+import matplotlib.pyplot as plt
+import numpy as np
+fig, axes = plt.subplots(1, 2)
+norm = plt.Normalize(0, 15)
+left = axes[0].imshow(np.arange(16).reshape(4, 4), cmap="viridis", norm=norm)
+axes[1].imshow(np.arange(16).reshape(4, 4), cmap="viridis", norm=norm)
+fig.colorbar(left, ax=list(axes), label="Shared scale")
+"""
+        res = replay_render(script)
+        self.assertEqual(res.get("status"), "success")
+        objects = res["figures"][0]["manifest"]["objects"]
+        colorbar = next(obj for obj in objects if obj["kind"] == "colorbar")
+        relation = colorbar["identity"]["relation"]
+        right_heatmap = next(obj for obj in objects if obj["id"] == "heatmap.image.1.0")
+
+        self.assertEqual(colorbar["subplotIds"], ["subplot.0", "subplot.1"])
+        self.assertNotIn("subplotId", colorbar)
+        self.assertEqual(relation["subplotIds"], ["subplot.0", "subplot.1"])
+        self.assertNotIn("subplotId", relation)
+        self.assertEqual(relation["mappableId"], "heatmap.image.0.0")
+        self.assertEqual(relation["mappableIds"], ["heatmap.image.0.0", "heatmap.image.1.0"])
+        self.assertEqual(colorbar["source"]["ownerAxesIndices"], [0, 1])
+        self.assertEqual(colorbar["identity"]["scope"], "container")
+        left_heatmap = next(obj for obj in objects if obj["id"] == "heatmap.image.0.0")
+        self.assertEqual(left_heatmap["identity"]["relation"]["colorbarId"], colorbar["id"])
+        self.assertEqual(right_heatmap["identity"]["relation"]["colorbarId"], colorbar["id"])
+        shared_colorbar_children = [
+            obj for obj in objects
+            if obj.get("identity", {}).get("relation", {}).get("colorbarId") == colorbar["id"]
+            and obj.get("source", {}).get("axesIndex") == colorbar["source"]["axesIndex"]
+        ]
+        self.assertTrue(shared_colorbar_children)
+        self.assertTrue(all(
+            child["identity"]["relation"].get("subplotIds") == ["subplot.0", "subplot.1"]
+            and "subplotId" not in child["identity"]["relation"]
+            for child in shared_colorbar_children
+        ))
+        left_capability = next(
+            capability for capability in colorbar["propertyCapabilities"]
+            if capability["prop"] == "left"
+        )
+        self.assertNotIn("subplot", left_capability["scopes"])
+
+    def test_stem_container_relationships_and_patch_replay(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.stem([0, 1, 2], [1, 2, 1], label="Signal")
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success")
+        initial_objects = initial["figures"][0]["manifest"]["objects"]
+        stem = next(obj for obj in initial_objects if obj["kind"] == "stem_container")
+
+        self.assertEqual(stem["role"], "stem_series")
+        self.assertEqual(stem["identity"]["seriesKey"], stem["stableKey"])
+        self.assertEqual(len(stem["children"]), 3)
+        for child_id in stem["children"]:
+            child = next(obj for obj in initial_objects if obj["id"] == child_id)
+            self.assertEqual(child["parentId"], stem["id"])
+            self.assertEqual(child["role"], "stem_series")
+        color_capability = next(
+            capability for capability in stem["propertyCapabilities"]
+            if capability["prop"] == "color"
+        )
+        self.assertEqual(color_capability["patchMode"], "backend_patch")
+
+        patched = replay_render(script, edit_log=[
+            {"gid": stem["id"], "prop": "stem_color", "value": "#cc2255", "mode": "backend_patch"},
+            {"gid": stem["id"], "prop": "stem_linewidth", "value": 2.8, "mode": "backend_patch"},
+            {"gid": stem["id"], "prop": "marker_color", "value": "#2255cc", "mode": "backend_patch"},
+            {"gid": stem["id"], "prop": "markersize", "value": 9.0, "mode": "backend_patch"},
+            {"gid": stem["id"], "prop": "baseline_visible", "value": False, "mode": "backend_patch"},
+        ])
+        self.assertEqual(patched.get("status"), "success")
+        patched_stem = next(
+            obj for obj in patched["figures"][0]["manifest"]["objects"]
+            if obj["id"] == stem["id"]
+        )
+        self.assertEqual(patched_stem["currentProps"]["stem_color"], "#cc2255")
+        self.assertAlmostEqual(patched_stem["currentProps"]["stem_linewidth"], 2.8)
+        self.assertEqual(patched_stem["currentProps"]["marker_color"], "#2255cc")
+        self.assertAlmostEqual(patched_stem["currentProps"]["markersize"], 9.0)
+        self.assertFalse(patched_stem["currentProps"]["baseline_visible"])
+
     def test_axis_label_color_does_not_change_tick_label_color(self):
         script = """
 import matplotlib.pyplot as plt
@@ -403,6 +712,30 @@ ax.set_yticklabels(["low", "mid", "high"])
 
         self.assertEqual(target["currentProps"]["color"].lower(), "#00aa00")
         self.assertNotEqual(sibling["currentProps"]["color"].lower(), "#00aa00")
+
+    def test_axis_tick_line_and_tick_label_colors_are_independent(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 3, 2])
+ax.set_xticks([0, 1, 2])
+ax.set_xticklabels(["A", "B", "C"])
+"""
+        result = replay_render(script, edit_log=[
+            {"gid": "axis.x.0", "prop": "tick_color", "value": "#ff0000", "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_width", "value": 2.0, "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_labelcolor", "value": "#00aa00", "mode": "backend_patch"},
+        ])
+        self.assertEqual(result.get("status"), "success")
+        objects = result["figures"][0]["manifest"]["objects"]
+        axis_x = next(obj for obj in objects if obj["id"] == "axis.x.0")
+        tick_labels = [obj for obj in objects if obj["id"].startswith("xtick.0.")]
+        self.assertEqual(axis_x["currentProps"]["tick_color"].lower(), "#ff0000")
+        self.assertAlmostEqual(axis_x["currentProps"]["tick_width"], 2.0)
+        self.assertEqual(axis_x["currentProps"]["tick_labelcolor"].lower(), "#00aa00")
+        self.assertTrue(tick_labels)
+        self.assertTrue(all(label["currentProps"]["color"].lower() == "#00aa00" for label in tick_labels))
+        self.assertTrue(all(label["currentProps"]["color"].lower() != "#ff0000" for label in tick_labels))
 
     def test_single_tick_text_patch_only_changes_target_tick_text(self):
         script = """
@@ -478,6 +811,66 @@ ax.set_xlim(0, 2)
         self.assertAlmostEqual(axis_x["currentProps"]["tick_label_dy"], -2.0)
         self.assertEqual(axis_x["currentProps"]["limits"], [0.0, 2.0])
 
+    def test_data_coordinate_text_and_annotation_position_patch(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.set_xlim(-2, 2)
+ax.set_ylim(-2, 2)
+ax.arrow(0, 0, 1, 0.6, length_includes_head=True)
+ax.text(1.1, 0.7, "PCoA_TEXT", fontsize=10)
+ax.annotate("PCoA_ANN", xy=(0, 0), xytext=(-1.1, 0.8), arrowprops=dict(arrowstyle="->"))
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success")
+        initial_objects = initial["figures"][0]["manifest"]["objects"]
+        text_obj = next(o for o in initial_objects if o["currentProps"].get("text") == "PCoA_TEXT")
+        ann_obj = next(o for o in initial_objects if o["currentProps"].get("text") == "PCoA_ANN")
+        arrow_obj = next(o for o in initial_objects if o.get("role") == "annotation_arrow")
+
+        self.assertIn("position", text_obj["editable"])
+        self.assertIn("position", ann_obj["editable"])
+        self.assertIn("anchor_position", ann_obj["editable"])
+        self.assertEqual(text_obj["currentProps"]["coord_system"], "data")
+        self.assertEqual(ann_obj["currentProps"]["coord_system"], "data")
+        self.assertEqual(ann_obj["role"], "annotation_text")
+        self.assertEqual(ann_obj["identity"]["relation"]["annotationId"], ann_obj["id"])
+        self.assertEqual(ann_obj["identity"]["relation"]["arrowId"], arrow_obj["id"])
+        self.assertEqual(arrow_obj["identity"]["relation"]["annotationId"], ann_obj["id"])
+        self.assertEqual(arrow_obj["identity"]["relation"]["textId"], ann_obj["id"])
+        self.assertEqual(ann_obj["currentProps"]["anchor_position"], {
+            "x": 0.0,
+            "y": 0.0,
+            "coord_system": "data",
+        })
+        self.assertFalse(any(o["id"].startswith("patch.") and o.get("role") == "annotation_arrow" for o in initial_objects))
+
+        patched = replay_render(script, edit_log=[
+            {"gid": text_obj["id"], "prop": "position", "value": {"x": 1.35, "y": 1.05, "coord_system": "data"}, "mode": "backend_patch"},
+            {"gid": ann_obj["id"], "prop": "position", "value": {"x": -0.8, "y": 1.15, "coord_system": "data"}, "mode": "backend_patch"},
+            {"gid": ann_obj["id"], "prop": "anchor_position", "value": {"x": 0.25, "y": 0.35, "coord_system": "data"}, "mode": "backend_patch"},
+            {"gid": arrow_obj["id"], "prop": "linewidth", "value": 2.5, "mode": "backend_patch"},
+        ])
+        self.assertEqual(patched.get("status"), "success")
+        patched_objects = patched["figures"][0]["manifest"]["objects"]
+        patched_text = next(o for o in patched_objects if o["id"] == text_obj["id"])
+        patched_ann = next(o for o in patched_objects if o["id"] == ann_obj["id"])
+        patched_arrow = next(o for o in patched_objects if o["id"] == arrow_obj["id"])
+
+        self.assertAlmostEqual(patched_text["currentProps"]["x"], 1.35)
+        self.assertAlmostEqual(patched_text["currentProps"]["y"], 1.05)
+        self.assertAlmostEqual(patched_ann["currentProps"]["x"], -0.8)
+        self.assertAlmostEqual(patched_ann["currentProps"]["y"], 1.15)
+        self.assertEqual(patched_ann["currentProps"]["coord_system"], "data")
+        self.assertEqual(patched_ann["currentProps"]["anchor_position"], {
+            "x": 0.25,
+            "y": 0.35,
+            "coord_system": "data",
+        })
+        self.assertAlmostEqual(patched_arrow["currentProps"]["linewidth"], 2.5)
+        self.assertEqual(patched_ann["identity"]["instanceKey"], ann_obj["identity"]["instanceKey"])
+        self.assertEqual(patched_ann["identity"]["relation"]["arrowId"], arrow_obj["id"])
+
     def test_legend_position_patch_application(self):
         script = """
 import matplotlib.pyplot as plt
@@ -544,6 +937,208 @@ ax.legend(loc="upper left", title="Group")
         self.assertEqual(patched.get("status"), "success")
         warning_types = [w.get("type") for w in patched.get("warnings", [])]
         self.assertIn("unsupported_legend_child_position", warning_types)
+
+    def test_legend_markerscale_updates_visible_handles(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 2, 1], marker="o", markersize=5, label="Line")
+ax.scatter([0, 1, 2], [2, 1, 3], s=20, label="Scatter")
+ax.legend()
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success")
+        initial_objects = initial["figures"][0]["manifest"]["objects"]
+        initial_legend = next(o for o in initial_objects if o["id"] == "legend.0")
+        initial_line = next(o for o in initial_objects if o["id"] == "legend_line.0.0")
+        initial_collection = next(o for o in initial_objects if o["id"].startswith("legend_collection.0."))
+        initial_texts = [o for o in initial_objects if o["id"].startswith("legend_text.0.")]
+
+        legend_relation = initial_legend["identity"]["relation"]
+        self.assertEqual(legend_relation["legendTextIds"], ["legend_text.0.0", "legend_text.0.1"])
+        self.assertEqual(legend_relation["legendMarkerIds"], [initial_line["id"], initial_collection["id"]])
+        self.assertEqual(initial_line["identity"]["relation"]["legendTextId"], "legend_text.0.0")
+        self.assertEqual(initial_collection["identity"]["relation"]["legendTextId"], "legend_text.0.1")
+        self.assertEqual(initial_texts[0]["identity"]["relation"]["legendMarkerIds"], [initial_line["id"]])
+        self.assertEqual(initial_texts[1]["identity"]["relation"]["legendMarkerIds"], [initial_collection["id"]])
+
+        patched = replay_render(script, edit_log=[
+            {"gid": "legend.0", "prop": "markerscale", "value": 2.0, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "marker_yoffset", "value": 3.0, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "handletextpad", "value": 0.4, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "labelspacing", "value": 0.2, "mode": "backend_patch"},
+        ])
+        self.assertEqual(patched.get("status"), "success")
+        patched_objects = patched["figures"][0]["manifest"]["objects"]
+        patched_legend = next(o for o in patched_objects if o["id"] == "legend.0")
+        patched_line = next(o for o in patched_objects if o["id"] == "legend_line.0.0")
+        patched_collection = next(o for o in patched_objects if o["id"] == initial_collection["id"])
+
+        self.assertEqual(initial_legend["currentProps"]["markerscale"], 1.0)
+        self.assertEqual(patched_legend["currentProps"]["markerscale"], 2.0)
+        self.assertEqual(patched_legend["currentProps"]["marker_yoffset"], 3.0)
+        self.assertEqual(patched_legend["currentProps"]["handletextpad"], 0.4)
+        self.assertEqual(patched_legend["currentProps"]["labelspacing"], 0.2)
+        self.assertNotEqual(initial["figures"][0]["svg"], patched["figures"][0]["svg"])
+        self.assertGreater(
+            patched_line["currentProps"]["markersize"],
+            initial_line["currentProps"]["markersize"] * 1.9,
+        )
+        self.assertGreater(
+            patched_collection["currentProps"]["size"],
+            initial_collection["currentProps"]["size"] * 3.9,
+        )
+        self.assertEqual(patched_line["identity"]["relation"]["legendTextId"], "legend_text.0.0")
+        self.assertEqual(patched_collection["identity"]["relation"]["legendTextId"], "legend_text.0.1")
+
+    def test_figure_level_shared_legend_is_introspected_and_patchable(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, axes = plt.subplots(1, 2)
+handles = []
+labels = []
+for ax, offset in zip(axes, [0, 1]):
+    line_a, = ax.plot([0, 1, 2], [1 + offset, 2 + offset, 3 + offset], marker="o", label="A")
+    line_b, = ax.plot([0, 1, 2], [3 + offset, 2 + offset, 1 + offset], marker="s", label="B")
+    if not handles:
+        handles = [line_a, line_b]
+        labels = ["Promoted", "Suppressed"]
+fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 0.02), ncol=2, title="Shared")
+fig.tight_layout(rect=(0, 0.12, 1, 1))
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success")
+        manifest = initial["figures"][0]["manifest"]
+        objects = manifest["objects"]
+
+        legend = next(o for o in objects if o["id"] == "legend.figure.0")
+        legend_title = next(o for o in objects if o["id"] == "legend_title.figure.0")
+        legend_texts = [o for o in objects if o["id"].startswith("legend_text.figure.0.")]
+        legend_lines = [o for o in objects if o["id"].startswith("legend_line.figure.0.")]
+        unsupported_legend_count = sum(
+            item.get("count", 0)
+            for item in manifest.get("coverageReport", {}).get("unsupportedArtists", [])
+            if item.get("class") == "Legend"
+        )
+
+        self.assertEqual(legend["kind"], "legend")
+        self.assertEqual(legend["role"], "legend")
+        self.assertIn("position", legend["editable"])
+        self.assertEqual(legend["identity"]["scope"], "figure")
+        self.assertNotIn("subplotId", legend["identity"].get("relation", {}))
+        self.assertEqual(legend_title["role"], "legend_text")
+        self.assertEqual(legend_title["identity"]["relation"]["legendId"], "legend.figure.0")
+        self.assertNotIn("subplotId", legend_title["identity"]["relation"])
+        self.assertEqual(len(legend_texts), 2)
+        self.assertEqual([o["currentProps"]["text"] for o in legend_texts], ["Promoted", "Suppressed"])
+        self.assertEqual(len(legend_lines), 2)
+        self.assertEqual(unsupported_legend_count, 0)
+
+        patched = replay_render(script, edit_log=[
+            {
+                "gid": "legend.figure.0",
+                "prop": "position",
+                "value": {"x": 0.52, "y": 0.08, "coord_system": "figure"},
+                "mode": "backend_patch",
+            },
+            {
+                "gid": "legend_text.figure.0.0",
+                "prop": "fontsize",
+                "value": 13,
+                "mode": "backend_patch",
+            },
+        ])
+        self.assertEqual(patched.get("status"), "success")
+        patched_objects = patched["figures"][0]["manifest"]["objects"]
+        patched_legend = next(o for o in patched_objects if o["id"] == "legend.figure.0")
+        patched_text = next(o for o in patched_objects if o["id"] == "legend_text.figure.0.0")
+
+        self.assertAlmostEqual(patched_legend["currentProps"]["x"], 0.52, places=2)
+        self.assertAlmostEqual(patched_legend["currentProps"]["y"], 0.08, places=2)
+        self.assertEqual(patched_text["currentProps"]["fontsize"], 13)
+
+    def test_twin_and_shared_axes_have_explicit_symmetric_relationships(self):
+        twin_result = replay_render("""
+import matplotlib.pyplot as plt
+fig, left = plt.subplots()
+right = left.twinx()
+left.plot([0, 1], [1, 2])
+right.plot([0, 1], [10, 20])
+""")
+        self.assertEqual(twin_result.get("status"), "success")
+        twin_objects = {obj["id"]: obj for obj in twin_result["figures"][0]["manifest"]["objects"]}
+        left_relation = twin_objects["subplot.0"]["identity"]["relation"]
+        right_relation = twin_objects["subplot.1"]["identity"]["relation"]
+        self.assertEqual(left_relation["twinSubplotIds"], ["subplot.1"])
+        self.assertEqual(right_relation["twinSubplotIds"], ["subplot.0"])
+        self.assertEqual(left_relation["sharedXSubplotIds"], ["subplot.1"])
+        self.assertEqual(right_relation["sharedXSubplotIds"], ["subplot.0"])
+        self.assertNotIn("sharedYSubplotIds", left_relation)
+        self.assertNotIn("sharedYSubplotIds", right_relation)
+
+        patched_twin = replay_render("""
+import matplotlib.pyplot as plt
+fig, left = plt.subplots()
+right = left.twinx()
+left.plot([0, 1], [1, 2])
+right.plot([0, 1], [10, 20])
+""", edit_log=[
+            {"gid": "axis.y.1", "prop": "label_color", "value": "#cc2255", "mode": "backend_patch"},
+        ])
+        self.assertEqual(patched_twin.get("status"), "success")
+        patched_twin_objects = {obj["id"]: obj for obj in patched_twin["figures"][0]["manifest"]["objects"]}
+        self.assertEqual(patched_twin_objects["axis.y.1"]["currentProps"]["label_color"].lower(), "#cc2255")
+        self.assertNotEqual(patched_twin_objects["axis.y.0"]["currentProps"]["label_color"].lower(), "#cc2255")
+        self.assertEqual(
+            patched_twin_objects["subplot.0"]["identity"]["relation"]["twinSubplotIds"],
+            ["subplot.1"],
+        )
+
+        shared_result = replay_render("""
+import matplotlib.pyplot as plt
+fig, axes = plt.subplots(2, 2, sharex='col', sharey='row')
+for index, ax in enumerate(axes.flat):
+    ax.plot([0, 1], [index, index + 1])
+""")
+        self.assertEqual(shared_result.get("status"), "success")
+        shared_objects = {obj["id"]: obj for obj in shared_result["figures"][0]["manifest"]["objects"]}
+        top_left = shared_objects["subplot.0"]["identity"]["relation"]
+        self.assertEqual(top_left["sharedXSubplotIds"], ["subplot.2"])
+        self.assertEqual(top_left["sharedYSubplotIds"], ["subplot.1"])
+        self.assertNotIn("twinSubplotIds", top_left)
+        self.assertEqual(
+            shared_objects["subplot.2"]["identity"]["relation"]["sharedXSubplotIds"],
+            ["subplot.0"],
+        )
+        self.assertEqual(
+            shared_objects["subplot.1"]["identity"]["relation"]["sharedYSubplotIds"],
+            ["subplot.0"],
+        )
+
+    def test_replay_render_reports_monotonic_timing_breakdown(self):
+        result = replay_render("""
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 3, 2])
+ax.set_title("Timing")
+""")
+        self.assertEqual(result.get("status"), "success")
+        timing = result.get("timingBreakdown", {})
+        expected_keys = {
+            "staticScanMs",
+            "scriptExecutionMs",
+            "dynamicScanMs",
+            "figureDiscoveryMs",
+            "editApplyMs",
+            "introspectionMs",
+            "svgSerializeMs",
+            "binaryExportMs",
+            "totalMs",
+        }
+        self.assertTrue(expected_keys.issubset(timing.keys()))
+        self.assertTrue(all(isinstance(timing[key], int) and timing[key] >= 0 for key in expected_keys))
+        self.assertEqual(result["timingMs"], timing["totalMs"])
+        self.assertGreaterEqual(timing["totalMs"], timing["svgSerializeMs"])
 
     def test_all_fixtures_pipeline(self):
         fixtures_dir = os.path.join(project_root, "tests", "fixtures", "artist_introspection")

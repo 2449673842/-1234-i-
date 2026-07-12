@@ -28,6 +28,9 @@ const apiRequests = [];
 const consoleErrors = [];
 const pageErrors = [];
 const diagnostics = {};
+let authToken = '';
+const TEST_EMAIL = 'export-matrix-smoke@example.test';
+const TEST_PASSWORD = 'Export-Matrix-Smoke-2026';
 
 const script = [
   'import matplotlib.pyplot as plt',
@@ -59,7 +62,7 @@ function record(id, status, note) {
 
 function isIgnorableDevServerNoise(message) {
   return message.includes('[vite] failed to connect to websocket')
-    || message.includes("WebSocket connection to 'ws://localhost:24678/")
+    || /WebSocket connection to 'ws:\/\/[^']+:24678\//.test(message)
     || message.includes('WebSocket closed without opened');
 }
 
@@ -68,6 +71,7 @@ async function requestJson(pathname, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       ...(options.headers || {}),
     },
   });
@@ -76,6 +80,28 @@ async function requestJson(pathname, options = {}) {
     throw new Error(`${options.method || 'GET'} ${pathname} failed: ${res.status} ${JSON.stringify(data)}`);
   }
   return data;
+}
+
+async function authenticateSmokeUser() {
+  const register = await fetch(`${BASE_URL}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: TEST_EMAIL, password: TEST_PASSWORD, displayName: 'Export smoke' }),
+  });
+  let data = await register.json().catch(() => null);
+  if (register.status === 409) {
+    const login = await fetch(`${BASE_URL}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: TEST_EMAIL, password: TEST_PASSWORD }),
+    });
+    data = await login.json().catch(() => null);
+    if (!login.ok) throw new Error(`Smoke login failed: ${login.status} ${JSON.stringify(data)}`);
+  } else if (!register.ok) {
+    throw new Error(`Smoke registration failed: ${register.status} ${JSON.stringify(data)}`);
+  }
+  authToken = data?.token || '';
+  if (!authToken) throw new Error('Smoke authentication returned no access token');
 }
 
 async function cleanupSmokeProjects() {
@@ -217,12 +243,34 @@ async function runApiExportMatrix(projectId) {
     `count=${subplotAssets.length}, ids=${JSON.stringify(subplotAssets.map((asset) => asset.figureId))}`,
   );
 
+  const withPngSubplots = await requestJson(`/api/projects/${projectId}/export`, {
+    method: 'POST',
+    body: JSON.stringify({ figureId: 'fig_2', format: 'png', dpi: 300, saveToLibrary: true, includeSubplots: true }),
+  });
+  const exportedFig2Png = Array.isArray(withPngSubplots.figures) ? withPngSubplots.figures[0] : null;
+  const pngSubplotAssets = Array.isArray(exportedFig2Png?.subplotAssets) ? exportedFig2Png.subplotAssets : [];
+  const pngSubplotAssetsOk = exportedFig2Png?.format === 'png'
+    && pngSubplotAssets.length === 2
+    && pngSubplotAssets.every((asset, index) => (
+      asset.figureId === `fig_2:subplot.${index}`
+      && asset.format === exportedFig2Png.format
+      && asset.metadata?.requestedFormat === 'png'
+      && asset.metadata?.effectiveFormat === exportedFig2Png.format
+      && asset.tags?.includes('subplot')
+    ));
+  record(
+    'X2d-include-subplots-follow-main-format',
+    withPngSubplots.status === 'success' && exportedFig2Png?.figureId === 'fig_2' && pngSubplotAssetsOk ? 'PASS' : 'FAIL',
+    `main=${exportedFig2Png?.format}, subplots=${JSON.stringify(pngSubplotAssets.map((asset) => asset.format))}, notes=${JSON.stringify(exportedFig2Png?.subplot_format_notes || [])}`,
+  );
+
   const assets = await requestJson(`/api/projects/${projectId}/export-assets`);
   const allFigureAssetsPresent = ['fig_1', 'fig_2'].every((figureId) => (assets.assets || []).some((asset) => asset.figureId === figureId));
   const exportedFormats = new Set((assets.assets || []).filter((asset) => asset.figureId === 'fig_2').map((asset) => asset.format));
   const subplotLibraryAssets = (assets.assets || []).filter((asset) => String(asset.figureId || '').startsWith('fig_2:subplot.'));
   const subplotLibraryOk = subplotLibraryAssets.length >= 2
-    && subplotLibraryAssets.every((asset) => asset.format === 'svg' && asset.tags?.includes('subplot') && asset.metadata?.cropMode === 'axes_bounds');
+    && subplotLibraryAssets.every((asset) => ['svg', 'png'].includes(asset.format) && asset.tags?.includes('subplot') && asset.metadata?.cropMode === 'axes_bounds')
+    && subplotLibraryAssets.some((asset) => asset.format === 'png' && asset.metadata?.effectiveFormat === 'png');
   const assetSizesOk = (assets.assets || [])
     .filter((asset) => asset.figureId === 'fig_2')
     .every((asset) => typeof asset.sizeBytes === 'number' && asset.sizeBytes > 0 && asset.downloadUrl);
@@ -326,6 +374,9 @@ async function runPendingExportBrowserCheck(projectId, spec, rendered) {
   });
 
   try {
+    await page.addInitScript((token) => {
+      window.localStorage.setItem('scifigure:auth-token', token);
+    }, authToken);
     await page.route(`**/api/projects/${projectId}/figures/render`, async (route) => {
       await renderHold;
       await route.continue();
@@ -364,6 +415,7 @@ async function runPendingExportBrowserCheck(projectId, spec, rendered) {
 
 async function run() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  await authenticateSmokeUser();
   await cleanupSmokeProjects();
 
   let projectId = null;

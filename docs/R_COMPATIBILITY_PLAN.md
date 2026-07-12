@@ -1,6 +1,8 @@
 # R 语言兼容路线与当前边界
 
-## 当前已落地：Phase R1 渲染兼容 + Phase R2/R3/R4 语义编辑 MVP
+> 最后修改时间：2026-07-12 12:32:39 +08:00
+
+## 当前已落地：Phase R1-R5-B 渲染、语义编辑与离散组精细化
 
 SciFigure Studio 当前支持将 R 脚本作为真实渲染输入：
 
@@ -140,10 +142,10 @@ ggplot2 图如果将对象赋值给 `p`、`plot_obj`、`figure` 或 `fig`，当�
 | SVG/PNG/PDF/TIFF 导出 | 支持 | 支持 | 已完成 |
 | 标题/轴标签/图例字体编辑 | 支持 | 支持 ggplot2 | 已完成 R2 |
 | 点/线/柱/误差线整体样式 | 支持 | 支持 ggplot2 layer 整体样式 | 已完成 R3-A |
-| 按分组/颜色语义改色 | 支持部分 palette/binding | 支持 `scale_color_manual` / `scale_fill_manual` | 已完成 R3-B |
+| 按分组/颜色语义改色 | 支持部分 palette/binding | 支持默认/显式离散 color/fill scale，按 group 单独写回 | 已完成 R5-B |
 | facet 子图识别 | 支持 Matplotlib 子图 | 支持 facet panel 发现与统一 strip 标题样式 | 已完成 R3-C |
 | 热图/colorbar 语义 | 支持 Matplotlib heatmap/colorbar | 支持 ggplot tile/raster 连续色阶和 colorbar 基础编辑 | 已完成 R3-D |
-| 文本拖拽位置重放 | 支持 Matplotlib 部分文本 | 支持 ggplot text/label layer 的 SVG 选中、确认、position patch 后端重放；复杂坐标禁用/警告 | 已完成 R4-A/R4-B/R4-C |
+| 文本拖拽位置重放 | 支持 Matplotlib 部分文本 | 支持线性、`coord_flip`、X/Y log 和圆内 `coord_polar` 精确逆变换 | 已完成 R5-C |
 | 点/线/柱/误差线画布直选 | 支持 Matplotlib 已绑定 artist | R SVG primitive 可点击映射到 `r.layer.N`，右侧属性编辑按 layer patch | 已完成 R5-A |
 | base R 图元编辑 | 不适用 | 只支持预览/导出 | 暂缓 |
 
@@ -164,8 +166,11 @@ C:\Users\SZC\.conda\envs\Machine-learning\python.exe tests/test_r_renderer.py
 - heatmap / colorbar 连续色阶 patch。
 - `geom_text()` / `geom_label()` / `annotate("text")` 文本标注位置 patch。
 - R 文本标注对象必须在 SVG 中写出真实 `id="r.text.*"`，防止 manifest 可编辑但画布不可选。
-- `coord_flip()` 下的文本 position patch 会被禁用并返回 warning，防止复杂坐标下错误写回。
-- `scale_x_log10()` 等非 identity position scale 下的文本 position patch 会被禁用并返回 warning。
+- `coord_flip()`、`scale_x_log10()`、`scale_y_log10()` 使用 ggplot build 坐标和 scale inverse 精确写回。
+- `coord_polar()` 圆形绘图区内使用 theta/r 逆解；圆外位置拒绝并保留真实渲染位置。
+- 默认离散 color/fill scale 会输出 `layer + group + panel + aesthetic + scale + guide` 关系。
+- 重复颜色无法唯一映射 SVG 图元时退回整 layer 选择，不猜测具体 group。
+- base R / 未赋值 ggplot 的 grid 输出明确记录为 semantic editing unsupported，但继续支持预览和导出。
 
 Python 主路径回归测试：
 
@@ -173,14 +178,52 @@ Python 主路径回归测试：
 C:\Users\SZC\.conda\envs\Machine-learning\python.exe tests/test_introspection.py
 ```
 
-## 下一阶段建议：Phase R5-B R layer 精细化与更多坐标 fixture
+## Phase R5-B 完成结果
 
-R 兼容后续不应做无限图形适配，而应继续覆盖 ggplot2 的稳定语义层：
+2026-07-12 05:09:45 +08:00 已完成：
 
-- 进一步区分同一 layer 内多个 group 的画布直选，避免所有分组都只能落到同一个 `r.layer.N`；
-- 为 `scale_y_log10()` / `coord_polar()` 等更多复杂坐标补自动化 fixture，扩展当前 `coord_flip()` 与 `scale_x_log10()` 的禁用/警告覆盖；
-- 处理 code_patch 后文本 layer 行数变化导致的 gid 漂移；
-- 不直接修改 SVG DOM，避免不可复现。
+```text
+默认与显式离散 scale 统一生成稳定 group 对象
+group 显式关联 layerIds、subplotIds、aesthetic、scaleId、guideId 和 legendId
+layer 与 legend 反向记录 groupIds
+单组改色保留 scale 顺序、标签、标题、NA 和 drop/guide 语义
+重复颜色只在映射唯一时写入 SVG group id
+heatmap/colorbar 显式关联 layer、全部 panel、scale、guide 和 mappableIds
+GeomText/GeomLabel 显式关联 layer、panel 和 annotation
+文本行身份标记为 conditional，代码增删或重排行时提示可能漂移
+scale_y_log10、coord_polar 和 base R unsupported fixture
+```
+
+验证证据：`npm run lint`、18 files / 130 tests、25 个 R renderer 测试、Python/R capability matrix、默认离散 scale 浏览器语义中心和生产构建通过。
+
+## Phase R5-C 坐标、稳定身份与扩展对象边界
+
+2026-07-12 12:32:39 +08:00 已完成：
+
+```text
+CoordCartesian/CoordFlip：基于 coord$transform 的仿射逆解
+X/Y log scale：build 坐标逆解后调用 scale trans inverse 恢复原始数据
+CoordPolar：圆内 theta/r 精确逆解，圆外拒绝
+稳定文本键：优先 .scifigure_id/scifigure_id/id/ID/key/label_id
+稳定键随 geom_text/geom_label layer 重建保留
+代码重排行后同一数据键继续命中同一 gid 和 identity
+无稳定键对象继续使用行号 gid，并保持 conditional 提示
+未知 ggplot geom 改为 readonly/unsupported，不再显示伪造控件
+重命名多 scale aesthetic 明确报告 unsupported，不与主 scale 错误合并
+```
+
+验证证据：18 files / 130 tests、29 个 R renderer 测试、Python/R capability matrix、R 浏览器语义中心、扩展拖拽 smoke 和生产构建通过。
+
+## 下一阶段边界
+
+后续只按真实项目证据继续适配，不把以下内容算作当前已完成：
+
+- `ggnewscale` 等同一 aesthetic 多 scale 扩展包当前会被识别并报告 unsupported，尚未提供独立写回适配器；
+- `ggrepel` 等第三方 geom 当前按未知 geom 只读处理，尚未保留其排斥布局后进行写回；
+- 任意第三方 grid grob 或 SVG 节点写回；
+- 没有显式稳定数据键时，code patch 改变 text layer 行数后的自动身份迁移；
+- base R artist 级编辑；
+- `CoordSf`、地图投影和其他未经 fixture 证明的复杂坐标逆变换。
 
 R 路径的目标仍是：
 
@@ -206,3 +249,18 @@ R 路径的目标仍是：
 ```r
 install.packages(c("jsonlite", "svglite", "ggplot2"))
 ```
+
+## R 执行安全边界
+
+当前 R 路径已经补充：
+
+```text
+客户端任意 cwd / uploaded_file_paths 拒绝
+项目文件目录白名单
+生产环境强制 Docker renderer
+R 静态风险 log-only / block-high 预检
+超时终止、输出上限、CPU/内存/PID/tmpfs 限制
+R 主数据库读取与联网沙箱测试
+```
+
+完整风险说明和剩余边界见 `docs/R_SECURITY_RISK_AUDIT.md`。

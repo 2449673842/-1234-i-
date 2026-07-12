@@ -1,0 +1,11 @@
+[Unit]
+Description=Run SciFig encrypted backup every six hours
+
+[Timer]
+OnCalendar=*-*-* 00/6:15:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=scifigure-backup.service
+
+[Install]
+WantedBy=timers.target

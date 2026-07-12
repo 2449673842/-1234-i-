@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { UploadCloud, Save, Download, ChevronDown, Plus, Check } from 'lucide-react';
+import { UploadCloud, Save, Download, ChevronDown, Plus, Check, UserRound, ShieldCheck } from 'lucide-react';
 import { ViewState } from '../App';
 
 interface NavbarProps {
@@ -16,74 +16,79 @@ export function Navbar({ currentView, onNavigate }: NavbarProps) {
   };
 
   return (
-    <nav className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0 transition-colors z-20 relative shadow-sm">
-      <div className="flex items-center gap-6">
+    <nav className="scifig-navbar h-14 flex items-center justify-between px-3 sm:px-4 shrink-0 z-40 relative">
+      <div className="flex min-w-0 items-center gap-5">
         <div className="flex items-center gap-2 select-none cursor-pointer group" onClick={() => onNavigate('home', 'home')}>
-          <div className="w-8 h-8 bg-blue-600 text-white rounded flex items-center justify-center font-bold text-lg rotate-12 group-hover:bg-blue-700 transition-colors shadow">
-            <span className="-rotate-12">S</span>
+          <div className="scifig-brand-mark w-8 h-8 flex items-center justify-center font-black text-sm transition-colors">
+            S
           </div>
-          <span className="font-bold text-xl text-slate-800 tracking-tight whitespace-nowrap group-hover:text-blue-600 transition-colors">SciFigure Studio</span>
+          <div className="hidden sm:block min-w-0 leading-none">
+            <span className="block font-bold text-[15px] text-white whitespace-nowrap">SciFigure Studio</span>
+            <span className="mt-1 block text-[9px] font-semibold uppercase text-emerald-200/70">Journal-ready workspace</span>
+          </div>
         </div>
         
-        <div className="hidden md:flex items-center gap-6 text-sm font-medium ml-4">
+        <div className="hidden lg:flex items-center gap-1 text-xs font-semibold">
           <button 
             type="button"
             onClick={() => onNavigate('home', 'home')} 
-            className={`transition-colors relative pb-4 top-2 ${currentView === 'home' || currentView === 'projects' || currentView === 'data' || currentView === 'settings' ? 'text-blue-600 font-semibold' : 'text-slate-600 hover:text-slate-900'}`}
+            className={`scifig-nav-link ${currentView === 'home' || currentView === 'projects' || currentView === 'data' || currentView === 'settings' ? 'is-active' : ''}`}
           >
             项目与资源
-            {(currentView === 'home' || currentView === 'projects' || currentView === 'data' || currentView === 'settings') && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 rounded-t-full"></div>}
           </button>
-          <button type="button" onClick={() => onNavigate('data', 'data_files')} className={`transition-colors relative pb-4 top-2 ${currentView === 'data' ? 'text-blue-600 font-semibold' : 'text-slate-600 hover:text-slate-900'}`}>当前项目数据</button>
+          <button type="button" onClick={() => onNavigate('data', 'data_files')} className={`scifig-nav-link ${currentView === 'data' ? 'is-active' : ''}`}>当前项目数据</button>
           <button 
             type="button" 
             onClick={() => onNavigate('landing')} 
-            className={`transition-colors relative pb-4 top-2 flex items-center gap-1 font-bold ${currentView === 'landing' ? 'text-amber-600' : 'text-amber-500 hover:text-amber-600'}`}
+            className={`scifig-nav-link flex items-center gap-1 ${currentView === 'landing' ? 'is-active' : ''}`}
           >
-            ★ 升级 Pro (¥10/月)
-            {currentView === 'landing' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-amber-500 rounded-t-full"></div>}
+            专业版
           </button>
-          <button type="button" className="transition-colors relative pb-4 top-2 text-slate-600 hover:text-slate-900 flex items-center gap-1">
+          <button type="button" onClick={() => onNavigate('help')} className={`scifig-nav-link flex items-center gap-1 ${currentView === 'help' ? 'is-active' : ''}`}>
             帮助 <ChevronDown className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2">
         {(currentView === 'editor' || currentView === 'export_settings' || currentView === 'composer') ? (
           <>
-            <button type="button" onClick={() => onNavigate('data_import')} className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors shadow-sm">
-              <UploadCloud className="w-4 h-4 text-blue-600" />
+            <button type="button" onClick={() => onNavigate('project_reconfigure')} className="scifig-top-button hidden sm:flex">
+              <UploadCloud className="w-4 h-4" />
               重新配置
             </button>
             <button 
               type="button"
-              className={`hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium border rounded-md transition-colors shadow-sm ${isSaved ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'text-blue-600 bg-blue-50 border-blue-200 hover:bg-blue-100'}`}
+              className={`scifig-top-button hidden sm:flex ${isSaved ? 'is-saved' : ''}`}
               onClick={handleSave}
             >
               {isSaved ? <Check className="w-4 h-4" /> : <Save className="w-4 h-4" />}
               {isSaved ? '已保存' : '保存项目'}
             </button>
             <div className="flex">
-              <button type="button" onClick={() => onNavigate('export_settings')} className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-blue-600 border border-blue-600 rounded-l-md hover:bg-blue-700 transition-colors shadow-sm">
+              <button type="button" onClick={() => onNavigate('export_settings')} className="scifig-top-primary rounded-r-none">
                 <Download className="w-4 h-4" />
                 导出图形
               </button>
-              <button type="button" className="flex items-center justify-center px-1.5 py-1.5 text-white bg-blue-700 border border-blue-700 rounded-r-md hover:bg-blue-800 transition-colors shadow-sm">
+              <button type="button" aria-label="更多导出选项" title="更多导出选项" className="scifig-top-primary border-l border-white/15 px-1.5 rounded-l-none">
                  <ChevronDown className="w-4 h-4" />
               </button>
             </div>
           </>
         ) : (
           <>
-            <button type="button" onClick={() => onNavigate('data_import')} className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-md hover:bg-slate-50 transition-colors shadow-sm">
-              <UploadCloud className="w-4 h-4 text-blue-600" />
+            <div className="hidden xl:flex items-center gap-1.5 text-[10px] font-semibold text-emerald-100/80 mr-1">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-200" />
+              受保护工作区
+            </div>
+            <button type="button" onClick={() => onNavigate('project_create')} className="scifig-top-button hidden sm:flex">
+              <UploadCloud className="w-4 h-4" />
               导入数据
             </button>
             <button 
               type="button"
               onClick={() => onNavigate('project_create')}
-              className="hidden sm:flex items-center gap-1.5 px-4 py-1.5 text-sm font-medium text-white bg-blue-600 border border-blue-600 rounded-md hover:bg-blue-700 transition-colors shadow-sm tracking-wide"
+              className="scifig-top-primary hidden sm:flex"
             >
               <Plus className="w-4 h-4" />
               新建图形项目
@@ -91,9 +96,15 @@ export function Navbar({ currentView, onNavigate }: NavbarProps) {
           </>
         )}
         
-        <div className="w-8 h-8 rounded-full ml-2 cursor-pointer shadow border border-slate-200 overflow-hidden bg-slate-100 flex items-center justify-center hover:ring-2 hover:ring-blue-100 transition-all" onClick={() => onNavigate('settings', 'settings')}>
-          <img src="https://i.pravatar.cc/100?img=33" alt="Avatar" className="w-full h-full object-cover pointer-events-none" />
-        </div>
+        <button
+          type="button"
+          title="账号设置"
+          aria-label="账号设置"
+          className="w-8 h-8 ml-1 cursor-pointer border border-white/15 bg-white/10 text-emerald-50 flex items-center justify-center hover:bg-white/16 hover:text-white transition-colors"
+          onClick={() => onNavigate('settings', 'settings')}
+        >
+          <UserRound className="h-4 w-4" />
+        </button>
       </div>
     </nav>
   );

@@ -1,0 +1,99 @@
+{
+  "schemaVersion": "1.0",
+  "python": [
+    {
+      "id": "python_multi_figure_5",
+      "file": "python/multi_figure_5.py",
+      "expectedFigures": 5,
+      "minKindCounts": { "subplot": 5, "line": 5 },
+      "requiredRoles": ["subplot_panel", "line_series"]
+    },
+    {
+      "id": "python_2x4_shared_legend",
+      "file": "python/multi_panel_2x4_shared_legend.py",
+      "expectedFigures": 1,
+      "minKindCounts": { "subplot": 8, "line": 8, "legend": 1 },
+      "requiredIds": ["legend.figure.0"],
+      "requiredRoles": ["subplot_panel", "line_series", "legend"]
+    },
+    {
+      "id": "python_dual_heatmap_colorbar",
+      "file": "python/dual_heatmap_colorbar.py",
+      "expectedFigures": 1,
+      "minKindCounts": { "colorbar": 2, "heatmap": 4 },
+      "requiredIds": ["heatmap.image.0.0", "heatmap.image.1.0", "colorbar.2", "colorbar.3"],
+      "relations": [
+        { "from": "heatmap.image.0.0", "field": "colorbarId", "equals": "colorbar.2" },
+        { "from": "heatmap.image.1.0", "field": "colorbarId", "equals": "colorbar.3" },
+        { "from": "colorbar.2", "field": "mappableId", "equals": "heatmap.image.0.0" },
+        { "from": "colorbar.3", "field": "mappableId", "equals": "heatmap.image.1.0" }
+      ]
+    },
+    {
+      "id": "python_annotation_arrow",
+      "file": "python/annotation_arrow.py",
+      "expectedFigures": 1,
+      "minKindCounts": { "subplot": 1, "line": 1, "patch": 1 },
+      "requiredIds": ["text.0.0", "annotation_arrow.0.0"],
+      "relations": [
+        { "from": "text.0.0", "field": "arrowId", "equals": "annotation_arrow.0.0" },
+        { "from": "annotation_arrow.0.0", "field": "textId", "equals": "text.0.0" }
+      ]
+    },
+    {
+      "id": "python_twin_axes",
+      "file": "python/twin_axes.py",
+      "expectedFigures": 1,
+      "minKindCounts": { "subplot": 2, "line": 2 },
+      "requiredIds": ["subplot.0", "subplot.1", "line.0.0", "line.1.0", "axis.y.0", "axis.y.1"],
+      "relations": [
+        { "from": "subplot.0", "field": "twinSubplotIds", "equals": ["subplot.1"] },
+        { "from": "subplot.1", "field": "twinSubplotIds", "equals": ["subplot.0"] },
+        { "from": "subplot.0", "field": "sharedXSubplotIds", "equals": ["subplot.1"] },
+        { "from": "subplot.1", "field": "sharedXSubplotIds", "equals": ["subplot.0"] }
+      ]
+    }
+  ],
+  "r": [
+      {
+        "id": "r_facet_2x2",
+        "file": "r/facet_2x2.R",
+        "minKindCounts": { "subplot": 4, "collection": 5 },
+        "requiredIds": ["r.group.color.0.0", "r.group.color.0.3"],
+        "requiredRoles": ["ggplot_facet_panel", "facet_strip_title", "ggplot_GeomPoint", "ggplot_scale_color"],
+        "relations": [
+          { "from": "r.group.color.0.0", "field": "layerIds", "equals": ["r.layer.0"] },
+          { "from": "r.group.color.0.0", "field": "subplotIds", "equals": ["subplot.0"] },
+          { "from": "r.group.color.0.3", "field": "subplotIds", "equals": ["subplot.3"] },
+          { "from": "r.layer.0", "field": "groupIds", "equals": ["r.group.color.0.0", "r.group.color.0.1", "r.group.color.0.2", "r.group.color.0.3"] }
+        ]
+      },
+    {
+      "id": "r_heatmap_colorbar",
+      "file": "r/heatmap_colorbar.R",
+      "minKindCounts": { "heatmap": 1, "colorbar": 1 },
+      "requiredIds": ["r.heatmap.fill.0", "r.colorbar.fill.0"],
+      "relations": [
+        { "from": "r.heatmap.fill.0", "field": "colorbarId", "equals": "r.colorbar.fill.0" },
+        { "from": "r.colorbar.fill.0", "field": "mappableId", "equals": "r.heatmap.fill.0" }
+      ]
+    },
+    {
+      "id": "r_manual_scale_legend",
+      "file": "r/manual_scale_legend.R",
+      "minKindCounts": { "collection": 1, "legend": 1 },
+      "requiredIds": ["r.layer.0", "legend.0", "legend_title.0"],
+      "requiredRoles": ["ggplot_GeomPoint", "legend", "legend_text"]
+    },
+    {
+      "id": "r_annotation_text",
+      "file": "r/annotation_text.R",
+      "minKindCounts": { "collection": 1, "text": 4 },
+      "requiredIds": ["r.text.1.0", "r.text.2.0"],
+      "relations": [
+        { "from": "r.text.1.0", "field": "annotationId", "equals": "r.text.1.0" },
+        { "from": "r.text.2.0", "field": "annotationId", "equals": "r.text.2.0" }
+      ]
+    }
+  ]
+}

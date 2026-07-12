@@ -5,6 +5,7 @@ import { ViewState } from '../App';
 import { FigureSpec } from '../types';
 import type { FigureSession } from '../schemas/manifest';
 import { sanitizeSvg } from '../utils/svgEditor';
+import { downloadAuthenticatedFile } from '../utils/authenticatedFetch';
 
 const DPI_OPTIONS = [
   { value: 300, label: '300 dpi (标准印花)' },
@@ -42,6 +43,12 @@ interface DragState {
   startY: number;
   panelX: number;
   panelY: number;
+}
+
+interface ExportProgressState {
+  phase: string;
+  detail: string;
+  percent: number;
 }
 
 const COMPOSER_PANEL_WIDTH = 280;
@@ -129,6 +136,8 @@ export function ExportSettingsPage({
   const [assetFormatFilter, setAssetFormatFilter] = useState('all');
   const [assetSort, setAssetSort] = useState<'newest' | 'oldest' | 'name'>('newest');
   const [isAssetLoading, setIsAssetLoading] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<ExportProgressState | null>(null);
   const [isComposing, setIsComposing] = useState(false);
   const [isSavingAllFigures, setIsSavingAllFigures] = useState(false);
   const [includeSubplotExports, setIncludeSubplotExports] = useState(false);
@@ -253,14 +262,12 @@ export function ExportSettingsPage({
     setSelectedAssetIds(prev => prev.includes(assetId) ? prev.filter(id => id !== assetId) : [...prev, assetId]);
   };
 
-  const downloadAsset = (asset: ExportAsset) => {
+  const downloadAsset = async (asset: ExportAsset) => {
     if (!projectId) return;
-    const anchor = document.createElement('a');
-    anchor.href = `/api/projects/${projectId}/export-assets/${asset.assetId}/file`;
-    anchor.download = `${asset.name}.${asset.format}`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
+    await downloadAuthenticatedFile(
+      `/api/projects/${projectId}/export-assets/${asset.assetId}/file`,
+      `${asset.name}.${asset.format}`,
+    );
   };
 
   const downloadSelectedAssets = async () => {
@@ -425,6 +432,7 @@ export function ExportSettingsPage({
       alert('后台引擎正在渲染中，请等待渲染完成后再进行导出。');
       return;
     }
+    if (isExporting) return;
     try {
       const selectedFormat = formatOverride || exportConfig.format || 'PDF';
       const selectedDpi = exportConfig.dpi || 600;
@@ -435,15 +443,32 @@ export function ExportSettingsPage({
         return;
       }
 
+      setIsExporting(true);
+      setExportProgress({
+        phase: '准备导出',
+        detail: `正在准备 ${selectedFormat.toUpperCase()} · ${selectedDpi} dpi${includeSubplotExports ? ' · 包含子图' : ''}`,
+        percent: 12,
+      });
+
       const endpoint = isProjectExport ? `/api/projects/${projectId}/export` : '/api/figure/export';
       const payload = isProjectExport
         ? { figureId: activeFigureId, format: selectedFormat, dpi: selectedDpi, revision: figSession?.revision, includeSubplots: includeSubplotExports }
         : { sessionId: figSession?.sessionId, format: selectedFormat, dpi: selectedDpi, revision: figSession?.revision };
 
+      setExportProgress({
+        phase: '服务器生成中',
+        detail: '正在重放编辑记录并生成导出文件，请不要重复点击。',
+        percent: 38,
+      });
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+      });
+      setExportProgress({
+        phase: '处理导出结果',
+        detail: '服务器已返回，正在准备浏览器下载与图库记录。',
+        percent: 72,
       });
       const data = await res.json();
       if (data.status !== 'success') throw new Error(data.message || 'Export failed');
@@ -483,6 +508,11 @@ export function ExportSettingsPage({
       a.href = url;
       a.download = `${exportPayload.figureId || 'figure'}.${exportPayload.binary_b64 ? fmt : 'svg'}`;
       document.body.appendChild(a);
+      setExportProgress({
+        phase: '下载文件',
+        detail: `正在下载主图 ${String(exportPayload.format || fmt).toUpperCase()} 文件。`,
+        percent: 86,
+      });
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
@@ -492,15 +522,31 @@ export function ExportSettingsPage({
         downloadTextFile('reproducible_bundle.json', JSON.stringify(data.bundle, null, 2), 'application/json');
       }
       if (isProjectExport) {
+        setExportProgress({
+          phase: '刷新导出图库',
+          detail: includeSubplotExports ? '正在刷新主图和子图导出资产。' : '正在刷新导出资产。',
+          percent: 94,
+        });
         await loadAssets();
         const subplotCount = Array.isArray(exportPayload.subplotAssets) ? exportPayload.subplotAssets.length : 0;
         if (includeSubplotExports && subplotCount > 0) {
-          alert(`已同时保存 ${subplotCount} 个子图 SVG 到导出图库。`);
+          const subplotFormats = Array.from(new Set(exportPayload.subplotAssets.map((asset: ExportAsset) => asset.format?.toUpperCase()).filter(Boolean))).join(' / ');
+          alert(`已同时保存 ${subplotCount} 个子图到导出图库。子图格式：${subplotFormats || selectedFormat.toUpperCase()}。`);
         }
       }
+      setExportProgress({
+        phase: '导出完成',
+        detail: '文件已生成，导出图库已同步。',
+        percent: 100,
+      });
     } catch (err: any) {
       console.error('Export error:', err);
       alert(`导出失败: ${err.message}`);
+    } finally {
+      window.setTimeout(() => {
+        setIsExporting(false);
+        setExportProgress(null);
+      }, 650);
     }
   };
 
@@ -851,15 +897,38 @@ export function ExportSettingsPage({
                   <span>
                     <span className="font-semibold text-slate-800">同时导出每个子图到图库</span>
                     <span className="mt-0.5 block text-[11px] text-slate-500">
-                      适合 2×2 等多子图 Figure。第一版按识别到的坐标轴框裁出 SVG；框外图例、长标签或色条可能需要后续“包含标签图例”模式。
+                      适合 2×2 等多子图 Figure。子图会使用当前主图导出格式；框外图例、长标签或色条可能需要后续“包含标签图例”模式。
                     </span>
                   </span>
                 </label>
-                <button onClick={() => handleExport()} className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow-md hover:bg-blue-700 flex items-center justify-center gap-2 transition-all hover:-translate-y-0.5">
-                  <Download className="w-4 h-4" /> 导出高质量图形 ({exportConfig.format})
+                {exportProgress && (
+                  <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+                    <div className="flex items-center justify-between gap-3 text-xs">
+                      <span className="font-semibold text-blue-900">{exportProgress.phase}</span>
+                      <span className="font-mono text-blue-700">{exportProgress.percent}%</span>
+                    </div>
+                    <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-white">
+                      <div
+                        className="h-full rounded-full bg-blue-600 transition-all duration-300"
+                        style={{ width: `${exportProgress.percent}%` }}
+                      />
+                    </div>
+                    <div className="mt-1.5 text-[11px] leading-relaxed text-blue-700">{exportProgress.detail}</div>
+                  </div>
+                )}
+                <button
+                  onClick={() => handleExport()}
+                  disabled={isExporting}
+                  className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow-md hover:bg-blue-700 flex items-center justify-center gap-2 transition-all hover:-translate-y-0.5 disabled:cursor-wait disabled:opacity-70 disabled:hover:translate-y-0"
+                >
+                  <Download className="w-4 h-4" /> {isExporting ? '导出处理中...' : `导出高质量图形 (${exportConfig.format})`}
                 </button>
                 <div className="grid grid-cols-2 gap-3">
-                  <button onClick={() => { updateExportFormat('PDF'); void handleExport('PDF'); }} className="py-2.5 bg-slate-50 border border-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-100 transition-colors flex items-center justify-center gap-1.5 shadow-sm">
+                  <button
+                    onClick={() => { updateExportFormat('PDF'); void handleExport('PDF'); }}
+                    disabled={isExporting}
+                    className="py-2.5 bg-slate-50 border border-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-100 transition-colors flex items-center justify-center gap-1.5 shadow-sm disabled:cursor-wait disabled:opacity-60"
+                  >
                     <FileImage className="w-4 h-4 text-red-500" /> PDF 矢量
                   </button>
                   <button 

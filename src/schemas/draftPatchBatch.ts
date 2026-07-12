@@ -13,6 +13,8 @@ export interface DraftPatch {
   new_value?: unknown;
   gids?: string[];
   intent?: EditingIntent;
+  /** Figure targets still awaiting a successful retry after a partial apply. */
+  pendingFigureIds?: string[];
 }
 
 export interface DraftPatchBatch {

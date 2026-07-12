@@ -1,5 +1,7 @@
 import type { Manifest } from '../schemas/manifest';
 import type { StandardFigureModel } from '../schemas/standardFigureModel';
+import { useState } from 'react';
+import { filterManifestObjects, MANIFEST_OBJECT_RENDER_LIMIT } from '../utils/largeFigureUi';
 
 interface ManifestViewerProps {
   manifest: Manifest | null;
@@ -54,6 +56,10 @@ function coverageBadgeClass(value: unknown) {
 }
 
 export function ManifestViewer({ manifest, debugModel }: ManifestViewerProps) {
+  const [showAllObjects, setShowAllObjects] = useState(false);
+  const [objectQuery, setObjectQuery] = useState('');
+  const [objectKind, setObjectKind] = useState('all');
+
   if (!manifest) {
     return (
       <div className="w-full h-full bg-[#1e1e1e] text-slate-400 p-4 text-xs font-mono flex items-center justify-center">
@@ -66,6 +72,9 @@ export function ManifestViewer({ manifest, debugModel }: ManifestViewerProps) {
   for (const obj of manifest.objects) {
     objectsByKind[obj.kind] = (objectsByKind[obj.kind] || 0) + 1;
   }
+  const filteredObjects = filterManifestObjects(manifest.objects, objectQuery, objectKind);
+  const visibleObjects = showAllObjects ? filteredObjects : filteredObjects.slice(0, MANIFEST_OBJECT_RENDER_LIMIT);
+  const hiddenObjectCount = Math.max(0, filteredObjects.length - visibleObjects.length);
 
   return (
     <div className="w-full h-full bg-[#1e1e1e] text-[13px] font-mono overflow-auto p-4">
@@ -169,6 +178,52 @@ export function ManifestViewer({ manifest, debugModel }: ManifestViewerProps) {
       </div>
 
       {/* Object list */}
+      <div className="mb-3 grid grid-cols-[minmax(0,1fr)_160px] gap-2">
+        <input
+          data-testid="manifest-object-search"
+          type="search"
+          value={objectQuery}
+          onChange={event => {
+            setObjectQuery(event.target.value);
+            setShowAllObjects(false);
+          }}
+          placeholder="搜索 id、角色、标签、文本或语义 identity"
+          className="min-w-0 rounded border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-[11px] text-slate-100 outline-none focus:border-indigo-500"
+        />
+        <select
+          data-testid="manifest-kind-filter"
+          value={objectKind}
+          onChange={event => {
+            setObjectKind(event.target.value);
+            setShowAllObjects(false);
+          }}
+          className="rounded border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-[11px] text-slate-100 outline-none focus:border-indigo-500"
+        >
+          <option value="all">全部类型</option>
+          {Object.keys(objectsByKind).sort().map(kind => (
+            <option key={kind} value={kind}>{kind} ({objectsByKind[kind]})</option>
+          ))}
+        </select>
+      </div>
+      {(objectQuery.trim() || objectKind !== 'all') && (
+        <div data-testid="manifest-filter-summary" className="mb-2 text-[11px] text-slate-400">
+          匹配 {filteredObjects.length} / {manifest.objects.length} 个对象；筛选只影响调试表显示，不影响选择、编辑或导出。
+        </div>
+      )}
+      {hiddenObjectCount > 0 && (
+        <div data-testid="manifest-object-limit" className="mb-2 flex items-center justify-between rounded border border-slate-700/70 bg-slate-900/70 px-3 py-2 text-[11px] text-slate-300">
+          <span>
+            为保持大图响应，当前仅渲染前 {MANIFEST_OBJECT_RENDER_LIMIT} 个匹配对象；完整 manifest 仍用于选择、写回和导出。
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowAllObjects(true)}
+            className="rounded bg-slate-700 px-2 py-1 font-semibold text-slate-100 hover:bg-slate-600"
+          >
+            显示全部 {manifest.objects.length}
+          </button>
+        </div>
+      )}
       <table className="w-full text-[11px] border-collapse">
         <thead>
           <tr className="text-slate-500 uppercase text-[10px] tracking-wider">
@@ -178,8 +233,8 @@ export function ManifestViewer({ manifest, debugModel }: ManifestViewerProps) {
           </tr>
         </thead>
         <tbody>
-          {manifest.objects.map(obj => (
-            <tr key={obj.id} className="hover:bg-slate-800/40 border-b border-slate-800">
+          {visibleObjects.map(obj => (
+            <tr key={obj.id} data-manifest-object-id={obj.id} className="hover:bg-slate-800/40 border-b border-slate-800">
               <td className="p-1 text-emerald-300">{obj.id}</td>
               <td className="p-1 text-slate-400">{obj.kind}</td>
               <td className="p-1 text-slate-500">{[...obj.editable].sort().join(', ')}</td>
@@ -187,6 +242,9 @@ export function ManifestViewer({ manifest, debugModel }: ManifestViewerProps) {
           ))}
         </tbody>
       </table>
+      {filteredObjects.length === 0 && (
+        <div className="py-8 text-center text-[11px] text-slate-500">没有匹配的 manifest 对象</div>
+      )}
 
       {manifest.unsupportedNotes && manifest.unsupportedNotes.length > 0 && (
         <div className="mt-4">

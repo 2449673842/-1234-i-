@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
+import { downloadAuthenticatedFile } from '../utils/authenticatedFetch';
 import { 
   Download, 
   FileImage, 
@@ -30,12 +31,15 @@ interface ExportAsset {
   metadata: Record<string, unknown>;
   tags: string[];
   createdAt: string;
+  projectName?: string;
+  fileExists?: boolean;
   sizeBytes?: number;
 }
 
 interface ExportLibraryPageProps {
   projectId: string | null;
   onNavigate: (view: ViewState, subView?: string) => void;
+  onBack?: () => void;
 }
 
 type SortField = 'date' | 'name' | 'size' | 'dpi';
@@ -57,11 +61,12 @@ function getAssetSourceLabel(asset: ExportAsset) {
   return asset.figureId || '外部拼接';
 }
 
-export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPageProps) {
+export function ExportLibraryPage({ projectId, onNavigate, onBack }: ExportLibraryPageProps) {
   const [assets, setAssets] = useState<ExportAsset[]>([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [selectedFormat, setSelectedFormat] = useState<string>('all');
+  const [selectedProject, setSelectedProject] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   
   // Sorting state
@@ -72,10 +77,9 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const loadAssets = async () => {
-    if (!projectId) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/projects/${projectId}/export-assets`);
+      const res = await fetch('/api/export-assets');
       const data = await res.json();
       if (data.status === 'success') {
         setAssets(data.assets || []);
@@ -91,23 +95,21 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
 
   useEffect(() => {
     void loadAssets();
-  }, [projectId]);
+  }, []);
 
   // Handle individual asset download
-  const downloadAsset = (asset: ExportAsset) => {
-    const a = document.createElement('a');
-    a.href = `/api/projects/${projectId}/export-assets/${asset.assetId}/file`;
-    a.download = `${asset.name}.${asset.format}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const downloadAsset = async (asset: ExportAsset) => {
+    await downloadAuthenticatedFile(
+      `/api/projects/${asset.projectId}/export-assets/${asset.assetId}/file`,
+      `${asset.name}.${asset.format}`,
+    );
   };
 
   // Handle batch download
   const handleBatchDownload = async () => {
     if (selectedIds.size === 0) return;
     try {
-      const res = await fetch(`/api/projects/${projectId}/export-assets/zip`, {
+      const res = await fetch('/api/export-assets/zip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assetIds: Array.from(selectedIds) }),
@@ -120,7 +122,7 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `exports_${projectId?.slice(0, 8) || 'archive'}.zip`;
+      a.download = 'scifigure_exports.zip';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -131,16 +133,17 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
   };
 
   // Handle batch delete
-  const handleBatchDelete = async () => {
-    if (selectedIds.size === 0) return;
-    if (!window.confirm(`确定要永久删除这 ${selectedIds.size} 个导出图资产及本地文件吗？`)) return;
+  const handleBatchDelete = async (explicitIds?: string[]) => {
+    const ids = explicitIds ?? Array.from(selectedIds);
+    if (ids.length === 0) return;
+    if (!window.confirm(`确定要永久删除这 ${ids.length} 个导出图资产及本地文件吗？`)) return;
     
     setLoading(true);
     try {
-      const res = await fetch(`/api/projects/${projectId}/export-assets`, {
+      const res = await fetch('/api/export-assets', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assetIds: Array.from(selectedIds) })
+        body: JSON.stringify({ assetIds: ids })
       });
       const data = await res.json();
       if (data.status === 'success') {
@@ -175,9 +178,19 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
     return Array.from(set);
   }, [assets]);
 
+  const projectOptions = useMemo(() => {
+    const projects = new Map<string, string>();
+    assets.forEach(asset => projects.set(asset.projectId, asset.projectName || asset.projectId));
+    return Array.from(projects.entries()).sort((a, b) => a[1].localeCompare(b[1], 'zh-CN'));
+  }, [assets]);
+
   // Filtered and Sorted assets
   const processedAssets = useMemo(() => {
     let result = [...assets];
+
+    if (selectedProject !== 'all') {
+      result = result.filter(asset => asset.projectId === selectedProject);
+    }
     
     // 1. Search Query Filter
     if (query.trim()) {
@@ -215,7 +228,7 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
     });
     
     return result;
-  }, [assets, query, selectedFormat, sortField, sortOrder]);
+  }, [assets, query, selectedFormat, selectedProject, sortField, sortOrder]);
 
   const totalSelected = useMemo(() => {
     let count = 0;
@@ -232,15 +245,18 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
         <div className="flex items-center gap-3">
           <button 
             type="button" 
-            onClick={() => onNavigate('export_settings')}
+            onClick={() => {
+              if (onBack) onBack();
+              else onNavigate('home');
+            }}
             className="p-2 hover:bg-slate-100 rounded-lg text-slate-600 transition-colors"
-            title="返回导出设置"
+            title="返回上一页"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
             <h1 className="text-lg font-bold text-slate-800">导出资产库</h1>
-            <p className="text-xs text-slate-500">统一存储、对比排版与打包下载项目历史导出的高清晰图</p>
+            <p className="text-xs text-slate-500">汇总当前账号所有项目的历史导出图，可按项目筛选、对比和下载</p>
           </div>
         </div>
         
@@ -300,6 +316,18 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
                 </button>
               ))}
             </div>
+
+            <select
+              value={selectedProject}
+              onChange={event => setSelectedProject(event.target.value)}
+              className="min-w-44 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 outline-none focus:border-blue-500"
+              aria-label="按来源项目筛选"
+            >
+              <option value="all">全部项目（{assets.length}）</option>
+              {projectOptions.map(([id, name]) => (
+                <option key={id} value={id}>{name}</option>
+              ))}
+            </select>
 
             {/* View / Sort Actions */}
             <div className="flex items-center gap-3">
@@ -370,7 +398,7 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
             <FileImage className="w-12 h-12 text-slate-300 mx-auto mb-3" />
             <div className="text-sm font-semibold text-slate-700">未找到任何导出资产</div>
             <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-              {query ? '尝试更改搜索关键词或格式过滤条件' : '当前项目还没有写入历史导出资产。普通渲染预览只用于编辑预览；请到导出设置中保存全部 Figure 到图库，或导出单张高质量图形。'}
+              {query || selectedProject !== 'all' ? '尝试更改搜索关键词、格式或来源项目' : '当前账号还没有写入历史导出资产。普通渲染预览不会自动进入图库。'}
             </p>
             {!query && (
               <button
@@ -444,6 +472,10 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
                         <span className="flex items-center gap-1"><Layers className="w-3.5 h-3.5" /> 来源</span>
                         <span className="font-mono text-slate-600 truncate max-w-[120px]" title={getAssetSourceLabel(asset)}>{getAssetSourceLabel(asset)}</span>
                       </div>
+                      <div className="flex items-center justify-between gap-3 text-[10px] text-slate-400">
+                        <span>项目</span>
+                        <span className="truncate font-semibold text-slate-600" title={asset.projectName || asset.projectId}>{asset.projectName || asset.projectId}</span>
+                      </div>
                       <div className="flex items-center justify-between text-[10px] text-slate-400">
                         <span>资产类型</span>
                         <span className={`font-semibold ${isSubplotAsset(asset) ? 'text-emerald-700' : 'text-slate-600'}`}>{getAssetTypeLabel(asset)}</span>
@@ -472,12 +504,7 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
                       </button>
                       <button 
                         type="button"
-                        onClick={async () => {
-                          if (window.confirm(`确定要删除此图片资产吗？`)) {
-                            setSelectedIds(new Set([asset.assetId]));
-                            setTimeout(() => handleBatchDelete(), 50);
-                          }
-                        }}
+                        onClick={() => void handleBatchDelete([asset.assetId])}
                         className="p-1.5 rounded-lg border border-slate-200 hover:border-red-200 hover:bg-red-50 text-slate-500 hover:text-red-600 transition-all"
                         title="删除此导出"
                       >
@@ -547,9 +574,10 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
                     </div>
 
                     {/* File Name */}
-                    <span className="font-semibold text-slate-800 truncate pr-4" title={asset.name}>
-                      {asset.name}
-                    </span>
+                    <div className="min-w-0 pr-4" title={`${asset.projectName || asset.projectId} · ${asset.name}`}>
+                      <div className="truncate font-semibold text-slate-800">{asset.name}</div>
+                      <div className="mt-0.5 truncate text-[10px] text-slate-400">{asset.projectName || asset.projectId}</div>
+                    </div>
 
                     {/* Format */}
                     <span className="uppercase font-mono font-bold text-slate-500">
@@ -589,12 +617,7 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
                       </button>
                       <button 
                         type="button"
-                        onClick={() => {
-                          if (window.confirm('确定要删除此图片资产吗？')) {
-                            setSelectedIds(new Set([asset.assetId]));
-                            setTimeout(() => handleBatchDelete(), 50);
-                          }
-                        }}
+                        onClick={() => void handleBatchDelete([asset.assetId])}
                         className="p-1.5 hover:bg-red-50 border border-slate-200 hover:border-red-200 rounded text-slate-400 hover:text-red-600 transition-colors"
                         title="删除"
                       >
@@ -626,7 +649,7 @@ export function ExportLibraryPage({ projectId, onNavigate }: ExportLibraryPagePr
             </button>
             <button 
               type="button"
-              onClick={handleBatchDelete}
+              onClick={() => void handleBatchDelete()}
               className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-xs font-bold rounded-full transition-all"
             >
               <Trash2 className="w-3.5 h-3.5" />

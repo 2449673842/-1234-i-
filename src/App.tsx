@@ -16,14 +16,25 @@ import { DataFilesPage } from './components/DataFilesPage';
 import { SettingsPage } from './components/SettingsPage';
 import { ProjectCreatePage } from './components/ProjectCreatePage';
 import { LandingPage } from './components/LandingPage';
+import { ProjectReconfigurePage } from './components/ProjectReconfigurePage';
+import { HelpCenterPage } from './components/HelpCenterPage';
 import { FigureSpec, defaultSpec, DatasetEntry, FigureEntry } from './types';
 import { useFigureSession } from './hooks/useFigureSession';
 import { buildReproduciblePython } from './utils/reproduciblePython';
 import { applyRuntimePatchesToManifest, applyRuntimePatchesToSvg } from './utils/svgEditor';
 import { mapPatchesToTargetFigure } from './utils/semanticPatchMapping';
 import { compileEditingIntent, retargetEditingIntentForFigure } from './utils/editingIntentCompiler';
+import {
+  draftAppliesToFigure,
+  draftsEligibleForDirectPersistence,
+  mergeDraftSettlement,
+  settleDraftTransaction,
+} from './utils/draftTransaction';
+import { summarizeCodeChange } from './utils/codeHistory';
+import { AUTH_TOKEN_STORAGE_KEY } from './utils/authenticatedFetch';
 import type { FigureSession, EditEntry, PatchEntry, HistorySnapshot, ProjectHistoryState } from './schemas/manifest';
 import type { DraftPatch } from './schemas/draftPatchBatch';
+import type { EditingIntentApplyReport, EditingIntentSkippedTarget } from './schemas/editingIntent';
 import './index.css';
 
 class EditorErrorBoundary extends React.Component<
@@ -54,9 +65,32 @@ class EditorErrorBoundary extends React.Component<
   }
 }
 
-export type ViewState = 'home' | 'templates' | 'data_import' | 'editor' | 'workspace' | 'export_settings' | 'composer' | 'projects' | 'data' | 'settings' | 'project_create' | 'landing' | 'export_library';
+export type ViewState = 'home' | 'templates' | 'data_import' | 'editor' | 'workspace' | 'export_settings' | 'composer' | 'projects' | 'data' | 'settings' | 'project_create' | 'project_reconfigure' | 'landing' | 'export_library' | 'help';
 
 const SPEC_STORAGE_KEY = 'scifigure:app-state:v2';
+const EDITOR_PANEL_WIDTHS_KEY = 'scifigure:editor-panel-widths:v1';
+
+interface FigurePatchExecutionResult {
+  figureId: string;
+  success: boolean;
+  status: 'success' | 'error' | 'stale';
+  message?: string;
+}
+
+const clampPanelWidth = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+function loadEditorPanelWidths() {
+  if (typeof window === 'undefined') return { left: 256, right: 320 };
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(EDITOR_PANEL_WIDTHS_KEY) || '{}');
+    return {
+      left: clampPanelWidth(Number(parsed.left) || 256, 220, 420),
+      right: clampPanelWidth(Number(parsed.right) || 320, 280, 560),
+    };
+  } catch {
+    return { left: 256, right: 320 };
+  }
+}
 
 interface PersistedAppState {
   spec: FigureSpec;
@@ -85,12 +119,19 @@ function cloneEditLog(editLog: EditEntry[]): EditEntry[] {
   return JSON.parse(JSON.stringify(editLog || [])) as EditEntry[];
 }
 
-function makeHistorySnapshot(editLog: EditEntry[], label: string, script?: string): HistorySnapshot {
+function makeHistorySnapshot(
+  editLog: EditEntry[],
+  label: string,
+  script?: string,
+  metadata?: Pick<HistorySnapshot, 'changeType' | 'codeSummary'>,
+): HistorySnapshot {
   return {
     editLog: cloneEditLog(editLog),
     script,
     label,
     timestamp: Date.now(),
+    changeType: metadata?.changeType,
+    codeSummary: metadata?.codeSummary,
   };
 }
 
@@ -105,6 +146,8 @@ function normalizeHistorySnapshot(value: unknown, fallbackLabel: string): Histor
       script: typeof candidate.script === 'string' ? candidate.script : undefined,
       label: typeof candidate.label === 'string' && candidate.label ? candidate.label : fallbackLabel,
       timestamp: typeof candidate.timestamp === 'number' ? candidate.timestamp : Date.now(),
+      changeType: candidate.changeType,
+      codeSummary: candidate.codeSummary,
     };
   }
   return makeHistorySnapshot([], fallbackLabel);
@@ -122,6 +165,33 @@ function normalizeProjectHistory(raw: unknown): Record<string, ProjectHistorySta
     };
   });
   return result;
+}
+
+function rebuildHistoryFromEditLog(editLog: EditEntry[], script?: string): ProjectHistoryState {
+  const entries = cloneEditLog(editLog || []);
+  if (entries.length === 0) return { past: [], future: [] };
+
+  const groups: EditEntry[][] = [];
+  entries.forEach((entry, index) => {
+    const timestamp = typeof entry.timestamp === 'number' ? entry.timestamp : index;
+    const previous = groups[groups.length - 1];
+    const previousTimestamp = previous?.length
+      ? (typeof previous[0].timestamp === 'number' ? previous[0].timestamp : index - 1)
+      : null;
+    if (previous && previousTimestamp === timestamp) {
+      previous.push(entry);
+    } else {
+      groups.push([entry]);
+    }
+  });
+
+  const past: HistorySnapshot[] = [makeHistorySnapshot([], '初始图（从保存记录恢复）', script)];
+  let accumulated: EditEntry[] = [];
+  groups.slice(0, -1).forEach((group, index) => {
+    accumulated = [...accumulated, ...group];
+    past.push(makeHistorySnapshot(accumulated, `恢复步骤 ${index + 1}`, script));
+  });
+  return { past, future: [] };
 }
 
 function mergeReturnedProjectFigures(
@@ -148,6 +218,15 @@ function mergeReturnedProjectFigures(
       renderStatus: 'success',
       error: undefined,
     };
+  });
+  Object.entries(previous).forEach(([figureId, figure]) => {
+    if (!next[figureId] && figure?.renderStatus === 'rendering') {
+      next[figureId] = {
+        ...figure,
+        renderStatus: 'success',
+        error: undefined,
+      };
+    }
   });
   return next;
 }
@@ -192,6 +271,7 @@ function loadInitialState(): PersistedAppState {
       datasets: parsed.datasets ?? [],
       selectedGids: parsed.selectedGids ?? [],
       projectHistory: normalizeProjectHistory(parsed.projectHistory),
+      projectDrafts: parsed.projectDrafts ?? {},
       currentView: parsed.currentView ?? 'home',
       subView: parsed.subView ?? 'home',
     };
@@ -209,6 +289,7 @@ function loadInitialState(): PersistedAppState {
       datasets: [],
       selectedGids: [],
       projectHistory: {},
+      projectDrafts: {},
       currentView: 'home',
       subView: 'home',
     };
@@ -219,8 +300,71 @@ export default function App() {
   const initialState = useMemo(() => loadInitialState(), []);
   const hasRestoredProjectFiguresRef = useRef(false);
   const [spec, setSpec] = useState<FigureSpec>(initialState.spec);
+  const committedScriptRef = useRef(initialState.spec.custom_script || '');
   const [currentView, setCurrentView] = useState<ViewState>(initialState.currentView ?? 'home');
   const [subView, setSubView] = useState<string>(initialState.subView ?? 'home');
+  const exportLibraryReturnViewRef = useRef<ViewState>('home');
+  const [authStatus, setAuthStatus] = useState<'checking' | 'authenticated' | 'anonymous'>('checking');
+
+  useEffect(() => {
+    const handleAuthRequired = () => {
+      setAuthStatus('anonymous');
+      setCurrentView('landing');
+      setSubView('home');
+    };
+    const handleAuthChanged = (event: Event) => {
+      const authenticated = Boolean((event as CustomEvent<{ authenticated?: boolean }>).detail?.authenticated);
+      setAuthStatus(authenticated ? 'authenticated' : 'anonymous');
+      setCurrentView(authenticated ? 'home' : 'landing');
+      setSubView('home');
+    };
+    window.addEventListener('scifigure:auth-required', handleAuthRequired);
+    window.addEventListener('scifigure:auth-changed', handleAuthChanged);
+    return () => {
+      window.removeEventListener('scifigure:auth-required', handleAuthRequired);
+      window.removeEventListener('scifigure:auth-changed', handleAuthChanged);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const resolveAuth = async () => {
+      try {
+        let response = await fetch('/api/auth/me');
+        let data = await response.json().catch(() => null);
+        if (data?.status === 'anonymous' && !window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)) {
+          const refreshed = await fetch('/api/auth/refresh', {
+            method: 'POST',
+            credentials: 'same-origin',
+          });
+          const refreshedData = await refreshed.json().catch(() => null);
+          if (refreshed.ok && typeof refreshedData?.token === 'string') {
+            window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, refreshedData.token);
+            response = await fetch('/api/auth/me');
+            data = await response.json().catch(() => null);
+          }
+        }
+        if (!cancelled) {
+          const authenticated = Boolean(response.ok && data?.status === 'success' && data?.user);
+          setAuthStatus(authenticated ? 'authenticated' : 'anonymous');
+          if (!authenticated) {
+            setCurrentView('landing');
+            setSubView('home');
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setAuthStatus('anonymous');
+          setCurrentView('landing');
+          setSubView('home');
+        }
+      }
+    };
+    void resolveAuth();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [selectedObject, setSelectedObject] = useState<string>('Figure');
   const [projectId, setProjectId] = useState<string | null>(initialState.projectId);
   const [projectName, setProjectName] = useState<string>(initialState.projectName);
@@ -228,16 +372,61 @@ export default function App() {
   const [historyIndex, setHistoryIndex] = useState<number>(initialState.historyIndex);
   const [lockedObjects, setLockedObjects] = useState<Set<string>>(new Set());
   const [selectedGids, setSelectedGids] = useState<string[]>(initialState.selectedGids ?? []);
+  const activeFigureIdRef = useRef(initialState.activeFigureId ?? 'fig_1');
+  const figureSelectionsRef = useRef<Record<string, string[]>>({
+    [initialState.activeFigureId ?? 'fig_1']: initialState.selectedGids ?? [],
+  });
   const [projectHistory, setProjectHistory] = useState<Record<string, ProjectHistoryState>>(initialState.projectHistory ?? {});
+  const [editorPanelWidths, setEditorPanelWidths] = useState(loadEditorPanelWidths);
+  const editorPanelWidthsRef = useRef(editorPanelWidths);
 
   const handleSelectGids = (gids: string[]) => {
+    figureSelectionsRef.current[activeFigureIdRef.current] = gids;
     setSelectedGids(gids);
     setSelectedObject(gids.length === 0 ? 'Figure' : gids[0]);
   };
 
   const handleSelectObject = (obj: string) => {
+    const gids = obj === 'Figure' ? [] : [obj];
+    figureSelectionsRef.current[activeFigureIdRef.current] = gids;
     setSelectedObject(obj);
-    setSelectedGids(obj === 'Figure' ? [] : [obj]);
+    setSelectedGids(gids);
+  };
+
+  useEffect(() => {
+    editorPanelWidthsRef.current = editorPanelWidths;
+    try {
+      window.localStorage.setItem(EDITOR_PANEL_WIDTHS_KEY, JSON.stringify(editorPanelWidths));
+    } catch {}
+  }, [editorPanelWidths]);
+
+  const startEditorPanelResize = (side: 'left' | 'right', event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidths = editorPanelWidthsRef.current;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      const delta = moveEvent.clientX - startX;
+      setEditorPanelWidths(prev => {
+        const base = prev || startWidths;
+        const next = side === 'left'
+          ? { ...base, left: clampPanelWidth(startWidths.left + delta, 220, 420) }
+          : { ...base, right: clampPanelWidth(startWidths.right - delta, 280, 560) };
+        return next;
+      });
+    };
+    const handleUp = () => {
+      document.removeEventListener('pointermove', handleMove);
+      document.removeEventListener('pointerup', handleUp);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+    document.addEventListener('pointermove', handleMove);
+    document.addEventListener('pointerup', handleUp);
   };
 
   // V3.2A Project Layer States
@@ -246,6 +435,15 @@ export default function App() {
   const [selectedFigureIds, setSelectedFigureIds] = useState<string[]>(initialState.selectedFigureIds ?? []);
   const [datasets, setDatasets] = useState<DatasetEntry[]>(initialState.datasets ?? []);
   const [activeResourceFile, setActiveResourceFile] = useState<string>('figure_spec.json');
+
+  const handleSelectFigure = (figureId: string) => {
+    if (!figureId || figureId === activeFigureIdRef.current) return;
+    const nextSelection = figureSelectionsRef.current[figureId] || [];
+    activeFigureIdRef.current = figureId;
+    setActiveFigureId(figureId);
+    setSelectedGids(nextSelection);
+    setSelectedObject(nextSelection[0] || 'Figure');
+  };
 
   const handleToggleLock = (gid: string) => {
     setLockedObjects(prev => {
@@ -293,12 +491,14 @@ export default function App() {
   };
 
   const [projectDrafts, setProjectDrafts] = useState<Record<string, Record<string, DraftPatch>>>(initialState.projectDrafts ?? {});
+  const [editingIntentReports, setEditingIntentReports] = useState<EditingIntentApplyReport[]>([]);
 
   const handleUpdateDraft = (figId: string, patch: DraftPatch) => {
     setProjectDrafts(prev => {
       const figBucket = { ...(prev[figId] || {}) };
       const key = `${patch.gid}:${patch.prop}`;
-      figBucket[key] = patch;
+      const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = patch;
+      figBucket[key] = freshPatch;
       return { ...prev, [figId]: figBucket };
     });
   };
@@ -308,7 +508,8 @@ export default function App() {
       const figBucket = { ...(prev[figId] || {}) };
       patches.forEach(p => {
         const key = `${p.gid}:${p.prop}`;
-        figBucket[key] = p;
+        const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = p;
+        figBucket[key] = freshPatch;
       });
       return { ...prev, [figId]: figBucket };
     });
@@ -318,6 +519,48 @@ export default function App() {
     setProjectDrafts(prev => {
       const next = { ...prev };
       delete next[figId];
+      return next;
+    });
+  };
+
+  const handleProjectLocalDraftsPersisted = (draftsByFigure: Record<string, DraftPatch[]>) => {
+    const timestamp = Date.now();
+    setProjectFigures(prev => {
+      const next = { ...prev };
+      Object.entries(draftsByFigure).forEach(([figId, drafts]) => {
+        const figure = next[figId];
+        const persistableDrafts = draftsEligibleForDirectPersistence(drafts);
+        if (!figure || persistableDrafts.length === 0) return;
+        const runtimePatches = persistableDrafts.map(draft => ({ gid: draft.gid, prop: draft.prop, value: draft.value }));
+        const editEntries = persistableDrafts.map(draft => ({
+          gid: draft.gid,
+          prop: draft.prop,
+          value: draft.value,
+          mode: 'local_patch' as const,
+          timestamp,
+        }));
+        next[figId] = {
+          ...figure,
+          svg: applyRuntimePatchesToSvg(figure.svg || '', runtimePatches),
+          manifest: applyRuntimePatchesToManifest(figure.manifest || null, runtimePatches) || figure.manifest,
+          editLog: [...(figure.editLog || []), ...editEntries],
+        };
+      });
+      return next;
+    });
+    setProjectDrafts(prev => {
+      const next = { ...prev };
+      Object.entries(draftsByFigure).forEach(([figId, drafts]) => {
+        const bucket = { ...(next[figId] || {}) };
+        draftsEligibleForDirectPersistence(drafts).forEach(draft => {
+          delete bucket[`${draft.gid}:${draft.prop}`];
+        });
+        if (Object.keys(bucket).length > 0) {
+          next[figId] = bucket;
+        } else {
+          delete next[figId];
+        }
+      });
       return next;
     });
   };
@@ -361,6 +604,22 @@ export default function App() {
   }, [projectId, activeFig, activeFigureId, projectDrafts, spec.custom_script, spec.script_language, datasets, hookSession]);
 
   useEffect(() => {
+    activeFigureIdRef.current = activeFigureId;
+    if (!projectId) return;
+
+    const validIds = new Set((projectFigures[activeFigureId]?.manifest?.objects || []).map(object => object.id));
+    const storedSelection = figureSelectionsRef.current[activeFigureId] || [];
+    const nextSelection = storedSelection.filter(gid => validIds.has(gid));
+    figureSelectionsRef.current[activeFigureId] = nextSelection;
+    setSelectedGids(current => (
+      current.length === nextSelection.length && current.every((gid, index) => gid === nextSelection[index])
+        ? current
+        : nextSelection
+    ));
+    setSelectedObject(nextSelection[0] || 'Figure');
+  }, [activeFigureId, projectFigures, projectId]);
+
+  useEffect(() => {
     const availableFigureIds = new Set(Object.keys(projectFigures));
     setSelectedFigureIds(prev => prev.filter(figId => availableFigureIds.has(figId)));
   }, [projectFigures]);
@@ -398,14 +657,16 @@ export default function App() {
       datasets,
       selectedGids,
       projectHistory,
+      projectDrafts,
       currentView,
       subView,
     };
     window.sessionStorage.setItem(SPEC_STORAGE_KEY, JSON.stringify(nextState));
-  }, [spec, specHistory, historyIndex, projectId, projectName, hookSession, renderLog, projectFigures, activeFigureId, selectedFigureIds, datasets, selectedGids, projectHistory, currentView, subView]);
+  }, [spec, specHistory, historyIndex, projectId, projectName, hookSession, renderLog, projectFigures, activeFigureId, selectedFigureIds, datasets, selectedGids, projectHistory, projectDrafts, currentView, subView]);
 
   // Auto-rebuild project figures on mount/refresh if SVGs are missing
   useEffect(() => {
+    if (authStatus !== 'authenticated') return;
     const figsArray = Object.values(projectFigures as Record<string, any>);
     if (projectId && figsArray.length > 0 && !figsArray[0].svg) {
       if (hasRestoredProjectFiguresRef.current) return;
@@ -466,6 +727,9 @@ export default function App() {
           setProjectFigures(prev => {
             const returnedFigs = data.figures || [];
             if (data.status === 'success' && returnedFigs.length > 0) {
+              if (figIds.some(fid => latestRequestIdByFigure.current[fid] !== reqId)) {
+                return prev;
+              }
               return mergeReturnedProjectFigures(prev, returnedFigs, { editLogs });
             }
             const next = { ...prev };
@@ -509,7 +773,7 @@ export default function App() {
         }
       })();
     }
-  }, [projectId]);
+  }, [authStatus, projectId]);
 
   const applySpecChange = (nextSpec: FigureSpec, options?: { recordHistory?: boolean }) => {
     const recordHistory = options?.recordHistory !== false;
@@ -569,7 +833,10 @@ export default function App() {
     };
   };
 
-  const executeSingleFigurePatch = async (targetFigureId: string, patches: any[]) => {
+  const executeSingleFigurePatch = async (
+    targetFigureId: string,
+    patches: any[],
+  ): Promise<FigurePatchExecutionResult> => {
     const needsBackendRender = patches.some((patchItem: any) => patchItem.type === 'code_patch' || patchItem.mode !== 'local_patch');
     const patchSummary = patches.length === 1
       ? `${(patches[0] as any).gid || (patches[0] as any).target_id || '对象'} / ${(patches[0] as any).prop || '代码'}`
@@ -587,25 +854,6 @@ export default function App() {
           mode: patchItem.mode as any,
           timestamp: localPatchTimestamp,
         }));
-
-      if (!needsBackendRender && localPatchEntries.length > 0) {
-        setProjectFigures(prev => {
-          const active = prev[targetFigureId];
-          if (!active) return prev;
-          const runtimePatches = localPatchEntries.map(({ gid, prop, value }) => ({ gid, prop, value }));
-          return {
-            ...prev,
-            [targetFigureId]: {
-              ...active,
-              svg: applyRuntimePatchesToSvg(active.svg || '', runtimePatches),
-              manifest: applyRuntimePatchesToManifest(active.manifest || null, runtimePatches) || active.manifest,
-              editLog: [...(active.editLog || []), ...localPatchEntries],
-              revision: active.revision || 1,
-            },
-          };
-        });
-        pushProjectHistory(targetFigureId, prevEditLog, patchSummary);
-      }
 
       const reqId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
       latestRequestIdByFigure.current[targetFigureId] = reqId;
@@ -643,7 +891,12 @@ export default function App() {
         const data = await res.json();
         
         if (reqId !== latestRequestIdByFigure.current[targetFigureId]) {
-          return;
+          return {
+            figureId: targetFigureId,
+            success: false,
+            status: 'stale',
+            message: '较新的请求已替代本次修改。',
+          };
         }
 
         if (data.status === 'success') {
@@ -657,11 +910,18 @@ export default function App() {
               if (data.revision !== undefined && data.revision < active.revision) {
                 return prev;
               }
+              const runtimePatches = localPatchEntries.map(({ gid, prop, value }) => ({ gid, prop, value }));
+              const nextSvg = !needsBackendRender && runtimePatches.length > 0
+                ? applyRuntimePatchesToSvg(active.svg || '', runtimePatches)
+                : data.svg || active.svg;
+              const nextManifest = !needsBackendRender && runtimePatches.length > 0
+                ? applyRuntimePatchesToManifest(active.manifest || null, runtimePatches) || active.manifest
+                : data.manifest || active.manifest;
               next[targetFigureId] = {
                 ...active,
-                svg: data.svg || active.svg,
-                manifest: data.manifest || active.manifest,
-                editLog: data.editLog || active.editLog,
+                svg: nextSvg,
+                manifest: nextManifest,
+                editLog: data.editLog || [...(active.editLog || []), ...localPatchEntries],
                 revision: data.revision || active.revision,
                 codeSlice: data.codeSlice ?? active.codeSlice ?? null,
                 renderStatus: 'success',
@@ -671,10 +931,7 @@ export default function App() {
             return next;
           });
 
-          // Record history snapshot
-          if (needsBackendRender) {
-            pushProjectHistory(targetFigureId, prevEditLog, patchSummary);
-          }
+          pushProjectHistory(targetFigureId, prevEditLog, patchSummary);
 
           // Handle color mapping update inside spec for AST sync
           const codePatches = patches.filter((p: any) => p.type === 'code_patch');
@@ -693,6 +950,7 @@ export default function App() {
             }
             applySpecChange(nextSpec);
           }
+          return { figureId: targetFigureId, success: true, status: 'success' };
         } else {
           setProjectFigures(prev => {
             const next = { ...prev };
@@ -706,6 +964,12 @@ export default function App() {
             return next;
           });
           setRenderLog(prev => [...prev, `> [错误] ${targetFigureId} 应用失败: ${data.message}`]);
+          return {
+            figureId: targetFigureId,
+            success: false,
+            status: 'error',
+            message: data.message || '应用失败',
+          };
         }
       } catch (err: any) {
         setProjectFigures(prev => {
@@ -720,6 +984,12 @@ export default function App() {
           return next;
         });
         setRenderLog(prev => [...prev, `> [异常] ${targetFigureId} 应用异常: ${err.message}`]);
+        return {
+          figureId: targetFigureId,
+          success: false,
+          status: 'error',
+          message: err.message || '网络异常',
+        };
       } finally {
           finishProjectRenderRequest(reqId);
       }
@@ -751,13 +1021,60 @@ export default function App() {
             }
             applySpecChange(nextSpec);
           }
+          return { figureId: targetFigureId, success: true, status: 'success' };
         }
+        return {
+          figureId: targetFigureId,
+          success: false,
+          status: 'error',
+          message: res.message || '应用失败',
+        };
+      } catch (err: any) {
+        setRenderLog(prev => [...prev, `> [异常] 参数应用失败: ${err.message || '网络异常'}`]);
+        return {
+          figureId: targetFigureId,
+          success: false,
+          status: 'error',
+          message: err.message || '网络异常',
+        };
       } finally {
         if (needsBackendRender) {
           setRenderProgressText(null);
         }
       }
     }
+  };
+
+  const normalizeSkippedTarget = (item: unknown): EditingIntentSkippedTarget => {
+    const value = item as Record<string, any> | null;
+    if (value && typeof value === 'object' && typeof value.reason === 'string' && typeof value.detail === 'string') {
+      return {
+        gid: typeof value.gid === 'string' ? value.gid : undefined,
+        role: value.role,
+        reason: value.reason,
+        detail: value.detail,
+      } as EditingIntentSkippedTarget;
+    }
+
+    const gid = value && typeof value.gid === 'string'
+      ? value.gid
+      : value && typeof value.target_id === 'string'
+        ? value.target_id
+        : 'unknown';
+    const prop = value && typeof value.prop === 'string'
+      ? value.prop
+      : value && typeof value.target_id === 'string'
+        ? value.target_id
+        : 'unknown';
+    const isCodePatch = Boolean(value && (value.type === 'code_patch' || value.gid === 'code_patch' || value.target_id));
+
+    return {
+      gid,
+      reason: isCodePatch ? 'unsupported_scope' : 'not_found',
+      detail: isCodePatch
+        ? `代码常量修改 ${prop} 不能安全跨 Figure 自动套用。`
+        : `目标 Figure 没有找到可安全匹配的对象 ${gid}/${prop}。`,
+    };
   };
 
   const handleApplyDraft = async (figId: string, scope: 'current' | 'all' | 'selected') => {
@@ -781,29 +1098,12 @@ export default function App() {
     }
 
     const draftSourceBucket = (projectDrafts[figId] || {}) as Record<string, DraftPatch>;
-    const patches = Object.values(draftSourceBucket).map(d => {
-      if (d.type === 'code_patch') {
-        return {
-          type: 'code_patch' as const,
-          target_id: d.target_id!,
-          new_value: d.new_value!,
-          gids: d.gids || []
-        };
-      }
-      return {
-        op: 'set' as const,
-        mode: d.mode,
-        gid: d.gid,
-        prop: d.prop,
-        value: d.value,
-        intent: d.intent,
-      };
-    });
-
-    if (patches.length === 0) return;
+    const draftEntries = Object.entries(draftSourceBucket);
+    if (draftEntries.length === 0) return;
 
     const sourceManifest = projectFigures[figId]?.manifest || null;
     const skippedByTarget: Record<string, number> = {};
+    const reportByTarget: Record<string, { appliedCount: number; skipped: EditingIntentSkippedTarget[] }> = {};
     const patchFromDraft = (draft: DraftPatch): PatchEntry => {
       if (draft.type === 'code_patch') {
         return {
@@ -822,57 +1122,77 @@ export default function App() {
         intent: draft.intent,
       };
     };
-    const dedupePatchEntries = (items: PatchEntry[]): PatchEntry[] => {
-      const seen = new Set<string>();
-      const result: PatchEntry[] = [];
-      items.forEach((item) => {
-        const key = 'gid' in item
-          ? `${item.gid}:${item.prop}:${JSON.stringify(item.value)}`
-          : `code:${item.target_id}:${JSON.stringify(item.new_value)}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        result.push(item);
-      });
-      return result;
-    };
-    const compileDraftForTarget = (draft: DraftPatch, targetId: string): { patches: PatchEntry[]; skipped: unknown[] } => {
+    const compileDraftForTarget = (draft: DraftPatch, targetId: string): { patches: PatchEntry[]; skipped: EditingIntentSkippedTarget[] } => {
+      if (!draftAppliesToFigure(draft, targetId)) {
+        return { patches: [], skipped: [] };
+      }
       const plainPatch = patchFromDraft(draft);
       if (targetId === figId) {
-        return { patches: [plainPatch], skipped: [] as unknown[] };
+        return { patches: [plainPatch], skipped: [] };
       }
       if (draft.type === 'code_patch' || draft.gid === 'code_patch') {
-        return { patches: [], skipped: [plainPatch] as unknown[] };
+        return { patches: [], skipped: [normalizeSkippedTarget(plainPatch)] };
       }
       const targetManifest = projectFigures[targetId]?.manifest || null;
       if (draft.intent && targetManifest) {
         const compiled = compileEditingIntent(targetManifest, retargetEditingIntentForFigure(draft.intent));
-        if (compiled.patches.length > 0) {
-          return { patches: compiled.patches, skipped: compiled.skipped };
-        }
+        return { patches: compiled.patches, skipped: compiled.skipped };
       }
       const mapped = mapPatchesToTargetFigure([plainPatch], sourceManifest, targetManifest);
-      return { patches: mapped.patches as PatchEntry[], skipped: mapped.skipped };
+      return {
+        patches: mapped.patches as PatchEntry[],
+        skipped: mapped.skipped.map(normalizeSkippedTarget),
+      };
+    };
+    const dedupeCompiledPatches = (
+      compiled: Array<{ draftKey: string; patches: PatchEntry[] }>,
+    ): { patches: PatchEntry[]; draftKeys: string[] } => {
+      const byTargetProp = new Map<string, PatchEntry>();
+      const consumedDraftKeys = new Set<string>();
+      compiled.forEach(({ draftKey, patches: compiledPatches }) => {
+        if (compiledPatches.length > 0) consumedDraftKeys.add(draftKey);
+        compiledPatches.forEach((item) => {
+          const key = 'gid' in item
+            ? `${item.gid}:${item.prop}`
+            : `code:${item.target_id}`;
+          byTargetProp.set(key, item);
+        });
+      });
+      return {
+        patches: Array.from(byTargetProp.values()),
+        draftKeys: Array.from(consumedDraftKeys),
+      };
     };
     const targetPatchJobs = targetIds
       .map((targetId) => {
-        if (scope === 'current' || targetId === figId) {
-          const currentPatches = scope === 'current'
-            ? patches
-            : patches.filter((patch: any) => patch.type !== 'code_patch' && patch.gid !== 'code_patch');
-          skippedByTarget[targetId] = patches.length - currentPatches.length;
-          return { targetId, patches: dedupePatchEntries(currentPatches as PatchEntry[]) };
-        }
-
-        const compiled = Object.values(draftSourceBucket)
-          .map(draft => compileDraftForTarget(draft, targetId));
-        const mappedPatches = dedupePatchEntries(compiled.flatMap(item => item.patches));
+        const compiled = draftEntries.map(([draftKey, draft]) => ({
+          draftKey,
+          ...compileDraftForTarget(draft, targetId),
+        }));
+        const deduped = dedupeCompiledPatches(compiled);
         const skipped = compiled.flatMap(item => item.skipped);
         skippedByTarget[targetId] = skipped.length;
-        return { targetId, patches: mappedPatches };
+        reportByTarget[targetId] = { appliedCount: deduped.patches.length, skipped };
+        return { targetId, patches: deduped.patches, draftKeys: deduped.draftKeys };
       })
       .filter(job => job.patches.length > 0);
 
     if (targetPatchJobs.length === 0) {
+      setEditingIntentReports(prev => [{
+        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        sourceFigureId: figId,
+        scope,
+        createdAt: Date.now(),
+        targetReports: targetIds.map(targetId => {
+          const skipped = (reportByTarget[targetId]?.skipped || Object.values(draftSourceBucket).map(draft => normalizeSkippedTarget(patchFromDraft(draft))));
+          return {
+            figureId: targetId,
+            appliedCount: 0,
+            skippedCount: skipped.length,
+            skipped,
+          };
+        }),
+      }, ...prev].slice(0, 5));
       setRenderLog(prev => [
         ...prev,
         `> [提示] 没有可安全跨图应用的暂存修改：code_patch 或无法匹配的图元已跳过。`
@@ -888,23 +1208,40 @@ export default function App() {
       ]);
     }
 
-    // Clear drafts for all target figures first
-    setProjectDrafts(prev => {
-      const next = { ...prev };
-      delete next[figId];
-      return next;
-    });
+    setEditingIntentReports(prev => [{
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      sourceFigureId: figId,
+      scope,
+      createdAt: Date.now(),
+      targetReports: targetIds.map(targetId => {
+        const targetReport = reportByTarget[targetId] || { appliedCount: 0, skipped: [] };
+        return {
+          figureId: targetId,
+          appliedCount: targetReport.appliedCount,
+          skippedCount: targetReport.skipped.length,
+          skipped: targetReport.skipped,
+        };
+      }),
+    }, ...prev].slice(0, 5));
 
     const concurrency = 3;
     const queue = [...targetPatchJobs];
+    const executionResults: FigurePatchExecutionResult[] = [];
 
     const executeNext = async (): Promise<void> => {
       if (queue.length === 0) return;
       const nextJob = queue.shift()!;
       try {
-        await executeSingleFigurePatch(nextJob.targetId, nextJob.patches);
-      } catch (err) {
+        const result = await executeSingleFigurePatch(nextJob.targetId, nextJob.patches);
+        executionResults.push(result);
+      } catch (err: any) {
         console.error(`Failed to apply patches to ${nextJob.targetId}:`, err);
+        executionResults.push({
+          figureId: nextJob.targetId,
+          success: false,
+          status: 'error',
+          message: err?.message || '应用失败',
+        });
       }
       return executeNext();
     };
@@ -914,17 +1251,57 @@ export default function App() {
       workers.push(executeNext());
     }
     await Promise.all(workers);
+
+    const settlement = settleDraftTransaction(
+      draftSourceBucket,
+      targetPatchJobs.map(job => ({ targetId: job.targetId, draftKeys: job.draftKeys })),
+      executionResults.map(result => ({ targetId: result.figureId, success: result.success })),
+    );
+    setProjectDrafts(prev => {
+      const currentBucket = prev[figId] || {};
+      const mergedBucket = mergeDraftSettlement(
+        currentBucket,
+        draftSourceBucket,
+        settlement.nextBucket,
+      );
+      const next = { ...prev };
+      if (Object.keys(mergedBucket).length > 0) {
+        next[figId] = mergedBucket;
+      } else {
+        delete next[figId];
+      }
+      return next;
+    });
+
+    if (settlement.failedTargetIds.length > 0) {
+      setRenderLog(prev => [
+        ...prev,
+        `> [部分失败] ${settlement.failedTargetIds.join('、')} 应用失败；相关草稿已保留，仅重试失败 Figure。`,
+      ]);
+    } else if (settlement.pendingDraftKeys.length > 0) {
+      setRenderLog(prev => [
+        ...prev,
+        `> [提示] ${settlement.pendingDraftKeys.length} 项草稿没有找到可安全应用的目标，已保留。`,
+      ]);
+    }
   };
 
   const handleImmediatePatch = async (patches: PatchEntry[]) => {
     const figureId = projectId ? activeFigureId : 'fig_1';
-    await executeSingleFigurePatch(figureId, patches);
-    return { status: 'success' as const, sessionId: `${projectId || 'project'}_${figureId}`, applied: patches };
+    const result = await executeSingleFigurePatch(figureId, patches);
+    return {
+      status: result.success ? 'success' as const : 'error' as const,
+      sessionId: `${projectId || 'project'}_${figureId}`,
+      applied: result.success ? patches : [],
+      message: result.message,
+    };
   };
 
   const handleCodePatch = async (script: string, force?: boolean) => {
     if (projectId) {
       const targetFigureId = activeFigureId;
+      const previousScript = committedScriptRef.current;
+      const previousEditLog = cloneEditLog(projectFigures[targetFigureId]?.editLog || []);
       const reqId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
       latestRequestIdByFigure.current[targetFigureId] = reqId;
 
@@ -962,6 +1339,20 @@ export default function App() {
         }
 
         if (data.status === 'success') {
+          const codeSummary = summarizeCodeChange(previousScript, script);
+          if (codeSummary.changed) {
+            pushProjectHistory(
+              targetFigureId,
+              previousEditLog,
+              `代码更新前（${codeSummary.label}）`,
+              {
+                script: previousScript,
+                changeType: 'code',
+                codeSummary,
+              },
+            );
+            setRenderLog(prev => [...prev, `> [代码历史] 已记录代码版本，可从历史中撤回（${codeSummary.label}）`]);
+          }
           setProjectFigures(prev => {
             const next = { ...prev };
             const active = next[targetFigureId];
@@ -994,6 +1385,7 @@ export default function App() {
             });
           }
           applySpecChange(nextSpec);
+          committedScriptRef.current = script;
         } else {
           setProjectFigures(prev => {
             const next = { ...prev };
@@ -1044,6 +1436,7 @@ export default function App() {
           });
         }
         applySpecChange(nextSpec);
+        committedScriptRef.current = script;
       }
       return res;
     }
@@ -1086,6 +1479,9 @@ export default function App() {
       setProjectFigures(prev => {
         const returnedFigs = data.figures || [];
         if (data.status === 'success' && returnedFigs.length > 0) {
+          if (trackedFigIds.some(fid => latestRequestIdByFigure.current[fid] !== reqId)) {
+            return prev;
+          }
           return mergeReturnedProjectFigures(prev, returnedFigs, { editLogs });
         }
         const next = { ...prev };
@@ -1112,6 +1508,7 @@ export default function App() {
           nextSpec.custom_script = scriptOverride;
           applySpecChange(nextSpec, { recordHistory: false });
         }
+        committedScriptRef.current = scriptToReplay;
         setRenderLog(prev => [...prev, `> [历史] 撤销/重做已应用，预览已刷新`]);
       }
     } catch (err: any) {
@@ -1147,7 +1544,12 @@ export default function App() {
     if (history?.past?.length) {
       prevSnapshot = history.past[history.past.length - 1];
       nextPast = history.past.slice(0, -1);
-      nextFuture = [makeHistorySnapshot(currentEditLog, '撤销前状态', currentScript), ...history.future];
+      nextFuture = [makeHistorySnapshot(
+        currentEditLog,
+        prevSnapshot.changeType === 'code' ? '代码更新后状态' : '撤销前状态',
+        currentScript,
+        { changeType: prevSnapshot.changeType, codeSummary: prevSnapshot.codeSummary },
+      ), ...history.future];
     } else {
       const lastTimestamp = currentEditLog[currentEditLog.length - 1]?.timestamp;
       const fallbackIndex = lastTimestamp == null
@@ -1177,7 +1579,12 @@ export default function App() {
     const currentEditLog = projectFigures[figureId]?.editLog || [];
     const currentScript = spec.custom_script || '';
     const nextSnapshot = history.future[0];
-    const nextPast = [...history.past, makeHistorySnapshot(currentEditLog, '重做前状态', currentScript)];
+    const nextPast = [...history.past, makeHistorySnapshot(
+      currentEditLog,
+      nextSnapshot.changeType === 'code' ? '代码更新前状态' : '重做前状态',
+      currentScript,
+      { changeType: nextSnapshot.changeType, codeSummary: nextSnapshot.codeSummary },
+    )];
     const nextFuture = history.future.slice(1);
     setProjectHistory(prev => ({ ...prev, [figureId]: { past: nextPast, future: nextFuture } }));
     setProjectFigures(prev => {
@@ -1194,13 +1601,29 @@ export default function App() {
 
   // Call after each successful patch in project mode to record history
   const MAX_HISTORY = 50;
-  const pushProjectHistory = (figureId: string, prevEditLog: EditEntry[], label: string) => {
+  const pushProjectHistory = (
+    figureId: string,
+    prevEditLog: EditEntry[],
+    label: string,
+    options?: {
+      script?: string;
+      changeType?: HistorySnapshot['changeType'];
+      codeSummary?: HistorySnapshot['codeSummary'];
+    },
+  ) => {
     setProjectHistory(prev => {
       const entry = prev[figureId] || { past: [], future: [] };
+      const snapshotLabel = entry.past.length === 0 && prevEditLog.length === 0 && options?.changeType !== 'code'
+        ? '初始图'
+        : label;
       const snapshot = makeHistorySnapshot(
         prevEditLog,
-        entry.past.length === 0 && prevEditLog.length === 0 ? '初始图' : label,
-        spec.custom_script || ''
+        snapshotLabel,
+        options?.script ?? spec.custom_script ?? '',
+        {
+          changeType: options?.changeType || 'figure',
+          codeSummary: options?.codeSummary,
+        },
       );
       return {
         ...prev,
@@ -1288,8 +1711,13 @@ export default function App() {
     setProjectId(id);
     setProjectName(name);
     setSpec(cleanSpec);
+    committedScriptRef.current = cleanSpec.custom_script || '';
     setSpecHistory([cloneSpec(cleanSpec)]);
     setHistoryIndex(0);
+    setProjectDrafts({});
+    figureSelectionsRef.current = {};
+    setSelectedGids([]);
+    setSelectedObject('Figure');
     reset();
 
     // Set project datasets
@@ -1298,6 +1726,7 @@ export default function App() {
     // Set project figures
     const nextFigs: Record<string, FigureEntry> = {};
     const figList = projectData.figures || [];
+    const restoredHistory: Record<string, ProjectHistoryState> = {};
     figList.forEach((f: any) => {
       nextFigs[f.figureId] = {
         figureId: f.figureId,
@@ -1308,8 +1737,13 @@ export default function App() {
         fingerprint: f.fingerprint,
         codeSlice: f.codeSlice ?? null,
       };
+      const persistedHistory = normalizeProjectHistory({ [f.figureId]: f.history })[f.figureId];
+      restoredHistory[f.figureId] = persistedHistory && (persistedHistory.past.length > 0 || persistedHistory.future.length > 0)
+        ? persistedHistory
+        : rebuildHistoryFromEditLog(f.editLog || [], cleanSpec.custom_script || '');
     });
     setProjectFigures(nextFigs);
+    setProjectHistory(restoredHistory);
 
     if (figList.length > 0) {
       setActiveFigureId(figList[0].figureId);
@@ -1327,7 +1761,13 @@ export default function App() {
     handleNavigate('editor');
 
     // Trigger initial render
-    setRenderLog(['> 项目已加载，正在调用渲染引擎重建多图...']);
+    const recoveredFigureCount = figList.filter((f: any) => f.recoverySource === 'legacy_spec' || f.recoverySource === 'project_figure').length;
+    const recoveryLines = [
+      '> 项目已加载，正在调用渲染引擎重建多图...',
+      ...(recoveredFigureCount > 0 ? [`> [历史恢复] 已从项目持久化记录恢复 ${recoveredFigureCount} 张 Figure 的 editLog。`] : []),
+      ...(projectData.historyRecovery?.message ? [`> [需要确认] ${projectData.historyRecovery.message}`] : []),
+    ];
+    setRenderLog(recoveryLines);
     try {
       const renderScript = cleanSpec.plot_type === 'custom'
         ? (cleanSpec.custom_script || buildReproduciblePython(cleanSpec))
@@ -1361,6 +1801,9 @@ export default function App() {
             setProjectFigures(prev => {
               const returnedFigs = data.figures || [];
               if (data.status === 'success' && returnedFigs.length > 0) {
+                if (figIds.some(fid => latestRequestIdByFigure.current[fid] !== reqId)) {
+                  return prev;
+                }
                 return mergeReturnedProjectFigures(prev, returnedFigs, { editLogs: initialEditLogs, revisions: initialRevisions });
               }
               const next = { ...prev };
@@ -1466,8 +1909,11 @@ export default function App() {
     }
   };
 
-  const handleProjectRender = async (customScriptToUse?: string) => {
+  const handleProjectRender = async (customScriptToUse?: string, languageToUse?: 'python' | 'r') => {
     if (!projectId) return;
+    const previousScript = committedScriptRef.current;
+    const historyOwnerFigureId = activeFigureId;
+    const previousEditLog = cloneEditLog(projectFigures[historyOwnerFigureId]?.editLog || []);
     const reqId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     const figIds = Object.keys(projectFigures);
     const trackedFigIds = figIds.length > 0 ? figIds : [activeFigureId || 'fig_1'];
@@ -1489,12 +1935,16 @@ export default function App() {
     });
 
     beginProjectRenderRequest(reqId);
-    const engineName = (spec.script_language || 'python') === 'r' ? 'R 引擎' : 'Python 引擎';
+    const effectiveLanguage = languageToUse || spec.script_language || 'python';
+    const engineName = effectiveLanguage === 'r' ? 'R 引擎' : 'Python 引擎';
     setRenderProgressText(`正在调用 ${engineName}：执行脚本、捕获 Figure、生成 SVG...`);
     setSpec(prev => {
       const next = cloneSpec(prev);
       if (customScriptToUse !== undefined) {
         next.custom_script = customScriptToUse;
+      }
+      if (languageToUse !== undefined) {
+        next.script_language = languageToUse;
       }
       return next;
     });
@@ -1538,13 +1988,16 @@ export default function App() {
       const res = await fetch(`/api/projects/${projectId}/figures/render`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ script: scriptToRender, editLogs, language: spec.script_language || 'python', requestId: reqId })
+        body: JSON.stringify({ script: scriptToRender, editLogs, language: effectiveLanguage, requestId: reqId })
       });
       const data = await res.json();
       
       setProjectFigures(prev => {
         const returnedFigs = data.figures || [];
         if (data.status === 'success' && returnedFigs.length > 0) {
+          if (trackedFigIds.some(fid => latestRequestIdByFigure.current[fid] !== reqId)) {
+            return prev;
+          }
           const revisions = Object.fromEntries(
             Object.entries(projectFigures as Record<string, FigureEntry>).map(([fid, fig]) => [fid, fig.revision || 1])
           );
@@ -1564,6 +2017,21 @@ export default function App() {
       });
 
       if (data.status === 'success') {
+        const codeSummary = summarizeCodeChange(previousScript, scriptToRender);
+        if (codeSummary.changed) {
+          pushProjectHistory(
+            historyOwnerFigureId,
+            previousEditLog,
+            `项目代码更新前（${codeSummary.label}）`,
+            {
+              script: previousScript,
+              changeType: 'code',
+              codeSummary,
+            },
+          );
+          setRenderLog(prev => [...prev, `> [代码历史] 已记录项目代码版本，可从 ${historyOwnerFigureId} 历史中撤回（${codeSummary.label}）`]);
+        }
+        committedScriptRef.current = scriptToRender;
         setRenderLog(prev => [...prev, `> [引擎] 渲染成功，共捕获 ${data.figures?.length || 0} 张 Figure`]);
         const returnedFigs = data.figures || [];
         if (returnedFigs.length > 0) {
@@ -1594,9 +2062,76 @@ export default function App() {
     }
   };
 
+  const handleProjectReconfigure = async ({
+    script: nextScript,
+    language,
+    files,
+  }: {
+    script: string;
+    language: 'python' | 'r';
+    files: File[];
+  }) => {
+    if (!projectId) throw new Error('当前没有可重新配置的项目');
+
+    for (const file of files) {
+      const formData = new FormData();
+      formData.append('file', file);
+      const uploadRes = await fetch(`/api/projects/${projectId}/files`, {
+        method: 'POST',
+        body: formData,
+      });
+      const uploadData = await uploadRes.json().catch(() => null);
+      if (!uploadRes.ok || uploadData?.status !== 'success') {
+        throw new Error(uploadData?.message || `上传失败：${file.name}`);
+      }
+    }
+
+    const nextSpec = cloneSpec({
+      ...spec,
+      plot_type: 'custom',
+      custom_script: nextScript,
+      script_language: language,
+    });
+    const figuresToPersist = Object.entries(projectFigures as Record<string, FigureEntry>).map(([figureId, figure]) => ({
+      figureId,
+      index: figure.index,
+      editLog: figure.editLog || [],
+      revision: figure.revision || 1,
+      history: projectHistory[figureId] || { past: [], future: [] },
+    }));
+    const saveRes = await fetch(`/api/projects/${projectId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: projectName,
+        spec: nextSpec,
+        figures: figuresToPersist,
+      }),
+    });
+    const saveData = await saveRes.json().catch(() => null);
+    if (!saveRes.ok || saveData?.status === 'error') {
+      throw new Error(saveData?.message || '保存重新配置失败');
+    }
+
+    const filesRes = await fetch(`/api/projects/${projectId}/files`);
+    const filesData = await filesRes.json().catch(() => null);
+    if (filesRes.ok && filesData?.status === 'success') {
+      setDatasets(filesData.datasets || []);
+    }
+    setSpec(nextSpec);
+    setRenderLog(prev => [
+      ...prev,
+      `> [重新配置] 保留现有项目与历史，新增 ${files.length} 个数据文件。`,
+      '> [重新配置] 已保存脚本，开始重新渲染项目 Figure。',
+    ]);
+    await handleProjectRender(nextScript, language);
+    handleNavigate('editor');
+  };
+
   const handleImportSpec = (nextSpec: FigureSpec) => {
     const cloned = cloneSpec(nextSpec);
     setSpec(cloned);
+    committedScriptRef.current = cloned.custom_script || '';
     setSpecHistory([cloneSpec(cloned)]);
     setHistoryIndex(0);
     setProjectId(null);
@@ -1605,7 +2140,11 @@ export default function App() {
     setRenderLog(['> 数据已导入，日志待机中...']);
   };
 
-  const handleNavigate = (view: ViewState, sub?: string) => {
+  const handleNavigate = (requestedView: ViewState, sub?: string) => {
+    const view = requestedView === 'project_reconfigure' && !projectId ? 'project_create' : requestedView;
+    if (view === 'export_library' && currentView !== 'export_library') {
+      exportLibraryReturnViewRef.current = currentView;
+    }
     setCurrentView(view);
     if (sub !== undefined) {
       setSubView(sub);
@@ -1617,6 +2156,13 @@ export default function App() {
       if (sub !== undefined) prev.subView = sub;
       window.sessionStorage.setItem(SPEC_STORAGE_KEY, JSON.stringify(prev));
     } catch {}
+  };
+
+  const handleExportLibraryBack = () => {
+    const target = exportLibraryReturnViewRef.current === 'export_library'
+      ? (projectId ? 'editor' : 'home')
+      : exportLibraryReturnViewRef.current;
+    handleNavigate(target);
   };
 
   const handleRenderLog = (lines: string[]) => {
@@ -1639,31 +2185,88 @@ export default function App() {
     return Boolean(figureId && figureId !== 'composite' && projectFigures[figureId]);
   };
 
+  if (authStatus === 'checking') {
+    return (
+      <div className="flex h-screen items-center justify-center bg-[#071018] text-white">
+        <div className="text-center">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center bg-cyan-200 text-xl font-black text-slate-950">S</div>
+          <div className="mt-4 text-sm font-bold tracking-wide text-slate-300">正在检查登录状态...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (authStatus === 'anonymous') {
+    if (currentView === 'help') {
+      return (
+        <div className="flex h-screen overflow-hidden bg-[#071018]">
+          <HelpCenterPage
+            publicMode
+            onNavigate={handleNavigate}
+            onAuthenticated={() => {
+              setAuthStatus('authenticated');
+              setCurrentView('home');
+              setSubView('home');
+            }}
+          />
+        </div>
+      );
+    }
+    return (
+      <div className="flex h-screen overflow-hidden bg-[#071018]">
+        <LandingPage
+          publicMode
+          onNavigate={handleNavigate}
+          onAuthenticated={() => {
+            setAuthStatus('authenticated');
+            setCurrentView('home');
+            setSubView('home');
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-white text-slate-900 font-sans selection:bg-blue-100">
-      <Navbar currentView={currentView} onNavigate={handleNavigate} />
+    <div className="scifig-app-shell flex flex-col h-screen overflow-hidden text-slate-900 selection:bg-emerald-100">
+      {currentView !== 'help' && <Navbar currentView={currentView} onNavigate={handleNavigate} />}
       
-      <div className="flex flex-1 overflow-hidden relative">
+      <div className="scifig-app-body flex flex-1 overflow-hidden relative">
         {(currentView === 'editor' || currentView === 'workspace') && (
           <EditorErrorBoundary>
-            <IconSidebar />
-             <LeftSidebar
-              spec={spec}
-              selectedObject={selectedObject}
-              onSelectObject={handleSelectObject}
-              selectedGids={selectedGids}
-              onSelectGids={handleSelectGids}
-              figSession={figSession}
-              lockedObjects={lockedObjects}
-              onToggleLock={handleToggleLock}
-              onPatch={handlePatch}
-              projectId={projectId}
-              datasets={datasets}
-              onUploadFile={handleUploadFile}
-              onDeleteFile={handleDeleteFile}
-              onSelectResourceFile={(f) => setActiveResourceFile(f)}
-              activeResourceFile={activeResourceFile}
-            />
+            <IconSidebar onNavigate={handleNavigate} />
+            <div
+              className="hidden md:flex h-full shrink-0 min-w-0"
+              style={{ width: editorPanelWidths.left }}
+            >
+              <LeftSidebar
+                spec={spec}
+                selectedObject={selectedObject}
+                onSelectObject={handleSelectObject}
+                selectedGids={selectedGids}
+                onSelectGids={handleSelectGids}
+                figSession={figSession}
+                lockedObjects={lockedObjects}
+                onToggleLock={handleToggleLock}
+                onPatch={handlePatch}
+                projectId={projectId}
+                datasets={datasets}
+                onUploadFile={handleUploadFile}
+                onDeleteFile={handleDeleteFile}
+                onSelectResourceFile={(f) => setActiveResourceFile(f)}
+                activeResourceFile={activeResourceFile}
+              />
+            </div>
+            <div
+              role="separator"
+              aria-label="调整左侧栏宽度"
+              title="拖动调整左侧栏宽度，双击恢复默认"
+              onPointerDown={(event) => startEditorPanelResize('left', event)}
+              onDoubleClick={() => setEditorPanelWidths(prev => ({ ...prev, left: 256 }))}
+              className="scifig-panel-resizer group hidden md:flex relative z-30 w-2 shrink-0 cursor-col-resize items-center justify-center"
+            >
+              <div className="h-12 w-0.5 rounded-full bg-slate-300 group-hover:bg-emerald-500" />
+            </div>
             <MainWorkspace
               spec={spec}
               onSpecChange={applySpecChange}
@@ -1696,7 +2299,9 @@ export default function App() {
               onCodePatch={handleCodePatch}
               projectFigures={projectFigures}
               activeFigureId={activeFigureId}
-              onSelectFigure={(figId) => setActiveFigureId(figId)}
+              projectDrafts={projectDrafts}
+              onProjectLocalDraftsPersisted={handleProjectLocalDraftsPersisted}
+              onSelectFigure={handleSelectFigure}
               selectedFigureIds={selectedFigureIds}
               onSelectedFigureIdsChange={setSelectedFigureIds}
               onProjectRender={handleProjectRender}
@@ -1705,23 +2310,39 @@ export default function App() {
               onProjectRedo={handleProjectRedo}
               onProjectHistoryJump={handleProjectHistoryJump}
             />
-             <RightSidebar
-              figSession={figSession}
-              activeFigureId={activeFigureId}
-              selectedFigureIds={selectedFigureIds}
-              selectedObject={selectedObject}
-              onSelectObject={handleSelectObject}
-              selectedGids={selectedGids}
-              onSelectGids={handleSelectGids}
-              onPatch={handlePatch}
-              onImmediatePatch={handleImmediatePatch}
-              lockedObjects={lockedObjects}
-              projectDrafts={projectDrafts}
-              onUpdateDraft={handleUpdateDraft}
-              onUpdateDraftsBatch={handleUpdateDraftsBatch}
-              onDiscardDraft={handleDiscardDraft}
-              onApplyDraft={handleApplyDraft}
-            />
+            <div
+              role="separator"
+              aria-label="调整右侧栏宽度"
+              title="拖动调整右侧栏宽度，双击恢复默认"
+              onPointerDown={(event) => startEditorPanelResize('right', event)}
+              onDoubleClick={() => setEditorPanelWidths(prev => ({ ...prev, right: 320 }))}
+              className="scifig-panel-resizer group hidden md:flex relative z-30 w-2 shrink-0 cursor-col-resize items-center justify-center"
+            >
+              <div className="h-12 w-0.5 rounded-full bg-slate-300 group-hover:bg-emerald-500" />
+            </div>
+            <div
+              className="hidden md:flex h-full shrink-0 min-w-0"
+              style={{ width: editorPanelWidths.right }}
+            >
+              <RightSidebar
+                figSession={figSession}
+                activeFigureId={activeFigureId}
+                selectedFigureIds={selectedFigureIds}
+                selectedObject={selectedObject}
+                onSelectObject={handleSelectObject}
+                selectedGids={selectedGids}
+                onSelectGids={handleSelectGids}
+                onPatch={handlePatch}
+                onImmediatePatch={handleImmediatePatch}
+                lockedObjects={lockedObjects}
+                projectDrafts={projectDrafts}
+                onUpdateDraft={handleUpdateDraft}
+                onUpdateDraftsBatch={handleUpdateDraftsBatch}
+                onDiscardDraft={handleDiscardDraft}
+                onApplyDraft={handleApplyDraft}
+                editingIntentReports={editingIntentReports}
+              />
+            </div>
           </EditorErrorBoundary>
         )}
         
@@ -1754,6 +2375,17 @@ export default function App() {
           <ProjectCreatePage onNavigate={handleNavigate} onLoadProject={handleLoadProject} />
         )}
 
+        {currentView === 'project_reconfigure' && projectId && (
+          <ProjectReconfigurePage
+            projectId={projectId}
+            projectName={projectName}
+            spec={spec}
+            datasets={datasets}
+            onNavigate={handleNavigate}
+            onApply={handleProjectReconfigure}
+          />
+        )}
+
         {currentView === 'data' && (
           <>
             <AppSidebar currentView="data" subView={subView} onNavigate={handleNavigate} />
@@ -1774,13 +2406,15 @@ export default function App() {
 
         {currentView === 'export_settings' && (
           <>
-            <IconSidebar />
-            <LeftSidebar
-              spec={spec}
-              selectedObject={selectedObject}
-              onSelectObject={handleSelectObject}
-              figSession={figSession}
-            />
+            <IconSidebar onNavigate={handleNavigate} />
+            <div className="hidden md:flex h-full w-64 shrink-0">
+              <LeftSidebar
+                spec={spec}
+                selectedObject={selectedObject}
+                onSelectObject={handleSelectObject}
+                figSession={figSession}
+              />
+            </div>
             <ExportSettingsPage
               spec={spec}
               onNavigate={(v) => handleNavigate(v)}
@@ -1809,11 +2443,16 @@ export default function App() {
           <ExportLibraryPage
             projectId={projectId}
             onNavigate={(v) => handleNavigate(v)}
+            onBack={handleExportLibraryBack}
           />
         )}
 
         {currentView === 'landing' && (
           <LandingPage onNavigate={(v) => handleNavigate(v)} />
+        )}
+
+        {currentView === 'help' && (
+          <HelpCenterPage onNavigate={(v) => handleNavigate(v)} />
         )}
       </div>
     </div>

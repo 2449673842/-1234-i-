@@ -7,7 +7,25 @@ import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent
 
 const TEXT_GID_RE = /^(r\.text|text|title|xlabel|ylabel|legend_text|legend_title|fig_text)\./;
 const TICK_LABEL_GID_RE = /^(xtick|ytick)\./;
-const LEGEND_CHILD_GID_RE = /^legend_(?:text|title|line|patch)\.(\d+)(?:\.\d+)?$/;
+const LEGEND_CHILD_GID_RE = /^legend_(?:text|title|line|patch|collection)\.(?:(figure)\.(\d+)|(\d+))(?:\.\d+)?$/;
+let chartPreviewSanitizeCount = 0;
+let lastChartPreviewSvg: string | null = null;
+let lastChartPreviewSanitizedHtml = '';
+
+function sanitizeChartPreviewSvg(svg: string) {
+  if (svg === lastChartPreviewSvg) {
+    return { html: lastChartPreviewSanitizedHtml, sanitizeMs: 0, cacheHit: true };
+  }
+  const startedAt = typeof performance !== 'undefined' ? performance.now() : 0;
+  const html = sanitizeSvg(svg);
+  const sanitizeMs = typeof performance !== 'undefined'
+    ? Math.max(0, performance.now() - startedAt)
+    : 0;
+  lastChartPreviewSvg = svg;
+  lastChartPreviewSanitizedHtml = html;
+  chartPreviewSanitizeCount += 1;
+  return { html, sanitizeMs, cacheHit: false };
+}
 
 function isTextGid(gid: string): boolean {
   return TEXT_GID_RE.test(gid);
@@ -23,6 +41,16 @@ function inferTextTargetRole(gid: string): SemanticTargetRole | undefined {
   return undefined;
 }
 
+function inferObjectTextTargetRole(
+  gid: string,
+  role: string | undefined,
+): SemanticTargetRole | undefined {
+  if (role === 'annotation_text' || role === 'ggplot_text_annotation' || role === 'annotation') {
+    return 'annotation_text';
+  }
+  return inferTextTargetRole(gid);
+}
+
 interface ChartPreviewProps {
   spec: FigureSpec;
   onSpecChange: (spec: FigureSpec) => void;
@@ -35,6 +63,7 @@ interface ChartPreviewProps {
   onImmediatePatch?: (patches: PatchEntry[]) => void;
   figSession?: FigureSession | null;
   dragMode?: boolean;
+  onPendingPositionCountChange?: (count: number) => void;
 }
 
 interface DragSession {
@@ -80,7 +109,12 @@ function parseSvgDimensions(svg: string | null | undefined) {
   return { width: 900, height: 700, viewBox: { x: 0, y: 0, width: 900, height: 700 } };
 }
 
-export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObject, selectedGids = [], onSelectGids, renderedSVG, onPatch, onImmediatePatch, figSession, dragMode = false }: ChartPreviewProps) {
+export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObject, selectedGids = [], onSelectGids, renderedSVG, onPatch, onImmediatePatch, figSession, dragMode = false, onPendingPositionCountChange }: ChartPreviewProps) {
+  const safeRenderedSvg = typeof renderedSVG === 'string' ? renderedSVG : '';
+  const sanitizedRenderedSvg = useMemo(() => {
+    const sanitized = sanitizeChartPreviewSvg(safeRenderedSvg);
+    return { ...sanitized, sanitizeCount: chartPreviewSanitizeCount };
+  }, [safeRenderedSvg]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgContainerRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -97,6 +131,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const pendingDragDeltasRef = useRef<Map<string, DragDelta>>(new Map());
   const pendingPatchMapRef = useRef<Map<string, PatchEntry>>(new Map());
   const pendingOriginalTransformsRef = useRef<Map<string, string>>(new Map());
+  const selectedGidsRef = useRef<string[]>(selectedGids);
 
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [zoomMode, setZoomMode] = useState<'fit' | 'manual'>('fit');
@@ -110,7 +145,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const [dragPreview, setDragPreview] = useState<{ dx: number; dy: number; gids: string[] } | null>(null);
   const [pendingPositionPatches, setPendingPositionPatches] = useState<PatchEntry[]>([]);
   const [dragHint, setDragHint] = useState<string | null>(null);
-  const svgSize = useMemo(() => parseSvgDimensions(renderedSVG), [renderedSVG]);
+  const svgSize = useMemo(() => parseSvgDimensions(safeRenderedSvg), [safeRenderedSvg]);
   const fitScale = useMemo(() => {
     if (!viewport.width || !viewport.height) return 1;
     const availableWidth = Math.max(viewport.width - 64, 200);
@@ -119,12 +154,36 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   }, [svgSize.height, svgSize.width, viewport.height, viewport.width]);
   const scale = zoomMode === 'fit' ? fitScale : manualScale;
   const zoomPercent = Math.round(scale * 100);
+  const measureViewport = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return null;
+    const rect = container.getBoundingClientRect();
+    if (!Number.isFinite(rect.width) || !Number.isFinite(rect.height) || rect.width <= 0 || rect.height <= 0) {
+      return null;
+    }
+    const next = { width: rect.width, height: rect.height };
+    setViewport(next);
+    return next;
+  }, []);
+  const applyFitZoom = useCallback(() => {
+    measureViewport();
+    setZoomMode('fit');
+    setManualScale(1);
+    setPan({ x: 0, y: 0 });
+    window.requestAnimationFrame(() => {
+      measureViewport();
+    });
+  }, [measureViewport]);
   const validGids = useMemo(() => new Set((figSession?.manifest?.objects || []).map(o => o.id)), [figSession?.manifest?.objects]);
   const manifestObjectMap = useMemo(() => {
     const map = new Map<string, any>();
     (figSession?.manifest?.objects || []).forEach(obj => map.set(obj.id, obj));
     return map;
   }, [figSession?.manifest?.objects]);
+
+  useEffect(() => {
+    selectedGidsRef.current = selectedGids;
+  }, [selectedGids]);
 
   const querySvgElementById = useCallback((svgEl: SVGSVGElement | null, id: string): SVGGraphicsElement | null => {
     if (!svgEl || !id) return null;
@@ -169,7 +228,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       && obj.editable.includes('position')
       && typeof props.x === 'number'
       && typeof props.y === 'number'
-      && (props.coord_system === 'axes' || props.coord_system === 'figure');
+      && (props.coord_system === 'axes' || props.coord_system === 'figure' || props.coord_system === 'data');
   }, [manifestObjectMap]);
 
   const getSvgPoint = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
@@ -248,18 +307,21 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     if (!gid) return gid;
     const childMatch = gid.match(LEGEND_CHILD_GID_RE);
     if (!childMatch) return gid;
-    const legendGid = `legend.${childMatch[1]}`;
+    const legendGid = childMatch[1] === 'figure'
+      ? `legend.figure.${childMatch[2]}`
+      : `legend.${childMatch[3]}`;
     return validGids.has(legendGid) ? legendGid : gid;
   }, [validGids]);
 
   const findDraggableTextGidAtPoint = useCallback((target: HTMLElement | null, clientX: number, clientY: number) => {
     const targetGid = resolveLegendDragTarget(findElementGid(target));
-    if (targetGid && isDraggableTextObject(targetGid)) return targetGid;
+    if (targetGid && isDraggableTextObject(targetGid) && !pendingDragDeltasRef.current.has(targetGid)) return targetGid;
 
     const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
     if (!svgEl) return targetGid;
 
     let best: { gid: string; score: number } | null = null;
+    let bestNotPending: { gid: string; score: number } | null = null;
     validGids.forEach(gid => {
       if (!isDraggableTextObject(gid)) return;
       const el = querySvgElementById(svgEl, gid);
@@ -278,8 +340,11 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       const cy = rect.top + rect.height / 2;
       const score = Math.hypot(clientX - cx, clientY - cy);
       if (!best || score < best.score) best = { gid, score };
+      if (!pendingDragDeltasRef.current.has(gid) && (!bestNotPending || score < bestNotPending.score)) {
+        bestNotPending = { gid, score };
+      }
     });
-    return best?.gid ?? targetGid;
+    return bestNotPending?.gid ?? best?.gid ?? targetGid;
   }, [findElementGid, isDraggableTextObject, querySvgElementById, resolveLegendDragTarget, validGids]);
 
   const inferAxesIndexFromGid = useCallback((gid: string): number | null => {
@@ -315,6 +380,22 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     return null;
   }, [getElementSvgBox, getSelectableSvgElement, inferAxesIndexFromGid, manifestObjectMap]);
 
+  const getDataLimitsForObject = useCallback((gid: string) => {
+    const axesIndex = inferAxesIndexFromGid(gid);
+    if (axesIndex === null || !Number.isFinite(axesIndex)) return null;
+    const xAxis = manifestObjectMap.get(`axis.x.${axesIndex}`);
+    const yAxis = manifestObjectMap.get(`axis.y.${axesIndex}`);
+    const xLimits = xAxis?.currentProps?.limits;
+    const yLimits = yAxis?.currentProps?.limits;
+    if (!Array.isArray(xLimits) || !Array.isArray(yLimits) || xLimits.length < 2 || yLimits.length < 2) return null;
+    const x0 = Number(xLimits[0]);
+    const x1 = Number(xLimits[1]);
+    const y0 = Number(yLimits[0]);
+    const y1 = Number(yLimits[1]);
+    if (![x0, x1, y0, y1].every(Number.isFinite) || x0 === x1 || y0 === y1) return null;
+    return { x0, x1, y0, y1 };
+  }, [inferAxesIndexFromGid, manifestObjectMap]);
+
   const buildPositionPatch = useCallback((gid: string, dx: number, dy: number): PatchEntry | null => {
     const obj = manifestObjectMap.get(gid);
     const props = obj?.currentProps || {};
@@ -333,6 +414,12 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       if (!width || !height) return null;
       nextX = props.x + dx / width;
       nextY = props.y - dy / height;
+    } else if (coordSystem === 'data') {
+      const axesBox = getAxesBoxForObject(gid, svgEl);
+      const limits = getDataLimitsForObject(gid);
+      if (!axesBox || !limits || !axesBox.w || !axesBox.h) return null;
+      nextX = props.x + (dx / axesBox.w) * (limits.x1 - limits.x0);
+      nextY = props.y - (dy / axesBox.h) * (limits.y1 - limits.y0);
     } else if (coordSystem === 'figure') {
       const viewBox = svgEl.viewBox.baseVal;
       const width = viewBox?.width || svgSize.viewBox.width;
@@ -343,13 +430,16 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       return null;
     }
 
+    const targetRole: SemanticTargetRole | undefined = obj.kind === 'legend'
+      ? 'legend_container'
+      : inferObjectTextTargetRole(gid, obj.role);
     const intent: EditingIntent = {
       intent: obj.kind === 'legend' ? 'layout.position.legend' : 'layout.position.text',
       scope: {
         selectionMode: 'explicit_objects',
         objectIds: [gid],
         targetKinds: [obj.kind],
-        targetRole: obj.kind === 'legend' ? 'legend_container' : undefined,
+        targetRole,
         crossFigure: 'deny',
       },
       operation: {
@@ -377,7 +467,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       value: intent.operation.value,
       intent,
     } as PatchEntry & { intent: EditingIntent };
-  }, [getAxesBoxForObject, manifestObjectMap, svgSize.viewBox.height, svgSize.viewBox.width]);
+  }, [getAxesBoxForObject, getDataLimitsForObject, manifestObjectMap, svgSize.viewBox.height, svgSize.viewBox.width]);
 
   const releaseDragCapture = useCallback((pointerId?: number) => {
     const target = dragCaptureTargetRef.current;
@@ -493,7 +583,8 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         pendingDragDeltasRef.current.set(gid, nextDelta);
         const patch = buildPositionPatch(gid, nextDelta.dx, nextDelta.dy);
         if (patch) {
-          pendingPatchMapRef.current.set(gid, patch);
+          const identityKey = manifestObjectMap.get(gid)?.identity?.instanceKey ?? gid;
+          pendingPatchMapRef.current.set(`${figSession?.sessionId ?? 'figure'}:${identityKey}`, patch);
           nextPatches.push(patch);
         }
       });
@@ -511,7 +602,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       dragStartRef.current = null;
     }
     return true;
-  }, [applyDragPreviewTransform, applyPendingDragTransforms, buildPositionPatch, clearDragPreview, getSvgPoint, releaseDragCapture]);
+  }, [applyDragPreviewTransform, applyPendingDragTransforms, buildPositionPatch, clearDragPreview, figSession?.sessionId, getSvgPoint, manifestObjectMap, releaseDragCapture]);
 
   useEffect(() => {
     if (!dragPendingRef.current) return;
@@ -580,20 +671,27 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       setViewport({ width: entry.contentRect.width, height: entry.contentRect.height });
     });
     observer.observe(containerRef.current);
+    measureViewport();
     return () => observer.disconnect();
-  }, []);
+  }, [measureViewport]);
 
   useEffect(() => {
-    setZoomMode('fit');
-    setManualScale(1);
-    setPan({ x: 0, y: 0 });
-  }, [figSession?.sessionId]);
+    applyFitZoom();
+  }, [applyFitZoom, figSession?.sessionId]);
 
   useEffect(() => {
     clearDragPreview();
     setPendingPositionPatches([]);
     setDragHint(null);
-  }, [clearDragPreview, renderedSVG]);
+  }, [clearDragPreview, figSession?.sessionId, renderedSVG]);
+
+  useEffect(() => {
+    onPendingPositionCountChange?.(pendingPositionPatches.length);
+  }, [onPendingPositionCountChange, pendingPositionPatches.length]);
+
+  useEffect(() => () => {
+    onPendingPositionCountChange?.(0);
+  }, [onPendingPositionCountChange]);
 
   useEffect(() => {
     if (!dragHint) return;
@@ -666,7 +764,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     const foundGid = findElementGid(target);
 
     if (foundGid) {
-      if (event.ctrlKey || event.metaKey) {
+      if (event.ctrlKey || event.metaKey || event.shiftKey) {
         const next = selectedGids.includes(foundGid)
           ? selectedGids.filter(g => g !== foundGid)
           : [...selectedGids, foundGid];
@@ -719,7 +817,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
           selectionMode: 'explicit_objects',
           objectIds: [foundGid],
           targetKinds: obj?.kind ? [obj.kind] : undefined,
-          targetRole: inferTextTargetRole(foundGid),
+          targetRole: inferObjectTextTargetRole(foundGid, obj?.role),
           subplotIds: obj?.subplotId ? [obj.subplotId] : undefined,
           crossFigure: 'deny',
         },
@@ -734,8 +832,22 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     if (dragMode && event.button === 0) {
       const foundGid = findDraggableTextGidAtPoint(event.target as HTMLElement, event.clientX, event.clientY);
       if (foundGid && isDraggableTextObject(foundGid)) {
-        const dragGids = (selectedGids.includes(foundGid) ? selectedGids : [foundGid]).filter(isDraggableTextObject);
-        if (!selectedGids.includes(foundGid)) {
+        if (event.ctrlKey || event.metaKey || event.shiftKey) {
+          event.preventDefault();
+          event.stopPropagation();
+          suppressNextClickRef.current = true;
+          const currentSelection = selectedGidsRef.current;
+          const next = currentSelection.includes(foundGid)
+            ? currentSelection.filter(gid => gid !== foundGid)
+            : [...currentSelection, foundGid];
+          onSelectGids?.(next);
+          onSelectObject(foundGid);
+          setDragHint(next.length > 1 ? `已选择 ${next.length} 个对象；松开 Ctrl/Shift 后拖动其中任意一个可整体移动。` : null);
+          return;
+        }
+        const currentSelection = selectedGidsRef.current;
+        const dragGids = (currentSelection.includes(foundGid) ? currentSelection : [foundGid]).filter(isDraggableTextObject);
+        if (!currentSelection.includes(foundGid)) {
           onSelectGids?.([foundGid]);
           onSelectObject(foundGid);
         }
@@ -779,7 +891,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
           ? '刻度标签由坐标轴系统自动布局，不能自由拖拽写回；请在轴面板调整刻度间距、旋转、字号或绘图区边距。'
           : LEGEND_CHILD_GID_RE.test(foundGid)
             ? '图例内部文字/符号由图例容器布局管理；请拖动整个图例框，文字和符号会一起移动。'
-            : '当前对象不支持拖拽；仅支持可编辑 position 的普通文本/图例，R/复杂坐标对象会被保护。');
+            : '当前对象不支持拖拽；仅支持可编辑 position 的普通文本、data 坐标标注和图例，R/复杂坐标对象会被保护。');
         return;
       }
     }
@@ -934,7 +1046,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         <div className="absolute bottom-4 left-4 z-20 flex items-center gap-2 rounded-lg border border-slate-200 bg-white/95 px-2 py-1.5 shadow-sm backdrop-blur">
           <button type="button" className="rounded p-1 text-slate-600 hover:bg-slate-100 hover:text-slate-900" onClick={() => setManualZoom(scale / 1.1)} title="缩小"><Minus className="w-4 h-4" /></button>
           <button type="button" className="rounded p-1 text-slate-600 hover:bg-slate-100 hover:text-slate-900" onClick={() => setManualZoom(scale * 1.1)} title="放大"><Plus className="w-4 h-4" /></button>
-          <button type="button" className={`rounded px-2 py-1 text-xs font-medium transition-colors ${zoomMode === 'fit' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-100'}`} onClick={() => { setZoomMode('fit'); setPan({ x: 0, y: 0 }); }} title="适配窗口">适配</button>
+          <button type="button" className={`rounded px-2 py-1 text-xs font-medium transition-colors ${zoomMode === 'fit' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-100'}`} onClick={applyFitZoom} title="适配窗口">适配</button>
           <button type="button" className={`rounded px-2 py-1 text-xs font-medium transition-colors ${zoomMode === 'manual' && Math.abs(scale - 1) < 0.01 ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-100'}`} onClick={() => { setManualZoom(1); setPan({ x: 0, y: 0 }); }} title="100%">100%</button>
           <span className="min-w-[52px] text-center text-xs font-semibold text-slate-700">{zoomPercent}%</span>
         </div>
@@ -1002,14 +1114,27 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
             style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`, transformOrigin: 'center center' }}
             className="transition-transform duration-150 will-change-transform relative"
           >
-            <div
-              ref={svgContainerRef}
-              onClick={handleSvgClick}
-              onDoubleClick={handleSvgDoubleClick}
-              onPointerOver={handleSvgPointerOver}
-              className="flex items-center justify-center shadow-sm [&>svg]:block [&>svg]:h-auto [&>svg]:max-h-none [&>svg]:max-w-none [&>svg]:w-auto"
-              dangerouslySetInnerHTML={{ __html: sanitizeSvg(renderedSVG) }}
-            />
+            {safeRenderedSvg.trim() ? (
+              <div
+                ref={svgContainerRef}
+                onClick={handleSvgClick}
+                onDoubleClick={handleSvgDoubleClick}
+                onPointerOver={handleSvgPointerOver}
+                data-svg-bytes={safeRenderedSvg.length}
+                data-svg-sanitize-ms={sanitizedRenderedSvg.sanitizeMs.toFixed(2)}
+                data-svg-sanitize-count={sanitizedRenderedSvg.sanitizeCount}
+                data-svg-sanitize-cache-hit={sanitizedRenderedSvg.cacheHit ? 'true' : 'false'}
+                className="flex items-center justify-center shadow-sm [&>svg]:block [&>svg]:h-auto [&>svg]:max-h-none [&>svg]:max-w-none [&>svg]:w-auto"
+                dangerouslySetInnerHTML={{ __html: sanitizedRenderedSvg.html }}
+              />
+            ) : (
+              <div
+                ref={svgContainerRef}
+                className="flex h-[360px] w-[520px] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white/80 p-6 text-center text-sm text-slate-500 shadow-sm"
+              >
+                当前 Figure 暂无可预览 SVG。请等待渲染完成；如果日志显示已完成但这里仍为空，请重新点击“同步至引擎并预览 SVG”。
+              </div>
+            )}
             {overlayFrame && (overlayBoxes.length > 0 || marqueeRect) && (
               <svg
                 className="absolute pointer-events-none"

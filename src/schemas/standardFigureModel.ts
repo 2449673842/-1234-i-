@@ -6,6 +6,8 @@ import type {
   Manifest,
   ManifestField,
   ManifestObject,
+  ManifestObjectIdentity,
+  ManifestPropertyCapability,
   Palette,
   SemanticGroup,
 } from './manifest';
@@ -24,10 +26,13 @@ export interface StandardFigureObject {
   currentProps: Record<string, unknown>;
   role?: string;
   subplotId?: string;
+  subplotIds?: string[];
   parentId?: string;
   children?: string[];
   stableKey?: string;
   fingerprint?: string;
+  identity?: ManifestObjectIdentity;
+  propertyCapabilities?: ManifestPropertyCapability[];
   source?: ManifestObject['source'];
 }
 

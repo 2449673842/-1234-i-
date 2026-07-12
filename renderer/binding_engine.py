@@ -1,83 +1,96 @@
 from typing import Any, Dict, List, Optional
 
+
+ALLOWED_KINDS = {'patch', 'line', 'collection', 'legend_patch', 'legend_line'}
+
 def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Binds GIDs to semantic groups and palettes based on color matching and label matching.
     Filters out non-editable kinds (e.g., text, title, spines, axes).
     """
     bindings = []
-    
     palettes = semantic_manifest.get("palettes", [])
     groups = semantic_manifest.get("groups", [])
-    
-    # Kinds that are allowed to participate in binding
-    ALLOWED_KINDS = {'patch', 'line', 'collection', 'legend_patch', 'legend_line'}
-    
-    # Map palette_id -> palette color
-    palette_colors = {p["id"]: p["color"].lower() for p in palettes}
-    
-    # We want to map each group to its GIDs
+    palette_colors = {
+        p["id"]: str(p.get("color") or "").lower()
+        for p in palettes
+        if p.get("id")
+    }
+    palette_ids_by_color: Dict[str, List[str]] = {}
+    for palette_id, color in palette_colors.items():
+        if color:
+            palette_ids_by_color.setdefault(color, []).append(palette_id)
+
+    group_signatures: Dict[tuple, List[str]] = {}
+    for group in groups:
+        palette_id = group.get("paletteId")
+        signature = (
+            _normalize_label(group.get("label")),
+            palette_colors.get(palette_id, ""),
+        )
+        if signature[0] and signature[1]:
+            group_signatures.setdefault(signature, []).append(str(palette_id))
+
     for group in groups:
         palette_id = group.get("paletteId")
         if not palette_id:
             continue
-            
         group_label = group.get("label")
         target_color = palette_colors.get(palette_id)
-        
-        matched_gids = []
-        
+        signature = (_normalize_label(group_label), target_color or "")
+        duplicate_signatures = set(group_signatures.get(signature, []))
+        if len(duplicate_signatures) > 1:
+            bindings.append(_ambiguous_binding(
+                palette_id,
+                group.get("groupId") or f"group_{palette_id}",
+                "Multiple palette groups share the same exact label and color.",
+            ))
+            continue
+
+        label_and_color = []
+        label_only = []
+        color_only = []
         for artist in artist_manifest:
-            kind = artist.get("kind")
-            if kind not in ALLOWED_KINDS:
+            if artist.get("kind") not in ALLOWED_KINDS:
                 continue
-                
-            props = artist.get("currentProps") or artist.get("props") or {}
-            
-            # Normalize facecolor or color.  Mixed-color scatter collections
-            # expose an Nx4 facecolor array, so exact palette membership must
-            # be checked with _contains_color instead of only a single color.
-            artist_color = _normalize_color(props.get("facecolor") or props.get("color"))
-                
-            artist_label = artist.get("label") or ""
-            
-            # Label clean up for comparison (e.g. remove GID prefixes)
-            # If the artist is a legend_patch or legend_line, it might have a label matching the group
-            is_label_match = (
-                group_label.lower() in artist_label.lower() or 
-                artist_label.lower() in group_label.lower()
-            ) if group_label and artist_label else False
-            
-            # If colors match
-            if target_color and (
-                artist_color == target_color
-                or _contains_color(props.get("facecolor"), target_color)
-                or _contains_color(props.get("color"), target_color)
-                or _contains_color(props.get("edgecolor"), target_color)
-            ):
-                # If there are duplicate colors, prioritize matching label
-                # If there are no duplicate colors matching target_color in palettes, bind directly
-                duplicate_palettes_with_same_color = [pid for pid, col in palette_colors.items() if col == target_color]
-                
-                if len(duplicate_palettes_with_same_color) > 1:
-                    # Duplicate color conflict: resolve using label trace
-                    if is_label_match:
-                        matched_gids.append(artist["id"])
-                else:
-                    # Unique color: bind directly
-                    matched_gids.append(artist["id"])
-            elif is_label_match:
-                # Even if color doesn't match perfectly (e.g. small transparency/alpha differences in facecolor),
-                # if label matches, we can bind it.
-                matched_gids.append(artist["id"])
-                
-        if matched_gids:
-            bindings.append({
-                "paletteId": palette_id,
-                "groupId": group["groupId"],
-                "gids": matched_gids,
-                "props": _props_for_gids(matched_gids, artist_manifest)
-            })
+            label_match = _normalize_label(artist.get("label")) == _normalize_label(group_label)
+            matched_prop = _matching_color_prop(artist, target_color)
+            if label_match and matched_prop:
+                label_and_color.append(_binding_target(
+                    artist, matched_prop, "label_and_color", "exact"
+                ))
+            elif label_match:
+                label_only.append(_binding_target(
+                    artist, _default_color_prop(artist), "exact_label", "high"
+                ))
+            elif matched_prop:
+                color_only.append(_binding_target(
+                    artist, matched_prop, "unique_color", "conditional"
+                ))
+
+        if label_and_color:
+            bindings.append(_build_binding(
+                palette_id,
+                group.get("groupId") or f"group_{palette_id}",
+                label_and_color,
+                "exact",
+            ))
+        elif label_only:
+            bindings.append(_build_binding(
+                palette_id,
+                group.get("groupId") or f"group_{palette_id}",
+                label_only,
+                "semantic",
+                ["Palette binding used an exact label because rendered color differed."],
+            ))
+        elif len(palette_ids_by_color.get(target_color or "", [])) == 1 and color_only:
+            bindings.append(_build_binding(
+                palette_id,
+                group.get("groupId") or f"group_{palette_id}",
+                color_only,
+                "conditional",
+                ["Palette binding used unique rendered color because no exact label matched."],
+            ))
 
     # Real scripts often use vectorized color mapping such as
     # df["cluster"].map(CLUSTER_COLORS).  In that pattern there is no AST-level
@@ -89,30 +102,124 @@ def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict
     for palette_id, target_color in palette_colors.items():
         if palette_id in bound_palette_ids or not target_color:
             continue
+        duplicate_palette_ids = palette_ids_by_color.get(target_color, [])
+        if len(duplicate_palette_ids) > 1:
+            bindings.append(_ambiguous_binding(
+                palette_id,
+                f"palette_{palette_id}",
+                "Multiple unbound palettes share this color; color-only matching is disabled.",
+            ))
+            continue
 
-        matched_gids = []
+        targets = []
         for artist in artist_manifest:
-            kind = artist.get("kind")
-            if kind not in ALLOWED_KINDS:
+            if artist.get("kind") not in ALLOWED_KINDS:
                 continue
+            matched_prop = _matching_color_prop(artist, target_color)
+            if matched_prop:
+                targets.append(_binding_target(
+                    artist, matched_prop, "unique_color", "conditional"
+                ))
+        if targets:
+            bindings.append(_build_binding(
+                palette_id,
+                f"palette_{palette_id}",
+                targets,
+                "conditional",
+                ["Palette has no semantic group; binding used unique rendered color."],
+            ))
 
-            props = artist.get("currentProps") or artist.get("props") or {}
-            if (
-                _contains_color(props.get("facecolor"), target_color)
-                or _contains_color(props.get("color"), target_color)
-                or _contains_color(props.get("edgecolor"), target_color)
-            ):
-                matched_gids.append(artist["id"])
-
-        if matched_gids:
-            bindings.append({
-                "paletteId": palette_id,
-                "groupId": f"palette_{palette_id}",
-                "gids": matched_gids,
-                "props": _props_for_gids(matched_gids, artist_manifest)
-            })
-            
     return bindings
+
+
+def _normalize_label(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _default_color_prop(artist: Dict[str, Any]) -> str:
+    props = artist.get("currentProps") or artist.get("props") or {}
+    if artist.get("kind") == "line" and "color" in props:
+        return "color"
+    if "facecolor" in props:
+        return "facecolor"
+    if "color" in props:
+        return "color"
+    return "edgecolor"
+
+
+def _matching_color_prop(artist: Dict[str, Any], target_color: Optional[str]) -> Optional[str]:
+    if not target_color:
+        return None
+    props = artist.get("currentProps") or artist.get("props") or {}
+    preferred = ["color", "facecolor", "edgecolor"] if artist.get("kind") == "line" else ["facecolor", "color", "edgecolor"]
+    for prop in preferred:
+        if _contains_color(props.get(prop), target_color):
+            return prop
+    return None
+
+
+def _binding_target(
+    artist: Dict[str, Any],
+    prop: str,
+    match: str,
+    confidence: str,
+) -> Dict[str, Any]:
+    identity = artist.get("identity") or {}
+    target = {
+        "gid": artist["id"],
+        "prop": prop,
+        "match": match,
+        "confidence": confidence,
+    }
+    if identity.get("instanceKey"):
+        target["instanceKey"] = identity["instanceKey"]
+    if identity.get("seriesKey"):
+        target["seriesKey"] = identity["seriesKey"]
+    return target
+
+
+def _dedupe_targets(targets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    result = []
+    seen = set()
+    for target in targets:
+        key = (target.get("gid"), target.get("prop"))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(target)
+    return result
+
+
+def _build_binding(
+    palette_id: str,
+    group_id: str,
+    targets: List[Dict[str, Any]],
+    target_mode: str,
+    warnings: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    targets = _dedupe_targets(targets)
+    props = [prop for prop in ["facecolor", "color", "edgecolor"] if any(target.get("prop") == prop for target in targets)]
+    return {
+        "paletteId": palette_id,
+        "groupId": group_id,
+        "gids": list(dict.fromkeys(target["gid"] for target in targets)),
+        "props": props,
+        "targetMode": target_mode,
+        "targets": targets,
+        **({"warnings": warnings} if warnings else {}),
+    }
+
+
+def _ambiguous_binding(palette_id: str, group_id: str, warning: str) -> Dict[str, Any]:
+    return {
+        "paletteId": palette_id,
+        "groupId": group_id,
+        "gids": [],
+        "props": [],
+        "targetMode": "ambiguous",
+        "targets": [],
+        "warnings": [warning],
+    }
 
 def _normalize_color(color_val) -> Optional[str]:
     if color_val is None:

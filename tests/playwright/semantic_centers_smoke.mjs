@@ -17,6 +17,11 @@ import { chromium } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  authenticateCapabilitySmokeUser,
+  bearerHeaders,
+  installBrowserAuthentication,
+} from './smokeAuth.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -30,6 +35,7 @@ const apiResponses = [];
 const consoleErrors = [];
 const pageErrors = [];
 const diagnostics = {};
+let authToken = '';
 
 function record(id, status, note) {
   results.push({ id, status, note });
@@ -61,6 +67,7 @@ async function requestJson(pathname, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...bearerHeaders(authToken),
       ...(options.headers || {}),
     },
   });
@@ -86,9 +93,12 @@ const script = [
   'import matplotlib.pyplot as plt',
   'LINE_COLOR = "#225577"',
   'POINT_COLOR = "#cc5500"',
+  'SERIES_COLORS = {"Weak": "#446688", "Mixed": "#446688"}',
   'fig, ax = plt.subplots(figsize=(5, 3.5))',
   'ax.plot([0, 1, 2, 3], [1, 3, 2, 4], color=LINE_COLOR, linewidth=1.5, marker="o", label="Line A")',
   'ax.scatter([0, 1, 2, 3], [1.2, 2.8, 2.2, 3.7], c=POINT_COLOR, s=55, label="Points")',
+  'ax.plot([0, 1, 2, 3], [2.0, 2.4, 2.1, 2.8], color=SERIES_COLORS["Weak"], label="Weak")',
+  'ax.plot([0, 1, 2, 3], [2.8, 2.1, 2.6, 2.2], color=SERIES_COLORS["Mixed"], label="Mixed")',
   'ax.set_title("Semantic Centers")',
   'ax.set_xlabel("X Axis")',
   'ax.set_ylabel("Y Axis")',
@@ -155,6 +165,8 @@ async function prepareProject(page) {
       objectCount: rendered.figures[0]?.manifest?.objects?.length || 0,
       paletteCount: rendered.figures[0]?.manifest?.palettes?.length || 0,
       bindingCount: rendered.figures[0]?.manifest?.bindings?.length || 0,
+      weakBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'dict_SERIES_COLORS__Weak') || null,
+      mixedBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'dict_SERIES_COLORS__Mixed') || null,
     };
   }, { baseUrl: BASE_URL, script });
   await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
@@ -265,6 +277,16 @@ async function setNumberControl(page, sectionText, labelText, value) {
   return true;
 }
 
+async function setNumberByParam(page, gid, prop, value) {
+  const input = page.locator(`input[data-param-role="number"][data-param-gid="${gid}"][data-param-prop="${prop}"]`).first();
+  if (!(await input.isVisible({ timeout: 4000 }).catch(() => false))) return false;
+  await input.fill(String(value));
+  await input.press('Enter').catch(() => {});
+  await input.evaluate((node) => node.blur());
+  await page.waitForTimeout(700);
+  return true;
+}
+
 async function setColorControl(page, sectionText, labelText, value) {
   const directHandle = await page.evaluateHandle(({ sectionText, labelText }) => {
     const normalize = (text) => String(text || '').replace(/\s+/g, '');
@@ -310,6 +332,30 @@ async function setColorControl(page, sectionText, labelText, value) {
   await element.evaluate((node) => node.blur());
   await page.waitForTimeout(700);
   return true;
+}
+
+async function setColorByScope(page, scope, value) {
+  const textInput = page.locator(`input[data-color-role="text"][data-color-scope="${scope}"]`).first();
+  if (!(await textInput.isVisible({ timeout: 3000 }).catch(() => false))) return false;
+  await textInput.fill(value);
+  await textInput.press('Enter').catch(() => {});
+  await textInput.evaluate((node) => node.blur());
+  await page.waitForTimeout(700);
+  return true;
+}
+
+async function readRuntimePaletteColors(page, paletteIds) {
+  return page.evaluate((ids) => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    if (!raw) return {};
+    const state = JSON.parse(raw);
+    const figure = state.projectFigures?.[state.activeFigureId || 'fig_1'];
+    const palettes = figure?.manifest?.palettes || [];
+    return Object.fromEntries(ids.map((id) => [
+      id,
+      palettes.find((palette) => palette.id === id)?.color || null,
+    ]));
+  }, paletteIds);
 }
 
 async function clickFirstPaletteAffectedObject(page, sectionText) {
@@ -359,16 +405,39 @@ async function applyDraftAndReadPatch(page) {
   return { clicked, patchRequest, patchBody, successful };
 }
 
+async function saveProjectAndReadPut(page) {
+  const start = apiRequests.length;
+  const saveButton = page.getByRole('button', { name: /^保存$/ }).first();
+  if (!(await saveButton.isVisible({ timeout: 5000 }).catch(() => false))) {
+    return { clicked: false, putRequest: null, putBody: null, successful: false };
+  }
+  await saveButton.click();
+  await waitForApiSettle(start, 40000);
+  const putRequest = apiRequests.slice(start).find((request) => (
+    request.method === 'PUT' && /\/api\/projects\/[^/]+$/.test(new URL(request.url).pathname)
+  )) || null;
+  const putBody = parseJson(putRequest?.postData);
+  const successful = apiResponses.slice(start).some((response) => (
+    response.method === 'PUT' &&
+    /\/api\/projects\/[^/]+$/.test(new URL(response.url).pathname) &&
+    response.status >= 200 &&
+    response.status < 300
+  ));
+  return { clicked: true, putRequest, putBody, successful };
+}
+
 function patchList(body) {
   return Array.isArray(body?.patches) ? body.patches : [];
 }
 
 async function run() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'semantic centers');
   await cleanupSmokeProjects();
 
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await installBrowserAuthentication(context, authToken);
   const page = await context.newPage();
 
   page.on('console', (msg) => {
@@ -395,6 +464,19 @@ async function run() {
     projectId = fixture.projectId;
     diagnostics.fixture = fixture;
 
+    const weakGids = fixture.weakBinding?.gids || [];
+    const mixedGids = fixture.mixedBinding?.gids || [];
+    const sameColorBindingsOk = fixture.weakBinding?.targetMode === 'exact'
+      && fixture.mixedBinding?.targetMode === 'exact'
+      && weakGids.length > 0
+      && mixedGids.length > 0
+      && weakGids.every((gid) => !mixedGids.includes(gid));
+    record(
+      'H0-same-color-binding-isolation',
+      sameColorBindingsOk ? 'PASS' : 'FAIL',
+      `weak=${JSON.stringify(fixture.weakBinding)}, mixed=${JSON.stringify(fixture.mixedBinding)}`,
+    );
+
     await clickText(page, '字体中心');
     const fontChanged = await setNumberControl(page, 'X 轴刻度文字', '字号', 13);
     const fontDraft = (await getBodyText(page)).includes('已暂存');
@@ -410,6 +492,20 @@ async function run() {
     const componentPatches = patchList(componentApply.patchBody);
     const componentOk = componentChanged && componentDraft && componentApply.successful && componentPatches.some((patch) => patch.prop === 'linewidth' && Number(patch.value) === 2.5);
     record('G1', componentOk ? 'PASS' : 'FAIL', `changed=${componentChanged}, draft=${componentDraft}, patches=${JSON.stringify(componentPatches)}`);
+
+    await clickText(page, '组件中心');
+    const pointSizeChanged = await setNumberByParam(page, 'component-points', 'size', 90);
+    const pointDraft = (await getBodyText(page)).includes('已暂存');
+    const pointApply = pointSizeChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const pointPatches = patchList(pointApply.patchBody);
+    const pointOk = pointSizeChanged
+      && pointDraft
+      && pointApply.successful
+      && pointPatches.length === 1
+      && /^collection\.\d+\.\d+$/.test(String(pointPatches[0]?.gid || ''))
+      && pointPatches[0]?.prop === 'size'
+      && Number(pointPatches[0]?.value) === 90;
+    record('G2-scatter-excludes-legend', pointOk ? 'PASS' : 'FAIL', `changed=${pointSizeChanged}, draft=${pointDraft}, patches=${JSON.stringify(pointPatches)}`);
 
     await clickText(page, '配色中心');
     const selectedPaletteObject = await clickFirstPaletteAffectedObject(page, 'LINE_COLOR');
@@ -438,6 +534,60 @@ async function run() {
       (['color', 'facecolor', 'edgecolor'].includes(patch.prop) && patch.value === '#118833')
     ));
     record('H1-whole', paletteOk ? 'PASS' : 'FAIL', `changed=${paletteChanged}, draft=${paletteDraft}, patches=${JSON.stringify(palettePatches)}`);
+
+    await clickText(page, '配色中心');
+    const weakPaletteId = 'dict_SERIES_COLORS__Weak';
+    const mixedPaletteId = 'dict_SERIES_COLORS__Mixed';
+    const weakChanged = await setColorByScope(page, `palette:${weakPaletteId}`, '#22aa66');
+    const weakDraft = (await getBodyText(page)).includes('已暂存');
+    const weakApply = weakChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const weakPatches = patchList(weakApply.patchBody);
+    const weakCodePatch = weakPatches.find((patch) => patch.type === 'code_patch');
+    const runtimePaletteColors = await readRuntimePaletteColors(page, [weakPaletteId, mixedPaletteId]);
+    const weakIsolationOk = weakChanged
+      && weakDraft
+      && weakApply.successful
+      && weakPatches.length === 1
+      && weakCodePatch?.target_id === weakPaletteId
+      && Array.isArray(weakCodePatch?.gids)
+      && weakCodePatch.gids.length === weakGids.length
+      && weakCodePatch.gids.every((gid) => weakGids.includes(gid) && !mixedGids.includes(gid))
+      && String(runtimePaletteColors[weakPaletteId]).toLowerCase() === '#22aa66'
+      && String(runtimePaletteColors[mixedPaletteId]).toLowerCase() === '#446688';
+    record(
+      'H1b-same-color-weak-only',
+      weakIsolationOk ? 'PASS' : 'FAIL',
+      `changed=${weakChanged}, draft=${weakDraft}, patch=${JSON.stringify(weakCodePatch)}, colors=${JSON.stringify(runtimePaletteColors)}`,
+    );
+
+    await clickText(page, '配色中心');
+    const selectedForSave = await clickFirstPaletteAffectedObject(page, 'LINE_COLOR');
+    const saveDraftChanged = await setColorControl(page, 'LINE_COLOR', '仅修改已选', '#aa3377');
+    const saveDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const saveResult = saveDraftChanged ? await saveProjectAndReadPut(page) : { clicked: false, putBody: null, successful: false };
+    const savedFigureLog = Array.isArray(saveResult.putBody?.figures?.[0]?.editLog)
+      ? saveResult.putBody.figures[0].editLog
+      : [];
+    const savedLocalColor = savedFigureLog.some((entry) => (
+      entry?.mode === 'local_patch' &&
+      ['color', 'facecolor', 'edgecolor'].includes(entry?.prop) &&
+      String(entry?.value).toLowerCase() === '#aa3377'
+    ));
+    const persistedProject = projectId ? await requestJson(`/api/projects/${projectId}`).catch(() => null) : null;
+    const persistedLog = Array.isArray(persistedProject?.project?.figures?.[0]?.editLog)
+      ? persistedProject.project.figures[0].editLog
+      : [];
+    const persistedLocalColor = persistedLog.some((entry) => (
+      entry?.mode === 'local_patch' &&
+      ['color', 'facecolor', 'edgecolor'].includes(entry?.prop) &&
+      String(entry?.value).toLowerCase() === '#aa3377'
+    ));
+    const draftClearedAfterSave = !(await getBodyText(page)).includes('已暂存');
+    record(
+      'H2-save-local-draft',
+      selectedForSave.clicked && saveDraftChanged && saveDraftVisible && saveResult.clicked && saveResult.successful && savedLocalColor && persistedLocalColor && draftClearedAfterSave ? 'PASS' : 'FAIL',
+      `selected=${JSON.stringify(selectedForSave)}, changed=${saveDraftChanged}, draft=${saveDraftVisible}, savedLocalColor=${savedLocalColor}, persistedLocalColor=${persistedLocalColor}, persistedLog=${JSON.stringify(persistedLog)}, draftCleared=${draftClearedAfterSave}`,
+    );
 
     if (consoleErrors.length > 0 || pageErrors.length > 0) {
       record('N1', 'FAIL', `console=${consoleErrors.length}, page=${pageErrors.length}`);

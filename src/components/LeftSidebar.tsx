@@ -1,7 +1,8 @@
-import React, { useMemo, useState, type ReactNode } from 'react';
+import React, { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { FileCode, FileSpreadsheet, FileJson, Layout, Eye, EyeOff, ChevronDown, ChevronRight, Type, BarChart, Box, Lock, Unlock } from 'lucide-react';
 import { FigureSession, ManifestObject, PatchEntry, Binding } from '../schemas/manifest';
 import { FigureSpec, DatasetEntry } from '../types';
+import { takeBoundedWithPinned, TREE_CHILD_RENDER_LIMIT } from '../utils/largeFigureUi';
 
 interface LeftSidebarProps {
   spec: FigureSpec;
@@ -78,29 +79,49 @@ function TreeItem({
   const isLocked = lockedObjects?.has(node.id);
   const isVirtualNode = node.id.endsWith('_Section') || node.id === 'Figure';
 
-  const childItems = hasChildren && isExpanded
-    ? node.children!.map(child => (
-      <div key={child.id}>
-        <TreeItem
-          node={child}
-          depth={depth + 1}
-          expanded={expanded}
-          visibleMap={visibleMap}
-          selectedObject={selectedObject}
-          onSelectObject={onSelectObject}
-          selectedGids={selectedGids}
-          onSelectGids={onSelectGids}
-          allFlatNodes={allFlatNodes}
-          onToggleExpand={onToggleExpand}
-          onToggleVisibility={onToggleVisibility}
-          lockedObjects={lockedObjects}
-          onToggleLock={onToggleLock}
-          onDragStart={onDragStart}
-          onDragOver={onDragOver}
-          onDrop={onDrop}
-        />
-      </div>
-    ))
+  const visibleChildren = hasChildren && isExpanded
+    ? boundedTreeChildren(node.children!, selectedObject, selectedGids)
+    : [];
+  const hiddenChildCount = hasChildren && isExpanded
+    ? Math.max(0, node.children!.length - visibleChildren.length)
+    : 0;
+
+  const childItems = visibleChildren.length
+    ? (
+      <>
+        {visibleChildren.map(child => (
+          <div key={child.id}>
+            <TreeItem
+              node={child}
+              depth={depth + 1}
+              expanded={expanded}
+              visibleMap={visibleMap}
+              selectedObject={selectedObject}
+              onSelectObject={onSelectObject}
+              selectedGids={selectedGids}
+              onSelectGids={onSelectGids}
+              allFlatNodes={allFlatNodes}
+              onToggleExpand={onToggleExpand}
+              onToggleVisibility={onToggleVisibility}
+              lockedObjects={lockedObjects}
+              onToggleLock={onToggleLock}
+              onDragStart={onDragStart}
+              onDragOver={onDragOver}
+              onDrop={onDrop}
+            />
+          </div>
+        ))}
+        {hiddenChildCount > 0 && (
+          <div
+            data-testid="layer-tree-hidden-count"
+            className="py-1.5 pr-2 text-[11px] leading-tight text-slate-400"
+            style={{ paddingLeft: `${(depth + 1) * 12 + 28}px` }}
+          >
+            已隐藏 {hiddenChildCount} 个对象，使用搜索框可定位完整图层
+          </div>
+        )}
+      </>
+    )
     : null;
 
   const isDraggable = !isVirtualNode;
@@ -108,6 +129,8 @@ function TreeItem({
   return (
     <div
       className="w-full"
+      data-layer-render-mode="content-visibility"
+      style={{ contentVisibility: 'auto', containIntrinsicSize: '36px' }}
       draggable={isDraggable}
       onDragStart={(e) => {
         if (!isDraggable) return;
@@ -126,6 +149,8 @@ function TreeItem({
       }}
     >
       <div
+        data-layer-node-id={node.id}
+        data-selected={isSelected ? 'true' : 'false'}
         className={`flex items-center justify-between group py-1.5 pr-2 rounded cursor-pointer transition-colors ${isSelected ? 'bg-blue-50 text-blue-700 font-medium' : isMultiSelected ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-100 text-slate-700'}`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
         onClick={(event) => {
@@ -226,6 +251,22 @@ function flattenTree(nodes: TreeNode[]): TreeNode[] {
   return result;
 }
 
+function treeContainsId(node: TreeNode, ids: Set<string>): boolean {
+  if (ids.has(node.id)) return true;
+  return Boolean(node.children?.some(child => treeContainsId(child, ids)));
+}
+
+function boundedTreeChildren(children: TreeNode[], selectedObject: string, selectedGids: string[]): TreeNode[] {
+  const selectedIds = new Set([selectedObject, ...selectedGids].filter(Boolean));
+  return takeBoundedWithPinned(
+    children,
+    TREE_CHILD_RENDER_LIMIT,
+    selectedIds,
+    child => child.id,
+    treeContainsId,
+  );
+}
+
 export function LeftSidebar({
   spec,
   selectedObject = 'Figure',
@@ -302,7 +343,14 @@ export function LeftSidebar({
 
     const getSubplotId = (o: ManifestObject): string | null => {
       if (o.kind === 'subplot') return o.id;
+      const relation = o.identity?.relation;
+      if (typeof relation?.subplotId === 'string') return relation.subplotId;
+      if ((relation?.subplotIds?.length ?? 0) > 1) return null;
+      if (relation?.subplotIds?.length === 1) return relation.subplotIds[0];
       if (typeof o.subplotId === 'string') return o.subplotId;
+      if (o.kind === 'colorbar' || relation?.colorbarId) {
+        return typeof o.source?.ownerAxesIndex === 'number' ? `subplot.${o.source.ownerAxesIndex}` : null;
+      }
       const idx = getAxesIndex(o);
       return idx === null ? null : `subplot.${idx}`;
     };
@@ -311,6 +359,12 @@ export function LeftSidebar({
       o.id === 'Background' ||
       o.id === 'Export Boundary' ||
       o.id.startsWith('fig_text.') ||
+      o.id.startsWith('legend.figure.') ||
+      o.id.startsWith('legend_title.figure.') ||
+      o.id.startsWith('legend_text.figure.') ||
+      o.id.startsWith('legend_line.figure.') ||
+      o.id.startsWith('legend_patch.figure.') ||
+      o.id.startsWith('legend_collection.figure.') ||
       o.id === 'patch_1'
     );
     const canvasNodes = canvasObjects.map(o => nodeForObject(o, o.id.startsWith('fig_text.') ? <Type className="w-3.5 h-3.5" /> : undefined));
@@ -319,7 +373,8 @@ export function LeftSidebar({
       .filter(o => o.kind === 'subplot')
       .sort((a, b) => Number(a.currentProps.subplotIndex ?? getAxesIndex(a) ?? 0) - Number(b.currentProps.subplotIndex ?? getAxesIndex(b) ?? 0));
 
-    const axisLike = (o: ManifestObject) => (
+    const colorbarLike = (o: ManifestObject) => o.kind === 'colorbar' || Boolean(o.identity?.relation?.colorbarId);
+    const axisLike = (o: ManifestObject) => !colorbarLike(o) && (
       o.kind === 'axes' ||
       o.kind === 'axis_x' ||
       o.kind === 'axis_y' ||
@@ -340,19 +395,37 @@ export function LeftSidebar({
       o.kind !== 'subplot' &&
       !axisLike(o) &&
       !legendLike(o) &&
+      !colorbarLike(o) &&
       !textLike(o)
     );
 
     const subplotNodes = subplotObjects.map((subplot) => {
       const subplotId = subplot.id;
+      const relation = subplot.identity?.relation;
+      const twinSubplotIds = relation?.twinSubplotIds ?? [];
+      const sharedXSubplotIds = relation?.sharedXSubplotIds ?? [];
+      const sharedYSubplotIds = relation?.sharedYSubplotIds ?? [];
+      const relationBadge = twinSubplotIds.length > 0
+        ? '双轴'
+        : sharedXSubplotIds.length > 0 || sharedYSubplotIds.length > 0
+          ? '共享轴'
+          : undefined;
+      const relationSubtitle = [
+        twinSubplotIds.length > 0 ? `双轴关联 ${twinSubplotIds.join(', ')}` : '',
+        sharedXSubplotIds.length > 0 ? `共享 X ${sharedXSubplotIds.join(', ')}` : '',
+        sharedYSubplotIds.length > 0 ? `共享 Y ${sharedYSubplotIds.join(', ')}` : '',
+      ].filter(Boolean).join(' · ');
       const inSubplot = (o: ManifestObject) => getSubplotId(o) === subplotId;
       const axisNodes = objects.filter(o => inSubplot(o) && axisLike(o)).map(o => nodeForObject(o));
       const textNodes = objects.filter(o => inSubplot(o) && textLike(o)).map(o => nodeForObject(o, <Type className="w-3.5 h-3.5" />));
       const dataNodes = objects.filter(o => inSubplot(o) && dataLike(o)).map(o => nodeForObject(o, <BarChart className="w-3.5 h-3.5 text-indigo-400" />));
       const legendNodes = objects.filter(o => inSubplot(o) && legendLike(o)).map(o => nodeForObject(o, o.kind === 'text' ? <Type className="w-3.5 h-3.5" /> : undefined));
+      const colorbarNodes = objects.filter(o => inSubplot(o) && colorbarLike(o)).map(o => nodeForObject(o));
       return {
         id: `${subplotId}_Section`,
         label: String(subplot.currentProps.label || subplot.label || subplotId),
+        badge: relationBadge,
+        subtitle: relationSubtitle || undefined,
         icon: <Layout className="w-3.5 h-3.5 text-blue-500" />,
         children: [
           nodeForObject(subplot, <Layout className="w-3.5 h-3.5 text-blue-500" />),
@@ -360,6 +433,7 @@ export function LeftSidebar({
           { id: `${subplotId}_Axes`, label: '坐标轴 / 框线 / 刻度', children: axisNodes.length ? axisNodes : [{ id: `${subplotId}_axes_empty`, label: '无坐标轴对象' }] },
           { id: `${subplotId}_Data`, label: '数据图层', children: dataNodes.length ? dataNodes : [{ id: `${subplotId}_data_empty`, label: '无数据对象' }] },
           { id: `${subplotId}_Legend`, label: '图例', children: legendNodes.length ? legendNodes : [{ id: `${subplotId}_legend_empty`, label: '无图例' }] },
+          { id: `${subplotId}_Colorbar`, label: '色条', children: colorbarNodes.length ? colorbarNodes : [{ id: `${subplotId}_colorbar_empty`, label: '无色条' }] },
         ],
       };
     });
@@ -554,9 +628,26 @@ export function LeftSidebar({
     }
   };
 
+  useEffect(() => {
+    const handleRailAction = (event: Event) => {
+      const action = (event as CustomEvent<{ action?: string }>).detail?.action;
+      if (action !== 'resources' && action !== 'layers') return;
+      const selector = action === 'resources'
+        ? '[data-editor-section="resources"]'
+        : '[data-editor-section="layers"]';
+      const section = document.querySelector<HTMLElement>(selector);
+      section?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      if (action === 'layers') {
+        document.querySelector<HTMLInputElement>('[data-testid="layer-tree-search"]')?.focus({ preventScroll: true });
+      }
+    };
+    window.addEventListener('scifigure:editor-rail-action', handleRailAction);
+    return () => window.removeEventListener('scifigure:editor-rail-action', handleRailAction);
+  }, []);
+
   return (
-    <div className="w-64 bg-slate-50 border-r border-slate-200 flex flex-col h-full shrink-0 hidden md:flex select-none">
-      <div className="p-4 border-b border-slate-200">
+    <div className="scifig-editor-panel scifig-editor-panel-left w-full flex flex-col h-full shrink-0 select-none">
+      <div data-editor-section="resources" className="p-4 border-b border-slate-200">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-semibold text-slate-800 text-sm">项目资源</h2>
         </div>
@@ -641,7 +732,7 @@ export function LeftSidebar({
         )}
       </div>
 
-      <div className="p-4 flex-1 overflow-y-auto custom-scrollbar">
+      <div data-editor-section="layers" className="p-4 flex-1 overflow-y-auto custom-scrollbar">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-semibold text-slate-800 text-sm flex items-center gap-2">
             <Layout className="w-4 h-4 text-slate-500" />
@@ -649,6 +740,7 @@ export function LeftSidebar({
           </h2>
         </div>
         <input
+          data-testid="layer-tree-search"
           type="text"
           value={searchTerm}
           onChange={(event) => setSearchTerm(event.target.value)}

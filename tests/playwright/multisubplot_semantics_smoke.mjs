@@ -13,6 +13,11 @@ import { chromium } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import {
+  authenticateCapabilitySmokeUser,
+  bearerHeaders,
+  installBrowserAuthentication,
+} from './smokeAuth.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -26,6 +31,7 @@ const apiResponses = [];
 const consoleErrors = [];
 const pageErrors = [];
 const diagnostics = {};
+let authToken = '';
 
 function record(id, status, note) {
   results.push({ id, status, note });
@@ -46,11 +52,18 @@ function interestingApi(request) {
   return url.includes('/api/figure') || url.includes('/api/projects');
 }
 
+function isIgnorableDevServerNoise(message) {
+  return message.includes('[vite] failed to connect to websocket')
+    || message.includes("WebSocket connection to 'ws://localhost:24678/")
+    || message.includes('WebSocket closed without opened');
+}
+
 async function requestJson(pathname, options = {}) {
   const res = await fetch(`${BASE_URL}${pathname}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...bearerHeaders(authToken),
       ...(options.headers || {}),
     },
   });
@@ -282,6 +295,37 @@ async function setNumberControl(page, sectionText, labelText, value) {
   return true;
 }
 
+async function setNumberControlInExactCard(page, cardText, prop, value) {
+  const handle = await page.evaluateHandle(({ cardText, prop }) => {
+    const normalize = (text) => String(text || '').replace(/\s+/g, '');
+    const visible = (node) => {
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const rightSide = (node) => node.getBoundingClientRect().left > window.innerWidth * 0.70;
+    const heading = Array.from(document.querySelectorAll('span, div, p'))
+      .find((node) => visible(node) && rightSide(node) && normalize(node.textContent) === normalize(cardText));
+    if (!heading) return null;
+    let current = heading.parentElement;
+    while (current && rightSide(current)) {
+      const control = Array.from(current.querySelectorAll('input[data-param-role="number"]'))
+        .find((node) => visible(node) && !node.disabled && node.getAttribute('data-param-prop') === prop);
+      if (control) return control;
+      current = current.parentElement;
+    }
+    return null;
+  }, { cardText, prop });
+  const element = handle.asElement();
+  if (!element) return false;
+  await element.scrollIntoViewIfNeeded().catch(() => {});
+  await element.fill(String(value));
+  await element.press('Enter').catch(() => {});
+  await element.evaluate((node) => node.blur());
+  await page.waitForTimeout(700);
+  return true;
+}
+
 async function waitForApiSettle(startIndex, timeoutMs = 40000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -311,16 +355,20 @@ function patchList(body) {
 
 async function run() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'multi-subplot semantics');
   await cleanupSmokeProjects();
 
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await installBrowserAuthentication(context, authToken);
   const page = await context.newPage();
 
   page.on('console', (msg) => {
-    if (msg.type() === 'error') consoleErrors.push(msg.text());
+    if (msg.type() === 'error' && !isIgnorableDevServerNoise(msg.text())) consoleErrors.push(msg.text());
   });
-  page.on('pageerror', (err) => pageErrors.push(err.message));
+  page.on('pageerror', (err) => {
+    if (!isIgnorableDevServerNoise(err.message)) pageErrors.push(err.message);
+  });
   page.on('request', (request) => {
     if (interestingApi(request)) {
       apiRequests.push({ method: request.method(), url: request.url(), postData: request.postData() });
@@ -358,7 +406,7 @@ async function run() {
 
     await clickText(page, '组件中心');
     const componentScopeChanged = await setRightSidebarScope(page, 'subplot.3');
-    const componentChanged = await setNumberControl(page, '线条', 'linewidth', 3.3);
+    const componentChanged = await setNumberControlInExactCard(page, '线条 / 拟合线', 'linewidth', 3.3);
     const componentDraft = (await getBodyText(page)).includes('已暂存');
     const componentApply = componentChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const componentPatches = patchList(componentApply.patchBody);

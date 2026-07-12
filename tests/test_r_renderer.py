@@ -87,6 +87,47 @@ def _object(result: Dict[str, Any], gid: str) -> Dict[str, Any]:
 
 @unittest.skipUnless(os.path.exists(_rscript_bin()), "Rscript is not available")
 class TestRRenderer(unittest.TestCase):
+    def test_r_shadow_identity_is_stable_across_style_edits(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+p <- ggplot(df, aes(x, y)) + geom_line() + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        patched = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "color", "value": "#CC0000", "mode": "backend_patch"},
+        ])
+        baseline_objects = _objects(baseline)
+        instance_keys = [obj["identity"]["instanceKey"] for obj in baseline_objects]
+        self.assertEqual(len(instance_keys), len(set(instance_keys)))
+        for obj in baseline_objects:
+            capability_props = [item["prop"] for item in obj["propertyCapabilities"]]
+            self.assertEqual(sorted(obj["editable"]), sorted(capability_props))
+        baseline_layer = _object(baseline, "r.layer.0")
+        patched_layer = _object(patched, "r.layer.0")
+
+        self.assertEqual(
+            baseline_layer["identity"]["instanceKey"],
+            patched_layer["identity"]["instanceKey"],
+        )
+        self.assertEqual(
+            baseline_layer["identity"]["semanticKey"],
+            patched_layer["identity"]["semanticKey"],
+        )
+        self.assertEqual(
+            baseline_layer["identity"]["seriesKey"],
+            patched_layer["identity"]["seriesKey"],
+        )
+        color_capability = next(
+            capability for capability in patched_layer["propertyCapabilities"]
+            if capability["prop"] == "color"
+        )
+        self.assertEqual(color_capability["patchMode"], "backend_patch")
+        self.assertEqual(color_capability["replay"], "stable")
+        self.assertIn("object", color_capability["scopes"])
+        self.assertIn("cross_figure", color_capability["scopes"])
+
     def test_text_theme_patch(self):
         script = """
 library(ggplot2)
@@ -196,9 +237,120 @@ p
             {"gid": "r.group.color.0.1", "prop": "color", "value": "#2CA02C", "mode": "backend_patch"},
         ])
         palettes = result["manifest"]["palettes"]
+        bindings = result["manifest"]["bindings"]
         self.assertEqual(len(palettes), 2)
         self.assertIn("#2CA02C".lower(), result["svg"].lower())
         self.assertEqual(_object(result, "r.group.color.0.1")["currentProps"]["color"], "#2CA02C")
+        target_binding = next(binding for binding in bindings if binding["paletteId"] == "r.scale.color.0.1")
+        self.assertEqual(target_binding["targetMode"], "exact")
+        self.assertEqual(target_binding["targets"], [{
+            "gid": "r.group.color.0.1",
+            "prop": "color",
+            "instanceKey": "r:container:r.group.color.0.1",
+            "seriesKey": "r-series:color:B",
+            "match": "scale_key",
+            "confidence": "exact",
+        }])
+
+    def test_default_discrete_scale_exposes_layer_group_panel_aesthetic_identity(self):
+        script = """
+library(ggplot2)
+df <- expand.grid(panel=c("P1", "P2"), group=c("A", "B"), x=1:2)
+df$y <- seq_len(nrow(df))
+p <- ggplot(df, aes(x, y, color=group)) +
+  geom_point(size=4) +
+  facet_wrap(~panel) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        patched = _run_r_renderer(script, [
+            {"gid": "r.group.color.0.1", "prop": "color", "value": "#2CA02C", "mode": "backend_patch"},
+        ])
+
+        group_a = _object(baseline, "r.group.color.0.0")
+        group_b = _object(baseline, "r.group.color.0.1")
+        relation = group_b["identity"]["relation"]
+        self.assertEqual(relation["aesthetic"], "color")
+        self.assertEqual(relation["groupKey"], "B")
+        self.assertEqual(relation["scaleId"], "r.scale.color.0")
+        self.assertEqual(relation["guideId"], "legend.0")
+        self.assertEqual(relation["legendId"], "legend.0")
+        self.assertEqual(relation["layerIds"], ["r.layer.0"])
+        self.assertEqual(relation["subplotIds"], ["subplot.0", "subplot.1"])
+        self.assertEqual(group_b["identity"]["semanticKey"], "ggplot_group:color:B")
+        self.assertEqual(group_b["identity"]["seriesKey"], "r-series:color:B")
+        self.assertTrue(group_b["currentProps"]["svgSelectable"])
+        color_capability = next(
+            capability for capability in group_b["propertyCapabilities"]
+            if capability["prop"] == "color"
+        )
+        self.assertNotIn("subplot", color_capability["scopes"])
+        self.assertIn("figure", color_capability["scopes"])
+        self.assertIn('data-fig-id="r.group.color.0.0"', baseline["svg"])
+        self.assertIn('data-fig-id="r.group.color.0.1"', baseline["svg"])
+
+        patched_a = _object(patched, "r.group.color.0.0")
+        patched_b = _object(patched, "r.group.color.0.1")
+        self.assertEqual(patched_a["currentProps"]["color"], group_a["currentProps"]["color"])
+        self.assertEqual(patched_b["currentProps"]["color"], "#2CA02C")
+        self.assertEqual(patched_b["identity"]["semanticKey"], group_b["identity"]["semanticKey"])
+        self.assertIn("#2CA02C".lower(), patched["svg"].lower())
+
+        layer_relation = _object(baseline, "r.layer.0")["identity"]["relation"]
+        self.assertEqual(
+            layer_relation["groupIds"],
+            ["r.group.color.0.0", "r.group.color.0.1"],
+        )
+        self.assertEqual(layer_relation["subplotIds"], ["subplot.0", "subplot.1"])
+
+    def test_duplicate_discrete_colors_do_not_guess_svg_group_identity(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=1:4, group=c("A", "A", "B", "B"))
+p <- ggplot(df, aes(x, y, color=group)) +
+  geom_point(size=4) +
+  scale_color_manual(values=c(A="#777777", B="#777777")) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        group_a = _object(result, "r.group.color.0.0")
+        group_b = _object(result, "r.group.color.0.1")
+        self.assertFalse(group_a["currentProps"]["svgSelectable"])
+        self.assertFalse(group_b["currentProps"]["svgSelectable"])
+        self.assertNotIn('data-fig-id="r.group.color.0.0"', result["svg"])
+        self.assertNotIn('data-fig-id="r.group.color.0.1"', result["svg"])
+        self.assertIn('data-fig-id="r.layer.0"', result["svg"])
+
+    def test_discrete_group_patch_preserves_scale_order_labels_and_title(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=1:4, group=c("A", "B", "A", "B"))
+p <- ggplot(df, aes(x, y, color=group)) +
+  geom_point(size=4) +
+  scale_color_discrete(
+    limits=c("B", "A"),
+    breaks=c("B", "A"),
+    labels=c(B="Beta", A="Alpha"),
+    name="Study group",
+    na.value="#123456",
+    drop=FALSE
+  ) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        patched = _run_r_renderer(script, [
+            {"gid": "r.group.color.0.0", "prop": "color", "value": "#2CA02C", "mode": "backend_patch"},
+        ])
+        baseline_groups = baseline["manifest"]["groups"]
+        patched_groups = patched["manifest"]["groups"]
+        self.assertEqual([group["label"] for group in baseline_groups], ["Beta", "Alpha"])
+        self.assertEqual([group["label"] for group in patched_groups], ["Beta", "Alpha"])
+        self.assertEqual(_object(patched, "legend.0")["currentProps"]["title"], "Study group")
+        self.assertEqual(_object(patched, "r.group.color.0.0")["currentProps"]["groupKey"], "B")
+        self.assertEqual(_object(patched, "r.group.color.0.0")["currentProps"]["color"], "#2CA02C")
 
     def test_legend_title_and_item_text_manifest(self):
         script = """
@@ -354,6 +506,17 @@ p
         self.assertEqual(_object(result, "r.heatmap.fill.0")["currentProps"]["vmin"], 0.2)
         colorbar = _object(result, "r.colorbar.fill.0")
         self.assertEqual(colorbar["currentProps"]["tick_fontsize"], 15)
+        heatmap = _object(result, "r.heatmap.fill.0")
+        self.assertEqual(heatmap["identity"]["relation"]["colorbarId"], colorbar["id"])
+        self.assertEqual(colorbar["identity"]["relation"]["mappableId"], heatmap["id"])
+        self.assertEqual(colorbar["identity"]["relation"]["mappableIds"], [heatmap["id"]])
+        self.assertEqual(heatmap["identity"]["relation"]["layerIds"], ["r.layer.0"])
+        self.assertEqual(colorbar["identity"]["relation"]["layerIds"], ["r.layer.0"])
+        self.assertEqual(heatmap["identity"]["relation"]["subplotIds"], ["subplot.0"])
+        self.assertEqual(colorbar["identity"]["relation"]["subplotIds"], ["subplot.0"])
+        self.assertEqual(heatmap["identity"]["relation"]["scaleId"], "r.scale.fill.continuous.0")
+        self.assertEqual(colorbar["identity"]["relation"]["scaleId"], "r.scale.fill.continuous.0")
+        self.assertEqual(heatmap["identity"]["relation"]["guideId"], colorbar["id"])
         self.assertIn("left", colorbar["editable"])
         self.assertIn("bottom", colorbar["editable"])
         self.assertIn("width", colorbar["editable"])
@@ -390,10 +553,64 @@ p
         self.assertEqual(text_obj["currentProps"]["x"], 0.8)
         self.assertEqual(text_obj["currentProps"]["y"], 0.2)
         self.assertEqual(text_obj["currentProps"]["coord_system"], "axes")
+        self.assertEqual(text_obj["identity"]["relation"]["annotationId"], text_obj["id"])
+        self.assertEqual(text_obj["identity"]["relation"]["layerId"], "r.layer.1")
+        self.assertEqual(text_obj["identity"]["relation"]["subplotId"], "subplot.0")
+        self.assertEqual(text_obj["identity"]["relation"]["aesthetic"], "label")
+        self.assertNotIn("arrowId", text_obj["identity"]["relation"])
+        self.assertEqual(text_obj["currentProps"]["identityStability"], "conditional")
+        self.assertTrue(all(
+            capability["replay"] == "conditional"
+            for capability in text_obj["propertyCapabilities"]
+        ))
         self.assertGreater(text_obj["currentProps"]["data_x"], 1)
         self.assertLess(text_obj["currentProps"]["data_y"], 4)
 
-    def test_text_position_disabled_for_coord_flip(self):
+    def test_text_data_key_survives_code_row_reordering(self):
+        baseline_script = """
+library(ggplot2)
+df <- data.frame(
+  id=c("sample-a", "sample-b", "sample-c"),
+  x=1:3,
+  y=c(2,4,3),
+  label=c("A","B","C")
+)
+p <- ggplot(df, aes(x,y,label=label)) + geom_text() + theme_classic()
+p
+"""
+        reordered_script = baseline_script.replace(
+            'p <- ggplot(df, aes(x,y,label=label))',
+            'df <- df[c(3,1,2),]\np <- ggplot(df, aes(x,y,label=label))',
+        )
+        baseline = _run_r_renderer(baseline_script)
+        sample_a = next(
+            obj for obj in _objects(baseline)
+            if obj.get("currentProps", {}).get("dataKey") == "sample-a"
+        )
+        result = _run_r_renderer(reordered_script, [
+            {"gid": sample_a["id"], "prop": "text", "value": "Alpha", "mode": "backend_patch"},
+            {"gid": sample_a["id"], "prop": "color", "value": "#2CA02C", "mode": "backend_patch"},
+        ])
+        reordered_a = _object(result, sample_a["id"])
+        sample_b = next(
+            obj for obj in _objects(result)
+            if obj.get("currentProps", {}).get("dataKey") == "sample-b"
+        )
+
+        self.assertEqual(reordered_a["currentProps"]["text"], "Alpha")
+        self.assertEqual(reordered_a["currentProps"]["color"], "#2CA02C")
+        self.assertEqual(reordered_a["currentProps"]["identityStability"], "stable")
+        self.assertEqual(reordered_a["identity"]["instanceKey"], sample_a["identity"]["instanceKey"])
+        self.assertEqual(reordered_a["identity"]["semanticKey"], sample_a["identity"]["semanticKey"])
+        self.assertEqual(reordered_a["identity"]["relation"]["dataKey"], "sample-a")
+        self.assertEqual(sample_b["currentProps"]["text"], "B")
+        text_capability = next(
+            capability for capability in reordered_a["propertyCapabilities"]
+            if capability["prop"] == "text"
+        )
+        self.assertEqual(text_capability["replay"], "stable")
+
+    def test_text_position_supported_for_coord_flip(self):
         script = """
 library(ggplot2)
 df <- data.frame(x=1:3, y=c(2,4,3), label=c("A","B","C"))
@@ -410,14 +627,13 @@ p
         text_obj = _object(result, "r.text.0.0")
         self.assertIn('id="r.text.0.0"', result["svg"])
         self.assertIn("#2CA02C".lower(), result["svg"].lower())
-        self.assertNotIn("position", text_obj["editable"])
-        self.assertNotIn("x", text_obj["currentProps"])
-        self.assertNotIn("y", text_obj["currentProps"])
-        self.assertFalse(text_obj["currentProps"]["positionEditable"])
-        self.assertIn("CoordFlip", text_obj["currentProps"]["positionUnsupportedReason"])
-        self.assertTrue(any("CoordFlip" in warning for warning in result.get("warnings", [])))
+        self.assertIn("position", text_obj["editable"])
+        self.assertAlmostEqual(text_obj["currentProps"]["x"], 0.8, places=5)
+        self.assertAlmostEqual(text_obj["currentProps"]["y"], 0.2, places=5)
+        self.assertNotIn("positionEditable", text_obj["currentProps"])
+        self.assertFalse(any("CoordFlip" in warning for warning in result.get("warnings", [])))
 
-    def test_text_position_disabled_for_log_position_scale(self):
+    def test_text_position_supported_for_x_log_scale(self):
         script = """
 library(ggplot2)
 df <- data.frame(x=c(1, 10, 100), y=c(2,4,3), label=c("A","B","C"))
@@ -428,15 +644,129 @@ p <- ggplot(df, aes(x,y,label=label)) +
 p
 """
         result = _run_r_renderer(script, [
+            {"gid": "r.text.0.0", "prop": "position", "value": {"x": 0.7, "y": 0.3, "coord_system": "axes"}, "mode": "backend_patch"},
+        ])
+        text_obj = _object(result, "r.text.0.0")
+        self.assertIn("position", text_obj["editable"])
+        self.assertAlmostEqual(text_obj["currentProps"]["x"], 0.7, places=5)
+        self.assertAlmostEqual(text_obj["currentProps"]["y"], 0.3, places=5)
+        self.assertGreater(text_obj["currentProps"]["data_x"], 10)
+        self.assertAlmostEqual(_object(result, "r.text.0.1")["currentProps"]["data_x"], 10, places=5)
+        self.assertAlmostEqual(_object(result, "r.text.0.2")["currentProps"]["data_x"], 100, places=5)
+        self.assertFalse(any("scale" in warning for warning in result.get("warnings", [])))
+
+    def test_text_position_supported_for_y_log_scale(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:3, y=c(1, 10, 100), label=c("A","B","C"))
+p <- ggplot(df, aes(x,y,label=label)) +
+  geom_text() +
+  scale_y_log10() +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
             {"gid": "r.text.0.0", "prop": "position", "value": {"x": 0.8, "y": 0.2, "coord_system": "axes"}, "mode": "backend_patch"},
         ])
         text_obj = _object(result, "r.text.0.0")
-        self.assertNotIn("position", text_obj["editable"])
-        self.assertNotIn("x", text_obj["currentProps"])
-        self.assertNotIn("y", text_obj["currentProps"])
-        self.assertFalse(text_obj["currentProps"]["positionEditable"])
-        self.assertIn("scale", text_obj["currentProps"]["positionUnsupportedReason"])
-        self.assertTrue(any("scale" in warning for warning in result.get("warnings", [])))
+        self.assertIn("position", text_obj["editable"])
+        self.assertAlmostEqual(text_obj["currentProps"]["x"], 0.8, places=5)
+        self.assertAlmostEqual(text_obj["currentProps"]["y"], 0.2, places=5)
+        self.assertGreater(text_obj["currentProps"]["data_y"], 1)
+
+    def test_text_position_supported_inside_coord_polar_panel(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:3, y=c(2,4,3), label=c("A","B","C"))
+p <- ggplot(df, aes(x,y,label=label)) +
+  geom_text() +
+  coord_polar() +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "r.text.0.0", "prop": "position", "value": {"x": 0.7, "y": 0.3, "coord_system": "axes"}, "mode": "backend_patch"},
+        ])
+        text_obj = _object(result, "r.text.0.0")
+        self.assertIn("position", text_obj["editable"])
+        self.assertAlmostEqual(text_obj["currentProps"]["x"], 0.7, places=5)
+        self.assertAlmostEqual(text_obj["currentProps"]["y"], 0.3, places=5)
+
+    def test_text_position_outside_coord_polar_panel_is_rejected(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:3, y=c(2,4,3), label=c("A","B","C"))
+p <- ggplot(df, aes(x,y,label=label)) + geom_text() + coord_polar() + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        result = _run_r_renderer(script, [
+            {"gid": "r.text.0.0", "prop": "position", "value": {"x": 0.99, "y": 0.99, "coord_system": "axes"}, "mode": "backend_patch"},
+        ])
+        baseline_text = _object(baseline, "r.text.0.0")
+        text_obj = _object(result, "r.text.0.0")
+        self.assertAlmostEqual(text_obj["currentProps"]["x"], baseline_text["currentProps"]["x"], places=5)
+        self.assertAlmostEqual(text_obj["currentProps"]["y"], baseline_text["currentProps"]["y"], places=5)
+        self.assertTrue(any("could not be inverted" in warning for warning in result.get("warnings", [])))
+
+    def test_base_r_output_is_explicitly_unsupported_for_semantic_editing(self):
+        result = _run_r_renderer('plot(1:3, 1:3, main="Base R preview")')
+        report = result["manifest"]["coverageReport"]
+        self.assertEqual(result["manifest"]["objects"], [])
+        self.assertEqual(report["summary"]["unsupported"], 1)
+        self.assertEqual(report["unsupportedArtists"][0]["class"], "base_r_or_grid_output")
+        self.assertFalse(result["manifest"]["capabilities"]["backendPatch"])
+        self.assertIn("Base R preview", result["svg"])
+
+    def test_unknown_ggplot_geom_is_readonly_and_explicitly_unsupported(self):
+        script = """
+library(ggplot2)
+GeomCustomPoint <- ggproto("GeomCustomPoint", GeomPoint)
+geom_custom_point <- function(mapping=NULL, data=NULL, ...) {
+  layer(
+    geom=GeomCustomPoint,
+    mapping=mapping,
+    data=data,
+    stat="identity",
+    position="identity",
+    inherit.aes=TRUE,
+    params=list(...)
+  )
+}
+df <- data.frame(x=1:3, y=c(2,4,3))
+p <- ggplot(df, aes(x,y)) + geom_custom_point(size=4) + theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        layer = _object(result, "r.layer.0")
+        report = result["manifest"]["coverageReport"]
+        self.assertEqual(layer["kind"], "unsupported")
+        self.assertEqual(layer["editable"], [])
+        self.assertIn("GeomCustomPoint", layer["currentProps"]["unsupportedReason"])
+        self.assertEqual(report["summary"]["unsupported"], 1)
+        self.assertEqual(report["unsupportedArtists"][0]["class"], "GeomCustomPoint")
+        self.assertTrue(result["svg"])
+
+    def test_renamed_multi_scale_aesthetic_is_reported_without_unsafe_merge(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=1:4, group=c("A", "A", "B", "B"))
+p <- ggplot(df, aes(x,y,color=group)) +
+  geom_point(size=4) +
+  scale_color_discrete() +
+  theme_classic()
+p$scales$scales[[1]]$aesthetics <- "colour_ggnewscale_1"
+p
+"""
+        result = _run_r_renderer(script)
+        report = result["manifest"]["coverageReport"]
+        extension = next(
+            item for item in report["unsupportedArtists"]
+            if item["class"] == "ggnewscale_or_renamed_aesthetic"
+        )
+        self.assertGreaterEqual(report["summary"]["unsupported"], 1)
+        self.assertEqual(extension["count"], 1)
+        self.assertTrue(result["svg"])
 
     def test_uploaded_csv_json_bridge_preserves_quoted_commas_and_unicode_headers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -583,6 +913,27 @@ p
         self.assertIn("#0000ff", svg)
         self.assertTrue("stroke-opacity: 0.25" in svg or "stroke-opacity=\"0.25\"" in svg)
         self.assertTrue("fill-opacity: 0.35" in svg or "fill-opacity=\"0.35\"" in svg)
+
+    def test_r_renderer_reports_monotonic_timing_breakdown(self):
+        result = _run_r_renderer("""
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+p <- ggplot(df, aes(x, y)) + geom_point() + theme_classic()
+p
+""")
+        self.assertEqual(result.get("status"), "success")
+        timing = result.get("timingBreakdown", {})
+        expected_keys = {
+            "scriptExecutionMs",
+            "svgSerializeMs",
+            "manifestBuildMs",
+            "svgPostprocessMs",
+            "totalMs",
+        }
+        self.assertTrue(expected_keys.issubset(timing.keys()))
+        self.assertTrue(all(isinstance(timing[key], (int, float)) and timing[key] >= 0 for key in expected_keys))
+        self.assertEqual(result["timingMs"], timing["totalMs"])
+        self.assertGreaterEqual(timing["totalMs"], timing["svgSerializeMs"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,758 @@
+# SciFigure 能力与架构副文档
+
+> 状态：当前有效  
+> 更新时间：2026-07-12 15:25:57 +08:00  
+> 复核范围：当前本地工作区；尚未等同于已提交发布版本  
+> 适用范围：产品能力、前后端协议、Python/R 渲染、编辑与导出链路
+
+## 1. 总体设计
+
+SciFigure 的核心结构是：
+
+```text
+多来源代码和数据
+→ 各语言 renderer
+→ 图元内省
+→ StandardFigureModel
+→ EditingIntent
+→ Draft Patch Batch
+→ 按 Figure 调度重绘
+→ 保存、历史和导出
+```
+
+设计目标不是消除 Python/R 差异，而是在可靠边界内统一用户操作和前端协议。
+
+## 2. 前端架构
+
+主要页面：
+
+```text
+首页和项目列表
+项目创建与代码编辑
+数据文件
+Figure 编辑器
+导出设置和资产库
+组合图工作台
+设置与账号
+```
+
+核心编辑状态：
+
+```text
+当前项目和 Figure
+Figure session/revision
+manifest 与标准图形模型
+当前选中对象和语义作用域
+draft patches
+pending drag patches
+历史与导出锚点
+per-figure render status/requestId
+```
+
+普通对象编辑不应直接依赖 renderer 语言。语言差异应在模型归一化、能力声明和后端 patch 阶段处理。
+
+### 2.1 页面导航与项目配置
+
+```text
+导出资产页返回：记录进入资产页前的真实来源，返回到该页面
+新建项目：脚本优先 → 提取引用的数据文件名 → 补齐或追加多张表 → 创建项目
+重新配置：保留 projectId、已有数据、Figure editLog/history 和导出资产
+             → 可替换脚本、追加文件 → 保存配置 → 项目级重新渲染
+旧 DataImportPage：保留兼容路由，但不再作为顶栏、首页或新建项目主入口
+```
+
+脚本数据依赖提取当前覆盖 Python/R 常见显式文件读取方式，包括 `_uploaded_file_paths`、`uploaded_file_paths`、`read_csv`、`read_excel`、`read.csv` 和 `readxl::read_excel`。提取结果只用于用户提示，不执行脚本，也不限制用户上传额外数据文件。
+
+重新配置默认只追加新文件，不静默替换或删除已有文件。缺失脚本依赖时允许用户继续，但必须二次确认；保存时继续携带现有 Figure 的 editLog、revision 和 history。
+
+## 3. 后端架构
+
+Node/Express 负责：
+
+```text
+账号和会话
+项目、文件和 Figure 元数据
+渲染和 patch API
+按 Figure revision/requestId 调度
+用户数据所有权检查
+导出资产和组合项目
+渲染缓存
+安全预检和 Docker renderer
+```
+
+SQLite 保存：
+
+```text
+users/auth_sessions/devices
+projects/project_files/project_figures/sessions
+export_assets
+subscriptions/redeem_codes/redeem_records
+admin_audit_logs
+```
+
+用户上传数据和导出文件保存在项目目录，数据库保存所有权、路径和元数据。任何路径读取都必须经过项目所有权和目录边界检查。
+
+### 3.1 持久化状态边界
+
+升级时必须同时检查以下状态，不能只验证 SVG 是否还能显示：
+
+| 状态 | 主存储 | 作用域 | 典型遗漏后果 |
+|---|---|---|---|
+| 项目与脚本 | `projects` | 账号内项目 | 项目不可见、代码回退 |
+| 上传数据 | `project_files` + 项目文件目录 | 当前项目 | 重绘报缺文件 |
+| Figure 当前编辑 | `project_figures.edit_log/revision` | 当前 Figure | 刷新后修改消失 |
+| 撤销/重做与代码历史 | `project_figures.history` | 当前 Figure/项目代码锚点 | 历史记录消失 |
+| 运行 session | `sessions` | Figure session | patch、组合或导出链路降级 |
+| 导出记录 | `export_assets` + 导出文件 | 账号全局或明确项目筛选 | 历史资产看似丢失 |
+| 临时草稿与选择 | React state/sessionStorage | 当前浏览器会话 | 切页后草稿或选中状态变化 |
+
+账号级页面必须使用账号级 API，并明确提供项目筛选；项目级页面必须明确写“当前项目”。UI 空状态不能把“当前项目没有记录”表述为“账号没有历史”。
+
+`project_figures` 是编辑日志、revision 和 history 的持久化事实来源；`sessions` 是运行链路所需副本。当前清理逻辑不得删除被 `project_figures.session_id` 引用的 session，完整性审计会检查两者是否一致。
+
+## 4. 两引擎一协议
+
+### Python
+
+Python renderer 以 Matplotlib 为主，内省对象包括：
+
+```text
+Figure
+Axes/Subplot
+Text
+Axis label
+Tick label/tick line
+Spine/axes frame
+Line
+Patch
+Collection/scatter
+Legend/title/text/marker
+Colorbar
+Annotation/arrow
+```
+
+Python 路径在 artist 级对象定位、坐标变换和细粒度属性写回方面更成熟。
+
+### R
+
+R renderer 以 ggplot2、grob 和 SVG 语义映射为主，当前覆盖：
+
+```text
+标题、轴标签和刻度文本
+theme 字体和样式
+ggplot layer 整体样式
+scale/aes 分组颜色
+facet panel
+heatmap 与连续色标
+legend 和 colorbar
+文本 annotation
+基础拖拽和位置 patch
+```
+
+R 不承诺任意 SVG 节点都能像 Matplotlib artist 一样写回。复杂坐标、二次扩展包生成对象和 base R 图形仍需专项适配。
+
+### 统一协议
+
+StandardFigureModel 统一暴露：
+
+```text
+对象 id/gid
+kind/role
+figureId/subplotId
+bounds/position
+editable/read-only/unsupported 能力
+属性值
+语义分组
+语言和来源信息
+```
+
+当前 renderer 会增量输出 `identity` 和 `propertyCapabilities` metadata，用于对象身份稳定性、容器关系、属性级作用域和重放能力。字体中心、组件中心和配色中心已经通过各自独立 feature flag 受控接入严格 resolver；未迁移入口以及缺少新字段的旧项目继续使用 `gid/editable/currentProps` 兼容路径。重复身份或明确关系冲突不会回退到猜测规则。
+
+renderer 返回的 `manifest` 仍是渲染事实来源，StandardFigureModel 是前端归一化消费模型，不替代 Python/R 原始 manifest。
+
+EditingIntent 统一表达：
+
+```text
+用户想改什么
+目标对象或语义角色
+作用于当前对象、当前子图、当前 Figure、选中 Figure 或全部 Figure
+属性和值
+无法应用时的跳过原因
+```
+
+它解决“用户意图”和“renderer 具体 patch”之间的映射，不负责 AI 自动改图。
+
+当前真实接口仍是前端编译 EditingIntent 为 patch 后调用 `/api/figure/patch`。历史设计中的 `/api/figure/intent`、后端直接按 intent 修改 AST 和 intent 级数据库历史尚未落地。
+
+## 5. 图元识别与选择
+
+对象选择入口包括：
+
+```text
+画布单击
+图层结构
+组件中心
+字体中心
+配色中心
+子图面板
+语义组选择
+```
+
+单击模式和拖拽模式必须互斥：
+
+```text
+拖拽关闭：点击选择对象并在属性编辑中修改
+拖拽开启：直接拖动可定位对象，积累最终位置 patch
+```
+
+子图选择后应显示对应绘图区选框。多子图识别按实际 axes bounds 和空间关系工作，不写死 2x2、2x4 等固定模板。
+
+## 6. 编辑能力
+
+### 文本
+
+```text
+文本内容
+字体族
+字号
+粗体/斜体
+颜色
+对齐
+旋转
+上下标
+换行
+可见性
+位置
+```
+
+下划线等能力只有 renderer 和目标对象可靠支持时才应开放，不能只在前端显示无效控件。
+
+### 坐标轴
+
+```text
+axis label 与 tick label 分离
+单个 tick 与整组 tick 分离
+文字颜色与刻度线颜色分离
+tick 文本旋转
+轴标签整体平移
+刻度文本整体平移但不改变 tick 位置
+spine 颜色、线宽和可见性
+```
+
+位置编辑必须尊重坐标系。数据坐标文本、axes fraction、figure fraction、display pixel 和 legend 内部布局不能使用同一个位移公式。
+
+### 图例和色条
+
+```text
+图例整体位置
+图例文字
+图例 marker/line/patch
+marker scale
+文字与符号对齐
+共享或独立图例
+colorbar 距主图间距
+colorbar 宽度、标签和刻度
+```
+
+图例移动必须优先移动 legend 容器，不把内部文字和 marker 拆散写回。
+
+### 线、点和填充
+
+```text
+颜色
+线宽
+线型
+marker 大小
+marker 边框
+透明度
+填充色
+分组颜色语义
+```
+
+批量改颜色必须依赖稳定的系列身份、layer/scale 或 semantic key，不能只按当前颜色匹配，否则两个分组可能被连带修改。
+
+## 7. 字体中心、组件中心和配色中心
+
+### 字体中心
+
+按语义角色组织：
+
+```text
+标题
+X/Y 轴标签
+X/Y 刻度
+图例文字和图例标题
+annotation
+colorbar label/tick
+```
+
+组内修改通过 EditingIntent 找到对应角色，不应只修改第一个命中对象。
+
+### 组件中心
+
+主要分类：
+
+```text
+文本
+坐标轴和边框
+线
+散点/collection
+填充和 patch
+图例
+色条
+annotation
+子图/axes
+```
+
+边框应作为独立分类，并提供整组选中后的线宽、颜色、可见性等共同属性。
+
+### 配色中心
+
+颜色修改按对象身份和语义系列绑定。单一分组修改只作用于该分组；跨 Figure 批量应用需要显式语义作用域和映射报告。
+
+## 8. Draft Patch Batch
+
+需要后端重绘的连续修改先进入草稿：
+
+```text
+字体族、字号、粗斜体
+颜色
+线宽和线型
+坐标范围
+子图尺寸和间距
+```
+
+同一目标同一属性使用 last-write-wins。点击“应用”后：
+
+```text
+草稿去重
+编译为 patch batch
+只更新受影响 Figure
+单次进入历史
+单次后端渲染
+```
+
+应用事务按 Figure 结算：成功目标提交 revision/history，失败目标保留 `pendingFigureIds`。部分失败后的再次应用只调度失败 Figure；请求执行期间用户重新修改同一属性时，新草稿不会被旧请求清除。等待失败重试的草稿也不会被普通保存动作直接消费。
+
+拖拽保留自己的确认流程，但最终可复用同一批量 patch 和历史基础设施。
+
+## 9. 按 Figure 调度
+
+每个 Figure 应独立维护：
+
+```text
+revision
+requestId
+renderStatus
+lastSuccessfulRender
+cache key
+error
+```
+
+修改 Figure 2 时只重绘 Figure 2。跨 Figure 批量操作按用户勾选的 Figure 集合调度，并使用受控并发队列。
+
+stale response guard 必须丢弃旧 requestId 返回，防止较慢请求覆盖较新结果。
+
+## 10. 拖拽
+
+拖拽过程只在前端预览，不持续调用后端。松手时记录最终参数：
+
+```text
+开始位置
+最终显示位置
+目标对象坐标系
+最终 position patch
+```
+
+用户可以连续拖动多个目标。确认时一次提交全部 pending patches，取消时恢复拖拽前状态。
+
+标准 Matplotlib Annotation 已拆分为明确关系：`text.*` 保持原文本 gid，`annotation_arrow.*` 作为箭头样式对象，`position` 表示文字端，`anchor_position` 表示指向端。拖动文字只提交文本位置，箭头由 Matplotlib 自动保持连接；pending patch 使用 session + instanceKey 去重。R 的 GeomText/GeomLabel 声明 annotation 文本身份，但不会把独立 GeomSegment/GeomCurve 按空间距离猜成同一箭头。
+
+高风险对象：
+
+```text
+annotation 与箭头标签
+数据坐标文本
+tick label 组
+legend 内部对象
+colorbar 相关文字
+跨 subplot 对象
+```
+
+这些对象必须使用明确坐标转换和稳定 gid，不能用最近一次选中对象替代当前目标。
+
+## 11. 多子图与布局
+
+平台区分：
+
+```text
+Figure 画布尺寸
+subplot/axes 绘图区尺寸
+subplot 间距
+外边距
+图例和 colorbar 占用空间
+```
+
+改变画布可以有两种模式：
+
+```text
+缩放全图：子图比例随画布变化
+固定绘图区：保持 axes 物理宽高，反算 Figure 尺寸和边距
+```
+
+布局能力包括：
+
+```text
+自动识别行列
+1xn、nx1 和常用网格重排
+水平/垂直间距
+紧凑、标准、宽松密度
+恢复原图布局但保留字体颜色等编辑
+子图位置交换
+单个子图扩展到指定参考边界
+统一子图绘图区物理尺寸
+```
+
+密度预设只能调整当前选中布局的间距，不能擅自把 4x2 改成 3x3。
+
+## 12. 保存、历史和导出锚点
+
+保存成功必须持久化：
+
+```text
+脚本
+editLog
+revision
+Figure session
+项目 Figure 关系
+必要的 manifest/preview
+```
+
+刷新后应从服务器恢复，不依赖浏览器临时状态。
+
+项目所有权和历史持久化属于编辑能力的一部分，而不只是账号安全：
+
+```text
+project/user_id 必须来自认证用户
+legacy 项目只能由显式配置的目标账号认领
+project_figures 独立保存 editLog/history
+临时 session 清理不得删除项目引用
+测试账号必须使用临时数据库，不能接管真实项目
+```
+
+历史记录按编辑批次组织。导出不是单独插入一条编辑历史，而是在对应 revision 上记录导出锚点：
+
+```text
+第一次导出
+第二次导出
+上次导出
+```
+
+这样可以定位用户当时真正导出的版式。
+
+代码历史按“成功同步渲染”提交，不记录 Monaco 每次键盘输入：
+
+```text
+编辑器输入                    -> 代码草稿，不进入项目历史
+同步渲染成功                  -> 记录同步前脚本、行级摘要和目标 Figure
+渲染失败/漂移取消             -> 不写入代码历史
+撤销/重做                     -> 同时恢复脚本与 Figure editLog 并重新渲染
+保存/自动保存                 -> 持久化代码版本元数据
+刷新后历史                    -> 显示“代码版本”和 +N/-N 行摘要
+```
+
+代码版本复用现有 Figure 历史和 `project_figures.history`，不建立第二套互相冲突的撤销系统。项目级代码同步由当时的 active Figure 承载历史入口，但重绘仍覆盖代码实际生成的全部 Figure。
+
+## 13. 导出与组合
+
+支持目标：
+
+```text
+SVG
+PNG
+PDF
+TIFF
+主图与子图同时导出
+格式和 DPI 一致
+导出资产库
+可复现代码和数据包
+Word/A4 页面尺寸预览
+```
+
+Word 预览区分：
+
+```text
+A4 页面
+Word 版心
+导出物理尺寸
+插入后尺寸
+页面缩放
+估算最终字号
+```
+
+组合图推荐路径：
+
+```text
+从当前或其他项目选择 Figure
+→ 显示缩略图和来源
+→ 复制所需代码与数据到新组合代码项目
+→ 生成按实际 Figure 数量适配的转写提示词
+→ 生成组合代码
+→ 按统一 axes 物理尺寸重新渲染
+```
+
+该路径比只移动位图更容易保证字体、图例、框线和子图尺寸一致。
+
+### 13.1 组合代码项目选择器升级（C1-C5 已完成阶段验收）
+
+当前能力继续复用跨项目读取 Figure、来源代码回退、数据文件复制和组合提示词 API，没有建立第二套位图拼图模型。本次升级完成了“创建组合代码项目”的 Figure 选择、顺序和布局决策界面。
+
+目标信息架构采用三栏结构：
+
+```text
+左栏：来源项目
+  → 区分单图项目与组合代码项目
+  → 搜索、最近使用、更新时间和项目类型筛选
+
+中栏：Figure 可视化选择
+  → 稳定缩略图
+  → Figure 编号、子图数量、宽高比、Python/R 来源
+  → 图例、色条、代码片段和数据依赖状态
+
+右栏：已选 Figure 与组合预览
+  → 拖动排序、移除和交换顺序
+  → 显示 panel label 对应关系
+  → 实时显示推荐行列数、单个绘图区尺寸和预计组合图尺寸
+```
+
+这里的“智能化”优先使用可解释、可复现的确定性规则，不依赖 AI：
+
+```text
+按 Figure 数量推荐 1×N、2×2、2×3、2×4、4×2 等候选布局
+按来源 Figure 宽高比判断横排、竖排或多行更合适
+把 auto 解析为明确结果，例如“推荐 2×3，预计 7.4×5.1 in”
+根据目标 axes 宽高、间距、边距、图例和色条预留计算整体物理尺寸
+检查是否超过论文单栏、双栏或 Word/A4 版心
+检测重复 Figure、重复项目嵌套和组合项目再次嵌套
+检查代码片段、数据文件和可重放上下文是否完整
+根据实际选择数量生成 panel label，不写死 (a)(b)(c)
+```
+
+创建前确认区必须展示：
+
+```text
+已选 Figure 数量与顺序
+推荐或用户指定的 rows×cols
+单个绘图区目标宽高
+预计组合图物理尺寸
+需要复制的数据文件数量
+Python/R 来源分布
+panel label 顺序
+缺失依赖、重复来源和尺寸超限警告
+```
+
+实施阶段：
+
+| 阶段 | 内容 | 验收重点 |
+|---|---|---|
+| C1 | 来源项目分类、搜索和缩略图网格 | 不再依赖文字盲选；缩略图不拉伸、不串项目 |
+| C2 | 已选队列、拖动排序、移除和 panel label | 顺序与最终提示词、代码和标签完全一致 |
+| C3 | auto 布局解析和实时尺寸预览 | 显示明确 rows×cols 与整体物理尺寸，不只显示 `auto` |
+| C4 | 重复、依赖、嵌套和版面风险检查 | 阻止重复选择，缺失项可定位并说明原因 |
+| C5 | 大项目性能与回归 | 缩略图使用 memo、稳定占位和 `content-visibility`，不删除真实 Figure 语义 |
+
+当前实现结果：
+
+```text
+C1：项目名称搜索、单图/多图/组合项目筛选、最近使用筛选、更新时间和 Figure 数量
+C2：缩略图选择、拖动排序、上下移动、移除、动态 panel label 和行列位置
+C3：auto 解析为具体 rows×cols，显示绘图区尺寸和预计整体英寸尺寸
+C4：前后端共同阻止重复来源和缺失数据依赖；提示嵌套组合项目、语言混合、版面超限和代码片段回退
+C5：Sanitized SVG 使用 64 项 LRU；IntersectionObserver 只清洗可见区附近缩略图；窄窗口改为可滚动上下布局
+```
+
+后端不再信任前端布局结果：`auto` 会再次通过共享 planner 解析为具体布局，容量不足的显式布局返回 400。全 Python 来源生成 Matplotlib `fig.add_axes` 物理绘图区提示词；全 R 来源生成 `ggplotGrob + grid::unit` 提示词；混合来源明确以 Python 为转写目标。
+
+当前限制：
+
+```text
+单次最多选择 24 张 Figure
+组合代码项目作为来源时显示警告，但不自动递归展开
+缺少代码片段时允许使用完整项目脚本回退
+缺少脚本引用的数据文件时由后端最终阻断创建
+预计尺寸使用固定边距/间距模型，属于创建前估算，最终尺寸仍以生成代码和渲染结果为准
+```
+
+实现约束：
+
+- 继续复用现有组合代码项目 API、源文件复制和 AI 提示词契约，不建立第二套组合项目模型。
+- 可视化选择只改变前端投影和选择体验，不能改变 Figure identity、codeSlice、数据所有权或来源项目。
+- `auto` 推荐必须允许用户覆盖；标准、紧凑、宽松只调整所选布局的间距，不能擅自改变 rows×cols。
+- 组合项目作为来源时必须显示嵌套来源和重复风险，不能静默递归复制。
+- 非活动缩略图应延迟挂载，避免大量 SVG 同时清洗和渲染造成浏览器卡顿。
+
+验收标准：用户可以在多个项目中依靠缩略图准确选择 Figure，调整最终顺序，看到明确布局与尺寸，理解所有警告，并在不改变现有代码/数据复制结果的前提下创建组合代码项目。
+
+2026-07-12 03:35:38 +08:00 验证证据：
+
+```text
+npm run lint                                  PASS
+npm test                                      PASS（18 files / 127 tests）
+npm run build                                 PASS
+npm run test:composition-selector-ui-smoke    PASS（30 Figure、延迟清洗、排序、布局、风险、900/1680 px）
+npm run test:composition-code-project         PASS（Python/R、数据复制、布局、依赖、重复来源）
+npm run test:multi-figure-ui-state-smoke      PASS（11/11）
+npm run test:drag-extended-smoke               PASS
+npm run test:public-auth-smoke                 PASS
+```
+
+### 13.2 复杂对象精准编辑阶段结果
+
+2026-07-12 04:44:30 +08:00 完成 Batch 17 当前约定范围的阶段验收：
+
+```text
+legend container -> title/text/handle 双向关系
+shared colorbar -> 全部 mappableIds + owner subplotIds
+colorbar child -> colorbarId + 真实 owner subplot 继承
+twin/shared axes -> 对称 twin/sharedX/sharedY 关系
+tick line color -> axis tick_color
+tick label color -> 单独文本 labelcolor/color 路径
+```
+
+物理子图计数会排除 twin secondary axes；共享 colorbar 可从任一 owner subplot 解析且不会生成重复 patch。组件中心能显示双轴/共享轴关系，图例符号缩放写回真实 Matplotlib handle。
+
+验证结果：
+
+```text
+npm run test:axis-style-semantics-smoke    PASS（5/5）
+npm run test:component-container-smoke     PASS（15/15）
+npm run test:semantic-smoke                PASS（9/9）
+npm run test:multisubplot-smoke            PASS（4/4）
+npm run test:drag-extended-smoke            PASS
+npm run test:cross-figure-smoke             PASS（9/9）
+npm run lint                                PASS
+npm test                                    PASS（18 files / 129 tests）
+Python introspection                        PASS（36 tests）
+Python/R capability matrix                  PASS
+npm run build                               PASS
+git diff --check                            PASS
+```
+
+这表示显式关系和当前 fixture 已通过，不表示任意第三方 annotation、嵌套 parasite axes 或超大真实项目已经全覆盖。
+
+## 14. Python/R 对齐表
+
+| 能力 | Python | R | 当前判断 |
+|---|---|---|---|
+| 代码识别和渲染 | 成熟 | 已实现 | 对齐 |
+| 多 Figure | 成熟 | 已实现 | 基本对齐 |
+| 标题/轴标签/tick | artist 级 | theme/grob/scale | 基本对齐 |
+| 字体和颜色批量编辑 | 成熟 | 已实现 MVP | 基本对齐 |
+| line/scatter/patch | 细粒度 | layer + 可证明的离散 group/scale | 部分对齐，默认与 manual scale 已支持单组改色 |
+| legend/colorbar | 细粒度对象 | 显式 scale/guide/layer/panel/mappable 关系 | 部分对齐 |
+| facet/subplot | axes | facet panel | 基本对齐 |
+| annotation 拖拽 | 标准 data/axes/figure 坐标支持 text/arrow/anchor | 线性、flip、X/Y log、圆内 polar 精确逆变换 | 部分对齐，R 不猜测独立箭头 |
+| base R 图形编辑 | 不适用 | 有限 | 未对齐 |
+| 任意 SVG 节点写回 | 不承诺 | 不承诺 | 非目标 |
+| 导出 | 已实现 | 已实现转换路径 | 需格式矩阵 |
+
+## 15. 已知限制
+
+```text
+复杂 annotation 和箭头不是全覆盖成熟能力
+R 第三方扩展包对象可能缺少稳定语义
+R `ggnewscale`、任意第三方 grob 和 base R artist 级编辑仍不承诺
+R 未知 geom 会只读显示并记录 unsupported；没有显式数据键的 text layer 在代码重排后仍为 conditional identity
+超大 scatter/heatmap 的浏览器 DOM 和 SVG 成本较高
+字体视觉一致性受服务器字体安装影响
+部分布局代码会被 tight_layout/constrained_layout 二次改写
+大型 Excel 完整 records 解析仍受输出和内存上限约束
+浏览器端仍保留 xlsx 用于本地预览
+AI 自动改图尚未接入
+annotation/箭头仍只达到部分覆盖；tick line 与 tick label 的样式隔离已通过当前 Python fixture
+twinx/twiny、复杂共享轴和超大 scatter 的真实项目验证不足
+生产构建仍有主 bundle 大于 500 kB 和 CJS import.meta warning
+```
+
+## 16. 验证入口
+
+单元和构建：
+
+```text
+npx tsc --noEmit
+npm test
+npm run build
+```
+
+核心 API：
+
+```text
+npm run test:cache-smoke
+npm run test:cross-figure-concurrency
+npm run test:composition-code-project
+npm run test:component-kind-matrix
+npm run test:capability-matrix
+npm run test:code-history-smoke
+```
+
+编辑器浏览器回归：
+
+```text
+npm run test:behavior-smoke
+npm run test:semantic-smoke
+npm run test:multisubplot-smoke
+npm run test:cross-figure-smoke
+npm run test:drag-extended-smoke
+npm run test:export-matrix-smoke
+npm run test:r-semantic-smoke
+```
+
+自动化通过不代表真实复杂项目完全覆盖。涉及坐标、布局、字体和导出的修改必须保留人工视觉检查。
+
+## 17. 详细参考文档
+
+以下文件保留为专项参考，不再作为主入口：
+
+```text
+platform-capability/SCIFIGURE_CAPABILITY_EVOLUTION_AND_REGRESSION_GUARD_PLAN.md
+STANDARD_FIGURE_MODEL_V1.md
+EDITING_INTENT_SYSTEM_DESIGN.md
+EDITING_INTENT_LAYER_UPGRADE_PLAN.md
+SEMANTIC_CAPABILITY_MATRIX.md
+R_COMPATIBILITY_PLAN.md
+SCIFIG_EXCELLENT_UPGRADE_STATUS.md
+artist_introspection_upgrade_plan.md
+ERROR_LOG.md
+```
+
+专项方案第 12 节是当前能力增强执行逻辑。它规定每个能力域采用 `Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire` 的渐进放行方式，并以项目归属、保存历史、目标正确性和坐标一致性作为阻断门槛。
+
+其中第 12.7 节按项目数据、双 renderer、图元识别、精准编辑、Draft、拖拽、布局、图例/色条、保存历史、导出、调度和性能列出“当前基线 -> 增强方向 -> 不变量 -> 放行证据”；第 12.8 节规定展示、目标、写回、布局、性能和持久化六类变更的最小安全边界。
+
+## 18. 帮助中心能力边界（2026-07-12 13:44:49 +08:00）
+
+帮助中心属于公共产品内容层，不读取项目、Figure、用户文件或 renderer 状态。公开访客可从宣传页进入；登录用户可从顶部导航或工作区侧栏进入。
+
+内容由 `src/data/helpContent.ts` 提供稳定数据契约，页面组件负责搜索、分类、模板切换、复制反馈和 FAQ 展开状态。科研模板图片由可复现的 Matplotlib 脚本生成，代码与 CSV 示例直接随前端静态内容发布。
+
+`2026-07-12 13:56:33 +08:00` 模板库扩展为 7 套，覆盖均值比较、连续变量关系、矩阵模式、组间分布、时间变化、效应量区间和排序分析。浏览器回归逐条验证模板入口与图片 `naturalWidth`，避免内容记录存在但静态资产缺失。
+
+`2026-07-12 13:59:38 +08:00` 明确模板层与 renderer 层的边界：模板只提供示例，不限制可绘制图形类型。Python/R 能正常生成的 Figure 可进入渲染链路；对象级识别、批量修改和拖拽能力由 StandardFigureModel、各语言内省器及图元能力矩阵决定。
+
+`2026-07-12 14:05:43 +08:00` 公开导航契约更新：匿名认证检查完成后默认进入 `landing`；`help` 只由帮助入口显式打开，匿名刷新返回宣传页。帮助页复用宣传页视觉令牌，但与宣传页保持独立组件、内容和导航状态。
+
+`2026-07-12 14:12:14 +08:00` 帮助中心快速上手与项目创建页对齐：已有 Codex、Claude Code、DeepSeek、ChatGPT、Gemini 或本地流程脚本的用户直接导入；无脚本用户从模板代码和 CSV 起步。帮助文档不再把 AI 生成代码设为所有用户的必经步骤。
+
+`2026-07-12 14:24:55 +08:00` 帮助中心增加公开 AI 绘图提示词，公开范围仅限用户生成兼容代码所需的数据入口与编写规范。知识产权、内省算法、编辑协议和安全实现属于内部开发文档范围。
+
+`2026-07-12 14:57:42 +08:00` 导出资产读取由单一当前项目扩展为账号级聚合接口。后端只汇总认证用户拥有的项目，下载与删除继续执行项目所有权校验；前端默认显示全部历史资产，并提供项目筛选、跨项目打包和来源项目标识。
+
+帮助中心新增能力不得改变以下不变量：
+
+```text
+匿名访问不能暴露项目导航或用户数据
+登录后返回帮助页不能丢失工作区会话
+模板代码不得包含绝对路径、show、savefig 或文件系统归档逻辑
+动态效果必须尊重 prefers-reduced-motion
+帮助页样式必须限制在 help-center-page 命名空间内
+```

@@ -8,6 +8,21 @@ PATTERN_CONSTANT = re.compile(r'^([A-Z][A-Z0-9_]*)\s*=\s*["\'](\#[0-9A-Fa-f]{6})
 def _dict_palette_id(dict_name: str, key: Any) -> str:
     return f"dict_{dict_name}__{key}"
 
+def _literal_value(node: Any) -> Any:
+    """Unwrap AST literals across Python versions, including legacy ast.Index."""
+    current = node
+    for _ in range(3):
+        if isinstance(current, ast.Constant):
+            return current.value
+        if hasattr(ast, "Index") and isinstance(current, ast.Index):
+            current = current.value
+            continue
+        break
+    try:
+        return ast.literal_eval(current)
+    except (ValueError, TypeError):
+        return None
+
 def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Scans the Matplotlib Python script for semantic color constants and dictionary definitions.
@@ -67,8 +82,8 @@ def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict
                     dict_entries = []
                     has_hex_color = False
                     for k, v in zip(node.value.keys, node.value.values):
-                        k_val = getattr(k, 'value', getattr(k, 's', None))
-                        v_val = getattr(v, 'value', getattr(v, 's', None))
+                        k_val = _literal_value(k)
+                        v_val = _literal_value(v)
                         if k_val is not None and isinstance(v_val, str) and re.match(r'^\#[0-9A-Fa-f]{6}$', v_val):
                             has_hex_color = True
                             dict_entries.append((k_val, v_val))
@@ -104,8 +119,7 @@ def scan_source(source: str, namespace: Optional[Dict[str, Any]] = None) -> Dict
                                 color_arg = kw.value.id
                             elif isinstance(kw.value, ast.Subscript):
                                 if isinstance(kw.value.value, ast.Name):
-                                    slice_node = kw.value.slice
-                                    slice_val = getattr(slice_node, 'value', getattr(slice_node, 's', None))
+                                    slice_val = _literal_value(kw.value.slice)
                                     if slice_val is not None:
                                         color_arg = _dict_palette_id(kw.value.value.id, slice_val)
                             elif isinstance(kw.value, ast.Constant):

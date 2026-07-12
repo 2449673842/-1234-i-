@@ -17,11 +17,11 @@ scifigure-payload-*.json
 
 # Local runtime data and user uploads
 data/
+local-backups/
+.omx/
 tmp/
 .playwright-mcp/
 Rplots.pdf
-tmp_*.js
-tmp_*.R
-tmp_*.png
+tmp_*
 test.txt
 test_write.txt

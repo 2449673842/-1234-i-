@@ -2,8 +2,15 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import argon2 from 'argon2';
 
-const DB_PATH = path.join(process.cwd(), 'data', 'scifigure.db');
+const DATA_ROOT = process.env.SCIFIGURE_DATA_DIR
+  ? path.resolve(process.env.SCIFIGURE_DATA_DIR)
+  : path.join(process.cwd(), 'data');
+
+const DB_PATH = process.env.SCIFIGURE_DB_PATH
+  ? path.resolve(process.env.SCIFIGURE_DB_PATH)
+  : path.join(DATA_ROOT, 'scifigure.db');
 
 let db: Database.Database;
 
@@ -22,6 +29,7 @@ function initSchema() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
+      user_id TEXT,
       name TEXT NOT NULL,
       spec TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -29,6 +37,7 @@ function initSchema() {
     );
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
+      user_id TEXT,
       script TEXT NOT NULL,
       data_payload TEXT,
       edit_log TEXT NOT NULL DEFAULT '[]',
@@ -52,7 +61,9 @@ function initSchema() {
       project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
       figure_index INTEGER NOT NULL,
       session_id TEXT NOT NULL,
-      revision INTEGER NOT NULL DEFAULT 1
+      revision INTEGER NOT NULL DEFAULT 1,
+      edit_log TEXT NOT NULL DEFAULT '[]',
+      history TEXT NOT NULL DEFAULT '{"past":[],"future":[]}'
     );
     CREATE TABLE IF NOT EXISTS export_assets (
       id TEXT PRIMARY KEY,
@@ -75,6 +86,7 @@ function initSchema() {
       display_name TEXT,
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'user',
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       last_login_at TEXT
     );
@@ -82,8 +94,10 @@ function initSchema() {
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       token_hash TEXT NOT NULL UNIQUE,
+      refresh_token_hash TEXT UNIQUE,
       device_id TEXT,
       expires_at TEXT NOT NULL,
+      refresh_expires_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -139,6 +153,23 @@ function initSchema() {
       reason TEXT,
       checked_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS admin_audit_logs (
+      id TEXT PRIMARY KEY,
+      actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      action TEXT NOT NULL,
+      resource_type TEXT,
+      resource_id TEXT,
+      success INTEGER NOT NULL DEFAULT 1,
+      status_code INTEGER,
+      ip_address TEXT,
+      user_agent TEXT,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_admin_audit_created
+      ON admin_audit_logs(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_admin_audit_actor
+      ON admin_audit_logs(actor_user_id, created_at DESC);
   `);
 
   const ignoreDuplicateColumnOnly = (e: unknown) => {
@@ -160,11 +191,12 @@ function initSchema() {
     ignoreDuplicateColumnOnly(e);
   }
   [
-    "ALTER TABLE project_figures ADD COLUMN preview_svg TEXT",
-    "ALTER TABLE project_figures ADD COLUMN manifest TEXT",
-    "ALTER TABLE project_figures ADD COLUMN code_slice TEXT",
-    "ALTER TABLE project_figures ADD COLUMN fingerprint TEXT",
-    "ALTER TABLE project_figures ADD COLUMN preview_updated_at TEXT",
+    "ALTER TABLE projects ADD COLUMN user_id TEXT",
+    "ALTER TABLE sessions ADD COLUMN user_id TEXT",
+    "ALTER TABLE users ADD COLUMN password_algorithm TEXT DEFAULT 'pbkdf2_sha256'",
+    "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
+    "ALTER TABLE auth_sessions ADD COLUMN refresh_token_hash TEXT",
+    "ALTER TABLE auth_sessions ADD COLUMN refresh_expires_at TEXT",
   ].forEach((sql) => {
     try {
       db.prepare(sql).run();
@@ -172,6 +204,55 @@ function initSchema() {
       ignoreDuplicateColumnOnly(e);
     }
   });
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_projects_user_updated
+      ON projects(user_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_sessions_user_updated
+      ON sessions(user_id, updated_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_sessions_refresh_hash
+      ON auth_sessions(refresh_token_hash);
+  `);
+  [
+    "ALTER TABLE project_figures ADD COLUMN preview_svg TEXT",
+    "ALTER TABLE project_figures ADD COLUMN manifest TEXT",
+    "ALTER TABLE project_figures ADD COLUMN code_slice TEXT",
+    "ALTER TABLE project_figures ADD COLUMN fingerprint TEXT",
+    "ALTER TABLE project_figures ADD COLUMN preview_updated_at TEXT",
+    "ALTER TABLE project_figures ADD COLUMN edit_log TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE project_figures ADD COLUMN history TEXT NOT NULL DEFAULT '{\"past\":[],\"future\":[]}'",
+  ].forEach((sql) => {
+    try {
+      db.prepare(sql).run();
+    } catch (e) {
+      ignoreDuplicateColumnOnly(e);
+    }
+  });
+  db.exec(`
+    UPDATE project_figures
+    SET edit_log = COALESCE(
+      (SELECT s.edit_log FROM sessions AS s WHERE s.id = project_figures.session_id),
+      edit_log
+    )
+    WHERE (edit_log IS NULL OR edit_log = '[]');
+
+    UPDATE project_figures
+    SET edit_log = COALESCE(
+      (
+        SELECT json_extract(p.spec, '$.editLog')
+        FROM projects AS p
+        WHERE p.id = project_figures.project_id
+          AND json_valid(p.spec)
+          AND json_type(p.spec, '$.editLog') = 'array'
+          AND (
+            SELECT COUNT(*)
+            FROM project_figures AS only_pf
+            WHERE only_pf.project_id = project_figures.project_id
+          ) = 1
+      ),
+      edit_log
+    )
+    WHERE (edit_log IS NULL OR edit_log = '[]');
+  `);
 }
 
 function sha256(value: string): string {
@@ -191,9 +272,33 @@ export function hashPassword(password: string, salt = crypto.randomBytes(16).toS
   return { hash, salt };
 }
 
-export function verifyPassword(password: string, salt: string, expectedHash: string): boolean {
+function verifyLegacyPassword(password: string, salt: string, expectedHash: string): boolean {
   const { hash } = hashPassword(password, salt);
   return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(expectedHash, 'hex'));
+}
+
+export async function hashPasswordArgon2(password: string): Promise<string> {
+  return argon2.hash(password, {
+    type: argon2.argon2id,
+    memoryCost: 19_456,
+    timeCost: 2,
+    parallelism: 1,
+  });
+}
+
+export async function verifyPasswordAndMigrate(row: AuthUserRow, password: string): Promise<boolean> {
+  const algorithm = row.password_algorithm || 'pbkdf2_sha256';
+  if (algorithm === 'argon2id' || row.password_hash.startsWith('$argon2id$')) {
+    return argon2.verify(row.password_hash, password);
+  }
+  const valid = verifyLegacyPassword(password, row.password_salt, row.password_hash);
+  if (!valid) return false;
+  const nextHash = await hashPasswordArgon2(password);
+  getDb().prepare(`
+    UPDATE users SET password_hash = ?, password_salt = '', password_algorithm = 'argon2id'
+    WHERE id = ?
+  `).run(nextHash, row.id);
+  return true;
 }
 
 export function hashAuthToken(token: string): string {
@@ -204,10 +309,13 @@ export function hashRedeemCode(code: string): string {
   return sha256(code.trim().toUpperCase());
 }
 
+export type UserRole = 'user' | 'admin';
+
 export interface UserAccount {
   id: string;
   email: string;
   displayName: string | null;
+  role: UserRole;
   createdAt: string;
   lastLoginAt: string | null;
 }
@@ -218,6 +326,8 @@ export interface AuthUserRow {
   display_name: string | null;
   password_hash: string;
   password_salt: string;
+  password_algorithm: string | null;
+  role: string | null;
   created_at: string;
   last_login_at: string | null;
 }
@@ -235,21 +345,55 @@ function mapUser(row: AuthUserRow): UserAccount {
     id: row.id,
     email: row.email,
     displayName: row.display_name,
+    role: row.role === 'admin' ? 'admin' : 'user',
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at,
   };
 }
 
-export function createUserAccount(email: string, password: string, displayName?: string): UserAccount {
+export async function createUserAccount(email: string, password: string, displayName?: string): Promise<UserAccount> {
   const normalizedEmail = email.trim().toLowerCase();
-  const { hash, salt } = hashPassword(password);
+  const hash = await hashPasswordArgon2(password);
   const id = `usr_${crypto.randomUUID()}`;
   getDb().prepare(`
-    INSERT INTO users (id, email, display_name, password_hash, password_salt)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(id, normalizedEmail, displayName?.trim() || null, hash, salt);
+    INSERT INTO users (id, email, display_name, password_hash, password_salt, password_algorithm)
+    VALUES (?, ?, ?, ?, '', 'argon2id')
+  `).run(id, normalizedEmail, displayName?.trim() || null, hash);
   const row = getDb().prepare('SELECT * FROM users WHERE id = ?').get(id) as AuthUserRow;
+  claimLegacyOwnership(id);
   return mapUser(row);
+}
+
+export function claimLegacyOwnership(requestingUserId: string): void {
+  const configuredOwnerEmail = process.env.SCIFIGURE_LEGACY_OWNER_EMAIL?.trim().toLowerCase();
+  if (!configuredOwnerEmail) return;
+
+  const database = getDb();
+  database.transaction(() => {
+    const configuredOwner = database.prepare(`
+      SELECT id FROM users WHERE email = ? LIMIT 1
+    `).get(configuredOwnerEmail) as { id: string } | undefined;
+    if (!configuredOwner || configuredOwner.id !== requestingUserId) return;
+
+    const ownerUserId = configuredOwner.id;
+    database.prepare(`
+      UPDATE projects SET user_id = ? WHERE user_id IS NULL OR user_id = ''
+    `).run(ownerUserId);
+    database.prepare(`
+      UPDATE sessions
+      SET user_id = COALESCE(
+        (
+          SELECT p.user_id
+          FROM project_figures pf
+          JOIN projects p ON p.id = pf.project_id
+          WHERE pf.session_id = sessions.id
+          LIMIT 1
+        ),
+        ?
+      )
+      WHERE user_id IS NULL OR user_id = ''
+    `).run(ownerUserId);
+  })();
 }
 
 export function getUserByEmail(email: string): AuthUserRow | null {
@@ -262,15 +406,135 @@ export function getUserById(userId: string): UserAccount | null {
   return row ? mapUser(row) : null;
 }
 
+export function setUserRoleByEmail(email: string, role: UserRole): UserAccount {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (role !== 'user' && role !== 'admin') {
+    throw new Error('无效的用户角色');
+  }
+  const result = getDb().prepare('UPDATE users SET role = ? WHERE email = ?').run(role, normalizedEmail);
+  if (result.changes !== 1) {
+    throw new Error(`未找到用户: ${normalizedEmail}`);
+  }
+  const row = getDb().prepare('SELECT * FROM users WHERE email = ?').get(normalizedEmail) as AuthUserRow;
+  return mapUser(row);
+}
+
+export interface AdminAuditLogInput {
+  actorUserId?: string | null;
+  action: string;
+  resourceType?: string | null;
+  resourceId?: string | null;
+  success: boolean;
+  statusCode?: number | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AdminAuditLogEntry {
+  id: string;
+  actorUserId: string | null;
+  action: string;
+  resourceType: string | null;
+  resourceId: string | null;
+  success: boolean;
+  statusCode: number | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export function logAdminAudit(input: AdminAuditLogInput): void {
+  const metadata = JSON.stringify(input.metadata ?? {}).slice(0, 16_384);
+  getDb().prepare(`
+    INSERT INTO admin_audit_logs (
+      id, actor_user_id, action, resource_type, resource_id, success,
+      status_code, ip_address, user_agent, metadata
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    `aal_${crypto.randomUUID()}`,
+    input.actorUserId ?? null,
+    input.action,
+    input.resourceType ?? null,
+    input.resourceId ?? null,
+    input.success ? 1 : 0,
+    input.statusCode ?? null,
+    input.ipAddress?.slice(0, 128) ?? null,
+    input.userAgent?.slice(0, 512) ?? null,
+    metadata,
+  );
+}
+
+export function listAdminAuditLogs(limit = 100): AdminAuditLogEntry[] {
+  const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+  const rows = getDb().prepare(`
+    SELECT * FROM admin_audit_logs
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(safeLimit) as Array<{
+    id: string;
+    actor_user_id: string | null;
+    action: string;
+    resource_type: string | null;
+    resource_id: string | null;
+    success: number;
+    status_code: number | null;
+    ip_address: string | null;
+    user_agent: string | null;
+    metadata: string;
+    created_at: string;
+  }>;
+  return rows.map((row) => {
+    let metadata: Record<string, unknown> = {};
+    try {
+      metadata = JSON.parse(row.metadata || '{}');
+    } catch {
+      metadata = { invalidMetadata: true };
+    }
+    return {
+      id: row.id,
+      actorUserId: row.actor_user_id,
+      action: row.action,
+      resourceType: row.resource_type,
+      resourceId: row.resource_id,
+      success: row.success === 1,
+      statusCode: row.status_code,
+      ipAddress: row.ip_address,
+      userAgent: row.user_agent,
+      metadata,
+      createdAt: row.created_at,
+    };
+  });
+}
+
 export function touchUserLogin(userId: string): void {
   getDb().prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(userId);
 }
 
-export function createAuthSession(userId: string, token: string, deviceId?: string | null, ttlDays = 30): void {
+export function createAuthSession(
+  userId: string,
+  accessToken: string,
+  refreshToken: string,
+  deviceId?: string | null,
+  accessTtlMinutes = 15,
+  refreshTtlDays = 30,
+): void {
   getDb().prepare(`
-    INSERT INTO auth_sessions (id, user_id, token_hash, device_id, expires_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(`ses_${crypto.randomUUID()}`, userId, hashAuthToken(token), deviceId ?? null, addDaysIso(ttlDays));
+    INSERT INTO auth_sessions (
+      id, user_id, token_hash, refresh_token_hash, device_id, expires_at, refresh_expires_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    `ses_${crypto.randomUUID()}`,
+    userId,
+    hashAuthToken(accessToken),
+    hashAuthToken(refreshToken),
+    deviceId ?? null,
+    new Date(Date.now() + accessTtlMinutes * 60 * 1000).toISOString(),
+    addDaysIso(refreshTtlDays),
+  );
 }
 
 export function getUserByAuthToken(token: string): UserAccount | null {
@@ -287,6 +551,39 @@ export function getUserByAuthToken(token: string): UserAccount | null {
 
 export function revokeAuthToken(token: string): number {
   return getDb().prepare('DELETE FROM auth_sessions WHERE token_hash = ?').run(hashAuthToken(token)).changes;
+}
+
+export function rotateRefreshSession(refreshToken: string, nextAccessToken: string, nextRefreshToken: string, accessTtlMinutes = 15): UserAccount | null {
+  const database = getDb();
+  return database.transaction(() => {
+    const row = database.prepare(`
+      SELECT s.id AS session_id, s.refresh_expires_at, u.*
+      FROM auth_sessions s
+      JOIN users u ON u.id = s.user_id
+      WHERE s.refresh_token_hash = ?
+        AND datetime(s.refresh_expires_at) > datetime('now')
+    `).get(hashAuthToken(refreshToken)) as (AuthUserRow & { session_id: string; refresh_expires_at: string }) | undefined;
+    if (!row) return null;
+    database.prepare(`
+      UPDATE auth_sessions
+      SET token_hash = ?, refresh_token_hash = ?, expires_at = ?, last_seen_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      hashAuthToken(nextAccessToken),
+      hashAuthToken(nextRefreshToken),
+      new Date(Date.now() + accessTtlMinutes * 60 * 1000).toISOString(),
+      row.session_id,
+    );
+    return mapUser(row);
+  })();
+}
+
+export function revokeRefreshToken(refreshToken: string): number {
+  return getDb().prepare('DELETE FROM auth_sessions WHERE refresh_token_hash = ?').run(hashAuthToken(refreshToken)).changes;
+}
+
+export function revokeAllUserSessions(userId: string): number {
+  return getDb().prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(userId).changes;
 }
 
 export function upsertDevice(userId: string, deviceFingerprint: string, name?: string | null): string {
@@ -391,6 +688,7 @@ export function logLicenseCheck(userId: string | null, deviceId: string | null, 
 
 export interface ProjectRow {
   id: string;
+  user_id: string;
   name: string;
   spec: string;
   script?: string;
@@ -412,12 +710,13 @@ export interface ProjectSummary {
   preview: string | null;
 }
 
-export function listProjects(): ProjectSummary[] {
+export function listProjects(userId: string): ProjectSummary[] {
   const rows = getDb().prepare(`
     SELECT id, name, created_at, updated_at, spec
     FROM projects
+    WHERE user_id = ?
     ORDER BY updated_at DESC
-  `).all() as ProjectRow[];
+  `).all(userId) as ProjectRow[];
 
   return rows.map(r => {
     let spec: any = {};
@@ -453,31 +752,32 @@ export function listProjects(): ProjectSummary[] {
   });
 }
 
-export function getProject(id: string): ProjectRow | null {
-  const row = getDb().prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined;
+export function getProject(id: string, userId: string): ProjectRow | null {
+  const row = getDb().prepare('SELECT * FROM projects WHERE id = ? AND user_id = ?').get(id, userId) as ProjectRow | undefined;
   return row ?? null;
 }
 
-export function createProject(id: string, name: string, spec: object): void {
-  getDb().prepare('INSERT INTO projects (id, name, spec) VALUES (?, ?, ?)').run(id, name, JSON.stringify(spec));
+export function createProject(id: string, userId: string, name: string, spec: object): void {
+  getDb().prepare('INSERT INTO projects (id, user_id, name, spec) VALUES (?, ?, ?, ?)').run(id, userId, name, JSON.stringify(spec));
 }
 
-export function updateProject(id: string, name: string, spec: object, script?: string): void {
+export function updateProject(id: string, userId: string, name: string, spec: object, script?: string): void {
   if (script !== undefined) {
-    getDb().prepare('UPDATE projects SET name = ?, spec = ?, script = ?, updated_at = datetime(\'now\') WHERE id = ?').run(name, JSON.stringify(spec), script, id);
+    getDb().prepare('UPDATE projects SET name = ?, spec = ?, script = ?, updated_at = datetime(\'now\') WHERE id = ? AND user_id = ?').run(name, JSON.stringify(spec), script, id, userId);
   } else {
-    getDb().prepare('UPDATE projects SET name = ?, spec = ?, updated_at = datetime(\'now\') WHERE id = ?').run(name, JSON.stringify(spec), id);
+    getDb().prepare('UPDATE projects SET name = ?, spec = ?, updated_at = datetime(\'now\') WHERE id = ? AND user_id = ?').run(name, JSON.stringify(spec), id, userId);
   }
 }
 
-export function deleteProject(id: string): void {
-  getDb().prepare('DELETE FROM projects WHERE id = ?').run(id);
+export function deleteProject(id: string, userId: string): void {
+  getDb().prepare('DELETE FROM projects WHERE id = ? AND user_id = ?').run(id, userId);
 }
 
 // --- Session persistence ---
 
 export interface SessionRow {
   id: string;
+  user_id: string;
   script: string;
   data_payload: string | null;
   edit_log: string;
@@ -486,21 +786,22 @@ export interface SessionRow {
   updated_at: string;
 }
 
-export function saveSession(id: string, script: string, dataPayload: Record<string, unknown> | null, editLog: unknown[], revision: number): void {
+export function saveSession(id: string, userId: string, script: string, dataPayload: Record<string, unknown> | null, editLog: unknown[], revision: number): void {
   getDb().prepare(`
-    INSERT INTO sessions (id, script, data_payload, edit_log, revision, updated_at)
-    VALUES (?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO sessions (id, user_id, script, data_payload, edit_log, revision, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(id) DO UPDATE SET
+      user_id = excluded.user_id,
       script = excluded.script,
       data_payload = excluded.data_payload,
       edit_log = excluded.edit_log,
       revision = excluded.revision,
       updated_at = datetime('now')
-  `).run(id, script, dataPayload ? JSON.stringify(dataPayload) : null, JSON.stringify(editLog), revision);
+  `).run(id, userId, script, dataPayload ? JSON.stringify(dataPayload) : null, JSON.stringify(editLog), revision);
 }
 
-export function getSession(id: string): SessionRow | null {
-  const row = getDb().prepare('SELECT * FROM sessions WHERE id = ?').get(id) as SessionRow | undefined;
+export function getSession(id: string, userId: string): SessionRow | null {
+  const row = getDb().prepare('SELECT * FROM sessions WHERE id = ? AND user_id = ?').get(id, userId) as SessionRow | undefined;
   return row ?? null;
 }
 
@@ -510,8 +811,13 @@ export function deleteSession(id: string): void {
 
 export function cleanExpiredSessions(maxAgeMinutes: number = 120): void {
   getDb().prepare(`
-    DELETE FROM sessions
-    WHERE updated_at < datetime('now', ?)
+    DELETE FROM sessions AS s
+    WHERE s.updated_at < datetime('now', ?)
+      AND NOT EXISTS (
+        SELECT 1
+        FROM project_figures AS pf
+        WHERE pf.session_id = s.id
+      )
   `).run(`-${maxAgeMinutes} minutes`);
 }
 
@@ -725,28 +1031,38 @@ export interface FigSessionInput {
   manifest?: any;
   codeSlice?: any;
   fingerprint?: string | number | null;
+  history?: unknown;
 }
 
 export function replaceProjectFiguresAndSessions(
   projectId: string,
+  userId: string,
   figures: FigSessionInput[],
   script: string,
   dataPayload: Record<string, unknown> | null
 ): void {
   const db = getDb();
   db.transaction(() => {
+    const previousRows = db.prepare(`
+      SELECT figure_index, history
+      FROM project_figures
+      WHERE project_id = ?
+    `).all(projectId) as Array<{ figure_index: number; history?: string | null }>;
+    const previousHistoryByIndex = new Map(previousRows.map(row => [row.figure_index, row.history]));
     db.prepare('DELETE FROM project_figures WHERE project_id = ?').run(projectId);
     const insertFig = db.prepare(`
       INSERT INTO project_figures (
         id, project_id, figure_index, session_id, revision,
-        preview_svg, manifest, code_slice, fingerprint, preview_updated_at
+        preview_svg, manifest, code_slice, fingerprint, preview_updated_at,
+        edit_log, history
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
     `);
     const insertSession = db.prepare(`
-      INSERT INTO sessions (id, script, data_payload, edit_log, revision, updated_at)
-      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      INSERT INTO sessions (id, user_id, script, data_payload, edit_log, revision, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT(id) DO UPDATE SET
+        user_id = excluded.user_id,
         script = excluded.script,
         data_payload = excluded.data_payload,
         edit_log = excluded.edit_log,
@@ -764,12 +1080,17 @@ export function replaceProjectFiguresAndSessions(
         fig.previewSvg ?? null,
         fig.manifest ? JSON.stringify(fig.manifest) : null,
         fig.codeSlice ? JSON.stringify(fig.codeSlice) : null,
-        fig.fingerprint !== undefined && fig.fingerprint !== null ? String(fig.fingerprint) : null
+        fig.fingerprint !== undefined && fig.fingerprint !== null ? String(fig.fingerprint) : null,
+        JSON.stringify(fig.editLog || []),
+        fig.history !== undefined
+          ? JSON.stringify(fig.history)
+          : previousHistoryByIndex.get(fig.figureIndex) || JSON.stringify({ past: [], future: [] })
       );
 
       const payload = dataPayload ? JSON.stringify(dataPayload) : null;
       insertSession.run(
         fig.sessionId,
+        userId,
         script,
         payload,
         JSON.stringify(fig.editLog),

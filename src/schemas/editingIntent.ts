@@ -31,15 +31,28 @@ export type SemanticTargetRole =
   | 'x_tick_label'
   | 'y_tick_label'
   | 'legend_text'
+  | 'legend_title'
+  | 'legend_marker'
   | 'legend_container'
+  | 'colorbar_label'
+  | 'colorbar_tick_label'
   | 'subplot_axes_box'
   | 'axis_frame'
+  | 'axis_spine'
+  | 'tick_line'
   | 'grid'
   | 'data_line'
   | 'data_point'
   | 'data_patch'
+  | 'data_bar'
+  | 'data_errorbar'
+  | 'data_stem'
+  | 'data_boxplot'
+  | 'data_violin'
   | 'heatmap'
   | 'colorbar'
+  | 'annotation_text'
+  | 'annotation_arrow'
   | 'component';
 
 export interface EditingIntentScope {
@@ -90,4 +103,19 @@ export interface EditingIntentCompileResult {
   patches: PatchEntry[];
   skipped: EditingIntentSkippedTarget[];
   diagnostics: EditingIntentDiagnostic[];
+}
+
+export interface EditingIntentApplyTargetReport {
+  figureId: string;
+  appliedCount: number;
+  skippedCount: number;
+  skipped: EditingIntentSkippedTarget[];
+}
+
+export interface EditingIntentApplyReport {
+  id: string;
+  sourceFigureId: string;
+  scope: 'current' | 'all' | 'selected';
+  createdAt: number;
+  targetReports: EditingIntentApplyTargetReport[];
 }
