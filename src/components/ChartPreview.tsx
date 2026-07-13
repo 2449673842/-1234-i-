@@ -6,6 +6,7 @@ import { PatchEntry, FigureSession } from '../schemas/manifest';
 import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent';
 import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
 import { compileEditingIntentWithControlledResolver } from '../utils/targetResolver';
+import { recordLegacyRetireObservation } from '../utils/legacyRetireObservationClient';
 
 const TEXT_GID_RE = /^(r\.text|text|title|xlabel|ylabel|legend_text|legend_title|fig_text)\./;
 const TICK_LABEL_GID_RE = /^(xtick|ytick)\./;
@@ -492,6 +493,32 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       && candidate.gid === gid
       && candidate.prop === 'position'
     ));
+    if (!patch) {
+      recordLegacyRetireObservation({
+        eventType: 'legacy_position_drag_path',
+        strategy: compiled.strategy,
+        coordinateSpace: coordSystem,
+        objectKind: obj.kind,
+        projectionState: 'unsupported',
+        legacyFallbackCount: compiled.strategy === 'legacy' ? 1 : 0,
+      });
+      recordLegacyRetireObservation({
+        eventType: 'legacy_resolver_path',
+        source: 'position-drag',
+        center: 'layout',
+        intent: intent.intent,
+        prop: 'position',
+        selectionMode: 'explicit_objects',
+        targetRole,
+        strategy: compiled.strategy,
+        fallbackReason: compiled.fallbackReason,
+        patchCount: 0,
+        skippedCount: compiled.skipped.length,
+        ambiguousCount: compiled.resolution?.ambiguous.length ?? 0,
+        missingIdentityCount: compiled.readiness.missingIdentityObjectIds.length,
+        missingCapabilityCount: compiled.readiness.missingPropertyCapabilityObjectIds.length,
+      });
+    }
     return patch ? ({ ...patch, intent } as PatchEntry & { intent: EditingIntent }) : null;
   }, [figSession, getAxesBoxForObject, getDataLimitsForObject, manifestObjectMap, svgSize.viewBox.height, svgSize.viewBox.width]);
 
@@ -1040,11 +1067,45 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
   const confirmPendingDrag = useCallback(() => {
     if (pendingPositionPatches.length === 0) return;
+    const targetObjects = pendingPositionPatches.flatMap((patch) => {
+      if (!('gid' in patch) || patch.prop !== 'position') return [];
+      const object = manifestObjectMap.get(patch.gid);
+      if (!object) return [];
+      const value = patch.value && typeof patch.value === 'object' && !Array.isArray(patch.value)
+        ? patch.value as { coord_system?: unknown }
+        : {};
+      recordLegacyRetireObservation({
+        eventType: 'legacy_position_drag_path',
+        strategy: POSITION_TARGET_RESOLVER_V2_ENABLED ? 'strict' : 'legacy',
+        coordinateSpace: value.coord_system ?? 'none',
+        objectKind: object.kind,
+        projectionState: 'editable',
+        legacyFallbackCount: POSITION_TARGET_RESOLVER_V2_ENABLED ? 0 : 1,
+      });
+      return [object];
+    });
+    const firstObject = targetObjects[0];
+    recordLegacyRetireObservation({
+      eventType: 'legacy_resolver_path',
+      source: 'position-drag',
+      center: 'layout',
+      intent: firstObject?.kind === 'legend' ? 'layout.position.legend' : 'layout.position.text',
+      prop: 'position',
+      selectionMode: 'explicit_objects',
+      targetRole: firstObject?.kind === 'legend' ? 'legend_container' : undefined,
+      strategy: POSITION_TARGET_RESOLVER_V2_ENABLED ? 'strict' : 'legacy',
+      fallbackReason: POSITION_TARGET_RESOLVER_V2_ENABLED ? undefined : 'feature_disabled',
+      patchCount: pendingPositionPatches.length,
+      skippedCount: 0,
+      ambiguousCount: 0,
+      missingIdentityCount: targetObjects.filter(object => !object.identity?.instanceKey).length,
+      missingCapabilityCount: targetObjects.filter(object => !Array.isArray(object.propertyCapabilities)).length,
+    });
     finalizeDragPreviewKeepingTransform();
     void (onImmediatePatch || onPatch)?.(pendingPositionPatches);
     setPendingPositionPatches([]);
     setDragHint(null);
-  }, [finalizeDragPreviewKeepingTransform, onImmediatePatch, onPatch, pendingPositionPatches]);
+  }, [finalizeDragPreviewKeepingTransform, manifestObjectMap, onImmediatePatch, onPatch, pendingPositionPatches]);
 
   const cancelPendingDrag = useCallback(() => {
     clearDragPreview();

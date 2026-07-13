@@ -13,6 +13,7 @@ const STABLE_ROOT = path.dirname(GIT_COMMON_DIR);
 const BUILD_ROOT = path.join(ROOT, 'tmp', 'unified-editing-builds');
 const POINTER_PATH = path.join(ROOT, 'tmp', 'unified-editing-staging', 'current-build.json');
 const VITE_CLI = path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js');
+const STAGING_RENDERER_IMAGE = process.env.SCIFIGURE_STAGING_RENDERER_IMAGE || 'scifigure-renderer:phase8b';
 const INHERITED_FEATURE_FLAGS = [
   'VITE_SCIFIGURE_TARGET_RESOLVER_SHADOW',
   'VITE_SCIFIGURE_FONT_TARGET_RESOLVER_V2',
@@ -31,10 +32,12 @@ function stableFeatureEnv() {
   }));
 }
 
-function runBuild(distDir) {
+function runBuild(distDir, buildId) {
   const env = {
     ...process.env,
     ...stableFeatureEnv(),
+    SCIFIGURE_STAGING_BUILD_ID: buildId,
+    SCIFIGURE_LEGACY_RETIRE_OBSERVABILITY: '1',
     VITE_SCIFIGURE_PROPERTY_DESCRIPTOR_V1: '1',
     VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2: '1',
     VITE_SCIFIGURE_FONT_TARGET_RESOLVER_V2: '1',
@@ -44,6 +47,8 @@ function runBuild(distDir) {
     VITE_SCIFIGURE_PALETTE_TARGET_RESOLVER_V2: '1',
     VITE_SCIFIGURE_PALETTE_CONTROLS_V2: '1',
     VITE_SCIFIGURE_LAYOUT_CONTROLS_V2: '1',
+    VITE_SCIFIGURE_LEGACY_RETIRE_OBSERVABILITY: '1',
+    VITE_SCIFIGURE_STAGING_BUILD_ID: buildId,
     DISABLE_HMR: 'true',
   };
   return new Promise((resolve, reject) => {
@@ -67,13 +72,16 @@ const buildId = process.env.SCIFIGURE_STAGING_BUILD_ID
 if (!/^[A-Za-z0-9._-]+$/.test(buildId)) {
   throw new Error(`Invalid SCIFIGURE_STAGING_BUILD_ID: ${buildId}`);
 }
+if (!/^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,255}$/.test(STAGING_RENDERER_IMAGE)) {
+  throw new Error(`Invalid SCIFIGURE_STAGING_RENDERER_IMAGE: ${STAGING_RENDERER_IMAGE}`);
+}
 const candidateRoot = path.join(BUILD_ROOT, buildId);
 const distDir = path.join(candidateRoot, 'dist');
 const markerPath = path.join(distDir, '.unified-editing-staging.json');
 const publicMarkerPath = path.join(distDir, 'unified-editing-build.json');
 
 fs.mkdirSync(candidateRoot, { recursive: true });
-await runBuild(distDir);
+await runBuild(distDir, buildId);
 const marker = {
   kind: 'unified-editing-staging',
   buildId,
@@ -88,6 +96,8 @@ const marker = {
   paletteResolverV2: true,
   paletteControlsV2: true,
   layoutControlsV2: true,
+  legacyRetireObservationV1: true,
+  rendererImage: STAGING_RENDERER_IMAGE,
 };
 fs.writeFileSync(markerPath, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
 fs.writeFileSync(publicMarkerPath, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');

@@ -1,7 +1,73 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-13 12:16:10 +08:00
+> 最后修改时间：2026-07-13 15:43:12 +08:00
+
+---
+
+## 2026-07-13 15:24:50 +08:00 Phase 8b staging renderer 版本错配导致 strict 控件全部只读
+
+**现象**
+
+- 3200 可以正常出图，但语义 smoke 中字体和线宽控件变为 readonly，配色 binding 缺 `targetMode/targets`，修改不会形成 patch。
+- 同一前端候选使用 `scifigure-renderer:phase8a` 时恢复正常，说明不是统一编辑 UI 或图元选择系统损坏。
+
+**根因**
+
+- staging 启动器从稳定 `.env` 继承了 `SCIFIGURE_RENDERER_IMAGE=scifigure-renderer:latest`。
+- `latest` 是旧 renderer，能返回 SVG 和旧 manifest，但缺 Phase 8a identity、property capability 和精确 palette target 协议；默认 strict 因而正确阻止写回。
+- 旧 marker 只绑定前端 build，没有声明 renderer 镜像，前后端协议版本可以静默错配。
+
+**修复**
+
+- staging build marker 新增 `rendererImage`，并校验镜像名格式。
+- staging 启动器只使用 marker 绑定镜像，覆盖稳定 `.env` 的旧值；marker 缺字段时拒绝启动。
+- Phase 8b 候选绑定 `scifigure-renderer:phase8b`，marker 同时声明 `legacyRetireObservationV1`。
+
+**验证**
+
+- 旧镜像复现：语义 0/3、组件 3/18、拖拽 3/9，控件均因协议缺失只读。
+- 正确镜像：属性 9/9、Python 语义 14/14、组件/布局 18/18、拖拽 9/9、R 7/7。
+- 3200 marker 显示 `rendererImage=scifigure-renderer:phase8b`；3000 PID `196020` 未改变。
+
+**防复发规则**
+
+- production-like staging 必须把前端 build、Git revision、协议 marker 和 renderer image 视为一个不可拆分候选。
+- “能出 SVG”不能证明 renderer 协议兼容；放行必须检查 identity、propertyCapabilities 和 palette targetMode。
+- 测试报告出现大面积 readonly/空 patch 时，先核对 marker 与 renderer 哈希，不得先修改前端放宽 strict。
+
+---
+
+## 2026-07-13 15:24:50 +08:00 R facet 多面板 layer 因 `$` 部分匹配在 Docker R 4.5 渲染失败
+
+**现象**
+
+- R 语义 fixture 在 Docker 中报 `R script failed: 'length = 2' in coercion to 'logical(1)'`，本地基础 renderer 测试可通过。
+- 错误发生在 manifest identity 构建，不是 ggplot 绘制、SVG 序列化或前端解析阶段。
+
+**根因**
+
+- R list 的 `$` 会部分匹配字段名。facet layer 只有 `subplotIds=[subplot.0, subplot.1]` 时，读取 `obj$subplotId` 会错误命中复数字段。
+- 旧 R 版本可能只给警告并取首值，R 4.5 对长度 2 的 `&&` 标量转换直接报错；即使不报错，也会错误伪造单一 subplot 归属。
+- 同类风险还存在于 `layerId/layerIds` 和 `mappableId/mappableIds`。
+
+**修复**
+
+- 新增 R manifest 精确字段和标量字段读取函数，禁止 `$` 部分匹配进入 identity 协议。
+- 单值 relation 只读取精确同名字段；复数 `subplotIds/layerIds/groupIds/mappableIds` 独立保留全部去重值。
+- facet identity 回归开启 `options(warn=2)`，使旧 R 上的部分匹配警告也能阻断测试。
+
+**验证**
+
+- 本地目标 R 回归通过；Docker R 4.5 只读挂载修复版 renderer 后同一 fixture 成功，layer relation 保留两个 subplot。
+- Python introspection、R renderer 和 capability matrix 共 70 项通过。
+- `scifigure-renderer:phase8b` 构建通过；R 语义浏览器 7/7、Docker sandbox smoke 通过。
+
+**防复发规则**
+
+- R 协议对象存在单复数字段时必须使用 `[[name, exact=TRUE]]`，禁止用 `$singular` 读取。
+- 多面板 layer/group 的 relation 必须断言完整 `subplotIds`，不能只验证渲染成功。
+- 本地 R 和生产 Docker R 版本不同必须双跑语义 fixture；本地通过不能替代容器证据。
 
 ---
 

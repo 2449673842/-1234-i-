@@ -254,6 +254,7 @@ p
 
     def test_default_discrete_scale_exposes_layer_group_panel_aesthetic_identity(self):
         script = """
+options(warn=2)
 library(ggplot2)
 df <- expand.grid(panel=c("P1", "P2"), group=c("A", "B"), x=1:2)
 df$y <- seq_len(nrow(df))

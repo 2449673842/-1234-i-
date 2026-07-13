@@ -23,6 +23,7 @@ import Papa from 'papaparse';
 import { createRequire } from 'module';
 import { applyColorCodePatch } from './src/utils/codeColorPatch';
 import { isDurableVirtualEditGid, mergePreviewGlobalsIntoEditLog } from './src/utils/exportPreviewState';
+import { sanitizeLegacyRetireObservationBatch } from './src/utils/legacyRetireObservation';
 let archiver: any;
 try {
   // @ts-ignore
@@ -1121,6 +1122,74 @@ ${inner}
     }
     next(err);
   }
+
+  const LEGACY_RETIRE_OBSERVATION_ENDPOINT = '/api/internal/legacy-retire-observation';
+  const LEGACY_RETIRE_OBSERVATION_DIR = path.resolve(
+    process.cwd(),
+    'tmp',
+    'unified-editing-staging',
+    'legacy-retire-observation',
+  );
+  const LEGACY_RETIRE_OBSERVATION_MAX_EVENTS = 100;
+
+  function legacyRetireObservationEnabled(): boolean {
+    return process.env.SCIFIGURE_STAGING_INSTANCE === 'unified-editing'
+      || process.env.SCIFIGURE_LEGACY_RETIRE_OBSERVABILITY === '1';
+  }
+
+  function safeObservationToken(value: unknown, fallback: string): string {
+    const safe = String(value || '').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80);
+    return safe || fallback;
+  }
+
+  function assertInsideDirectory(candidatePath: string, parentPath: string): void {
+    const resolvedCandidate = path.resolve(candidatePath);
+    const resolvedParent = path.resolve(parentPath);
+    const relative = path.relative(resolvedParent, resolvedCandidate);
+    if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) return;
+    throw new Error('Observation path escaped staging directory');
+  }
+
+  function stagingBuildId(): string {
+    return safeObservationToken(process.env.SCIFIGURE_STAGING_BUILD_ID, 'unknown-build');
+  }
+
+  app.post(
+    LEGACY_RETIRE_OBSERVATION_ENDPOINT,
+    apiRateLimit,
+    express.json({ limit: '64kb' }),
+    (req, res) => {
+      try {
+        if (!legacyRetireObservationEnabled()) {
+          return res.status(404).json({ status: 'error', message: 'Not found' });
+        }
+        requireAuth(req);
+        const inputEvents = Array.isArray(req.body) ? req.body : req.body?.events;
+        if (!Array.isArray(inputEvents)) {
+          return res.status(400).json({ status: 'error', message: 'Observation events must be an array' });
+        }
+        if (inputEvents.length > LEGACY_RETIRE_OBSERVATION_MAX_EVENTS) {
+          return res.status(413).json({ status: 'error', message: 'Too many observation events' });
+        }
+        const events = sanitizeLegacyRetireObservationBatch(inputEvents, LEGACY_RETIRE_OBSERVATION_MAX_EVENTS);
+        if (events.length === 0) {
+          return res.status(400).json({ status: 'error', message: 'No valid observation events' });
+        }
+
+        const receivedAt = new Date().toISOString();
+        const buildId = stagingBuildId();
+        const fileName = `${buildId}-${receivedAt.slice(0, 10)}.jsonl`;
+        const outputPath = path.join(LEGACY_RETIRE_OBSERVATION_DIR, fileName);
+        assertInsideDirectory(outputPath, LEGACY_RETIRE_OBSERVATION_DIR);
+        fs.mkdirSync(LEGACY_RETIRE_OBSERVATION_DIR, { recursive: true });
+        const jsonl = events.map(event => JSON.stringify({ ...event, receivedAt, buildId })).join('\n') + '\n';
+        fs.appendFileSync(outputPath, jsonl, { encoding: 'utf8' });
+        res.json({ status: 'success', accepted: events.length });
+      } catch (err) {
+        apiErrorHandler(err, req, res, () => {});
+      }
+    },
+  );
 
   app.use(apiRateLimit);
   app.use(express.json({ limit: '50mb' }));

@@ -28,6 +28,8 @@ const STAGING_NODE_ENV = process.env.SCIFIGURE_STAGING_NODE_ENV || 'production';
 const STAGING_BUILD_ROOT = path.join(ROOT, 'tmp', 'unified-editing-builds');
 const STAGING_BUILD_POINTER = path.join(ROOT, 'tmp', 'unified-editing-staging', 'current-build.json');
 let stagingDistDir = path.join(ROOT, 'dist');
+let stagingBuildId = process.env.SCIFIGURE_STAGING_BUILD_ID || 'unknown-build';
+let stagingRendererImage = process.env.SCIFIGURE_STAGING_RENDERER_IMAGE || 'scifigure-renderer:phase8b';
 const ALLOWED_STAGING_ROOT = path.resolve(
   process.env.SCIFIGURE_STAGING_ALLOWED_ROOT || path.join(ROOT, 'tmp', 'unified-editing-staging'),
 );
@@ -160,10 +162,14 @@ function assertProductionAssetsExist() {
     || marker?.paletteResolverV2 !== true
     || marker?.paletteControlsV2 !== true
     || marker?.layoutControlsV2 !== true
+    || marker?.legacyRetireObservationV1 !== true
+    || !/^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,255}$/.test(String(marker?.rendererImage || ''))
     || marker?.buildId !== pointer?.buildId) {
     throw new Error(`Invalid unified editing staging build marker: ${markerPath}`);
   }
   stagingDistDir = resolvedDistDir;
+  stagingBuildId = String(marker.buildId);
+  stagingRendererImage = String(marker.rendererImage);
 }
 
 function assertPortFree(port) {
@@ -203,6 +209,9 @@ function stagingEnv(port) {
     SCIFIGURE_DB_PATH: STAGING_DB_PATH,
     SCIFIGURE_DIST_DIR: stagingDistDir,
     SCIFIGURE_STAGING_INSTANCE: 'unified-editing',
+    SCIFIGURE_STAGING_BUILD_ID: stagingBuildId,
+    SCIFIGURE_RENDERER_IMAGE: stagingRendererImage,
+    SCIFIGURE_LEGACY_RETIRE_OBSERVABILITY: '1',
     SCIFIGURE_RENDER_CONCURRENCY: process.env.SCIFIGURE_STAGING_RENDER_CONCURRENCY || '1',
     DISABLE_HMR: 'true',
     VITE_SCIFIGURE_PROPERTY_DESCRIPTOR_V1: '1',
@@ -214,6 +223,8 @@ function stagingEnv(port) {
     VITE_SCIFIGURE_PALETTE_TARGET_RESOLVER_V2: '1',
     VITE_SCIFIGURE_PALETTE_CONTROLS_V2: '1',
     VITE_SCIFIGURE_LAYOUT_CONTROLS_V2: '1',
+    VITE_SCIFIGURE_LEGACY_RETIRE_OBSERVABILITY: '1',
+    VITE_SCIFIGURE_STAGING_BUILD_ID: stagingBuildId,
   };
 }
 
@@ -224,12 +235,14 @@ function printConfig(port) {
   console.log(`Data: ${STAGING_DATA_DIR}`);
   console.log(`DB: ${STAGING_DB_PATH}`);
   console.log(`Candidate build: ${stagingDistDir}`);
+  console.log(`Build ID: ${stagingBuildId}`);
+  console.log(`Renderer image: ${stagingRendererImage}`);
   console.log(`Protected data roots: ${PROTECTED_DATA_DIRS.join(', ')}`);
   console.log(`Allowed staging root: ${ALLOWED_STAGING_ROOT}`);
   console.log('Renderer concurrency: 1 (override with SCIFIGURE_STAGING_RENDER_CONCURRENCY)');
   console.log(`Node environment: ${STAGING_NODE_ENV}`);
   console.log(`Vite HMR: ${STAGING_NODE_ENV === 'production' ? 'not started' : 'disabled'}`);
-  console.log('Feature flags: descriptor=1, property-inspector=1, font-resolver=1, font-controls=1, component-resolver=1, component-controls=1, palette-resolver=1, palette-controls=1, layout-controls=1');
+  console.log('Feature flags: descriptor=1, property-inspector=1, font-resolver=1, font-controls=1, component-resolver=1, component-controls=1, palette-resolver=1, palette-controls=1, layout-controls=1, legacy-retire-observation=1');
 }
 
 async function startServer(port) {

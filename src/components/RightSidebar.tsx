@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Baseline, Lock, Layout, Palette, Sliders } from 'lucide-react';
-import { FigureSession, PatchEntry, ManifestObject, ManifestField, Binding } from '../schemas/manifest';
+import { FigureSession, PatchEntry, ManifestObject, ManifestField, Binding, ManifestEditScope, ManifestObjectKind } from '../schemas/manifest';
 import { normalizeFigureModel } from '../utils/standardFigureModel';
 import { resolveFigureId } from '../utils/figureIdentity';
 import { compileEditingIntent } from '../utils/editingIntentCompiler';
@@ -13,10 +13,14 @@ import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolvePaletteTar
 import { projectPaletteColorControl } from '../utils/palettePropertyProjection';
 import { computeEqualAxesPhysicalLayout } from '../utils/subplotPhysicalLayout';
 import { resolveExplicitColorbarOwner } from '../utils/colorbarOwnership';
+import { recordLegacyRetireObservation } from '../utils/legacyRetireObservationClient';
+import type { LegacyPaletteResolverPathEvent, LegacyResolverPathEvent, LegacyUiSurface } from '../utils/legacyRetireObservation';
 import type { StandardFigureModel, StandardFigureObject } from '../schemas/standardFigureModel';
 import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent';
 import type { EditingIntentApplyReport, EditingIntentSkippedTarget } from '../schemas/editingIntent';
 import type { CanonicalPropertyKey, EditingCenterId, ProjectedPropertyDescriptor } from '../schemas/propertyDescriptor';
+import type { ControlledTargetCompileResult } from '../utils/targetResolver';
+import type { PaletteTargetResolution } from '../utils/paletteTargetResolver';
 import { PropertyControl } from './PropertyControl';
 
 import type { DraftPatch } from '../schemas/draftPatchBatch';
@@ -395,6 +399,73 @@ function unionNormalizedBounds(boundsList: NormalizedBounds[]): NormalizedBounds
   };
 }
 
+function objectKindCounts(items: readonly ManifestObject[]): Partial<Record<ManifestObjectKind, number>> {
+  const counts: Partial<Record<ManifestObjectKind, number>> = {};
+  items.forEach(item => {
+    counts[item.kind] = (counts[item.kind] ?? 0) + 1;
+  });
+  return counts;
+}
+
+function projectionScopeForCenter(center: EditingCenterId, objectCount: number): ManifestEditScope {
+  if (center === 'fonts') return 'figure';
+  if (center === 'components') return 'group';
+  if (center === 'layout') return objectCount > 1 ? 'group' : 'object';
+  return 'object';
+}
+
+function legacySurfaceForCenter(center: EditingCenterId): LegacyUiSurface | null {
+  if (center === 'fonts' && !FONT_CONTROLS_V2_ENABLED) return 'font_controls_rollback';
+  if (center === 'components' && !COMPONENT_CONTROLS_V2_ENABLED) return 'component_controls_rollback';
+  if (center === 'palette' && !PALETTE_CONTROLS_V2_ENABLED) return 'palette_controls_rollback';
+  if (center === 'layout' && !LAYOUT_CONTROLS_V2_ENABLED) return 'layout_controls_rollback';
+  return null;
+}
+
+function descriptorProjectionFallbackEnabled(center: EditingCenterId): boolean {
+  if (center === 'layout') return !LAYOUT_CONTROLS_V2_ENABLED;
+  if (center === 'components') return !COMPONENT_STRICT_RESOLVER_ACTIVE;
+  if (center === 'fonts') return !FONT_STRICT_RESOLVER_ACTIVE;
+  return false;
+}
+
+function recordResolverObservation(
+  result: ControlledTargetCompileResult,
+  source: LegacyResolverPathEvent['source'],
+  center: LegacyResolverPathEvent['center'],
+  intent: EditingIntent,
+) {
+  recordLegacyRetireObservation({
+    eventType: 'legacy_resolver_path',
+    source,
+    center,
+    intent: intent.intent,
+    prop: intent.operation.prop,
+    selectionMode: intent.scope.selectionMode,
+    targetRole: intent.scope.targetRole,
+    strategy: result.strategy,
+    fallbackReason: result.fallbackReason,
+    patchCount: result.patches.length,
+    skippedCount: result.skipped.length,
+    ambiguousCount: result.resolution?.ambiguous.length ?? 0,
+    missingIdentityCount: result.readiness.missingIdentityObjectIds.length,
+    missingCapabilityCount: result.readiness.missingPropertyCapabilityObjectIds.length,
+  });
+}
+
+function recordPaletteResolverObservation(resolution: PaletteTargetResolution) {
+  recordLegacyRetireObservation({
+    eventType: 'legacy_palette_resolver_path',
+    strategy: resolution.strategy,
+    fallbackReason: resolution.fallbackReason,
+    targetMode: resolution.targetMode,
+    targetCount: resolution.targets.length,
+    codeOnlyCount: resolution.targets.filter(target => target.replayMode === 'code_only').length,
+    skippedCount: resolution.skipped.length,
+    ambiguousCount: resolution.ambiguous.length,
+  } satisfies LegacyPaletteResolverPathEvent);
+}
+
 function normalizeTickTextPatch(gid: string, prop: string) {
   if (prop !== 'fontsize' && prop !== 'fontfamily' && prop !== 'color') {
     return null;
@@ -591,7 +662,97 @@ export function RightSidebar({
       ));
     }
     recordPropertyProjectionShadowDiagnostic(manifest, center, shadowObjects);
+    const scope = projectionScopeForCenter(center, shadowObjects.length);
+    const projections = center === 'palette'
+      ? []
+      : projectPropertyDescriptors({
+          center,
+          objects: shadowObjects,
+          scope,
+          allowLegacyFallback: descriptorProjectionFallbackEnabled(center),
+        });
+    recordLegacyRetireObservation({
+      eventType: 'legacy_descriptor_projection',
+      generatedBy: manifest.generatedBy === 'r_svg' ? 'r_svg' : 'introspection',
+      center,
+      scope,
+      objectCount: shadowObjects.length,
+      protocolCompleteCount: shadowObjects.filter(object => (
+        Boolean(object.identity?.instanceKey) && Array.isArray(object.propertyCapabilities)
+      )).length,
+      objectKindCounts: objectKindCounts(shadowObjects),
+      properties: projections.map(projection => ({
+        key: projection.key,
+        state: projection.state,
+        editableCount: projection.counts.editable,
+        readonlyCount: projection.counts.readonly,
+        unsupportedCount: projection.counts.unsupported,
+        legacyFallbackCount: projection.counts.legacyFallback,
+      })),
+    });
+
+    const rollbackSurface = legacySurfaceForCenter(center);
+    if (rollbackSurface) {
+      recordLegacyRetireObservation({
+        eventType: 'legacy_ui_surface_rendered',
+        surface: rollbackSurface,
+        center,
+        controlFamily: center === 'layout' ? 'position' : 'common',
+        renderedControlCount: shadowObjects.length,
+      });
+    }
+    if (center === 'components') {
+      const errorbarLegacyCount = shadowObjects.filter(object => object.kind === 'errorbar_container').length;
+      if (errorbarLegacyCount > 0) {
+        recordLegacyRetireObservation({
+          eventType: 'legacy_ui_surface_rendered',
+          surface: 'component_errorbar_legacy',
+          center: 'components',
+          controlFamily: 'specialized',
+          renderedControlCount: errorbarLegacyCount,
+        });
+      }
+      const specializedCount = shadowObjects.filter(object => (
+        ['bar_container', 'errorbar_container', 'stem_container', 'boxplot_container',
+          'violinplot_container', 'legend', 'heatmap', 'colorbar', 'subplot', 'axis_x', 'axis_y']
+          .includes(object.kind)
+        || object.role === 'annotation_arrow'
+      )).length;
+      if (specializedCount > 0) {
+        recordLegacyRetireObservation({
+          eventType: 'legacy_ui_surface_rendered',
+          surface: 'component_specialized_controls',
+          center: 'components',
+          controlFamily: 'specialized',
+          renderedControlCount: specializedCount,
+        });
+      }
+    }
   }, [activeTab, figSession?.manifest, figSession?.revision, selectedGids, selectedObject]);
+
+  useEffect(() => {
+    if (activeTab !== 'properties' || !selectedObj) return;
+    const descriptorProjections = PROPERTY_INSPECTOR_V2_ENABLED
+      ? projectPropertyDescriptors({ center: 'properties', objects: [selectedObj as unknown as ManifestObject], scope: 'object' })
+        .filter(projection => Boolean(projection.propByObjectId[selectedObj.id]))
+      : [];
+    const descriptorProps = new Set(descriptorProjections
+      .map(projection => projection.propByObjectId[selectedObj.id])
+      .filter((prop): prop is string => Boolean(prop)));
+    const legacyEditableCount = selectedObj.editable.filter(prop => (
+      prop !== 'position'
+      && prop !== 'anchor_position'
+      && !descriptorProps.has(prop)
+    )).length;
+    if (legacyEditableCount === 0) return;
+    recordLegacyRetireObservation({
+      eventType: 'legacy_ui_surface_rendered',
+      surface: 'property_legacy_editable',
+      center: 'properties',
+      controlFamily: 'common',
+      renderedControlCount: legacyEditableCount,
+    });
+  }, [activeTab, selectedObj, figSession?.revision]);
 
   const getObjectSubplotId = (obj: Pick<StandardFigureObject, 'id' | 'kind' | 'subplotId' | 'source' | 'identity'>) => {
     if (obj.kind === 'subplot') return obj.id;
@@ -752,6 +913,7 @@ export function RightSidebar({
       intent,
       FONT_STRICT_RESOLVER_ACTIVE,
     );
+    recordResolverObservation(result, 'font-center', 'fonts', intent);
     recordTargetResolverShadowDiagnostic(manifest, intent, 'font-center');
     if (result.fallbackReason && result.fallbackReason !== 'feature_disabled') {
       console.info('[FontTargetResolverV2] compatibility fallback', {
@@ -772,6 +934,7 @@ export function RightSidebar({
       intent,
       COMPONENT_STRICT_RESOLVER_ACTIVE,
     );
+    recordResolverObservation(result, 'component-center', 'components', intent);
     recordTargetResolverShadowDiagnostic(manifest, intent, 'component-center');
     if (result.fallbackReason && result.fallbackReason !== 'feature_disabled') {
       console.info('[ComponentTargetResolverV2] compatibility fallback', {
@@ -1186,6 +1349,7 @@ export function RightSidebar({
 
   const handlePaletteColorChange = (paletteId: string, newColor: string) => {
     const resolution = resolvePaletteBindingTargets(paletteId);
+    recordPaletteResolverObservation(resolution);
     if (resolution.fallbackReason && resolution.fallbackReason !== 'feature_disabled') {
       console.info('[PaletteTargetResolverV2] compatibility fallback', {
         paletteId,
@@ -4863,6 +5027,7 @@ export function RightSidebar({
       if (manifest.generatedBy === 'r_svg') {
         const patchArray = palettes.flatMap((p: any, idx: number) => {
           const resolution = resolvePaletteBindingTargets(p.id);
+          recordPaletteResolverObservation(resolution);
           return buildPaletteObjectPatches(resolution, colors[idx % colors.length]);
         });
         void onPatch(patchArray);
@@ -4870,6 +5035,7 @@ export function RightSidebar({
       }
       const patchArray = palettes.flatMap((p: any, idx: number) => {
         const resolution = resolvePaletteBindingTargets(p.id);
+        recordPaletteResolverObservation(resolution);
         return buildPaletteUpdatePatches(
           resolution,
           colors[idx % colors.length],

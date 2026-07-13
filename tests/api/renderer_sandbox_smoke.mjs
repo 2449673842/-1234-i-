@@ -13,6 +13,14 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function waitForExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null) return Promise.resolve(true);
+  return Promise.race([
+    new Promise((resolve) => child.once('exit', () => resolve(true))),
+    new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+  ]);
+}
+
 function assertCapabilityManifest(result, label) {
   const objects = result?.manifest?.objects;
   assert(Array.isArray(objects) && objects.length > 0, `${label} did not return manifest objects`);
@@ -50,6 +58,7 @@ async function ensureServer() {
       ...process.env,
       PORT: String(port),
       SCIFIGURE_DB_PATH: path.join(tempDir, 'scifigure-test.db'),
+      SCIFIGURE_DATA_DIR: path.join(tempDir, 'data'),
       SCIFIGURE_RENDER_MODE: 'docker',
       SCIFIGURE_R_RISK_ENFORCE: '0',
       SCIFIGURE_R_TIMEOUT_MS: '5000',
@@ -71,14 +80,22 @@ async function ensureServer() {
 }
 
 async function cleanupServer() {
-  if (ownedServer) {
-    ownedServer.kill();
-    await Promise.race([
-      new Promise((resolve) => ownedServer.once('close', resolve)),
-      new Promise((resolve) => setTimeout(resolve, 5_000)),
-    ]);
+  if (ownedServer && ownedServer.exitCode === null) {
+    ownedServer.kill('SIGTERM');
+    const exited = await waitForExit(ownedServer, 5_000);
+    if (!exited && ownedServer.exitCode === null) {
+      ownedServer.kill('SIGKILL');
+      await waitForExit(ownedServer, 5_000);
+    }
   }
-  if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+  if (tempDir) {
+    fs.rmSync(tempDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 200,
+    });
+  }
 }
 
 async function render(token, script, language = 'python') {

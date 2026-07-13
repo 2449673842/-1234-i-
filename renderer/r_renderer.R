@@ -2396,10 +2396,22 @@ r_manifest_legend_id <- function(id) {
   NULL
 }
 
+r_manifest_exact_field <- function(obj, name) {
+  if (!is.list(obj)) return(NULL)
+  obj[[name, exact = TRUE]]
+}
+
+r_manifest_scalar_field <- function(obj, name) {
+  value <- r_manifest_exact_field(obj, name)
+  if (is.null(value) || length(value) == 0) return(NULL)
+  scalar <- as.character(value[[1]])
+  if (length(scalar) == 0 || is.na(scalar[[1]]) || !nzchar(scalar[[1]])) return(NULL)
+  scalar[[1]]
+}
+
 r_manifest_subplot_id <- function(obj) {
-  if (!is.null(obj$subplotId) && nzchar(as.character(obj$subplotId))) {
-    return(as.character(obj$subplotId))
-  }
+  subplot_id <- r_manifest_scalar_field(obj, "subplotId")
+  if (!is.null(subplot_id)) return(subplot_id)
   id <- as.character(obj$id %||% "")
   if (grepl("^subplot\\.", id)) return(id)
   tick_match <- regexec("^[xy]tick\\.([0-9]+)\\.", id)
@@ -2433,25 +2445,23 @@ r_manifest_identity <- function(obj) {
   figure_level <- grepl("^(title|xlabel|ylabel|axis\\.[xy]|legend\\.0$|grid|spine\\.)", id)
   scope <- if (!is.null(legend_id) || grepl("^r\\.group\\.", id)) "container" else if (figure_level) "figure" else if (!is.null(subplot_id)) "subplot" else "figure"
   relation <- list()
-  if (!is.null(obj$parentId)) relation$parentId <- as.character(obj$parentId)
+  parent_id <- r_manifest_scalar_field(obj, "parentId")
+  if (!is.null(parent_id)) relation$parentId <- parent_id
   if (!is.null(subplot_id) && !figure_level) relation$subplotId <- subplot_id
-  if (!is.null(obj$subplotIds) && length(obj$subplotIds) > 0) relation$subplotIds <- as.list(unique(as.character(obj$subplotIds)))
-  if (!is.null(obj$layerId) && nzchar(as.character(obj$layerId))) relation$layerId <- as.character(obj$layerId)
-  if (!is.null(obj$layerIds) && length(obj$layerIds) > 0) relation$layerIds <- as.list(unique(as.character(obj$layerIds)))
-  if (!is.null(obj$groupIds) && length(obj$groupIds) > 0) relation$groupIds <- as.list(unique(as.character(obj$groupIds)))
-  if (!is.null(obj$scaleId) && nzchar(as.character(obj$scaleId))) relation$scaleId <- as.character(obj$scaleId)
-  if (!is.null(obj$guideId) && nzchar(as.character(obj$guideId))) relation$guideId <- as.character(obj$guideId)
-  if (!is.null(obj$aesthetic) && nzchar(as.character(obj$aesthetic))) relation$aesthetic <- as.character(obj$aesthetic)
-  if (!is.null(obj$groupKey) && nzchar(as.character(obj$groupKey))) relation$groupKey <- as.character(obj$groupKey)
-  if (!is.null(obj$dataKey) && nzchar(as.character(obj$dataKey))) relation$dataKey <- as.character(obj$dataKey)
+  for (field in c("subplotIds", "layerIds", "groupIds", "mappableIds")) {
+    values <- r_manifest_exact_field(obj, field)
+    if (!is.null(values) && length(values) > 0) {
+      relation[[field]] <- as.list(unique(as.character(unlist(values, recursive = TRUE, use.names = FALSE))))
+    }
+  }
+  for (field in c("layerId", "scaleId", "guideId", "aesthetic", "groupKey", "dataKey",
+                  "colorbarId", "mappableId", "annotationId", "arrowId", "textId")) {
+    value <- r_manifest_scalar_field(obj, field)
+    if (!is.null(value)) relation[[field]] <- value
+  }
   if (!is.null(legend_id)) relation$legendId <- legend_id
-  if (!is.null(obj$legendId) && nzchar(as.character(obj$legendId))) relation$legendId <- as.character(obj$legendId)
-  if (!is.null(obj$colorbarId) && nzchar(as.character(obj$colorbarId))) relation$colorbarId <- as.character(obj$colorbarId)
-  if (!is.null(obj$mappableId) && nzchar(as.character(obj$mappableId))) relation$mappableId <- as.character(obj$mappableId)
-  if (!is.null(obj$mappableIds) && length(obj$mappableIds) > 0) relation$mappableIds <- as.list(unique(as.character(obj$mappableIds)))
-  if (!is.null(obj$annotationId) && nzchar(as.character(obj$annotationId))) relation$annotationId <- as.character(obj$annotationId)
-  if (!is.null(obj$arrowId) && nzchar(as.character(obj$arrowId))) relation$arrowId <- as.character(obj$arrowId)
-  if (!is.null(obj$textId) && nzchar(as.character(obj$textId))) relation$textId <- as.character(obj$textId)
+  explicit_legend_id <- r_manifest_scalar_field(obj, "legendId")
+  if (!is.null(explicit_legend_id)) relation$legendId <- explicit_legend_id
   semantic_scope <- relation$subplotId %||% if (length(relation$subplotIds %||% list()) == 1) relation$subplotIds[[1]] else "figure"
   semantic_key <- paste(role, semantic_scope, sep = ":")
   if (grepl("^r\\.group\\.", id)) {

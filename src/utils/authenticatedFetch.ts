@@ -13,6 +13,7 @@ function isProtectedApiRequest(input: RequestInfo | URL): boolean {
       || url.pathname.startsWith('/api/license')
       || url.pathname === '/api/auth/me'
       || url.pathname === '/api/auth/logout'
+      || url.pathname === '/api/internal/legacy-retire-observation'
     );
 }
 

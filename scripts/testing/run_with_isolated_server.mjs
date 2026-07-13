@@ -50,6 +50,14 @@ function runChild(executable, args, env) {
   });
 }
 
+function waitForExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null) return Promise.resolve(true);
+  return Promise.race([
+    new Promise(resolve => child.once('exit', () => resolve(true))),
+    new Promise(resolve => setTimeout(() => resolve(false), timeoutMs)),
+  ]);
+}
+
 async function main() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-isolated-smoke-'));
   const dataRoot = path.join(tempRoot, 'data');
@@ -83,21 +91,20 @@ async function main() {
     exitCode = await runChild(command[0], command.slice(1), env);
   } finally {
     serverProcess.kill('SIGTERM');
-    await new Promise(resolve => {
-      if (serverProcess.exitCode !== null) return resolve();
-      const timer = setTimeout(() => {
-        serverProcess.kill('SIGKILL');
-        resolve();
-      }, 3000);
-      serverProcess.once('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
+    const exited = await waitForExit(serverProcess, 3000);
+    if (!exited && serverProcess.exitCode === null) {
+      serverProcess.kill('SIGKILL');
+      await waitForExit(serverProcess, 3000);
+    }
     const resolvedTemp = path.resolve(tempRoot);
     const resolvedOsTemp = path.resolve(os.tmpdir());
     if (resolvedTemp.startsWith(`${resolvedOsTemp}${path.sep}`) && path.basename(resolvedTemp).startsWith('scifigure-isolated-smoke-')) {
-      fs.rmSync(resolvedTemp, { recursive: true, force: true });
+      fs.rmSync(resolvedTemp, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 200,
+      });
     }
   }
   process.exitCode = exitCode;

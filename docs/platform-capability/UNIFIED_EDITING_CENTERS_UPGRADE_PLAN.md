@@ -1,8 +1,8 @@
 # SciFigure 统一编辑中心与属性能力升级方案
 
-> 状态：Phase 0-7 已提交；Phase 8a 默认启用候选已完成本地验收，待提交；Phase 8b Legacy Retire 延后至稳定发布观察期后
+> 状态：Phase 0-8a 已提交；Phase 8b 匿名观察候选已完成本地验收，Legacy Retire 删除仍等待稳定发布观察期
 > 创建时间：2026-07-12 16:10:44 +08:00
-> 最后更新：2026-07-13 12:16:10 +08:00
+> 最后更新：2026-07-13 15:43:12 +08:00
 > 适用范围：属性编辑、布局中心、组件中心、配色中心、字体中心
 > 实施方式：Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire
 
@@ -1227,7 +1227,45 @@ Docker capability gate：Python/R 均返回 identity/capability-backed manifest
 
 本机 Docker renderer 代码与沙箱门禁已经通过，但云服务器禁网、只读文件系统、资源限制和真实并发仍需部署后复测，不能用本机证据替代云端放行。
 
-Phase 8b 暂不执行：旧控件仍承担 errorbar、stem、legend、colorbar 等专用能力，旧 manifest 仍需要显式回滚入口。只有经过至少一个稳定发布观察期、专用能力完成 descriptor 覆盖且云端 renderer 复测通过后，才能删除无调用 legacy 分支。
+Phase 8b 的删除动作暂不执行：旧控件仍承担 errorbar、stem、legend、colorbar 等专用能力，旧 manifest 仍需要显式回滚入口。只有经过至少一个稳定发布观察期、专用能力完成 descriptor 覆盖且云端 renderer 复测通过后，才能删除无调用 legacy 分支。
+
+### 13.21 Phase 8b 匿名观察候选状态（2026-07-13 15:43:12 +08:00）
+
+本轮只建设退役决策所需的观察证据，不删除 legacy：
+
+- 新增五类固定枚举事件：descriptor 投影、resolver 路径、palette resolver、旧 UI surface、position drag。
+- 前端与服务端使用同一 sanitizer 双重白名单；只保留引擎、中心、作用域、规范属性、对象 kind、策略和聚合计数。
+- 禁止采集用户、项目、Figure、session、对象 ID、patch key、palette ID、label、文本、颜色值、属性值、脚本、SVG、数据、IP 和 User-Agent。
+- 端点只在统一编辑 staging 或显式环境变量下开放，继续要求认证，并限制为 64 KB / 100 events。
+- JSONL 只按 build/date 追加到 `tmp/unified-editing-staging/legacy-retire-observation/`；不写 `data/`、SQLite、admin audit 或 Git tracked 文件。
+- staging marker 新增 `legacyRetireObservationV1` 和 `rendererImage`。启动器必须使用 marker 绑定的 renderer，禁止再从稳定 `.env` 静默继承旧镜像。
+- 拖拽只在松手被协议阻止或用户确认累计位置时记录，不在 pointer move 高频路径上报。
+- errorbar 专用控件与总体 specialized controls 分开计数，避免用粗粒度数据误判可删除路径。
+
+本轮同时修复候选验证暴露的 R 协议问题：R list `$subplotId` 会部分匹配 `subplotIds`，facet layer 在 R 4.5 中因此把长度 2 的多面板关系当作单值并中止。renderer 现改为精确字段读取，`subplotIds/layerIds/groupIds/mappableIds` 继续完整保留；新镜像为 `scifigure-renderer:phase8b`。
+
+验证证据：
+
+```text
+全量 Vitest：28 files / 194 tests 通过
+TypeScript：通过
+Python introspection + R renderer + 双语言 capability matrix：70 tests 通过
+属性编辑 production-like staging：9 PASS / 0 FAIL
+Python 语义中心默认路径：14 PASS / 0 FAIL
+Python 组件/布局默认路径：18 PASS / 0 FAIL
+R 语义中心默认路径：7 PASS / 0 FAIL
+扩展拖拽：9 PASS / 0 FAIL
+UI 显式回滚：语义中心 14 PASS；组件/布局 18 PASS
+观察 API：关闭 404、认证、64 KB、100 events、路径净化和敏感字段剔除通过
+默认候选 JSONL：68 条，五类事件均出现；敏感字段扫描为 0
+显式回滚 JSONL：legacy resolver、palette resolver 和各 rollback surface 均出现
+Docker renderer phase8b：构建和 sandbox smoke 通过
+仓库 data boundary、R 风险预检、staging dry-run、git diff check：通过
+独立安全审查：通过，0 个 blocking finding
+3000 稳定服务 PID 196020 未改变；3200 使用隔离 staging 数据
+```
+
+观察链路完成不等于 Legacy Retire 完成。下一步必须在稳定发布候选上积累观察周期，并按 `UNIFIED_EDITING_LEGACY_RETIRE_REGISTER.md` 逐路径给出保留、迁移或删除结论；本轮不得删除 B/C 类能力。
 
 ## 14. 实施阶段
 
