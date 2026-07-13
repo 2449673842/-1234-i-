@@ -1,0 +1,5 @@
+* text=auto
+*.sh text eol=lf
+ops/env/*.example text eol=lf
+ops/nginx/*.template text eol=lf
+ops/systemd/*.service text eol=lf
