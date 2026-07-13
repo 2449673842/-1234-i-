@@ -1,7 +1,7 @@
 # SciFigure 安全、部署与运维副文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-12 15:25:57 +08:00  
+> 更新时间：2026-07-13 17:05:09 +08:00
 > 复核范围：当前本地工作区；尚未等同于已提交发布版本  
 > 适用范围：用户账号、数据保护、代码执行、Docker、备份、管理员能力和生产上线
 
@@ -392,6 +392,21 @@ Kubernetes
 
 这些能力不能替代当前更重要的沙箱、备份、权限和恢复验证。
 
+### 9.1 发布排空基础
+
+当前代码已经提供应用层发布控制：
+
+```text
+GET  /api/health/live
+GET  /api/health/ready
+GET  /api/admin/deployment-state
+POST /api/admin/deployment-state
+```
+
+进入 draining 后，新的 render、patch、code-patch、项目重绘、导出、压缩和组合任务返回 `503 INSTANCE_DRAINING`；已经开始的任务继续完成。客户端断线会取消排队任务和对应 renderer worker，但不会在 worker 停止前提前释放发布 lease。管理员状态变更写入 `deployment.mode.change` 审计，`SIGTERM/SIGINT` 代码会等待在途请求和 renderer active/queued/worker 排空。
+
+这只是应用层基础。Nginx upstream 摘除、sticky routing、Linux 信号行为和真实并发仍必须在云服务器复测。
+
 ## 10. 云服务器上线阻断项
 
 以下项目未完成前不得开放公网用户：
@@ -412,6 +427,7 @@ Docker renderer 文件、网络和资源隔离复测
 把当前脏工作树整理为经过审查的可复现提交
 验证生产 Compose/systemd 到 renderer 的实际调用链
 配置可信反向代理，禁止客户端伪造 X-Forwarded-For 影响限流和审计
+Nginx readiness 摘流、sticky routing 和 Linux SIGTERM 排空实测
 ```
 
 ## 11. 管理员后台
@@ -480,6 +496,7 @@ Content-Security-Policy-Report-Only
 | 超时 | 死循环强杀，后续任务恢复，无残留容器 |
 | XLS/XLSX | metadata、limit、损坏文件、超限和失败清理 |
 | 导出 | R PNG 转换在沙箱内，格式和输出受限 |
+| 发布控制 | readiness/draining、在途任务计数、503 门禁、管理员审计、恢复 accepting |
 | 仓库 | 用户数据、数据库、密钥不进入 Git |
 | 备份 | 可恢复，不只存在备份文件 |
 
@@ -493,6 +510,7 @@ npm run test:security-baseline
 npm run test:user-isolation
 npm run test:auth-refresh
 npm run test:admin-authorization
+npm run test:deployment-lifecycle
 npm run test:r-security-precheck
 npm run test:renderer-sandbox
 npm run security:repo-boundary
@@ -527,6 +545,8 @@ CSP 尚未强制
 本地 Git 状态中已有历史用户数据删除标记，不能擅自恢复或提交
 当前 Web 服务使用 X-Forwarded-For 参与客户端 IP 判断，生产代理必须清洗该请求头并建立可信代理边界
 当前 Compose 和 Web 镜像不能单独证明生产 renderer 已正确接通
+Windows 无法可靠模拟 Linux 子进程 SIGTERM；云端必须复测在途渲染完成后进程退出
+sticky routing 和负载均衡 readiness 摘流尚未在真实 Nginx 环境验证
 ```
 
 ## 16. 详细参考文档

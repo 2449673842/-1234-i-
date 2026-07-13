@@ -24,6 +24,13 @@ import { createRequire } from 'module';
 import { applyColorCodePatch } from './src/utils/codeColorPatch';
 import { isDurableVirtualEditGid, mergePreviewGlobalsIntoEditLog } from './src/utils/exportPreviewState';
 import { sanitizeLegacyRetireObservationBatch } from './src/utils/legacyRetireObservation';
+import {
+  AbortableWorkQueue,
+  DeploymentLifecycle,
+  type DeploymentDrainReason,
+  type DeploymentJobKind,
+  type DeploymentMode,
+} from './src/utils/deploymentLifecycle';
 let archiver: any;
 try {
   // @ts-ignore
@@ -158,6 +165,10 @@ async function startServer() {
   const processedRequestIdsMap = new Map<string, Set<string>>();
   const responseCacheMap = new Map<string, Map<string, any>>();
   const requestAuthContext = new WeakMap<express.Request, { user: UserAccount; token: string; deviceId: string | null }>();
+  const requestWorkAbortSignals = new WeakMap<express.Request, AbortSignal>();
+  const deploymentLifecycle = new DeploymentLifecycle();
+  const activeRendererAborters = new Set<() => void>();
+  const renderWorkQueue = new AbortableWorkQueue(() => renderConcurrencyLimit());
   app.disable('x-powered-by');
 
   type RateLimitBucket = {
@@ -213,7 +224,7 @@ async function startServer() {
     windowMs: 60 * 1000,
     max: Number(process.env.API_RATE_LIMIT_PER_MINUTE || 240),
     message: '请求过于频繁，请稍后再试。',
-    skip: req => !req.path.startsWith('/api/'),
+    skip: req => !req.path.startsWith('/api/') || req.path.startsWith('/api/health/'),
   });
 
   const authRateLimit = createRateLimiter({
@@ -234,6 +245,111 @@ async function startServer() {
     max: Number(process.env.ADMIN_RATE_LIMIT_PER_15_MINUTES || 60),
     message: '管理操作过于频繁，请稍后再试。',
   });
+
+  function renderConcurrencyLimit(): number {
+    return boundedNumber(process.env.SCIFIGURE_RENDER_CONCURRENCY, 4, 1, 8);
+  }
+
+  function deploymentState() {
+    return {
+      ...deploymentLifecycle.snapshot(),
+      renderer: {
+        ...renderWorkQueue.snapshot(),
+        workers: activeRendererAborters.size,
+      },
+    };
+  }
+
+  function deploymentJobHandler(
+    kind: DeploymentJobKind,
+    handler: (req: express.Request, res: express.Response, next: express.NextFunction) => unknown | Promise<unknown>,
+  ) {
+    return async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        authenticatedUserId(req);
+      } catch (err: any) {
+        return res.status(Number(err?.statusCode || 401)).json({ status: 'error', message: err.message });
+      }
+      const lease = deploymentLifecycle.tryStartJob(kind);
+      if (!lease.accepted) {
+        res.setHeader('Retry-After', '15');
+        return res.status(503).json({
+          status: 'draining',
+          code: 'INSTANCE_DRAINING',
+          message: '服务正在进行无感升级，新的渲染和导出任务已暂停，请稍后重试。',
+          retryAfterSeconds: 15,
+        });
+      }
+      const workAbortController = new AbortController();
+      const abortDisconnectedWork = () => {
+        if (!res.writableFinished) workAbortController.abort('client disconnected');
+      };
+      requestWorkAbortSignals.set(req, workAbortController.signal);
+      res.once('close', abortDisconnectedWork);
+      try {
+        return await handler(req, res, next);
+      } catch (err) {
+        return next(err);
+      } finally {
+        res.removeListener('close', abortDisconnectedWork);
+        requestWorkAbortSignals.delete(req);
+        lease.finish();
+      }
+    };
+  }
+
+  function trackRendererAborter(abort: () => void): () => void {
+    activeRendererAborters.add(abort);
+    return () => activeRendererAborters.delete(abort);
+  }
+
+  function requestWorkAbortSignal(req?: express.Request): AbortSignal | undefined {
+    return req ? requestWorkAbortSignals.get(req) : undefined;
+  }
+
+  function finalizeArchiveResponse(archive: any, req: express.Request, res: express.Response): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const signal = requestWorkAbortSignal(req);
+      const cleanup = () => {
+        res.removeListener('finish', onFinish);
+        res.removeListener('close', onClose);
+        signal?.removeEventListener('abort', onAbort);
+        archive.removeListener?.('error', onError);
+      };
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error) reject(error);
+        else resolve();
+      };
+      const onFinish = () => finish();
+      const onClose = () => {
+        if (!res.writableFinished) archive.abort?.();
+        finish();
+      };
+      const onAbort = () => {
+        archive.abort?.();
+        finish();
+      };
+      const onError = (error: Error) => finish(error);
+      res.once('finish', onFinish);
+      res.once('close', onClose);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      archive.once('error', onError);
+      archive.pipe(res);
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      try {
+        Promise.resolve(archive.finalize()).catch(onError);
+      } catch (error: any) {
+        onError(error);
+      }
+    });
+  }
 
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -1064,7 +1180,7 @@ ${inner}
         : { ok: true, message, errors };
     };
     try {
-      const result = await spawnPythonWithPayload('ast_validator.py', { script });
+      const result = await spawnPythonWithPayload('ast_validator.py', { script }, { req, label: 'ast-validator' });
       if (result.status !== 'success') {
         return reportRisk(result.message || 'AST 风险命中', result.errors);
       }
@@ -1195,6 +1311,20 @@ ${inner}
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '1mb', extended: false }));
   app.use(apiErrorHandler);
+
+  app.get('/api/health/live', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ status: 'live' });
+  });
+
+  app.get('/api/health/ready', (_req, res) => {
+    const snapshot = deploymentLifecycle.snapshot();
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(snapshot.acceptingNewJobs ? 200 : 503).json({
+      status: snapshot.acceptingNewJobs ? 'ready' : 'draining',
+      acceptingNewJobs: snapshot.acceptingNewJobs,
+    });
+  });
 
   app.post('/api/auth/register', authRateLimit, async (req, res) => {
     try {
@@ -1407,6 +1537,62 @@ ${inner}
         metadata: {
           reason: statusCode === 401 ? 'unauthenticated' : statusCode === 403 ? 'forbidden' : 'request_failed',
         },
+      });
+      res.status(statusCode).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.get('/api/admin/deployment-state', (req, res) => {
+    try {
+      requireAdmin(req);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ status: 'success', deployment: deploymentState() });
+    } catch (err: any) {
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/admin/deployment-state', adminRateLimit, (req, res) => {
+    let actorUserId: string | null = null;
+    try {
+      const auth = requireAdmin(req);
+      actorUserId = auth.user.id;
+      const mode = String(req.body?.mode || '') as DeploymentMode;
+      const reason = String(req.body?.reason || 'manual') as DeploymentDrainReason;
+      const allowedModes: DeploymentMode[] = ['accepting', 'draining'];
+      const allowedReasons: DeploymentDrainReason[] = ['deployment', 'maintenance', 'rollback', 'manual'];
+      if (!allowedModes.includes(mode)) {
+        const err = new Error('mode 必须是 accepting 或 draining');
+        (err as any).statusCode = 400;
+        throw err;
+      }
+      if (!allowedReasons.includes(reason)) {
+        const err = new Error('reason 不是允许的发布原因');
+        (err as any).statusCode = 400;
+        throw err;
+      }
+      const previousMode = deploymentLifecycle.snapshot().mode;
+      deploymentLifecycle.setMode(mode, reason);
+      writeAdminAudit(req, {
+        actorUserId,
+        action: 'deployment.mode.change',
+        resourceType: 'deployment-instance',
+        resourceId: null,
+        success: true,
+        statusCode: 200,
+        metadata: { previousMode, mode, reason },
+      });
+      res.json({ status: 'success', deployment: deploymentState() });
+    } catch (err: any) {
+      const statusCode = Number(err?.statusCode || 500);
+      writeAdminAudit(req, {
+        actorUserId: actorUserId || err?.actorUserId || null,
+        action: 'deployment.mode.change',
+        resourceType: 'deployment-instance',
+        resourceId: null,
+        success: false,
+        statusCode,
+        metadata: { reason: statusCode === 401 ? 'unauthenticated' : statusCode === 403 ? 'forbidden' : 'request_failed' },
       });
       res.status(statusCode).json({ status: 'error', message: err.message });
     }
@@ -1759,23 +1945,11 @@ ${inner}
     throw new Error('Non-development environments require SCIFIGURE_RENDER_MODE=docker. Local renderer execution is disabled for security.');
   }
 
-  const renderQueue: Array<() => void> = [];
-  let activeRenderJobs = 0;
-
-  async function withRenderSlot<T>(task: (queueMs: number) => Promise<T>): Promise<T> {
-    const limit = Math.max(1, Math.min(8, Number(process.env.SCIFIGURE_RENDER_CONCURRENCY || 4)));
-    const queueStartedAt = performance.now();
-    if (activeRenderJobs >= limit) {
-      await new Promise<void>(resolve => renderQueue.push(resolve));
-    }
-    const queueMs = roundedDuration(queueStartedAt);
-    activeRenderJobs += 1;
-    try {
-      return await task(queueMs);
-    } finally {
-      activeRenderJobs = Math.max(0, activeRenderJobs - 1);
-      renderQueue.shift()?.();
-    }
+  async function withRenderSlot<T>(
+    task: (queueMs: number) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return renderWorkQueue.run(task, signal);
   }
 
   function dockerMountPath(hostPath: string): string {
@@ -1826,6 +2000,7 @@ ${inner}
     options: SpawnPythonOptions,
   ): Promise<any> {
     const runtimeStartedAt = performance.now();
+    const workSignal = requestWorkAbortSignal(options.req);
     return withRenderSlot(async (queueMs) => {
     const payloadStageStartedAt = performance.now();
     const configuredRTimeout = Math.max(5_000, Math.min(120_000, Number(process.env.SCIFIGURE_R_TIMEOUT_MS || 45_000)));
@@ -1874,6 +2049,11 @@ ${inner}
           timeout: 10_000,
         });
       };
+      const abort = () => {
+        forceRemoveContainer();
+        child.kill('SIGKILL');
+      };
+      const untrackAborter = trackRendererAborter(abort);
       const cleanup = () => {
         try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* already removed */ }
       };
@@ -1904,10 +2084,12 @@ ${inner}
       child.stdout.on('data', (data: Buffer) => captureOutput('stdout', data));
       child.stderr.on('data', (data: Buffer) => captureOutput('stderr', data));
       child.on('error', (error) => {
+        untrackAborter();
         forceRemoveContainer();
         finishError(error);
       });
       child.on('close', code => {
+        untrackAborter();
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -1933,14 +2115,14 @@ ${inner}
           reject(new Error(`Failed to parse Docker renderer output: ${error}\n${stderr.slice(0, 1200)}`));
         }
       });
-      const abort = () => {
-        forceRemoveContainer();
-        child.kill('SIGKILL');
-      };
       options.req?.once('aborted', abort);
-      child.once('close', () => options.req?.removeListener('aborted', abort));
+      workSignal?.addEventListener('abort', abort, { once: true });
+      child.once('close', () => {
+        options.req?.removeListener('aborted', abort);
+        workSignal?.removeEventListener('abort', abort);
+      });
     });
-    });
+    }, workSignal);
   }
 
   type SpawnPythonOptions = {
@@ -1963,6 +2145,8 @@ ${inner}
     const scriptLen = typeof (payload as any)?.script === 'string' ? (payload as any).script.length : 0;
     const rowCount = Array.isArray((payload as any)?.dataPayload?.custom_data) ? (payload as any).dataPayload.custom_data.length : 0;
     const runtimeStartedAt = performance.now();
+    const workSignal = requestWorkAbortSignal(options.req);
+    if (workSignal?.aborted) throw new Error('Render request aborted before renderer start');
     const payloadStageStartedAt = performance.now();
 
     // Write payload to temp file (prevents stdin buffer deadlock for large payloads)
@@ -1985,6 +2169,7 @@ ${inner}
       let settled = false;
       let closed = false;
       let sigkillTimer: NodeJS.Timeout | null = null;
+      let untrackAborter = () => {};
       const maxOutputMb = boundedNumber(options.maxOutputMb ?? process.env.SCIFIGURE_RENDER_OUTPUT_MB, 8, 1, 64);
       const maxOutputBytes = maxOutputMb * 1024 * 1024;
 
@@ -1999,8 +2184,13 @@ ${inner}
           if (!closed) child.kill('SIGKILL');
         }, 2000);
       };
+      untrackAborter = trackRendererAborter(() => killChild(`${label}: deployment shutdown`));
 
       const onRequestAborted = () => killChild(`${label}: request aborted`);
+      const removeAbortListeners = () => {
+        options.req?.removeListener('aborted', onRequestAborted);
+        workSignal?.removeEventListener('abort', onRequestAborted);
+      };
 
       if (options.req && !options.req.destroyed) {
         // Do not listen to req.close here. In Express/Node it can fire for a
@@ -2008,12 +2198,13 @@ ${inner}
         // validation workers and made every render fail at the AST gate.
         options.req.on('aborted', onRequestAborted);
       }
+      workSignal?.addEventListener('abort', onRequestAborted, { once: true });
 
       const timer = setTimeout(() => {
         killChild(`${label}: timeout after ${timeoutMs}ms`);
         settled = true;
         cleanupPayload();
-        options.req?.removeListener('aborted', onRequestAborted);
+        removeAbortListeners();
         reject(new Error(`Python process timed out (${Math.round(timeoutMs / 1000)}s) [script=${scriptName}, scriptLen=${scriptLen}, rows=${rowCount}]${stderr ? ` stderr=${stderr.slice(0, 400)}` : ''}`));
       }, timeoutMs);
 
@@ -2025,7 +2216,7 @@ ${inner}
           settled = true;
           clearTimeout(timer);
           cleanupPayload();
-          options.req?.removeListener('aborted', onRequestAborted);
+          removeAbortListeners();
           reject(new Error(`Python process output exceeded ${maxOutputMb} MB [script=${scriptName}]`));
           return;
         }
@@ -2037,23 +2228,25 @@ ${inner}
       child.stderr.on('data', (d: Buffer) => captureOutput('stderr', d));
 
       child.on('error', (err) => {
+        untrackAborter();
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         if (sigkillTimer) clearTimeout(sigkillTimer);
         cleanupPayload();
-        options.req?.removeListener('aborted', onRequestAborted);
+        removeAbortListeners();
         reject(err);
       });
 
       child.on('close', (code) => {
+        untrackAborter();
         closed = true;
         if (sigkillTimer) clearTimeout(sigkillTimer);
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         cleanupPayload();
-        options.req?.removeListener('aborted', onRequestAborted);
+        removeAbortListeners();
 
         if (code !== 0) {
           reject(new Error(`Python exited ${code}: ${stderr}`));
@@ -2112,6 +2305,8 @@ ${inner}
       ?? Math.max(5_000, Math.min(120_000, Number(process.env.SCIFIGURE_R_TIMEOUT_MS || 45_000)));
     const label = options.label ?? 'r-render';
     const runtimeStartedAt = performance.now();
+    const workSignal = requestWorkAbortSignal(options.req);
+    if (workSignal?.aborted) throw new Error('R render request aborted before renderer start');
     let mirrorDir: string | null = null;
     const shouldBridgeCsvForR = (filePath: string) => /\.(csv|tsv|txt)$/i.test(filePath);
     const bridgeCsvForR = (source: string, mirroredName: string): string | null => {
@@ -2219,6 +2414,7 @@ ${inner}
       let settled = false;
       let closed = false;
       let sigkillTimer: NodeJS.Timeout | null = null;
+      let untrackAborter = () => {};
       const maxOutputMb = boundedNumber(options.maxOutputMb ?? process.env.SCIFIGURE_RENDER_OUTPUT_MB, 8, 1, 64);
       const maxOutputBytes = maxOutputMb * 1024 * 1024;
 
@@ -2237,17 +2433,23 @@ ${inner}
           if (!closed) child.kill('SIGKILL');
         }, 2000);
       };
+      untrackAborter = trackRendererAborter(killChild);
 
       const onRequestAborted = () => killChild();
+      const removeAbortListeners = () => {
+        options.req?.removeListener('aborted', onRequestAborted);
+        workSignal?.removeEventListener('abort', onRequestAborted);
+      };
       if (options.req && !options.req.destroyed) {
         options.req.on('aborted', onRequestAborted);
       }
+      workSignal?.addEventListener('abort', onRequestAborted, { once: true });
 
       const timer = setTimeout(() => {
         killChild();
         settled = true;
         cleanupPayload();
-        options.req?.removeListener('aborted', onRequestAborted);
+        removeAbortListeners();
         reject(new Error(`R process timed out (${Math.round(timeoutMs / 1000)}s)${stderr ? ` stderr=${stderr.slice(0, 400)}` : ''}`));
       }, timeoutMs);
 
@@ -2259,7 +2461,7 @@ ${inner}
           settled = true;
           clearTimeout(timer);
           cleanupPayload();
-          options.req?.removeListener('aborted', onRequestAborted);
+          removeAbortListeners();
           reject(new Error(`R process output exceeded ${maxOutputMb} MB`));
           return;
         }
@@ -2271,12 +2473,13 @@ ${inner}
       child.stderr.on('data', (d: Buffer) => captureOutput('stderr', d));
 
       child.on('error', (err: any) => {
+        untrackAborter();
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         if (sigkillTimer) clearTimeout(sigkillTimer);
         cleanupPayload();
-        options.req?.removeListener('aborted', onRequestAborted);
+        removeAbortListeners();
         if (err?.code === 'ENOENT') {
           reject(new Error('Rscript not found. Please install R and ensure Rscript is available in PATH, or set RSCRIPT_BIN.'));
           return;
@@ -2285,13 +2488,14 @@ ${inner}
       });
 
       child.on('close', (code) => {
+        untrackAborter();
         closed = true;
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         if (sigkillTimer) clearTimeout(sigkillTimer);
         cleanupPayload();
-        options.req?.removeListener('aborted', onRequestAborted);
+        removeAbortListeners();
         const processMs = roundedDuration(processStartedAt);
         if (code !== 0) {
           if (stdout.trim().startsWith('{')) {
@@ -3031,7 +3235,7 @@ ${inner}
   }
 
   // POST /api/figure/render — introspection-based render
-  app.post('/api/figure/render', renderRateLimit, async (req, res) => {
+  app.post('/api/figure/render', renderRateLimit, deploymentJobHandler('render', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       let { script, dataPayload, editLog, renderOptions } = req.body;
@@ -3100,10 +3304,10 @@ ${inner}
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
-  });
+  }));
 
   // POST /api/figure/patch — apply edits and re-render
-  app.post('/api/figure/patch', renderRateLimit, async (req, res) => {
+  app.post('/api/figure/patch', renderRateLimit, deploymentJobHandler('render', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const { sessionId, patches } = req.body;
@@ -3473,10 +3677,10 @@ ${inner}
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
-  });
+  }));
 
   // POST /api/figure/code-patch — update script with AST gate & drift detection
-  app.post('/api/figure/code-patch', renderRateLimit, async (req, res) => {
+  app.post('/api/figure/code-patch', renderRateLimit, deploymentJobHandler('render', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       let { sessionId, script, force } = req.body;
@@ -3625,10 +3829,10 @@ ${inner}
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
-  });
+  }));
 
   // POST /api/figure/export — export SVG/PNG/PDF and reproducible bundle
-  app.post('/api/figure/export', renderRateLimit, async (req, res) => {
+  app.post('/api/figure/export', renderRateLimit, deploymentJobHandler('export', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const { sessionId, format, dpi } = req.body;
@@ -3726,7 +3930,7 @@ ${inner}
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
-  });
+  }));
 
   // --- Project CRUD API ---
 
@@ -4094,7 +4298,7 @@ ${inner}
   });
 
   // --- Project Figures Render API ---
-  app.post('/api/projects/:id/figures/render', renderRateLimit, async (req, res) => {
+  app.post('/api/projects/:id/figures/render', renderRateLimit, deploymentJobHandler('render', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
@@ -4276,7 +4480,7 @@ ${inner}
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
-  });
+  }));
 
   // GET /api/projects/:id/figures — list project figures metadata
   app.get('/api/projects/:id/figures', async (req, res) => {
@@ -4514,7 +4718,7 @@ ${inner}
     }
   });
 
-  app.post('/api/export-assets/zip', (req, res) => {
+  app.post('/api/export-assets/zip', deploymentJobHandler('archive', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const assetIds = new Set(Array.isArray(req.body?.assetIds) ? req.body.assetIds.map(String) : []);
@@ -4533,10 +4737,6 @@ ${inner}
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', 'attachment; filename=scifigure_exports.zip');
       const archive = new archiver.ZipArchive({ zlib: { level: 9 } });
-      archive.on('error', (err: any) => {
-        throw err;
-      });
-      archive.pipe(res);
       for (const { project, asset } of selected) {
         const root = projectExportsDir(project.id);
         const absPath = safeResolveUnder(root, asset.filePath);
@@ -4546,13 +4746,13 @@ ${inner}
           });
         }
       }
-      archive.finalize();
+      await finalizeArchiveResponse(archive, req, res);
     } catch (err: any) {
       if (!res.headersSent) {
         res.status(500).json({ status: 'error', message: err.message });
       }
     }
-  });
+  }));
 
   app.delete('/api/export-assets', (req, res) => {
     try {
@@ -4623,7 +4823,7 @@ ${inner}
     }
   });
 
-  app.post('/api/projects/:id/export-assets/zip', (req, res) => {
+  app.post('/api/projects/:id/export-assets/zip', deploymentJobHandler('archive', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
@@ -4644,11 +4844,6 @@ ${inner}
       res.setHeader('Content-Disposition', `attachment; filename=exports_${projectId.slice(0, 8)}.zip`);
 
       const archive = new archiver.ZipArchive({ zlib: { level: 9 } });
-      archive.on('error', (err: any) => {
-        throw err;
-      });
-      archive.pipe(res);
-
       const root = projectExportsDir(projectId);
       for (const asset of assets) {
         const absPath = safeResolveUnder(root, asset.filePath);
@@ -4656,13 +4851,13 @@ ${inner}
           archive.file(absPath, { name: `${safeExportName(asset.name)}.${asset.format}` });
         }
       }
-      archive.finalize();
+      await finalizeArchiveResponse(archive, req, res);
     } catch (err: any) {
       if (!res.headersSent) {
         res.status(500).json({ status: 'error', message: err.message });
       }
     }
-  });
+  }));
 
   app.post('/api/projects/:id/export-assets/import', (req, res) => {
     try {
@@ -4702,8 +4897,7 @@ ${inner}
     }
   });
 
-  app.post('/api/projects/:id/compose', renderRateLimit, (req, res) => {
-    void (async () => {
+  app.post('/api/projects/:id/compose', renderRateLimit, deploymentJobHandler('composition', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
@@ -4764,11 +4958,10 @@ ${inner}
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
-    })();
-  });
+  }));
 
   // POST /api/projects/:id/export — export single or all project figures
-  app.post('/api/projects/:id/export', renderRateLimit, async (req, res) => {
+  app.post('/api/projects/:id/export', renderRateLimit, deploymentJobHandler('export', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
@@ -4922,11 +5115,12 @@ ${inner}
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
-  });
+  }));
 
   app.use(apiErrorHandler);
 
   // Vite middleware for development
+  let viteServer: any = null;
   if (process.env.NODE_ENV !== "production") {
     const requestedHmrPort = Number(process.env.SCIFIGURE_VITE_HMR_PORT);
     const isolatedHmr = Number.isInteger(requestedHmrPort) && requestedHmrPort > 0
@@ -4939,6 +5133,7 @@ ${inner}
       },
       appType: "spa",
     });
+    viteServer = vite;
     app.use(vite.middlewares);
   } else {
     const distPath = process.env.SCIFIGURE_DIST_DIR
@@ -4950,9 +5145,52 @@ ${inner}
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+
+  let shutdownStarted = false;
+  async function waitForAllDeploymentJobs(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    const requestJobsIdle = deploymentLifecycle.waitForIdle(timeoutMs);
+    while (Date.now() < deadline) {
+      const renderState = renderWorkQueue.snapshot();
+      if (renderState.active === 0 && renderState.queued === 0 && activeRendererAborters.size === 0) {
+        return await requestJobsIdle;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    return false;
+  }
+
+  async function gracefulShutdown(signal: 'SIGTERM' | 'SIGINT'): Promise<void> {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    deploymentLifecycle.setMode('draining', 'deployment');
+    const timeoutMs = boundedNumber(process.env.SCIFIGURE_GRACEFUL_SHUTDOWN_MS, 180_000, 5_000, 600_000);
+    console.log(`[deployment] ${signal}: draining started; active=${JSON.stringify(deploymentState())}`);
+    const serverClosed = new Promise<boolean>(resolve => {
+      httpServer.close(error => resolve(!error));
+    });
+    const idle = await waitForAllDeploymentJobs(timeoutMs);
+    if (!idle) {
+      console.error(`[deployment] graceful timeout after ${timeoutMs}ms; active=${JSON.stringify(deploymentState())}`);
+      renderWorkQueue.cancelQueued('Render queue canceled during deployment shutdown');
+      for (const abort of [...activeRendererAborters]) {
+        try { abort(); } catch { /* worker already stopped */ }
+      }
+      (httpServer as any).closeAllConnections?.();
+    }
+    await Promise.race([
+      serverClosed,
+      new Promise<boolean>(resolve => setTimeout(() => resolve(false), 5_000)),
+    ]);
+    if (viteServer) await viteServer.close().catch(() => {});
+    process.exit(idle ? 0 : 1);
+  }
+
+  process.once('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
+  process.once('SIGINT', () => { void gracefulShutdown('SIGINT'); });
 }
 
 startServer().catch((error) => {

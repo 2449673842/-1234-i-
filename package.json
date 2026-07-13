@@ -33,6 +33,7 @@
     "test:auth-refresh": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/auth_refresh_smoke.mjs",
     "test:legacy-retire-observation": "node tests/api/legacy_retire_observation_smoke.mjs",
     "test:admin-authorization": "node tests/api/admin_authorization_smoke.mjs",
+    "test:deployment-lifecycle": "node tests/api/deployment_lifecycle_smoke.mjs",
     "test:r-security-precheck": "node tests/api/r_security_precheck_smoke.mjs",
     "test:renderer-sandbox": "node tests/api/renderer_sandbox_smoke.mjs",
     "test:render-performance": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/render_performance_probe.mjs",

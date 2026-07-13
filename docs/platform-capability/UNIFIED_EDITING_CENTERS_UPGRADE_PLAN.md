@@ -1,8 +1,8 @@
 # SciFigure 统一编辑中心与属性能力升级方案
 
-> 状态：Phase 0-8a 已提交；Phase 8b 匿名观察候选已完成本地验收，Legacy Retire 删除仍等待稳定发布观察期
+> 状态：Phase 0-8a 已提交；Phase 8b 匿名观察候选与本地发布控制基线已完成验收，Legacy Retire 删除仍等待稳定发布观察期
 > 创建时间：2026-07-12 16:10:44 +08:00
-> 最后更新：2026-07-13 15:43:12 +08:00
+> 最后更新：2026-07-13 17:05:09 +08:00
 > 适用范围：属性编辑、布局中心、组件中心、配色中心、字体中心
 > 实施方式：Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire
 
@@ -960,7 +960,7 @@ graceful timeout：等待任务结束，超时后明确失败而不是永久转�
 sticky routing：一个编辑会话在切换完成前保持同一版本
 ```
 
-这些属于未来生产部署能力。当前本地升级至少应做到切换前观察渲染状态，等待任务结束后再停止稳定服务。
+本地候选现已实现 readiness、draining、active job count 和 graceful timeout 的应用层基础。sticky routing、Nginx/负载均衡切流以及 Linux `SIGTERM` 实际排空仍属于云端部署验收，不使用 Windows 子进程信号模拟结果代替。
 
 #### 无感升级验收标准
 
@@ -1266,6 +1266,39 @@ Docker renderer phase8b：构建和 sandbox smoke 通过
 ```
 
 观察链路完成不等于 Legacy Retire 完成。下一步必须在稳定发布候选上积累观察周期，并按 `UNIFIED_EDITING_LEGACY_RETIRE_REGISTER.md` 逐路径给出保留、迁移或删除结论；本轮不得删除 B/C 类能力。
+
+### 13.22 本地发布控制基线（2026-07-13 16:12:27 +08:00）
+
+为满足 13.12 的无感切换不变量，候选服务新增独立的进程级发布生命周期，不改变 Draft、历史、保存、renderer patch 或用户数据结构：
+
+- `GET /api/health/live` 只报告进程存活；`GET /api/health/ready` 在 accepting 时返回 200，在 draining 时返回 503。健康检查不消耗普通 API 限流额度。
+- `GET /api/admin/deployment-state` 仅数据库 `admin` 可读取，返回 render/export/archive/composition 在途数，以及 renderer active/queued/concurrency。
+- `POST /api/admin/deployment-state` 仅允许 `accepting/draining` 与固定 reason 枚举；成功和失败都沿用管理员鉴权，状态变更写入 `deployment.mode.change` 审计。
+- draining 只阻止新的 render、patch、code-patch、项目重绘、导出、压缩和组合任务；已经取得 lease 的任务继续完成，普通读取不受影响。
+- 请求 lease 由实际 route Promise 持有，不因客户端断线提前释放；断线会取消尚未启动的排队任务，并向 Python/R/Docker worker 传播终止信号。ZIP 流会等待 finish 或显式 abort，组合任务不再使用脱离 handler 的异步 IIFE。
+- `SIGTERM/SIGINT` 会先进入 draining，等待请求 lease、renderer active/queued/worker 全部归零；超过 `SCIFIGURE_GRACEFUL_SHUTDOWN_MS` 才取消本实例队列和 worker、关闭连接并以失败状态退出。
+- 所有状态仅存于当前进程，重启后默认 accepting；不写 SQLite、项目目录、真实 `data/` 或用户历史。
+
+验证证据：
+
+```text
+全量 Vitest：29 files / 201 tests 通过
+DeploymentLifecycle + AbortableWorkQueue 单元测试：7 PASS
+TypeScript：通过（Node 8 GB heap；默认 4 GB 检查进程会 OOM）
+发布控制 API smoke：PASS
+管理员授权既有 smoke：PASS
+已有慢渲染在 draining 中完成：通过
+draining 后新渲染 503 + INSTANCE_DRAINING：通过
+resume 后 readiness 恢复 200：通过
+状态变更管理员审计：通过
+客户端断线：renderer 停止后才释放请求 lease，通过
+ZIP 流与 composition：正常完成、draining 503、无 lease 泄漏，通过
+既有 composer consistency smoke：通过；同时修复其认证升级后的旧匿名测试前提
+独立代码复审：APPROVE，0 blocking/high/medium
+测试数据库和项目目录：仅系统临时目录，结束后清理
+```
+
+本地尚不能证明 Linux 信号排空、Nginx sticky routing、真实云端并发和负载均衡摘除顺序；这些继续作为部署后门槛，不把应用层基础写成完整蓝绿发布已完成。
 
 ## 14. 实施阶段
 

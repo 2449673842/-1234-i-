@@ -9,7 +9,13 @@
  *   The app is running at http://localhost:3000.
  */
 
+import {
+  authenticateCapabilitySmokeUser,
+  bearerHeaders,
+} from '../playwright/smokeAuth.mjs';
+
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
+let authToken = '';
 
 function assert(condition, message) {
   if (!condition) {
@@ -22,6 +28,7 @@ async function requestJson(path, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...bearerHeaders(authToken),
       ...(options.headers || {}),
     },
   });
@@ -74,6 +81,7 @@ async function importAsset(projectId, figureId, revision, label, color) {
 }
 
 async function main() {
+  authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'composer consistency');
   await cleanupSmokeProjects();
   let projectId = null;
   try {

@@ -1,5 +1,7 @@
 # SciFig 管理员授权与审计说明
 
+> 最后更新：2026-07-13 17:05:09 +08:00
+
 ## 1. 安全目标
 
 管理接口不再依赖可复制、可泄露的 `x-admin-secret` 请求头，而是使用：
@@ -143,6 +145,33 @@ Authorization: Bearer <admin-access-token>
 
 最大返回 500 条。读取审计日志本身也会记录 `admin_audit_logs.read`。
 
+### 查询与切换发布状态
+
+```text
+GET /api/admin/deployment-state
+Authorization: Bearer <admin-access-token>
+```
+
+返回当前 `accepting/draining`、各类在途任务数和 renderer active/queued/workers/concurrency。状态不包含用户、项目、脚本或文件内容。
+
+开始排空：
+
+```text
+POST /api/admin/deployment-state
+Authorization: Bearer <admin-access-token>
+Content-Type: application/json
+
+{"mode":"draining","reason":"deployment"}
+```
+
+取消排空并恢复接收任务：
+
+```text
+{"mode":"accepting","reason":"manual"}
+```
+
+允许的 reason 只有 `deployment`、`maintenance`、`rollback`、`manual`。状态变更审计操作名为 `deployment.mode.change`。进入 draining 后普通读取继续可用，但新的渲染和导出任务返回 503；应等待 `activeJobsTotal=0` 且 renderer active/queued/workers 均为 0 后再停止旧实例。
+
 ## 5. 审计字段
 
 ```text
@@ -184,6 +213,7 @@ Cookie
 
 ```bash
 npm run test:admin-authorization
+npm run test:deployment-lifecycle
 ```
 
 专项测试使用临时 SQLite，验证：
