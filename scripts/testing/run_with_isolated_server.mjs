@@ -54,6 +54,7 @@ async function main() {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-isolated-smoke-'));
   const dataRoot = path.join(tempRoot, 'data');
   const port = await reservePort();
+  const hmrPort = await reservePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const env = {
     ...process.env,
@@ -63,6 +64,8 @@ async function main() {
     SCIFIGURE_DB_PATH: path.join(dataRoot, 'scifigure.db'),
     SCIFIGURE_LEGACY_OWNER_EMAIL: '',
     SCIFIGURE_TEST_ISOLATED: '1',
+    SCIFIGURE_VITE_HMR_PORT: String(hmrPort),
+    DISABLE_HMR: 'false',
   };
   const tsxCli = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
   const logLines = [];

@@ -1,8 +1,8 @@
 # SciFigure 统一编辑中心与属性能力升级方案
 
-> 状态：Phase 0-7 完成；3200 已启用布局中心 V2 候选；下一阶段为 Phase 8 默认启用与 Legacy Retire
+> 状态：Phase 0-7 已提交；Phase 8a 默认启用候选已完成本地验收，待提交；Phase 8b Legacy Retire 延后至稳定发布观察期后
 > 创建时间：2026-07-12 16:10:44 +08:00
-> 最后更新：2026-07-13 02:14:35 +08:00
+> 最后更新：2026-07-13 12:16:10 +08:00
 > 适用范围：属性编辑、布局中心、组件中心、配色中心、字体中心
 > 实施方式：Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire
 
@@ -1195,6 +1195,40 @@ R facet 五中心浏览器回归：7 PASS / 0 FAIL
 
 保留限制：R facet 的独立 left/bottom/width/height 与 R legend position 仍不具备可靠 renderer 映射，V2 会显示 unsupported/readonly 而不是伪装可编辑。Docker renderer 新镜像仍未重建，默认启用和生产切换继续受 Phase 6 部署门禁约束。
 
+### 13.20 Phase 8a 默认启用候选状态（2026-07-13 12:11:40 +08:00）
+
+Phase 8 拆为可独立验收的两个子阶段。本轮完成 Phase 8a，不把尚未满足发布周期条件的 Legacy Retire 伪装为已完成：
+
+- 属性、字体、组件、配色、布局五中心改为默认启用；只有显式设置对应开关为 `0` 才回滚。
+- 字体、组件、配色 strict resolver 默认启用。缺少稳定 identity 或 property capability 时不再静默生成 legacy patch，而是返回空 patch、`unsupported_engine` 和可见原因。
+- descriptor 投影新增 `allowLegacyFallback` 策略。strict 中心遇到旧 manifest 时显示 readonly，避免“控件可点但应用无效”；显式协议回滚时仍可使用旧 `editable/currentProps`。
+- 拖拽 position 不再硬编码 strict。布局 V2 开启时只允许 capability-backed 目标；显式关闭布局 V2 时恢复 legacy position 投影和 patch 编译。
+- UI 回滚与 resolver 回滚保持两层语义：`*_CONTROLS_V2=0` 只回退公共控件，继续保留容器识别；`*_TARGET_RESOLVER_V2=0` 是旧 manifest 应急协议回滚，不承诺保留升级后新增的容器语义分组。
+- 隔离 smoke 为每次运行分配独立 HTTP 与 Vite HMR 端口，避免连接稳定 3000 的 HMR 端口并产生假 console/page error。
+
+验证证据：
+
+```text
+全量 Vitest：26 files / 188 tests 通过
+TypeScript：通过
+Python introspection + R renderer + 双语言 capability matrix：70 tests 通过
+属性编辑 production-like staging：9 PASS / 0 FAIL
+Python 语义中心默认路径：14 PASS / 0 FAIL
+Python 组件/布局默认路径：18 PASS / 0 FAIL
+R 语义中心默认路径：7 PASS / 0 FAIL
+扩展拖拽：9 PASS / 0 FAIL，console/page error 为 0
+五中心 UI 显式回滚：语义中心 14 PASS；组件/布局 18 PASS
+staging build、marker、隔离路径 dry-run 与 git diff check：通过
+Docker renderer：scifigure-renderer:phase8a 构建通过
+Docker sandbox：Python/R 正常渲染、R 导出、禁网、敏感路径隔离、超时强杀、容器清理通过
+Docker capability gate：Python/R 均返回 identity/capability-backed manifest
+3000 稳定服务 PID 196020 保持不变；测试未访问真实 data/ 或数据库
+```
+
+本机 Docker renderer 代码与沙箱门禁已经通过，但云服务器禁网、只读文件系统、资源限制和真实并发仍需部署后复测，不能用本机证据替代云端放行。
+
+Phase 8b 暂不执行：旧控件仍承担 errorbar、stem、legend、colorbar 等专用能力，旧 manifest 仍需要显式回滚入口。只有经过至少一个稳定发布观察期、专用能力完成 descriptor 覆盖且云端 renderer 复测通过后，才能删除无调用 legacy 分支。
+
 ## 14. 实施阶段
 
 ### Phase 0：Baseline 清单和回归锁定
@@ -1265,20 +1299,25 @@ rotation、visible、alpha、linewidth
 
 ### Phase 8：默认启用与 Legacy Retire
 
-每个中心独立通过放行证据后逐个默认启用，不用一个总开关同时切换五个中心。最后删除重复 label/range/options、tick alias、kind 白名单、mixed value 逻辑和无调用 legacy 控件。
+Phase 8a：每个中心独立通过放行证据后逐个默认启用，不用一个总开关同时切换五个中心。默认 strict 不允许缺 identity/capability 的目标静默回退；显式 `=0` 保留可审计回滚路径。
+
+Phase 8b：经过稳定发布观察期后，删除已经由 descriptor 完整覆盖且确认无调用的重复 label/range/options、tick alias、kind 白名单、mixed value 逻辑和 legacy 控件。仍承担专用能力或旧项目兼容的代码不得提前删除。
 
 ## 15. Feature Flag 与回滚单位
 
 ```text
 VITE_SCIFIGURE_PROPERTY_DESCRIPTOR_V1
 VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2
+VITE_SCIFIGURE_FONT_TARGET_RESOLVER_V2
 VITE_SCIFIGURE_FONT_CONTROLS_V2
+VITE_SCIFIGURE_COMPONENT_TARGET_RESOLVER_V2
 VITE_SCIFIGURE_COMPONENT_CONTROLS_V2
+VITE_SCIFIGURE_PALETTE_TARGET_RESOLVER_V2
 VITE_SCIFIGURE_PALETTE_CONTROLS_V2
 VITE_SCIFIGURE_LAYOUT_CONTROLS_V2
 ```
 
-每个中心可单独回滚。resolver、Draft、render scheduler 和持久化不与 UI 开关绑定。
+每个中心可单独回滚。`*_CONTROLS_V2=0` 回退 UI 公共控件但保留语义分组；`*_TARGET_RESOLVER_V2=0` 回退旧 manifest 编译协议。Draft、render scheduler 和持久化不与 UI 开关绑定。生产默认启用后，回滚必须记录所关闭的具体开关和原因。
 
 ## 16. 测试矩阵
 

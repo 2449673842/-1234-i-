@@ -13,6 +13,17 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function assertCapabilityManifest(result, label) {
+  const objects = result?.manifest?.objects;
+  assert(Array.isArray(objects) && objects.length > 0, `${label} did not return manifest objects`);
+  const capabilityBacked = objects.filter((object) => (
+    object?.identity?.instanceKey
+    && Array.isArray(object?.propertyCapabilities)
+    && object.propertyCapabilities.length > 0
+  ));
+  assert(capabilityBacked.length > 0, `${label} did not return identity/capability-backed objects`);
+}
+
 async function register() {
   const response = await fetch(`${BASE_URL}/api/auth/register`, {
     method: 'POST',
@@ -98,6 +109,7 @@ async function main() {
     'ax.set_title("sandbox-ok")',
   ].join('\n'));
   assert(normal.response.ok && normal.data?.status === 'success', `Normal sandbox render failed: ${normal.response.status} ${JSON.stringify(normal.data)}`);
+  assertCapabilityManifest(normal.data, 'Python sandbox render');
 
   const fileProbe = await render(token, [
     'from pathlib import Path',
@@ -124,6 +136,7 @@ async function main() {
     'print(p)',
   ].join('\n'), 'r');
   assert(rNormal.response.ok && rNormal.data?.status === 'success', `Normal R sandbox render failed: ${rNormal.response.status} ${JSON.stringify(rNormal.data)}`);
+  assertCapabilityManifest(rNormal.data, 'R sandbox render');
 
   const rPngExport = await exportFigure(token, rNormal.data?.sessionId, 'png');
   assert(

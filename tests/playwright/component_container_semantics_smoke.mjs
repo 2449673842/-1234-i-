@@ -14,7 +14,9 @@ const apiResponses = [];
 const consoleErrors = [];
 const pageErrors = [];
 let authToken = '';
-const OUTPUT_DIR = path.resolve('output', 'playwright', 'component-container');
+const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
+const CONTROL_MODE = process.env.VITE_SCIFIGURE_COMPONENT_CONTROLS_V2 === '0' ? 'rollback' : 'default';
+const OUTPUT_DIR = path.resolve('output', 'playwright', `component-container-${CONTROL_MODE}-${RUN_ID}`);
 
 const script = [
   'import numpy as np',
@@ -341,7 +343,7 @@ async function run() {
       initialComponentText.includes('茎叶图系列') && initialStemControlCount > 0 && initialComponentText.includes('双轴') ? 'PASS' : 'FAIL',
       `clicked=${componentTabClicked}, card=${initialComponentText.includes('茎叶图系列')}, controls=${initialStemControlCount}, labels=${JSON.stringify(rightPanelLabels.slice(0, 20))}`,
     );
-    const componentControlsV2Expected = process.env.VITE_SCIFIGURE_COMPONENT_CONTROLS_V2 === '1';
+    const componentControlsV2Expected = process.env.VITE_SCIFIGURE_COMPONENT_CONTROLS_V2 !== '0';
     const componentControlsV2Count = await page.locator('[data-component-controls-version="2"]').count();
     const barLinewidthControls = page.locator('[data-component-group-id="bars"] input[data-property-control="linewidth"][data-param-prop="linewidth"]');
     const barLinewidthCount = await barLinewidthControls.count();
@@ -413,7 +415,7 @@ async function run() {
       `changed=${frameChanged}, draft=${frameDraftVisible}, expected=${JSON.stringify(Array.from(expectedFrameIds))}, patches=${JSON.stringify(frameApplied.patches)}`,
     );
     await clickText(page, '布局中心');
-    const layoutControlsV2Expected = process.env.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 === '1';
+    const layoutControlsV2Expected = process.env.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 !== '0';
     const layoutV2Panel = page.locator('[data-layout-controls-version="2"]').first();
     const layoutV2PanelCount = await layoutV2Panel.count();
     const layoutControlKeys = layoutV2PanelCount > 0

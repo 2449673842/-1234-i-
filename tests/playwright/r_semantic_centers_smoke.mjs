@@ -384,7 +384,7 @@ async function run() {
     record('R2-component-center', componentOk ? 'PASS' : 'FAIL', `changed=${componentChanged}, draft=${componentDraft}, patches=${JSON.stringify(componentPatches)}`);
 
     await clickText(page, '配色中心');
-    const paletteV2Expected = process.env.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 === '1';
+    const paletteV2Expected = process.env.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 !== '0';
     const paletteV2Count = await page.locator('[data-palette-controls-version="2"]').count();
     record(
       'R3a-palette-descriptor-controls',
@@ -401,7 +401,7 @@ async function run() {
     record('R3-palette-center', paletteOk ? 'PASS' : 'FAIL', `changed=${paletteChanged}, draft=${paletteDraft}, patches=${JSON.stringify(palettePatches)}`);
 
     await clickText(page, '布局中心');
-    const layoutV2Expected = process.env.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 === '1';
+    const layoutV2Expected = process.env.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 !== '0';
     const layoutPanel = page.locator('[data-layout-controls-version="2"]').first();
     const layoutPanelCount = await layoutPanel.count();
     const aspectControl = layoutPanel.locator('[data-property-control="aspect"]').first();

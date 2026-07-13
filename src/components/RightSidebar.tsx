@@ -45,28 +45,30 @@ interface RightSidebarProps {
 const LOCAL_PROPS = new Set(['text', 'color', 'visible', 'facecolor', 'edgecolor', 'alpha']);
 const FONT_TARGET_RESOLVER_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
-).env?.VITE_SCIFIGURE_FONT_TARGET_RESOLVER_V2 === '1';
+).env?.VITE_SCIFIGURE_FONT_TARGET_RESOLVER_V2 !== '0';
 const COMPONENT_TARGET_RESOLVER_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
 ).env?.VITE_SCIFIGURE_COMPONENT_TARGET_RESOLVER_V2 !== '0';
 const PALETTE_TARGET_RESOLVER_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
-).env?.VITE_SCIFIGURE_PALETTE_TARGET_RESOLVER_V2 === '1';
+).env?.VITE_SCIFIGURE_PALETTE_TARGET_RESOLVER_V2 !== '0';
 const PALETTE_CONTROLS_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
-).env?.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 === '1';
+).env?.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 !== '0';
 const PROPERTY_INSPECTOR_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
-).env?.VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2 === '1';
+).env?.VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2 !== '0';
 const FONT_CONTROLS_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
-).env?.VITE_SCIFIGURE_FONT_CONTROLS_V2 === '1';
+).env?.VITE_SCIFIGURE_FONT_CONTROLS_V2 !== '0';
 const COMPONENT_CONTROLS_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
-).env?.VITE_SCIFIGURE_COMPONENT_CONTROLS_V2 === '1';
+).env?.VITE_SCIFIGURE_COMPONENT_CONTROLS_V2 !== '0';
 const LAYOUT_CONTROLS_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
-).env?.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 === '1';
+).env?.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 !== '0';
+const FONT_STRICT_RESOLVER_ACTIVE = FONT_CONTROLS_V2_ENABLED && FONT_TARGET_RESOLVER_V2_ENABLED;
+const COMPONENT_STRICT_RESOLVER_ACTIVE = COMPONENT_CONTROLS_V2_ENABLED && COMPONENT_TARGET_RESOLVER_V2_ENABLED;
 const DEFAULT_PRESETS: Record<string, string[]> = {
   Nature: ['#1F78B4', '#D95F02', '#7570B3', '#E7298A', '#66A61E'],
   Science: ['#E41A1C', '#377EB8', '#4DAF4A', '#984EA3', '#FF7F00'],
@@ -748,7 +750,7 @@ export function RightSidebar({
     const result = compileEditingIntentWithControlledResolver(
       manifest,
       intent,
-      FONT_TARGET_RESOLVER_V2_ENABLED,
+      FONT_STRICT_RESOLVER_ACTIVE,
     );
     recordTargetResolverShadowDiagnostic(manifest, intent, 'font-center');
     if (result.fallbackReason && result.fallbackReason !== 'feature_disabled') {
@@ -768,7 +770,7 @@ export function RightSidebar({
     const result = compileEditingIntentWithControlledResolver(
       manifest,
       intent,
-      COMPONENT_TARGET_RESOLVER_V2_ENABLED,
+      COMPONENT_STRICT_RESOLVER_ACTIVE,
     );
     recordTargetResolverShadowDiagnostic(manifest, intent, 'component-center');
     if (result.fallbackReason && result.fallbackReason !== 'feature_disabled') {
@@ -806,6 +808,7 @@ export function RightSidebar({
     center: 'layout',
     objects: items as unknown as readonly ManifestObject[],
     scope,
+    allowLegacyFallback: !LAYOUT_CONTROLS_V2_ENABLED,
   });
 
   const supportsLayoutProps = (
@@ -3694,6 +3697,7 @@ export function RightSidebar({
         objects: items,
         semanticRole: componentRoleForItems(items),
         scope: 'group',
+        allowLegacyFallback: !COMPONENT_STRICT_RESOLVER_ACTIVE,
       }).filter(projection => Object.values(projection.propByObjectId).some(Boolean))
     );
 
@@ -4487,6 +4491,7 @@ export function RightSidebar({
       objects: items,
       semanticRole: fontGroupSemanticRole(roleId),
       scope: 'figure',
+      allowLegacyFallback: !FONT_STRICT_RESOLVER_ACTIVE,
     }).filter(projection => Object.values(projection.propByObjectId).some(Boolean))
   );
 

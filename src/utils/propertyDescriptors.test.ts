@@ -148,6 +148,28 @@ describe('property descriptor projection', () => {
     expect(byKey(projected, 'color').counts.legacyFallback).toBe(1);
   });
 
+  it('projects legacy editable fields as readonly when strict fallback is disabled', () => {
+    const legacy = object({
+      id: 'title.legacy',
+      editable: ['fontsize'],
+      currentProps: { fontsize: 12 },
+    });
+
+    const projected = byKey(projectPropertyDescriptors({
+      center: 'fonts',
+      objects: [legacy],
+      scope: 'object',
+      allowLegacyFallback: false,
+    }), 'fontsize');
+
+    expect(projected.state).toBe('readonly');
+    expect(projected.stateByObjectId['title.legacy']).toBe('readonly');
+    expect(projected.counts).toEqual({
+      total: 1, editable: 0, readonly: 1, unsupported: 0, conditional: 0, legacyFallback: 1,
+    });
+    expect(projected.unsupportedReasons['title.legacy']).toContain('严格目标解析已阻止写回');
+  });
+
   it('treats property capabilities as authoritative even when editable is absent', () => {
     const title = object({
       id: 'title.0',
@@ -557,5 +579,31 @@ describe('property descriptor projection', () => {
     expect(position.state).toBe('editable');
     expect(position.coordinateSpace).toBe('none');
     expect(position.coordinateSpaceByObjectId).toEqual({ 'r.text.0': 'none' });
+  });
+
+  it('does not advertise legacy position dragging while the strict layout resolver is active', () => {
+    const legacyText = object({
+      id: 'text.legacy',
+      kind: 'text',
+      editable: ['position'],
+      currentProps: { x: 0.4, y: 0.6, coord_system: 'axes' },
+    });
+
+    const strictPosition = byKey(projectPropertyDescriptors({
+      center: 'layout',
+      objects: [legacyText],
+      scope: 'object',
+      allowLegacyFallback: false,
+    }), 'position');
+    const rollbackPosition = byKey(projectPropertyDescriptors({
+      center: 'layout',
+      objects: [legacyText],
+      scope: 'object',
+      allowLegacyFallback: true,
+    }), 'position');
+
+    expect(strictPosition.state).toBe('readonly');
+    expect(rollbackPosition.state).toBe('editable');
+    expect(rollbackPosition.coordinateSpaceByObjectId['text.legacy']).toBe('axes');
   });
 });

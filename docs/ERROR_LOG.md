@@ -1,7 +1,48 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-13 02:14:35 +08:00
+> 最后修改时间：2026-07-13 12:16:10 +08:00
+
+---
+
+## 2026-07-13 12:11:40 +08:00 Phase 8 默认 strict 导致旧 manifest 假可编辑与拖拽回滚失效
+
+**现象**
+
+- 旧 manifest 只有 `editable/currentProps`、缺少 identity 或 property capability 时，V2 控件仍显示可编辑，但 strict resolver 返回空 patch，用户会看到控件变化却无法应用。
+- 拖拽确认硬编码 strict resolver；旧对象可以进入拖拽预览，但松手确认时无法生成 position patch。
+- 只关闭字体或组件 V2 控件时，旧 UI 仍可能调用默认 strict resolver，回滚不是完整的用户行为回滚。
+- 隔离 Playwright 多次刷新时错误连接稳定 3000 的 Vite HMR 端口，功能断言全部通过但 N1 被假 console/page error 阻断。
+
+**根因**
+
+- descriptor 的 legacy fallback 与 resolver 的 strict readiness 使用了两套独立判断，没有共享“是否允许旧协议写回”的策略。
+- `ChartPreview.buildPositionPatch()` 把 resolver 参数写死为 `true`。
+- UI 控件开关和底层 resolver 开关缺少明确的两层回滚契约。
+- 多个 Vite middleware 测试实例共用默认 HMR 端口，测试 HTTP 端口虽然隔离，WebSocket 端口没有隔离。
+
+**修复**
+
+- property projection 新增 `allowLegacyFallback`；strict 下 legacy editable 投影为 readonly 并显示缺 capability 原因，显式回滚时才恢复 editable。
+- position 投影和最终 patch 统一由布局 V2 开关控制，默认 strict、显式 `0` legacy，不再出现预览与确认协议不一致。
+- 字体/组件旧控件启用时使用 legacy compiler；UI 回滚保留 renderer 的容器识别，底层 resolver 回滚单独作为旧 manifest 应急入口。
+- 隔离测试同时分配独立 HTTP/HMR 端口，稳定服务和 smoke 不再共享 WebSocket。
+
+**验证**
+
+- Vitest：26 files / 188 tests；新增 strict readonly、legacy position 回滚等回归。
+- Python/R/capability matrix：70 tests；TypeScript 通过。
+- 默认路径：属性 9 PASS、语义 14 PASS、组件/布局 18 PASS、R 7 PASS、拖拽 9 PASS。
+- UI 显式回滚：语义 14 PASS、组件/布局 18 PASS；console/page error 为 0。
+- `scifigure-renderer:phase8a` 构建通过；增强 sandbox smoke 确认 Python/R capability manifest、禁网、敏感路径隔离、R 超时终止和容器清理。
+- 3000 稳定 PID `196020` 未改变，所有 smoke 使用隔离临时数据目录。
+
+**防复发规则**
+
+- 控件投影为 editable 时，必须存在同一模式下可生成 patch 的 resolver 证据；禁止“可编辑 UI + 空 patch”。
+- 拖拽资格判断、坐标换算和确认编译必须使用同一开关与协议模式。
+- UI 回滚和 resolver 回滚必须分开记录；测试不得把关闭底层 resolver 后缺失的新语义能力误报为 UI 回滚失败。
+- 隔离浏览器测试必须同时隔离 HTTP、数据库、数据目录和 HMR/WebSocket 端口。
 
 ---
 

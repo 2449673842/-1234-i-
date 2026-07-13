@@ -13,6 +13,9 @@ const LEGEND_CHILD_GID_RE = /^legend_(?:text|title|line|patch|collection)\.(?:(f
 let chartPreviewSanitizeCount = 0;
 let lastChartPreviewSvg: string | null = null;
 let lastChartPreviewSanitizedHtml = '';
+const POSITION_TARGET_RESOLVER_V2_ENABLED = (
+  import.meta as ImportMeta & { env?: Record<string, string | undefined> }
+).env?.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 !== '0';
 
 function sanitizeChartPreviewSvg(svg: string) {
   if (svg === lastChartPreviewSvg) {
@@ -230,6 +233,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       center: 'layout',
       objects: [obj],
       scope: 'object',
+      allowLegacyFallback: !POSITION_TARGET_RESOLVER_V2_ENABLED,
     }).find(projection => projection.key === 'position');
     const coordinateSpace = positionProjection?.coordinateSpaceByObjectId?.[gid];
     return (obj?.kind === 'text' || obj?.kind === 'legend')
@@ -413,6 +417,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       center: 'layout',
       objects: [obj],
       scope: 'object',
+      allowLegacyFallback: !POSITION_TARGET_RESOLVER_V2_ENABLED,
     }).find(projection => projection.key === 'position');
     const coordSystem = positionProjection?.coordinateSpaceByObjectId?.[gid];
     if (positionProjection?.stateByObjectId[gid] !== 'editable'
@@ -477,7 +482,11 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
     const currentManifest = figSession?.manifest;
     if (!currentManifest) return null;
-    const compiled = compileEditingIntentWithControlledResolver(currentManifest, intent, true);
+    const compiled = compileEditingIntentWithControlledResolver(
+      currentManifest,
+      intent,
+      POSITION_TARGET_RESOLVER_V2_ENABLED,
+    );
     const patch = compiled.patches.find(candidate => (
       'gid' in candidate
       && candidate.gid === gid

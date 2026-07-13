@@ -398,22 +398,33 @@ export function compileEditingIntentStrict(
 ): ControlledTargetCompileResult {
   const readiness = getStrictProtocolReadiness(manifest, intent);
   if (!readiness.ready) {
-    const legacy = compileEditingIntent(manifest, intent);
     const fallbackReason: StrictProtocolFallbackReason = readiness.missingIdentityObjectIds.length > 0
       ? 'missing_identity'
       : 'missing_property_capabilities';
+    const blockedObjectIds = Array.from(new Set([
+      ...(intent.scope.objectIds ?? []),
+      ...readiness.missingIdentityObjectIds,
+      ...readiness.missingPropertyCapabilityObjectIds,
+    ])).filter(Boolean);
+    const skipped: EditingIntentSkippedTarget[] = (blockedObjectIds.length > 0 ? blockedObjectIds : [undefined])
+      .map(gid => ({
+        gid,
+        role: intent.scope.targetRole,
+        reason: 'unsupported_engine',
+        detail: fallbackReason === 'missing_identity'
+          ? '目标缺少稳定 identity，严格目标解析已阻止写回。'
+          : '目标缺少 property capability，严格目标解析已阻止写回。',
+      }));
     return {
-      ...legacy,
-      strategy: 'legacy',
+      strategy: 'strict',
       fallbackReason,
       readiness,
-      diagnostics: [
-        ...legacy.diagnostics,
-        {
-          level: 'info',
-          message: '严格目标协议不完整，本次操作已使用兼容编译器。',
-        },
-      ],
+      patches: [],
+      skipped,
+      diagnostics: [{
+        level: 'warning',
+        message: '严格目标协议不完整，本次操作已阻止；可重新渲染刷新 manifest，或显式关闭对应 V2 resolver 回滚。',
+      }],
     };
   }
 

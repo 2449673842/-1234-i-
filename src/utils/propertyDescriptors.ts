@@ -220,6 +220,7 @@ function projectObjectState(
   object: ManifestObject,
   prop: string | undefined,
   scope: import('../schemas/manifest').ManifestEditScope,
+  allowLegacyFallback: boolean,
 ): {
   state: ProjectedObjectPropertyState;
   value: unknown;
@@ -263,6 +264,15 @@ function projectObjectState(
   }
 
   if (!Array.isArray(object.propertyCapabilities) && Array.isArray(object.editable) && object.editable.includes(prop)) {
+    if (!allowLegacyFallback) {
+      return {
+        state: 'readonly',
+        value: object.currentProps?.[prop],
+        unsupportedReason: `${prop} 缺少属性级 capability，严格目标解析已阻止写回`,
+        conditional: false,
+        legacyFallback: true,
+      };
+    }
     return {
       state: 'editable',
       value: object.currentProps?.[prop],
@@ -362,6 +372,7 @@ export function projectPropertyDescriptors({
   objects: selection,
   semanticRole,
   scope = defaultScopeForCenter(center),
+  allowLegacyFallback = true,
   resolvedPropByKey,
 }: PropertyProjectionRequest): ProjectedPropertyDescriptor[] {
   const objects = Array.from(selection);
@@ -383,7 +394,7 @@ export function projectPropertyDescriptors({
     for (const object of objects) {
       const prop = resolvedPropByKey?.[descriptor.key]?.[object.id]
         ?? resolveCanonicalPropertyAlias(descriptor.key, object, semanticRole);
-      const objectState = projectObjectState(object, prop, scope);
+      const objectState = projectObjectState(object, prop, scope, allowLegacyFallback);
       propByObjectId[object.id] = prop;
       stateByObjectId[object.id] = objectState.state;
       coordinateSpaceByObjectId[object.id] = coordinateSpaceForObject(descriptor, object, prop);

@@ -420,7 +420,7 @@ describe('controlled strict target compiler', () => {
     }]);
   });
 
-  it('falls back to the legacy compiler only when v1.1 protocol fields are absent', () => {
+  it('blocks missing v1.1 protocol by default and only falls back when explicitly disabled', () => {
     const legacy = manifest([{
       id: 'title.0',
       kind: 'text',
@@ -434,9 +434,22 @@ describe('controlled strict target compiler', () => {
       operation: { prop: 'fontsize', value: 14 },
     }, true);
 
-    expect(result.strategy).toBe('legacy');
+    expect(result.strategy).toBe('strict');
     expect(result.fallbackReason).toBe('missing_identity');
-    expect(result.patches).toEqual([{
+    expect(result.patches).toEqual([]);
+    expect(result.skipped).toEqual([expect.objectContaining({
+      gid: 'title.0',
+      reason: 'unsupported_engine',
+    })]);
+
+    const rollback = compileEditingIntentWithControlledResolver(legacy, {
+      intent: 'style.text.title',
+      scope: { selectionMode: 'role_in_figure', objectIds: ['title.0'], targetRole: 'title' },
+      operation: { prop: 'fontsize', value: 14 },
+    }, false);
+    expect(rollback.strategy).toBe('legacy');
+    expect(rollback.fallbackReason).toBe('feature_disabled');
+    expect(rollback.patches).toEqual([{
       op: 'set', mode: 'backend_patch', gid: 'title.0', prop: 'fontsize', value: 14,
     }]);
   });
@@ -993,6 +1006,43 @@ describe('controlled strict target compiler', () => {
     expect(result.strategy).toBe('strict');
     expect(result.patches).toEqual([{
       op: 'set', mode: 'backend_patch', gid: 'text.0.0', prop: 'position', value,
+    }]);
+  });
+
+  it('restores legacy drag-confirmed position patches when the layout resolver is disabled', () => {
+    const figure = manifest([{
+      id: 'text.legacy',
+      kind: 'text',
+      label: 'Legacy movable label',
+      editable: ['position'],
+      currentProps: { x: 0.4, y: 0.6, coord_system: 'axes' },
+      role: 'annotation_text',
+      subplotId: 'subplot.0',
+    }]);
+    const value = { x: 0.5, y: 0.55, coord_system: 'axes' };
+    const intent: EditingIntent = {
+      intent: 'layout.position.text',
+      scope: {
+        selectionMode: 'explicit_objects',
+        objectIds: ['text.legacy'],
+        targetKinds: ['text'],
+        targetRole: 'annotation_text',
+        crossFigure: 'deny',
+      },
+      operation: { prop: 'position', value },
+      commit: { mode: 'immediate', applyAsOneHistoryStep: true },
+      fallback: { onUnsupported: 'skip_with_warning' },
+    };
+
+    const strict = compileEditingIntentWithControlledResolver(figure, intent, true);
+    const rollback = compileEditingIntentWithControlledResolver(figure, intent, false);
+
+    expect(strict.strategy).toBe('strict');
+    expect(strict.patches).toEqual([]);
+    expect(rollback.strategy).toBe('legacy');
+    expect(rollback.fallbackReason).toBe('feature_disabled');
+    expect(rollback.patches).toEqual([{
+      op: 'set', mode: 'backend_patch', gid: 'text.legacy', prop: 'position', value,
     }]);
   });
 });

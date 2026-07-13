@@ -554,15 +554,18 @@ async function run() {
     const componentDescriptorOnlyDraft = (await getBodyText(page)).includes('已暂存');
     const componentDescriptorOnlyApply = componentDescriptorOnlyChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const componentDescriptorOnlyPatches = patchList(componentDescriptorOnlyApply.patchBody);
-    const componentDescriptorOnlyOk = componentDescriptorOnlyChanged
-      && componentDescriptorOnlyDraft
-      && componentDescriptorOnlyApply.successful
-      && componentDescriptorOnlyPatches.length > 1
-      && componentDescriptorOnlyPatches.every((patch) => patch.prop === 'rotation' && Number(patch.value) === 17);
+    const componentControlsV2Expected = process.env.VITE_SCIFIGURE_COMPONENT_CONTROLS_V2 !== '0';
+    const componentDescriptorOnlyOk = componentControlsV2Expected
+      ? componentDescriptorOnlyChanged
+        && componentDescriptorOnlyDraft
+        && componentDescriptorOnlyApply.successful
+        && componentDescriptorOnlyPatches.length > 1
+        && componentDescriptorOnlyPatches.every((patch) => patch.prop === 'rotation' && Number(patch.value) === 17)
+      : !componentDescriptorOnlyChanged && componentDescriptorOnlyPatches.length === 0;
     record(
       'G1b-component-descriptor-only-fanout',
       componentDescriptorOnlyOk ? 'PASS' : 'FAIL',
-      `changed=${componentDescriptorOnlyChanged}, draft=${componentDescriptorOnlyDraft}, patches=${JSON.stringify(componentDescriptorOnlyPatches)}`,
+      `expected=${componentControlsV2Expected}, changed=${componentDescriptorOnlyChanged}, draft=${componentDescriptorOnlyDraft}, patches=${JSON.stringify(componentDescriptorOnlyPatches)}`,
     );
 
     await clickText(page, '组件中心');
@@ -583,7 +586,7 @@ async function run() {
     record('G2-scatter-excludes-legend', pointOk ? 'PASS' : 'FAIL', `changed=${pointSizeChanged}, draft=${pointDraft}, patches=${JSON.stringify(pointPatches)}`);
 
     await clickText(page, '配色中心');
-    const paletteV2Expected = process.env.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 === '1';
+    const paletteV2Expected = process.env.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 !== '0';
     const paletteV2Count = await page.locator('[data-palette-controls-version="2"]').count();
     const strictPaletteControlCount = await page.locator('input[data-property-control="color-text"][data-property-scope="palette:LINE_COLOR"]').count();
     record(

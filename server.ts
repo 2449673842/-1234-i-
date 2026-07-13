@@ -4859,10 +4859,14 @@ ${inner}
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
+    const requestedHmrPort = Number(process.env.SCIFIGURE_VITE_HMR_PORT);
+    const isolatedHmr = Number.isInteger(requestedHmrPort) && requestedHmrPort > 0
+      ? { host: '127.0.0.1', port: requestedHmrPort, clientPort: requestedHmrPort }
+      : undefined;
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : undefined,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : isolatedHmr,
       },
       appType: "spa",
     });
