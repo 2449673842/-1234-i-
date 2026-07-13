@@ -54,6 +54,9 @@ const deployScript = read('ops/deployment/deploy-release.sh');
 assert.match(deployScript, /Release already exists and will not be overwritten/);
 assert.match(deployScript, /runuser -u scifigure/);
 assert.match(deployScript, /DOCKER_HOST="\$docker_host"/);
+assert.match(deployScript, /SCIFIGURE_RENDERER_DEBIAN_MIRROR/);
+assert.match(deployScript, /SCIFIGURE_RENDERER_DEBIAN_SECURITY_MIRROR/);
+assert.match(deployScript, /SCIFIGURE_RENDERER_PIP_INDEX_URL/);
 assert.match(deployScript, /SCIFIGURE_RENDERER_IMAGE=\$\{renderer_image\}/);
 assert.match(deployScript, /stop_service\(\)/);
 assert.doesNotMatch(deployScript, /systemctl stop scifigure\.service 2>\/dev\/null \|\| true/);
@@ -103,6 +106,11 @@ assert.match(tlsScript, /renewal-hooks\/deploy\/20-scifigure-reload-nginx/);
 const server = read('server.ts');
 assert.match(server, /SCIFIGURE_BIND_HOST/);
 assert.match(server, /\['DOCKER_HOST', 'XDG_RUNTIME_DIR'\]/);
+
+const rendererDockerfile = read('Dockerfile.renderer');
+assert.match(rendererDockerfile, /ARG DEBIAN_MIRROR=/);
+assert.match(rendererDockerfile, /ARG DEBIAN_SECURITY_MIRROR=/);
+assert.match(rendererDockerfile, /ARG PIP_INDEX_URL=/);
 
 let bashSyntax = 'not available on this platform';
 if (process.platform !== 'win32') {

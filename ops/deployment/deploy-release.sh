@@ -128,6 +128,9 @@ runuser -u scifigure -- env \
 scifigure_uid="$(id -u scifigure)"
 docker_host="unix:///run/user/${scifigure_uid}/docker.sock"
 renderer_image="scifigure-renderer:${build_id}"
+renderer_debian_mirror="${SCIFIGURE_RENDERER_DEBIAN_MIRROR:-http://deb.debian.org/debian}"
+renderer_security_mirror="${SCIFIGURE_RENDERER_DEBIAN_SECURITY_MIRROR:-http://deb.debian.org/debian-security}"
+renderer_pip_index="${SCIFIGURE_RENDERER_PIP_INDEX_URL:-https://pypi.org/simple}"
 runuser -u scifigure -- env \
   HOME=/var/lib/scifigure \
   XDG_RUNTIME_DIR="/run/user/${scifigure_uid}" \
@@ -135,6 +138,9 @@ runuser -u scifigure -- env \
   docker build \
     --file "$release_dir/Dockerfile.renderer" \
     --tag "$renderer_image" \
+    --build-arg "DEBIAN_MIRROR=${renderer_debian_mirror}" \
+    --build-arg "DEBIAN_SECURITY_MIRROR=${renderer_security_mirror}" \
+    --build-arg "PIP_INDEX_URL=${renderer_pip_index}" \
     "$release_dir"
 
 chown -R root:scifigure "$release_dir"
