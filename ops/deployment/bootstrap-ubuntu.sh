@@ -8,6 +8,7 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 server_name="${1:-_}"
+docker_apt_base="${SCIFIGURE_DOCKER_APT_BASE_URL:-https://download.docker.com}"
 
 if [[ ! -r /etc/os-release ]]; then
   echo "Unable to identify the operating system" >&2
@@ -36,12 +37,12 @@ deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node
 EOF
 
 if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+  curl -fsSL "${docker_apt_base}/linux/ubuntu/gpg" \
     | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 fi
 chmod a+r /etc/apt/keyrings/docker.gpg
 cat > /etc/apt/sources.list.d/docker.list <<EOF
-deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable
+deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] ${docker_apt_base}/linux/ubuntu ${VERSION_CODENAME} stable
 EOF
 
 apt-get update

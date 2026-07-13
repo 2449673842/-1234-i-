@@ -80,6 +80,7 @@ assert.match(bootstrap, /fallocate -l 4G \/swapfile/);
 assert.match(bootstrap, /SCIFIGURE_ENABLE_UFW/);
 assert.match(bootstrap, /sshd -T/);
 assert.match(bootstrap, /SCIFIGURE_DISABLE_ROOTFUL_DOCKER/);
+assert.match(bootstrap, /SCIFIGURE_DOCKER_APT_BASE_URL/);
 assert.match(bootstrap, /refusing to disable it/);
 assert.doesNotMatch(bootstrap, /ufw allow 310[12]/);
 assert.match(bootstrap, /dockerd-rootless-setuptool\.sh install/);
