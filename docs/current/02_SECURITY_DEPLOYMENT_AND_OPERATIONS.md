@@ -1,7 +1,7 @@
 # SciFigure 安全、部署与运维副文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-13 17:05:09 +08:00
+> 更新时间：2026-07-13 19:42:42 +08:00
 > 复核范围：当前本地工作区；尚未等同于已提交发布版本  
 > 适用范围：用户账号、数据保护、代码执行、Docker、备份、管理员能力和生产上线
 
@@ -405,7 +405,32 @@ POST /api/admin/deployment-state
 
 进入 draining 后，新的 render、patch、code-patch、项目重绘、导出、压缩和组合任务返回 `503 INSTANCE_DRAINING`；已经开始的任务继续完成。客户端断线会取消排队任务和对应 renderer worker，但不会在 worker 停止前提前释放发布 lease。管理员状态变更写入 `deployment.mode.change` 审计，`SIGTERM/SIGINT` 代码会等待在途请求和 renderer active/queued/worker 排空。
 
-这只是应用层基础。Nginx upstream 摘除、sticky routing、Linux 信号行为和真实并发仍必须在云服务器复测。
+这只是应用层基础。Linux 信号行为、真实 renderer 并发和失败恢复仍必须在云服务器复测。
+
+### 9.2 2 核 4 GB 调试服务器
+
+2026-07-13 已完成一台 Ubuntu 24.04.2 LTS、2 核、3.8 GiB 内存、约 50 GiB 可用磁盘服务器的只读预检。该主机用于本人和少量同学共同调试，采用单实例而不是长期 Blue/Green 双实例：
+
+```text
+Nginx 公网入口 80/443
+-> 127.0.0.1:3101 单个 Node/systemd 服务
+-> rootless Docker renderer
+-> /srv/scifigure/data 独立数据目录
+```
+
+资源基线：
+
+```text
+4 GB Swap
+renderer 并发 1
+单 renderer 任务 1 CPU / 896 MB / 96 PID
+tabular parser 并发 1
+Node 构建最大堆 2 GB，仅发生在 release 构建阶段
+```
+
+发布采用不可变 release + `current` 原子软链接。候选依赖和 renderer 镜像先在后台构建；切换时当前服务通过 SIGTERM 排空并停止，随后只启动新 release。新版本 readiness 失败时自动恢复上一 release 和对应环境文件。整个过程不允许两个 Node 进程同时写同一个 SQLite。
+
+真正零停机 Blue/Green 暂不启用。若未来要求并行写流量，必须先引入跨进程部署锁、明确数据库迁移策略，或迁移到适合多实例写入的数据库，不能直接让两个实例共享 SQLite。
 
 ## 10. 云服务器上线阻断项
 
@@ -427,7 +452,7 @@ Docker renderer 文件、网络和资源隔离复测
 把当前脏工作树整理为经过审查的可复现提交
 验证生产 Compose/systemd 到 renderer 的实际调用链
 配置可信反向代理，禁止客户端伪造 X-Forwarded-For 影响限流和审计
-Nginx readiness 摘流、sticky routing 和 Linux SIGTERM 排空实测
+Linux SIGTERM 排空、单实例原子替换和自动回滚实测
 ```
 
 ## 11. 管理员后台
@@ -546,7 +571,7 @@ CSP 尚未强制
 当前 Web 服务使用 X-Forwarded-For 参与客户端 IP 判断，生产代理必须清洗该请求头并建立可信代理边界
 当前 Compose 和 Web 镜像不能单独证明生产 renderer 已正确接通
 Windows 无法可靠模拟 Linux 子进程 SIGTERM；云端必须复测在途渲染完成后进程退出
-sticky routing 和负载均衡 readiness 摘流尚未在真实 Nginx 环境验证
+Linux 单实例原子替换和失败自动回滚尚未完成首次云端实测
 ```
 
 ## 16. 详细参考文档

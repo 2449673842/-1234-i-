@@ -5,7 +5,6 @@ import path from 'node:path';
 
 const repoRoot = process.cwd();
 const tsxCli = path.join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
-const observationDir = path.join(repoRoot, 'tmp', 'unified-editing-staging', 'legacy-retire-observation');
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -140,6 +139,8 @@ async function testDisabled404() {
 }
 
 async function testEnabledContract() {
+  const observationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-legacy-observation-output-'));
+  const observationDir = path.join(observationRoot, 'jsonl');
   fs.mkdirSync(observationDir, { recursive: true });
   const buildSuffix = `${process.pid}-${Date.now()}`;
   const buildId = `smoke/..\\unsafe:build?${buildSuffix}`;
@@ -150,7 +151,8 @@ async function testEnabledContract() {
   const { baseUrl, server, tempDir } = await startServer({
     SCIFIGURE_STAGING_INSTANCE: 'unified-editing',
     SCIFIGURE_LEGACY_RETIRE_OBSERVABILITY: '1',
-    SCIFIGURE_STAGING_BUILD_ID: buildId,
+    SCIFIGURE_BUILD_ID: buildId,
+    SCIFIGURE_LEGACY_RETIRE_OBSERVATION_DIR: observationDir,
   });
   try {
     const unauthenticated = await request(baseUrl, '/api/internal/legacy-retire-observation', {
@@ -223,7 +225,7 @@ async function testEnabledContract() {
     assert(record.eventType === 'legacy_resolver_path', `Unexpected event type: ${record.eventType}`);
   } finally {
     await stopServer(server, tempDir);
-    fs.rmSync(expectedFilePath, { force: true });
+    fs.rmSync(observationRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   }
 }
 

@@ -7,7 +7,6 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 import express from 'express';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import { spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import crypto from 'crypto';
@@ -20,7 +19,7 @@ import fs from 'fs';
 import os from 'os';
 import { performance } from 'node:perf_hooks';
 import Papa from 'papaparse';
-import { createRequire } from 'module';
+import * as archiver from 'archiver';
 import { applyColorCodePatch } from './src/utils/codeColorPatch';
 import { isDurableVirtualEditGid, mergePreviewGlobalsIntoEditLog } from './src/utils/exportPreviewState';
 import { sanitizeLegacyRetireObservationBatch } from './src/utils/legacyRetireObservation';
@@ -31,20 +30,6 @@ import {
   type DeploymentJobKind,
   type DeploymentMode,
 } from './src/utils/deploymentLifecycle';
-let archiver: any;
-try {
-  // @ts-ignore
-  if (typeof require !== 'undefined') {
-    // @ts-ignore
-    archiver = require('archiver');
-  } else {
-    // @ts-ignore
-    archiver = createRequire(import.meta.url)('archiver');
-  }
-} catch {
-  // @ts-ignore
-  archiver = createRequire(import.meta.url)('archiver');
-}
 import { 
   listProjects, 
   getProject, 
@@ -162,6 +147,7 @@ async function startServer() {
 
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
+  const BIND_HOST = String(process.env.SCIFIGURE_BIND_HOST || '0.0.0.0').trim() || '0.0.0.0';
   const processedRequestIdsMap = new Map<string, Set<string>>();
   const responseCacheMap = new Map<string, Map<string, any>>();
   const requestAuthContext = new WeakMap<express.Request, { user: UserAccount; token: string; deviceId: string | null }>();
@@ -1240,13 +1226,20 @@ ${inner}
   }
 
   const LEGACY_RETIRE_OBSERVATION_ENDPOINT = '/api/internal/legacy-retire-observation';
-  const LEGACY_RETIRE_OBSERVATION_DIR = path.resolve(
-    process.cwd(),
-    'tmp',
-    'unified-editing-staging',
-    'legacy-retire-observation',
-  );
+  const LEGACY_RETIRE_OBSERVATION_DIR = resolveLegacyRetireObservationDir();
   const LEGACY_RETIRE_OBSERVATION_MAX_EVENTS = 100;
+
+  function resolveLegacyRetireObservationDir(): string {
+    const configured = String(process.env.SCIFIGURE_LEGACY_RETIRE_OBSERVATION_DIR || '').trim();
+    const resolved = configured
+      ? path.resolve(configured)
+      : path.resolve(process.cwd(), 'tmp', 'unified-editing-staging', 'legacy-retire-observation');
+    const relativeToData = path.relative(DATA_ROOT, resolved);
+    if (relativeToData === '' || (!relativeToData.startsWith('..') && !path.isAbsolute(relativeToData))) {
+      throw new Error('Legacy retire observation directory must be outside SCIFIGURE_DATA_DIR');
+    }
+    return resolved;
+  }
 
   function legacyRetireObservationEnabled(): boolean {
     return process.env.SCIFIGURE_STAGING_INSTANCE === 'unified-editing'
@@ -1267,7 +1260,10 @@ ${inner}
   }
 
   function stagingBuildId(): string {
-    return safeObservationToken(process.env.SCIFIGURE_STAGING_BUILD_ID, 'unknown-build');
+    return safeObservationToken(
+      process.env.SCIFIGURE_BUILD_ID || process.env.SCIFIGURE_STAGING_BUILD_ID,
+      'unknown-build',
+    );
   }
 
   app.post(
@@ -1798,6 +1794,11 @@ ${inner}
       PYTHONIOENCODING: 'utf-8',
       PYTHONUTF8: '1',
     };
+    if (path.basename(executableBin).toLowerCase().startsWith('docker')) {
+      (['DOCKER_HOST', 'XDG_RUNTIME_DIR'] as const).forEach((key) => {
+        if (process.env[key]) env[key] = process.env[key];
+      });
+    }
     (['SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT', 'LANG', 'LC_ALL', 'R_HOME', 'R_LIBS_USER'] as const).forEach((key) => {
       if (process.env[key]) env[key] = process.env[key];
     });
@@ -5122,6 +5123,7 @@ ${inner}
   // Vite middleware for development
   let viteServer: any = null;
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import('vite');
     const requestedHmrPort = Number(process.env.SCIFIGURE_VITE_HMR_PORT);
     const isolatedHmr = Number.isInteger(requestedHmrPort) && requestedHmrPort > 0
       ? { host: '127.0.0.1', port: requestedHmrPort, clientPort: requestedHmrPort }
@@ -5145,8 +5147,8 @@ ${inner}
     });
   }
 
-  const httpServer = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  const httpServer = app.listen(PORT, BIND_HOST, () => {
+    console.log(`Server running on http://${BIND_HOST}:${PORT}`);
   });
 
   let shutdownStarted = false;

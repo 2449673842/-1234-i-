@@ -1,0 +1,40 @@
+[Unit]
+Description=SciFigure web service
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=scifigure
+Group=scifigure
+EnvironmentFile=/etc/scifigure/common.env
+EnvironmentFile=/etc/scifigure/release.env
+WorkingDirectory=/opt/scifigure/current
+ExecStartPre=/usr/bin/test -r /opt/scifigure/current/dist/server.cjs
+ExecStartPre=/usr/bin/mkdir -p /var/lib/scifigure/runtime
+ExecStart=/usr/bin/node dist/server.cjs
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=210s
+UMask=0077
+StateDirectory=scifigure
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/srv/scifigure/data /var/lib/scifigure
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=scifigure
+
+[Install]
+WantedBy=multi-user.target

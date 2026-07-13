@@ -1,8 +1,8 @@
 # SciFigure 统一编辑中心与属性能力升级方案
 
-> 状态：Phase 0-8a 已提交；Phase 8b 匿名观察候选与本地发布控制基线已完成验收，Legacy Retire 删除仍等待稳定发布观察期
+> 状态：Phase 0-8a 已提交；Phase 8b 匿名观察候选、本地发布控制和单实例 Linux 部署包已完成本地验收，云端安装与 Legacy 稳定观察期尚未完成
 > 创建时间：2026-07-12 16:10:44 +08:00
-> 最后更新：2026-07-13 17:05:09 +08:00
+> 最后更新：2026-07-13 19:42:42 +08:00
 > 适用范围：属性编辑、布局中心、组件中心、配色中心、字体中心
 > 实施方式：Baseline -> Shadow -> Scoped Enable -> Default Enable -> Legacy Retire
 
@@ -1299,6 +1299,21 @@ ZIP 流与 composition：正常完成、draining 503、无 lease 泄漏，通过
 ```
 
 本地尚不能证明 Linux 信号排空、Nginx sticky routing、真实云端并发和负载均衡摘除顺序；这些继续作为部署后门槛，不把应用层基础写成完整蓝绿发布已完成。
+
+### 13.22 单实例云端部署候选（2026-07-13 19:42:42 +08:00）
+
+针对 2 核 4 GB Ubuntu 24.04 调试服务器，部署层采用单 Node 实例，不启用两个实例并行写 SQLite：
+
+- systemd 服务只绑定 `127.0.0.1:3101`，公网只经过 Nginx 的 80/443。
+- renderer 使用 rootless Docker，Web 服务只继承 `DOCKER_HOST` 和 `XDG_RUNTIME_DIR`，不继承服务器敏感环境变量。
+- renderer 并发固定为 1，单任务上限为 1 CPU、896 MB 和 96 PID；主机配置 4 GB Swap。
+- release 在不可变目录内完成 Linux 依赖安装、最新统一编辑中心 Vite flags 构建和 renderer 镜像构建。
+- 当前实例先 SIGTERM 排空并停止，再原子替换 `current`；readiness 失败自动恢复上一 release 和环境文件。
+- rollback 使用记录的 last-known-good release，不以“另一个槽位”作为推断依据。
+- UFW 默认不由远程 bootstrap 自动启用；显式启用时先从 `sshd -T` 读取真实 SSH 端口。
+- TLS 重定向固定到配置域名，证书续期 deploy hook 会验证并 reload Nginx。
+
+本地证据：部署包静态测试、TypeScript、deployment lifecycle 和 Legacy observation smoke 已通过；服务器只读预检与远端 Bash 语法验证已完成。尚未完成的软件安装、rootless renderer 真实绘图、Linux SIGTERM、TLS、备份恢复和公网浏览器验收不能写成已上线。
 
 ## 14. 实施阶段
 
