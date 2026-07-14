@@ -5,6 +5,8 @@ export interface ClientErrorReportInput {
   severity?: 'info' | 'warning' | 'error' | 'critical';
   title: string;
   message: string;
+  component?: string | null;
+  operation?: string | null;
   errorCode?: string | null;
   projectId?: string | null;
   figureId?: string | null;
@@ -29,7 +31,7 @@ export async function reportClientError(input: ClientErrorReportInput): Promise<
   const message = sanitizeClientText(input.message, 1200);
   if (!title || !message) return false;
 
-  const dedupeKey = `${input.source}:${input.errorCode || ''}:${title}:${message}`;
+  const dedupeKey = `${input.source}:${input.component || ''}:${input.operation || ''}:${input.errorCode || ''}:${title}:${message}`;
   const now = Date.now();
   if (now - (recentReports.get(dedupeKey) || 0) < REPORT_DEDUPE_MS) return true;
   recentReports.set(dedupeKey, now);
@@ -44,6 +46,8 @@ export async function reportClientError(input: ClientErrorReportInput): Promise<
         severity: input.severity || 'error',
         title,
         message,
+        component: sanitizeClientText(input.component, 120) || null,
+        operation: sanitizeClientText(input.operation, 120) || null,
         errorCode: sanitizeClientText(input.errorCode, 80) || null,
         route: window.location.pathname.slice(0, 240),
         projectId: sanitizeClientText(input.projectId, 120) || null,
@@ -69,6 +73,8 @@ export function installGlobalErrorReporting(): () => void {
       source: 'client',
       title: '页面运行错误',
       message: event.message || '浏览器报告了未知运行错误',
+      component: 'window',
+      operation: 'runtime.error',
       errorCode: 'window_error',
       metadata: { line: event.lineno || null, column: event.colno || null },
     });
@@ -79,6 +85,8 @@ export function installGlobalErrorReporting(): () => void {
       source: 'client',
       title: '未处理的异步错误',
       message: reason,
+      component: 'window',
+      operation: 'runtime.unhandled_rejection',
       errorCode: 'unhandled_rejection',
     });
   };

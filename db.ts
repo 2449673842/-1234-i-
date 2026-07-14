@@ -111,6 +111,10 @@ function initSchema() {
       starts_at TEXT NOT NULL,
       ends_at TEXT,
       source TEXT NOT NULL DEFAULT 'manual',
+      actor_user_id TEXT,
+      change_reason TEXT,
+      admin_note TEXT,
+      request_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_subscriptions_user_status
@@ -170,6 +174,27 @@ function initSchema() {
       ON admin_audit_logs(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_admin_audit_actor
       ON admin_audit_logs(actor_user_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS admin_reauth_tokens (
+      id TEXT PRIMARY KEY,
+      actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      purpose TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_admin_reauth_actor_expiry
+      ON admin_reauth_tokens(actor_user_id, expires_at);
+    CREATE TABLE IF NOT EXISTS admin_idempotency_requests (
+      request_id TEXT PRIMARY KEY,
+      actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_admin_idempotency_actor_created
+      ON admin_idempotency_requests(actor_user_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS error_reports (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -224,6 +249,10 @@ function initSchema() {
     "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
     "ALTER TABLE auth_sessions ADD COLUMN refresh_token_hash TEXT",
     "ALTER TABLE auth_sessions ADD COLUMN refresh_expires_at TEXT",
+    "ALTER TABLE subscriptions ADD COLUMN actor_user_id TEXT",
+    "ALTER TABLE subscriptions ADD COLUMN change_reason TEXT",
+    "ALTER TABLE subscriptions ADD COLUMN admin_note TEXT",
+    "ALTER TABLE subscriptions ADD COLUMN request_id TEXT",
     "ALTER TABLE error_reports ADD COLUMN project_id TEXT",
     "ALTER TABLE error_reports ADD COLUMN figure_id TEXT",
   ].forEach((sql) => {
@@ -246,6 +275,8 @@ function initSchema() {
       ON auth_sessions(user_id, expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_sessions_refresh_hash
       ON auth_sessions(refresh_token_hash);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_request_id
+      ON subscriptions(request_id) WHERE request_id IS NOT NULL;
   `);
   [
     "ALTER TABLE project_figures ADD COLUMN preview_svg TEXT",
@@ -861,6 +892,7 @@ export function getLicenseState(userId: string | null): LicenseState {
     SELECT plan, status, source, ends_at
     FROM subscriptions
     WHERE user_id = ?
+      AND plan = 'pro'
       AND status = 'active'
       AND (ends_at IS NULL OR datetime(ends_at) > datetime('now'))
     ORDER BY CASE WHEN ends_at IS NULL THEN 1 ELSE 0 END DESC, ends_at DESC

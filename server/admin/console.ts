@@ -1,12 +1,18 @@
 import type express from 'express';
+import crypto from 'crypto';
 import os from 'os';
 import {
   getDb,
   getErrorReportById,
+  getLicenseState,
+  getUserByEmail,
+  getUserById,
   listErrorReports,
   upsertErrorReport,
+  verifyPasswordAndMigrate,
   type UserAccount,
   type ErrorReportSeverity,
+  type ErrorReportSummary,
 } from '../../db';
 
 type AuthContext = { user: UserAccount; token: string; deviceId: string | null };
@@ -34,6 +40,9 @@ const ALLOWED_SEVERITIES = new Set(['info', 'warning', 'error', 'critical']);
 const ALLOWED_STATUSES = new Set(['open', 'triaged', 'resolved', 'ignored']);
 const SENSITIVE_KEY_PATTERN = /(script|data|dataset|payload|trace|traceback|stack|path|file|content|token|password|secret|cookie|authorization)/i;
 const ABSOLUTE_PATH_PATTERN = /(?:[A-Za-z]:\\|\/(?:Users|home|var|tmp|etc|opt|root|mnt|Volumes)\/)/;
+const ADMIN_REAUTH_PURPOSE = 'subscription_adjustment';
+const ALLOWED_SUBSCRIPTION_PLANS = new Set(['free', 'pro']);
+const ALLOWED_SUBSCRIPTION_STATUSES = new Set(['active', 'paused', 'expired']);
 
 function adminConsoleEnabled(): boolean {
   return process.env.SCIFIGURE_ADMIN_CONSOLE_ENABLED === '1';
@@ -102,6 +111,37 @@ function sanitizeMetadata(value: unknown): Record<string, unknown> {
     }
   }
   return output;
+}
+
+function httpError(statusCode: number, message: string): Error {
+  const error = new Error(message);
+  (error as any).statusCode = statusCode;
+  return error;
+}
+
+function tokenHash(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function adminReauthTtlMs(): number {
+  const configured = Number(process.env.SCIFIGURE_ADMIN_REAUTH_TTL_MS || 5 * 60 * 1000);
+  return Math.max(1_000, Math.min(10 * 60 * 1000, Number.isFinite(configured) ? configured : 5 * 60 * 1000));
+}
+
+function normalizeIsoDate(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'string') throw httpError(400, '到期时间格式无效');
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) throw httpError(400, '到期时间格式无效');
+  return new Date(timestamp).toISOString();
+}
+
+function safeRequestId(value: unknown): string {
+  const requestId = boundedText(value, 120);
+  if (!requestId || !/^[A-Za-z0-9][A-Za-z0-9._:-]{7,119}$/.test(requestId)) {
+    throw httpError(400, 'requestId 格式无效');
+  }
+  return requestId;
 }
 
 function userAgentFamily(req: express.Request): string {
@@ -198,6 +238,157 @@ function overview(rendererSnapshot: AdminConsoleDeps['rendererSnapshot']) {
   };
 }
 
+function suggestedRepairContext(report: ErrorReportSummary): { codeAreas: string[]; checks: string[] } {
+  const codeAreas = new Set<string>(['src/utils/clientErrorReporter.ts']);
+  const checks = [
+    'Use event identifiers and the sanitized summary to reproduce the failure without requesting user scripts or datasets.',
+    'Locate the component, operation and errorCode call path, then add a regression test before changing behavior.',
+    'Verify that the fix preserves project ownership, file boundaries and existing Python/R behavior.',
+  ];
+  if (report.source === 'render' || report.source === 'renderer') {
+    codeAreas.add('src/hooks/useFigureSession.ts');
+    codeAreas.add('renderer/introspector.py');
+    codeAreas.add('renderer/r_renderer.R');
+    checks.push('Compare Python and R renderer outcomes and inspect manifest generation before changing shared frontend targeting.');
+  }
+  if (report.source === 'editor') {
+    codeAreas.add('src/components/ChartPreview.tsx');
+    codeAreas.add('src/components/RightSidebar.tsx');
+  }
+  if (report.source === 'export') codeAreas.add('src/utils/exportPreviewState.ts');
+  return { codeAreas: [...codeAreas], checks };
+}
+
+function aiRepairPackage(report: ErrorReportSummary) {
+  const suggested = suggestedRepairContext(report);
+  return {
+    schemaVersion: 'scifigure.error-handoff.v1',
+    generatedAt: new Date().toISOString(),
+    eventId: report.id,
+    source: report.source,
+    severity: report.severity,
+    status: report.status,
+    title: report.title || 'Untitled platform error',
+    message: report.message || 'No sanitized message was recorded.',
+    errorName: report.errorName,
+    errorCode: report.errorCode,
+    component: report.component,
+    operation: report.operation,
+    route: report.route,
+    projectId: report.projectId,
+    figureId: report.figureId,
+    clientVersion: report.clientVersion,
+    userAgentFamily: report.userAgentFamily,
+    occurrenceCount: report.occurrenceCount,
+    firstSeenAt: report.firstSeenAt,
+    lastSeenAt: report.lastSeenAt,
+    metadata: sanitizeMetadata(report.metadata),
+    suggestedCodeAreas: suggested.codeAreas,
+    suggestedChecks: suggested.checks,
+    privacyBoundary: {
+      classification: 'sanitized-diagnostic-only',
+      excluded: [
+        'user scripts and datasets',
+        'traceback and stack content',
+        'images, SVG and exported files',
+        'passwords, tokens, cookies and authorization headers',
+        'absolute server and local filesystem paths',
+        'full device fingerprints',
+      ],
+    },
+  };
+}
+
+function aiRepairMarkdown(pkg: ReturnType<typeof aiRepairPackage>): string {
+  const value = (input: unknown) => input === null || input === undefined || input === '' ? 'Not recorded' : String(input);
+  return [
+    '# SciFigure AI Repair Handoff',
+    '',
+    `- Schema: \`${pkg.schemaVersion}\``,
+    `- Event: \`${pkg.eventId}\``,
+    `- Generated: ${pkg.generatedAt}`,
+    `- Source / severity / status: ${pkg.source} / ${pkg.severity} / ${pkg.status}`,
+    `- Component / operation: ${value(pkg.component)} / ${value(pkg.operation)}`,
+    `- Error code: ${value(pkg.errorCode)}`,
+    `- Project / Figure: ${value(pkg.projectId)} / ${value(pkg.figureId)}`,
+    `- Occurrences: ${pkg.occurrenceCount} (${pkg.firstSeenAt} to ${pkg.lastSeenAt})`,
+    '',
+    '## Sanitized Failure',
+    '',
+    `**${pkg.title}**`,
+    '',
+    pkg.message,
+    '',
+    '## Allowed Metadata',
+    '',
+    '```json',
+    JSON.stringify(pkg.metadata, null, 2),
+    '```',
+    '',
+    '## Suggested Code Areas',
+    '',
+    ...pkg.suggestedCodeAreas.map(item => `- \`${item}\``),
+    '',
+    '## Verification Checks',
+    '',
+    ...pkg.suggestedChecks.map(item => `- ${item}`),
+    '',
+    '## Privacy Boundary',
+    '',
+    'This package contains sanitized diagnostics only. Do not request or infer excluded user content.',
+    ...pkg.privacyBoundary.excluded.map(item => `- Excluded: ${item}`),
+    '',
+  ].join('\n');
+}
+
+function listSubscriptions(req: express.Request) {
+  const page = clampPage(req.query.page);
+  const pageSize = clampPageSize(req.query.pageSize);
+  const query = queryText(req.query.query || req.query.q);
+  const whereSql = query ? 'WHERE u.email LIKE ? OR u.display_name LIKE ? OR u.id LIKE ?' : '';
+  const params = query ? [`%${query}%`, `%${query}%`, `%${query}%`] : [];
+  const total = Number((getDb().prepare(`SELECT COUNT(*) AS count FROM users u ${whereSql}`).get(...params) as { count: number }).count || 0);
+  const rows = getDb().prepare(`
+    SELECT
+      u.id AS user_id, u.email, u.display_name,
+      sub.id AS subscription_id, sub.plan, sub.status, sub.starts_at, sub.ends_at,
+      sub.source, sub.actor_user_id, sub.change_reason, sub.admin_note, sub.created_at,
+      (SELECT COUNT(*) FROM subscriptions history WHERE history.user_id = u.id) AS history_count
+    FROM users u
+    LEFT JOIN subscriptions sub ON sub.id = (
+      SELECT candidate.id FROM subscriptions candidate
+      WHERE candidate.user_id = u.id
+      ORDER BY CASE WHEN candidate.status = 'active' THEN 0 ELSE 1 END,
+        candidate.rowid DESC
+      LIMIT 1
+    )
+    ${whereSql}
+    ORDER BY u.created_at DESC, u.id DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, pageSize, (page - 1) * pageSize) as any[];
+  return {
+    items: rows.map(row => ({
+      userId: row.user_id,
+      email: row.email,
+      displayName: row.display_name ?? null,
+      subscriptionId: row.subscription_id ?? null,
+      plan: row.plan ?? 'free',
+      status: row.status ?? 'none',
+      startsAt: row.starts_at ?? null,
+      endsAt: row.ends_at ?? null,
+      source: row.source ?? 'none',
+      actorUserId: row.actor_user_id ?? null,
+      changeReason: row.change_reason ?? null,
+      adminNote: row.admin_note ?? null,
+      createdAt: row.created_at ?? null,
+      historyCount: Number(row.history_count || 0),
+    })),
+    total,
+    page,
+    pageSize,
+  };
+}
+
 function listUsers(req: express.Request) {
   const page = clampPage(req.query.page);
   const pageSize = clampPageSize(req.query.pageSize);
@@ -251,19 +442,19 @@ function listUsers(req: express.Request) {
       (
         SELECT sub.plan FROM subscriptions sub WHERE sub.user_id = u.id
         ORDER BY CASE WHEN sub.status = 'active' THEN 0 ELSE 1 END,
-          datetime(COALESCE(sub.ends_at, sub.created_at)) DESC, sub.created_at DESC
+          sub.rowid DESC
         LIMIT 1
       ) AS subscriptionPlan,
       (
         SELECT sub.status FROM subscriptions sub WHERE sub.user_id = u.id
         ORDER BY CASE WHEN sub.status = 'active' THEN 0 ELSE 1 END,
-          datetime(COALESCE(sub.ends_at, sub.created_at)) DESC, sub.created_at DESC
+          sub.rowid DESC
         LIMIT 1
       ) AS subscriptionStatus,
       (
         SELECT sub.ends_at FROM subscriptions sub WHERE sub.user_id = u.id
         ORDER BY CASE WHEN sub.status = 'active' THEN 0 ELSE 1 END,
-          datetime(COALESCE(sub.ends_at, sub.created_at)) DESC, sub.created_at DESC
+          sub.rowid DESC
         LIMIT 1
       ) AS subscriptionEndsAt
     FROM users u
@@ -430,6 +621,38 @@ export function installAdminConsoleRoutes(app: express.Express, deps: AdminConso
     },
   ));
 
+  app.get('/api/admin/error-reports/:id/ai-handoff', deps.adminRateLimit, (req, res) => {
+    if (!adminConsoleEnabled()) return res.status(404).json({ status: 'error', message: 'Not found' });
+    let actorUserId: string | null = null;
+    try {
+      const auth = deps.requireAdmin(req);
+      actorUserId = auth.user.id;
+      const id = boundedText(req.params.id, 120);
+      const report = id ? getErrorReportById(id) : null;
+      if (!report) throw httpError(404, 'Error report not found');
+      const pkg = aiRepairPackage(report);
+      const format = req.query.format === 'markdown' ? 'markdown' : 'json';
+      deps.writeAdminAudit(req, {
+        actorUserId,
+        action: 'admin_console.error_reports.ai_handoff',
+        resourceType: 'error_report',
+        resourceId: report.id,
+        success: true,
+        statusCode: 200,
+        metadata: { format },
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      if (format === 'markdown') {
+        res.type('text/markdown; charset=utf-8');
+        return res.send(aiRepairMarkdown(pkg));
+      }
+      return res.json({ status: 'success', repairPackage: pkg });
+    } catch (err: any) {
+      const statusCode = auditFailure(deps, req, err, 'admin_console.error_reports.ai_handoff', 'error_report', actorUserId, req.params.id);
+      return res.status(statusCode).json({ status: 'error', message: err.message });
+    }
+  });
+
   app.get('/api/admin/error-reports/:id', deps.adminRateLimit, adminReadHandler(
     deps,
     'admin_console.error_reports.detail',
@@ -445,4 +668,168 @@ export function installAdminConsoleRoutes(app: express.Express, deps: AdminConso
       return { report };
     },
   ));
+
+  app.get('/api/admin/subscriptions', deps.adminRateLimit, adminReadHandler(
+    deps,
+    'admin_console.subscriptions.read',
+    'subscription',
+    (req) => listSubscriptions(req),
+  ));
+
+  app.post('/api/admin/reauth', deps.adminRateLimit, async (req, res) => {
+    if (!adminConsoleEnabled()) return res.status(404).json({ status: 'error', message: 'Not found' });
+    let actorUserId: string | null = null;
+    try {
+      const auth = deps.requireAdmin(req);
+      actorUserId = auth.user.id;
+      const password = typeof req.body?.password === 'string' ? req.body.password : '';
+      if (!password || password.length > 512) throw httpError(400, '管理员密码不能为空');
+      const row = getUserByEmail(auth.user.email);
+      if (!row || !(await verifyPasswordAndMigrate(row, password))) {
+        throw httpError(401, '管理员密码验证失败');
+      }
+      const token = `sfr_${crypto.randomBytes(32).toString('base64url')}`;
+      const ttlMs = adminReauthTtlMs();
+      const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+      const database = getDb();
+      database.transaction(() => {
+        database.prepare(`DELETE FROM admin_reauth_tokens WHERE datetime(expires_at) <= datetime('now') OR used_at IS NOT NULL`).run();
+        database.prepare(`
+          INSERT INTO admin_reauth_tokens (id, actor_user_id, token_hash, purpose, expires_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(`art_${crypto.randomUUID()}`, auth.user.id, tokenHash(token), ADMIN_REAUTH_PURPOSE, expiresAt);
+      })();
+      deps.writeAdminAudit(req, {
+        actorUserId,
+        action: 'admin_console.reauth',
+        resourceType: 'admin_session',
+        resourceId: auth.user.id,
+        success: true,
+        statusCode: 200,
+        metadata: { purpose: ADMIN_REAUTH_PURPOSE, expiresInSeconds: ttlMs / 1000 },
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ status: 'success', reauthToken: token, expiresAt });
+    } catch (err: any) {
+      const statusCode = auditFailure(deps, req, err, 'admin_console.reauth', 'admin_session', actorUserId, actorUserId);
+      return res.status(statusCode).json({ status: 'error', message: err.message });
+    }
+  });
+
+  app.post('/api/admin/users/:userId/subscription', deps.adminRateLimit, (req, res) => {
+    if (!adminConsoleEnabled()) return res.status(404).json({ status: 'error', message: 'Not found' });
+    let actorUserId: string | null = null;
+    let targetUserId: string | null = null;
+    try {
+      const auth = deps.requireAdmin(req);
+      actorUserId = auth.user.id;
+      targetUserId = boundedText(req.params.userId, 120);
+      if (!targetUserId || !getUserById(targetUserId)) throw httpError(404, '目标用户不存在');
+      const plan = boundedText(req.body?.plan, 16);
+      const status = boundedText(req.body?.status, 16);
+      if (!plan || !ALLOWED_SUBSCRIPTION_PLANS.has(plan)) throw httpError(400, '订阅套餐无效');
+      if (!status || !ALLOWED_SUBSCRIPTION_STATUSES.has(status)) throw httpError(400, '订阅状态无效');
+      const endsAt = normalizeIsoDate(req.body?.endsAt);
+      if (status === 'active' && endsAt && Date.parse(endsAt) <= Date.now()) {
+        throw httpError(400, '有效订阅的到期时间必须晚于当前时间');
+      }
+      const reason = boundedText(req.body?.reason, 500);
+      if (!reason || reason.length < 3) throw httpError(400, '必须填写至少 3 个字符的调整原因');
+      const adminNote = boundedText(req.body?.adminNote, 500);
+      const requestId = safeRequestId(req.body?.requestId);
+      const reauthToken = typeof req.body?.reauthToken === 'string' ? req.body.reauthToken : '';
+      if (!/^sfr_[A-Za-z0-9_-]{32,}$/.test(reauthToken)) throw httpError(401, '二次验证令牌无效');
+
+      const database = getDb();
+      const result = database.transaction(() => {
+        const existing = database.prepare(`
+          SELECT actor_user_id, resource_id, response_json
+          FROM admin_idempotency_requests WHERE request_id = ?
+        `).get(requestId) as { actor_user_id: string; resource_id: string; response_json: string } | undefined;
+        if (existing) {
+          if (existing.actor_user_id !== auth.user.id || existing.resource_id !== targetUserId) {
+            throw httpError(409, 'requestId 已用于其他管理操作');
+          }
+          const replay = JSON.parse(existing.response_json);
+          const original = replay?.subscription;
+          if (!original
+            || original.plan !== plan
+            || original.status !== status
+            || (original.endsAt ?? null) !== endsAt
+            || original.changeReason !== reason
+            || (original.adminNote ?? null) !== (adminNote ?? null)) {
+            throw httpError(409, 'requestId 对应的订阅参数不一致');
+          }
+          return { ...replay, replayed: true };
+        }
+
+        const reauth = database.prepare(`
+          SELECT id, expires_at FROM admin_reauth_tokens
+          WHERE actor_user_id = ? AND token_hash = ? AND purpose = ? AND used_at IS NULL
+        `).get(auth.user.id, tokenHash(reauthToken), ADMIN_REAUTH_PURPOSE) as { id: string; expires_at: string } | undefined;
+        if (!reauth || Date.parse(reauth.expires_at) <= Date.now()) throw httpError(401, '二次验证已过期，请重新验证管理员密码');
+        const consumed = database.prepare(`UPDATE admin_reauth_tokens SET used_at = datetime('now') WHERE id = ? AND used_at IS NULL`).run(reauth.id);
+        if (consumed.changes !== 1) throw httpError(409, '二次验证令牌已被使用');
+
+        const previous = database.prepare(`
+          SELECT id, plan, status, starts_at, ends_at, source
+          FROM subscriptions WHERE user_id = ?
+          ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, rowid DESC LIMIT 1
+        `).get(targetUserId) as any | undefined;
+        database.prepare(`UPDATE subscriptions SET status = 'paused' WHERE user_id = ? AND status = 'active'`).run(targetUserId);
+        const subscriptionId = `sub_${crypto.randomUUID()}`;
+        const startsAt = new Date().toISOString();
+        database.prepare(`
+          INSERT INTO subscriptions (
+            id, user_id, plan, status, starts_at, ends_at, source,
+            actor_user_id, change_reason, admin_note, request_id
+          ) VALUES (?, ?, ?, ?, ?, ?, 'admin_manual', ?, ?, ?, ?)
+        `).run(subscriptionId, targetUserId, plan, status, startsAt, endsAt, auth.user.id, reason, adminNote, requestId);
+        const payload = {
+          subscription: {
+            id: subscriptionId,
+            userId: targetUserId,
+            plan,
+            status,
+            startsAt,
+            endsAt,
+            source: 'admin_manual',
+            changeReason: reason,
+            adminNote,
+          },
+          previousSubscription: previous ? {
+            id: previous.id,
+            plan: previous.plan,
+            status: previous.status,
+            startsAt: previous.starts_at,
+            endsAt: previous.ends_at,
+            source: previous.source,
+          } : null,
+          license: getLicenseState(targetUserId),
+          replayed: false,
+        };
+        database.prepare(`
+          INSERT INTO admin_idempotency_requests (
+            request_id, actor_user_id, resource_type, resource_id, response_json
+          ) VALUES (?, ?, 'subscription', ?, ?)
+        `).run(requestId, auth.user.id, targetUserId, JSON.stringify(payload));
+        return payload;
+      })();
+
+      deps.writeAdminAudit(req, {
+        actorUserId,
+        action: 'admin_console.subscription.adjust',
+        resourceType: 'subscription',
+        resourceId: targetUserId,
+        success: true,
+        statusCode: 200,
+        metadata: { plan, status, endsAt, reason, requestId, replayed: result.replayed },
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ status: 'success', ...result });
+    } catch (err: any) {
+      const statusCode = auditFailure(deps, req, err, 'admin_console.subscription.adjust', 'subscription', actorUserId, targetUserId);
+      return res.status(statusCode).json({ status: 'error', message: err.message });
+    }
+  });
 }

@@ -53,6 +53,8 @@ class EditorErrorBoundary extends React.Component<
       severity: 'critical',
       title: '编辑器组件崩溃',
       message: error.message || '编辑器发生未知错误',
+      component: 'EditorErrorBoundary',
+      operation: 'editor.render',
       errorCode: 'editor_error_boundary',
     });
   }
@@ -492,6 +494,8 @@ export default function App() {
       severity: 'error',
       title: `${spec.script_language === 'r' ? 'R' : 'Python'} 渲染失败`,
       message: renderError,
+      component: 'FigureSession',
+      operation: 'figure.render',
       errorCode: 'figure_render_failed',
       projectId,
       figureId: activeFigureId,

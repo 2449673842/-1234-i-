@@ -1,14 +1,14 @@
 # SciFigure 管理员后台独立开发计划
 
 > 文档状态：In Progress
-> 最后修改时间：2026-07-14 09:55:23 +08:00
-> 实现校准：Phase A 已完成；Phase B 已完成系统概览、用户元数据、错误中心和审计日志，订阅/兑换码、备份与完整渲染指标待完成
+> 最后修改时间：2026-07-14 11:12:57 +08:00
+> 实现校准：Phase A 已完成；Phase B 已完成系统概览、用户元数据、错误中心、审计日志和订阅列表；Phase C4 订阅修正已完成，其他受控操作仍待完成
 > 模块定位：独立安全运维模块  
 > 与绘图主线关系：复用认证和数据库，不依赖编辑器、Figure 协议或渲染 UI  
 > 默认开关：关闭  
 > 开发原则：先只读、后写入；先元数据、后受控操作；不提供任意命令、SQL 或用户文件浏览
 
-> 当前验证：管理 API 专项、旧管理员鉴权回归、203 项 Vitest、TypeScript、生产构建、production bundle 和 1440/390 真实浏览器验收通过
+> 当前验证：管理员后台专项、旧管理员鉴权、203 项 Vitest、TypeScript、生产构建、production bundle、仓库数据边界，以及订阅对话框和 AI 修复包桌面/390px 真实浏览器验收通过
 
 ## 1. 建设目的
 
@@ -368,6 +368,20 @@ suspended_reason
 
 不允许直接执行任意 SQL 修改订阅。
 
+实现状态（2026-07-14）：已完成。
+
+```text
+支持 free/pro 套餐、active/paused/expired 状态和到期时间
+每次操作新增 admin_manual 订阅记录，旧记录保留
+新记录生效前暂停旧 active 记录，避免并存授权歧义
+要求管理员密码 recent re-auth，一次性令牌默认 5 分钟有效且只存哈希
+要求 reason 和 requestId；同 requestId 重放返回原结果，不重复插入
+成功、失败、错误密码和重放均进入管理审计
+订阅写入不修改项目、Figure、文件、导出资产和登录会话
+```
+
+同期完成错误中心 AI 交接包：`GET /api/admin/error-reports/:id/ai-handoff` 提供稳定脱敏 JSON，`?format=markdown` 提供 Markdown；包内不包含账号身份、脚本、数据、traceback、图像、令牌或绝对路径。
+
 验收标准：
 
 ```text
@@ -445,6 +459,8 @@ GET /api/admin/backup-status
 ```text
 POST /api/admin/redeem-codes
 POST /api/admin/redeem-codes/:id/disable
+POST /api/admin/reauth
+POST /api/admin/users/:userId/subscription
 POST /api/admin/users/:userId/suspend
 POST /api/admin/users/:userId/restore
 POST /api/admin/users/:userId/revoke-sessions

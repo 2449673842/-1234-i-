@@ -86,6 +86,7 @@ function startServer(port, enabled) {
       SCIFIGURE_DB_PATH: dbPath,
       SCIFIGURE_RENDER_MODE: 'docker',
       SCIFIGURE_ADMIN_CONSOLE_ENABLED: enabled ? '1' : '0',
+      SCIFIGURE_ADMIN_REAUTH_TTL_MS: '1000',
       SCIFIGURE_VITE_HMR_PORT: String(port + 1_000),
       NODE_ENV: 'production',
       DISABLE_HMR: 'true',
@@ -180,6 +181,13 @@ try {
   const userData = await register(enabled.baseUrl, userEmail, 'Admin Console User');
   const adminToken = adminData.token;
   const userToken = userData.token;
+
+  const projectResponse = await request(enabled.baseUrl, '/api/projects', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${userToken}` },
+    body: JSON.stringify({ name: 'Subscription safety project', spec: { script_language: 'python', custom_script: 'print("safe")' } }),
+  });
+  assert(projectResponse.ok, `User project fixture failed: ${projectResponse.status} ${JSON.stringify(await jsonResponse(projectResponse))}`);
 
   const anonymousOverview = await request(enabled.baseUrl, '/api/admin/overview');
   assert(anonymousOverview.status === 401, `Anonymous admin read must return 401, got ${anonymousOverview.status}`);
@@ -284,6 +292,131 @@ try {
   const detailData = await jsonResponse(detailResponse);
   assert(detailResponse.ok && detailData?.report?.id === reportsData.items[0].id, `Error report detail failed: ${detailResponse.status} ${JSON.stringify(detailData)}`);
 
+  const anonymousHandoff = await request(enabled.baseUrl, `/api/admin/error-reports/${reportsData.items[0].id}/ai-handoff`);
+  assert(anonymousHandoff.status === 401, `Anonymous AI handoff must return 401, got ${anonymousHandoff.status}`);
+  const userHandoff = await request(enabled.baseUrl, `/api/admin/error-reports/${reportsData.items[0].id}/ai-handoff`, {
+    headers: { Authorization: `Bearer ${userToken}` },
+  });
+  assert(userHandoff.status === 403, `Ordinary user AI handoff must return 403, got ${userHandoff.status}`);
+  const handoffResponse = await request(enabled.baseUrl, `/api/admin/error-reports/${reportsData.items[0].id}/ai-handoff`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  const handoffData = await jsonResponse(handoffResponse);
+  assert(handoffResponse.ok && handoffData?.repairPackage?.schemaVersion === 'scifigure.error-handoff.v1', `AI handoff failed: ${handoffResponse.status} ${JSON.stringify(handoffData)}`);
+  assert(handoffData.repairPackage.component === 'ChartPreview' && handoffData.repairPackage.operation === 'render.preview', 'AI handoff must preserve sanitized component and operation');
+  assert(!('userEmail' in handoffData.repairPackage) && !('userId' in handoffData.repairPackage), 'AI handoff must not expose account identity');
+  assert(forbiddenJsonFields(handoffData).length === 0, `AI handoff leaked forbidden fields: ${forbiddenJsonFields(handoffData).join(', ')}`);
+  const handoffText = JSON.stringify(handoffData);
+  assert(!/C:\\Users|\/srv\/|\/home\//i.test(handoffText), 'AI handoff must not expose absolute paths');
+
+  const markdownResponse = await request(enabled.baseUrl, `/api/admin/error-reports/${reportsData.items[0].id}/ai-handoff?format=markdown`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  const markdown = await markdownResponse.text();
+  assert(markdownResponse.ok && markdown.includes('# SciFigure AI Repair Handoff') && markdown.includes('ChartPreview'), 'Markdown AI handoff must be readable and structured');
+  assert(!markdown.includes(userEmail) && !/C:\\Users|\/srv\/|\/home\//i.test(markdown), 'Markdown AI handoff must not expose user identity or absolute paths');
+
+  const anonymousSubscriptions = await request(enabled.baseUrl, '/api/admin/subscriptions');
+  assert(anonymousSubscriptions.status === 401, `Anonymous subscription read must return 401, got ${anonymousSubscriptions.status}`);
+  const userSubscriptions = await request(enabled.baseUrl, '/api/admin/subscriptions', { headers: { Authorization: `Bearer ${userToken}` } });
+  assert(userSubscriptions.status === 403, `Ordinary user subscription read must return 403, got ${userSubscriptions.status}`);
+  const subscriptionsBeforeResponse = await request(enabled.baseUrl, `/api/admin/subscriptions?query=${encodeURIComponent(userEmail)}`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  const subscriptionsBefore = await jsonResponse(subscriptionsBeforeResponse);
+  assert(subscriptionsBeforeResponse.ok && subscriptionsBefore?.items?.[0]?.userId === userData.user.id, 'Admin subscription list must include target user');
+
+  const wrongReauth = await request(enabled.baseUrl, '/api/admin/reauth', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({ password: 'definitely-wrong' }),
+  });
+  assert(wrongReauth.status === 401, `Wrong administrator password must return 401, got ${wrongReauth.status}`);
+
+  const missingReason = await request(enabled.baseUrl, `/api/admin/users/${userData.user.id}/subscription`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({ plan: 'pro', status: 'active', requestId: 'subscription-missing-reason', reauthToken: `sfr_${'a'.repeat(43)}` }),
+  });
+  assert(missingReason.status === 400, `Missing subscription reason must return 400, got ${missingReason.status}`);
+  const missingRequestId = await request(enabled.baseUrl, `/api/admin/users/${userData.user.id}/subscription`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({ plan: 'pro', status: 'active', reason: 'test reason', reauthToken: `sfr_${'a'.repeat(43)}` }),
+  });
+  assert(missingRequestId.status === 400, `Missing requestId must return 400, got ${missingRequestId.status}`);
+
+  const expiringReauthResponse = await request(enabled.baseUrl, '/api/admin/reauth', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({ password }),
+  });
+  const expiringReauth = await jsonResponse(expiringReauthResponse);
+  assert(expiringReauthResponse.ok && expiringReauth?.reauthToken, 'Administrator reauth must return a short-lived token');
+  await new Promise(resolve => setTimeout(resolve, 1_150));
+  const expiredAdjustment = await request(enabled.baseUrl, `/api/admin/users/${userData.user.id}/subscription`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({
+      plan: 'pro', status: 'active', endsAt: null, reason: 'verify token expiry',
+      requestId: 'subscription-expired-token', reauthToken: expiringReauth.reauthToken,
+    }),
+  });
+  assert(expiredAdjustment.status === 401, `Expired reauth token must return 401, got ${expiredAdjustment.status}`);
+
+  const reauthResponse = await request(enabled.baseUrl, '/api/admin/reauth', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({ password }),
+  });
+  const reauth = await jsonResponse(reauthResponse);
+  assert(reauthResponse.ok && reauth?.reauthToken && reauth?.expiresAt, 'Valid administrator password must create a reauth token');
+  const requestId = `subscription-${Date.now()}`;
+  const adjustmentBody = {
+    plan: 'pro', status: 'active', endsAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    reason: 'Grant a seven-day test subscription', adminNote: 'Smoke test only', requestId,
+    reauthToken: reauth.reauthToken,
+  };
+  const adjustmentResponse = await request(enabled.baseUrl, `/api/admin/users/${userData.user.id}/subscription`, {
+    method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: JSON.stringify(adjustmentBody),
+  });
+  const adjustment = await jsonResponse(adjustmentResponse);
+  assert(adjustmentResponse.ok && adjustment?.subscription?.plan === 'pro' && adjustment?.license?.isPro === true, `Subscription adjustment failed: ${adjustmentResponse.status} ${JSON.stringify(adjustment)}`);
+  assert(adjustment.replayed === false, 'First subscription request must not be marked as replayed');
+
+  const replayResponse = await request(enabled.baseUrl, `/api/admin/users/${userData.user.id}/subscription`, {
+    method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: JSON.stringify(adjustmentBody),
+  });
+  const replay = await jsonResponse(replayResponse);
+  assert(replayResponse.ok && replay?.replayed === true && replay?.subscription?.id === adjustment.subscription.id, 'Duplicate requestId must replay the original result without another change');
+
+  const mismatchedReplay = await request(enabled.baseUrl, `/api/admin/users/${userData.user.id}/subscription`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({ ...adjustmentBody, plan: 'free' }),
+  });
+  assert(mismatchedReplay.status === 409, `Reused requestId with different parameters must return 409, got ${mismatchedReplay.status}`);
+
+  const tokenReuseResponse = await request(enabled.baseUrl, `/api/admin/users/${userData.user.id}/subscription`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${adminToken}` },
+    body: JSON.stringify({ ...adjustmentBody, requestId: `${requestId}-different` }),
+  });
+  assert(tokenReuseResponse.status === 409 || tokenReuseResponse.status === 401, `Consumed reauth token must be rejected, got ${tokenReuseResponse.status}`);
+
+  const subscriptionsAfterResponse = await request(enabled.baseUrl, `/api/admin/subscriptions?query=${encodeURIComponent(userEmail)}`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  const subscriptionsAfter = await jsonResponse(subscriptionsAfterResponse);
+  assert(subscriptionsAfterResponse.ok && subscriptionsAfter?.items?.[0]?.plan === 'pro' && subscriptionsAfter.items[0].historyCount === 1, 'Subscription list must show one idempotent Pro adjustment');
+  const usersAfterResponse = await request(enabled.baseUrl, `/api/admin/users?pageSize=100&query=${encodeURIComponent(userEmail)}`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  const usersAfter = await jsonResponse(usersAfterResponse);
+  const { subscriptions: _beforeSubscriptions, ...beforeAggregates } = usersData.items.find(item => item.email === userEmail).aggregates;
+  const { subscriptions: _afterSubscriptions, ...afterAggregates } = usersAfter.items.find(item => item.email === userEmail).aggregates;
+  assert(JSON.stringify(beforeAggregates) === JSON.stringify(afterAggregates), `Subscription adjustment modified user resources: ${JSON.stringify({ beforeAggregates, afterAggregates })}`);
+
   setRole(adminEmail, 'user');
 
   const demotedResponse = await request(enabled.baseUrl, '/api/admin/users', {
@@ -300,6 +433,11 @@ try {
   assert(auditData.logs.some(entry => entry.action === 'admin_console.overview.read' && entry.success === true), 'Successful overview read must be audited');
   assert(auditData.logs.some(entry => entry.action === 'admin_console.overview.read' && entry.success === false && entry.statusCode === 401), 'Anonymous admin read failure must be audited');
   assert(auditData.logs.some(entry => entry.action === 'admin_console.users.read' && entry.success === false && entry.statusCode === 403), 'Demoted admin read failure must be audited');
+  assert(auditData.logs.some(entry => entry.action === 'admin_console.reauth' && entry.success === false && entry.statusCode === 401), 'Failed administrator reauth must be audited');
+  assert(auditData.logs.some(entry => entry.action === 'admin_console.subscription.adjust' && entry.success === true), 'Successful subscription adjustment must be audited');
+  assert(auditData.logs.some(entry => entry.action === 'admin_console.error_reports.ai_handoff' && entry.success === true), 'AI repair handoff generation must be audited');
+  const auditSerialized = JSON.stringify(auditData);
+  assert(!auditSerialized.includes(password) && !auditSerialized.includes(reauth.reauthToken), 'Audit output must not contain administrator password or reauth token');
 
   console.log(JSON.stringify({
     status: 'PASS',
@@ -312,6 +450,12 @@ try {
       'admin overview matches frontend contract',
       'users pagination omits sensitive fields',
       'error report list/detail omit sensitive fields',
+      'AI repair JSON and Markdown are structured, sanitized and access controlled',
+      'subscription reads and writes are admin-only',
+      'subscription writes require password reauth, reason and requestId',
+      'reauth tokens expire and are single-use',
+      'subscription requestId replay is idempotent',
+      'subscription changes preserve user project and asset aggregates',
       'admin role demotion applies immediately',
       'admin read successes and failures are audited',
     ],

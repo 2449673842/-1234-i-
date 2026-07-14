@@ -1,5 +1,5 @@
 import { AnimatePresence } from 'motion/react';
-import { AlertCircle, Search } from 'lucide-react';
+import { AlertCircle, Clipboard, Download, Loader2, Search } from 'lucide-react';
 import { useDeferredValue, useEffect, useState } from 'react';
 import { adminApi } from '../api/adminApi';
 import type { AdminErrorReport } from '../types';
@@ -10,6 +10,34 @@ function severityTone(value: string): 'neutral' | 'warning' | 'danger' | 'info' 
   if (value === 'warning') return 'warning';
   if (value === 'info') return 'info';
   return 'neutral';
+}
+
+function downloadText(filename: string, content: string, type: string) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function copyText(content: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(content);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = content;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('浏览器未允许复制，请下载 JSON 修复包');
 }
 
 export function ErrorReportsPage() {
@@ -23,6 +51,8 @@ export function ErrorReportsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<AdminErrorReport | null>(null);
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const [handoffStatus, setHandoffStatus] = useState<string | null>(null);
   const deferredQuery = useDeferredValue(query);
   const pageSize = 40;
 
@@ -38,6 +68,32 @@ export function ErrorReportsPage() {
   }, [deferredQuery, page, severity, source, status]);
 
   const resetPage = () => setPage(1);
+  const runHandoffAction = async (action: 'copy' | 'markdown' | 'json') => {
+    if (!selected || handoffBusy) return;
+    setHandoffBusy(true);
+    setHandoffStatus(null);
+    try {
+      if (action === 'markdown') {
+        const markdown = await adminApi.errorRepairMarkdown(selected.id);
+        downloadText(`scifigure-error-${selected.id}.md`, markdown, 'text/markdown;charset=utf-8');
+        setHandoffStatus('Markdown 修复包已下载');
+      } else {
+        const repairPackage = await adminApi.errorRepairPackage(selected.id);
+        const json = JSON.stringify(repairPackage, null, 2);
+        if (action === 'copy') {
+          await copyText(json);
+          setHandoffStatus('AI 修复包已复制');
+        } else {
+          downloadText(`scifigure-error-${selected.id}.json`, `${json}\n`, 'application/json;charset=utf-8');
+          setHandoffStatus('JSON 修复包已下载');
+        }
+      }
+    } catch (error: any) {
+      setHandoffStatus(error?.message || '无法生成 AI 修复包');
+    } finally {
+      setHandoffBusy(false);
+    }
+  };
   return (
     <div className="admin-page">
       <PageHeader eyebrow="Reliability" title="错误中心" description="接收用户端、编辑器和 Python/R 渲染链路的脱敏错误摘要。同类错误自动合并计数，不保存 traceback、脚本或数据内容。" />
@@ -83,9 +139,18 @@ export function ErrorReportsPage() {
       </section>
 
       <AnimatePresence>{selected && (
-        <DetailDrawer title={selected.title} subtitle={selected.id} onClose={() => setSelected(null)}>
+        <DetailDrawer title={selected.title} subtitle={selected.id} onClose={() => { setSelected(null); setHandoffStatus(null); }}>
+          <div className="admin-handoff-actions">
+            <button type="button" className="admin-button admin-button-primary" disabled={handoffBusy} onClick={() => void runHandoffAction('copy')}>
+              {handoffBusy ? <Loader2 className="admin-spin" size={14} /> : <Clipboard size={14} />}复制 AI 修复包
+            </button>
+            <button type="button" className="admin-button" disabled={handoffBusy} onClick={() => void runHandoffAction('markdown')}><Download size={14} />Markdown</button>
+            <button type="button" className="admin-button" disabled={handoffBusy} onClick={() => void runHandoffAction('json')}><Download size={14} />JSON</button>
+          </div>
+          {handoffStatus && <div className="admin-inline-notice" role="status">{handoffStatus}</div>}
           <DetailField label="严重程度"><StatusBadge tone={severityTone(selected.severity)}>{selected.severity}</StatusBadge></DetailField>
           <DetailField label="来源">{selected.source}</DetailField>
+          <DetailField label="组件 / 操作">{selected.component || '—'} / {selected.operation || '—'}</DetailField>
           <DetailField label="错误码">{selected.errorCode || '—'}</DetailField>
           <DetailField label="脱敏摘要">{selected.message}</DetailField>
           <DetailField label="路由">{selected.route || '—'}</DetailField>

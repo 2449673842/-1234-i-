@@ -1,7 +1,10 @@
 import type {
   AdminAuditLog,
+  AdminAiRepairPackage,
   AdminErrorReport,
   AdminOverview,
+  AdminSubscriptionAdjustment,
+  AdminSubscriptionRow,
   AdminUserIdentity,
   AdminUserRow,
   PaginatedResponse,
@@ -48,6 +51,41 @@ export const adminApi = {
   async errorReports(input: { page: number; pageSize: number; query?: string; source?: string; severity?: string; status?: string }): Promise<PaginatedResponse<AdminErrorReport>> {
     const response = await fetch(`/api/admin/error-reports${queryString(input)}`);
     return readJson<PaginatedResponse<AdminErrorReport>>(response);
+  },
+
+  async errorRepairPackage(id: string): Promise<AdminAiRepairPackage> {
+    const response = await fetch(`/api/admin/error-reports/${encodeURIComponent(id)}/ai-handoff`);
+    const data = await readJson<{ repairPackage: AdminAiRepairPackage }>(response);
+    return data.repairPackage;
+  },
+
+  async errorRepairMarkdown(id: string): Promise<string> {
+    const response = await fetch(`/api/admin/error-reports/${encodeURIComponent(id)}/ai-handoff?format=markdown`);
+    if (!response.ok) await readJson(response);
+    return response.text();
+  },
+
+  async subscriptions(input: { page: number; pageSize: number; query?: string }): Promise<PaginatedResponse<AdminSubscriptionRow>> {
+    const response = await fetch(`/api/admin/subscriptions${queryString(input)}`);
+    return readJson<PaginatedResponse<AdminSubscriptionRow>>(response);
+  },
+
+  async reauth(password: string): Promise<{ reauthToken: string; expiresAt: string }> {
+    const response = await fetch('/api/admin/reauth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    return readJson<{ status: 'success'; reauthToken: string; expiresAt: string }>(response);
+  },
+
+  async adjustSubscription(userId: string, input: AdminSubscriptionAdjustment): Promise<{ replayed: boolean }> {
+    const response = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/subscription`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    return readJson<{ status: 'success'; replayed: boolean }>(response);
   },
 
   async auditLogs(limit = 100): Promise<AdminAuditLog[]> {

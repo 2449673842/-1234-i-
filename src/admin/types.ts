@@ -1,4 +1,4 @@
-export type AdminSection = 'overview' | 'users' | 'errors' | 'audit';
+export type AdminSection = 'overview' | 'users' | 'subscriptions' | 'errors' | 'audit';
 
 export interface AdminUserIdentity {
   id: string;
@@ -62,6 +62,9 @@ export interface AdminErrorReport {
   status: 'open' | 'triaged' | 'resolved' | 'ignored';
   title: string;
   message: string;
+  component: string | null;
+  operation: string | null;
+  errorName: string | null;
   errorCode: string | null;
   route: string | null;
   projectId: string | null;
@@ -70,6 +73,60 @@ export interface AdminErrorReport {
   firstSeenAt: string;
   lastSeenAt: string;
   metadata: Record<string, unknown>;
+}
+
+export interface AdminAiRepairPackage {
+  schemaVersion: 'scifigure.error-handoff.v1';
+  generatedAt: string;
+  eventId: string;
+  source: string;
+  severity: AdminErrorReport['severity'];
+  status: AdminErrorReport['status'];
+  title: string;
+  message: string;
+  errorName: string | null;
+  errorCode: string | null;
+  component: string | null;
+  operation: string | null;
+  route: string | null;
+  projectId: string | null;
+  figureId: string | null;
+  clientVersion: string | null;
+  userAgentFamily: string | null;
+  occurrenceCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  metadata: Record<string, unknown>;
+  suggestedCodeAreas: string[];
+  suggestedChecks: string[];
+  privacyBoundary: { classification: string; excluded: string[] };
+}
+
+export interface AdminSubscriptionRow {
+  userId: string;
+  email: string;
+  displayName: string | null;
+  subscriptionId: string | null;
+  plan: 'free' | 'pro';
+  status: 'active' | 'paused' | 'expired' | 'none';
+  startsAt: string | null;
+  endsAt: string | null;
+  source: string;
+  actorUserId: string | null;
+  changeReason: string | null;
+  adminNote: string | null;
+  createdAt: string | null;
+  historyCount: number;
+}
+
+export interface AdminSubscriptionAdjustment {
+  plan: 'free' | 'pro';
+  status: 'active' | 'paused' | 'expired';
+  endsAt: string | null;
+  reason: string;
+  adminNote?: string | null;
+  requestId: string;
+  reauthToken: string;
 }
 
 export interface AdminAuditLog {
