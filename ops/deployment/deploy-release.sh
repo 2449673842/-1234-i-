@@ -19,6 +19,8 @@ release_dir="${release_root}/${build_id}"
 current_link=/opt/scifigure/current
 release_env=/etc/scifigure/release.env
 service_unit=/etc/systemd/system/scifigure.service
+deploy_tool=/usr/local/sbin/scifigure-deploy-release
+rollback_tool=/usr/local/sbin/scifigure-rollback
 state_dir=/var/lib/scifigure/deployment
 previous_file="$state_dir/previous-release"
 previous_env="$state_dir/previous-release.env"
@@ -82,12 +84,13 @@ install -d -o scifigure -g scifigure -m 0750 "$release_dir"
 tar -xzf "$artifact" -C "$release_dir" --no-same-owner --no-same-permissions
 chown -R scifigure:scifigure "$release_dir"
 
-for required in package.json package-lock.json server.ts Dockerfile.renderer renderer ops/systemd/scifigure.service; do
+for required in package.json package-lock.json server.ts Dockerfile.renderer renderer ops/systemd/scifigure.service ops/deployment/deploy-release.sh ops/deployment/rollback.sh; do
   if [[ ! -e "$release_dir/$required" ]]; then
     echo "Release artifact is missing: $required" >&2
     exit 1
   fi
 done
+bash -n "$release_dir/ops/deployment/deploy-release.sh" "$release_dir/ops/deployment/rollback.sh"
 
 runuser -u scifigure -- env \
   HOME=/var/lib/scifigure \
@@ -165,6 +168,8 @@ done
 old_release="$(readlink -f "$current_link" 2>/dev/null || true)"
 old_env="$(mktemp "${state_dir}/release-env.XXXXXX")"
 old_unit="$(mktemp "${state_dir}/service-unit.XXXXXX")"
+old_deploy_tool="$(mktemp "${state_dir}/deploy-tool.XXXXXX")"
+old_rollback_tool="$(mktemp "${state_dir}/rollback-tool.XXXXXX")"
 if [[ -f "$release_env" ]]; then
   cp -- "$release_env" "$old_env"
 else
@@ -175,11 +180,23 @@ if [[ -f "$service_unit" ]]; then
 else
   : > "$old_unit"
 fi
+if [[ -f "$deploy_tool" ]]; then
+  cp -- "$deploy_tool" "$old_deploy_tool"
+else
+  : > "$old_deploy_tool"
+fi
+if [[ -f "$rollback_tool" ]]; then
+  cp -- "$rollback_tool" "$old_rollback_tool"
+else
+  : > "$old_rollback_tool"
+fi
 
 next_link="${current_link}.next"
 ln -sfn "$release_dir" "$next_link"
 next_env="${release_env}.next"
 next_unit="${service_unit}.next"
+next_deploy_tool="${deploy_tool}.next"
+next_rollback_tool="${rollback_tool}.next"
 cat > "$next_env" <<EOF
 PORT=3101
 SCIFIGURE_BUILD_ID=${build_id}
@@ -188,9 +205,12 @@ EOF
 chown root:scifigure "$next_env"
 chmod 0640 "$next_env"
 install -o root -g root -m 0644 "$candidate_unit" "$next_unit"
+install -o root -g root -m 0755 "$release_dir/ops/deployment/deploy-release.sh" "$next_deploy_tool"
+install -o root -g root -m 0755 "$release_dir/ops/deployment/rollback.sh" "$next_rollback_tool"
 
 cleanup_deploy_temps() {
-  rm -f -- "$old_env" "$old_unit" "$next_link" "$next_env" "$next_unit"
+  rm -f -- "$old_env" "$old_unit" "$old_deploy_tool" "$old_rollback_tool"
+  rm -f -- "$next_link" "$next_env" "$next_unit" "$next_deploy_tool" "$next_rollback_tool"
   rm -f -- "$state_dir"/*.next "$state_dir"/*.restore
   rm -rf -- "$metadata_backup"
 }
@@ -240,6 +260,18 @@ restore_previous_state() {
   else
     rm -f -- "$service_unit" || return 1
   fi
+  if [[ -s "$old_deploy_tool" ]]; then
+    install -o root -g root -m 0755 "$old_deploy_tool" "$next_deploy_tool" || return 1
+    mv -Tf "$next_deploy_tool" "$deploy_tool" || return 1
+  else
+    rm -f -- "$deploy_tool" || return 1
+  fi
+  if [[ -s "$old_rollback_tool" ]]; then
+    install -o root -g root -m 0755 "$old_rollback_tool" "$next_rollback_tool" || return 1
+    mv -Tf "$next_rollback_tool" "$rollback_tool" || return 1
+  else
+    rm -f -- "$rollback_tool" || return 1
+  fi
   systemctl daemon-reload || return 1
   restore_metadata_snapshot || return 1
 
@@ -271,6 +303,8 @@ if ! stop_service; then
 fi
 transaction_active=1
 mv -Tf "$next_unit" "$service_unit"
+mv -Tf "$next_deploy_tool" "$deploy_tool"
+mv -Tf "$next_rollback_tool" "$rollback_tool"
 mv -Tf "$next_link" "$current_link"
 mv -f "$next_env" "$release_env"
 systemctl daemon-reload
