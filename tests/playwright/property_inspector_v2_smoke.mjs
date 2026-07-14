@@ -183,11 +183,21 @@ async function run() {
     await page.locator('[data-property-inspector-version="2"]').waitFor({ state: 'visible', timeout: 10000 });
 
     const v2Count = await page.locator('[data-property-inspector-version="2"]').count();
+    const legacyTextEditor = page.locator(`textarea[data-param-role="text"][data-param-gid="${fixture.title.id}"][data-param-prop="text"]`);
+    const legacyTextEditorCount = await legacyTextEditor.count();
+    const textEditorBeforeV2 = legacyTextEditorCount === 1 && await page.evaluate((titleId) => {
+      const editor = document.querySelector(`textarea[data-param-role="text"][data-param-gid="${CSS.escape(titleId)}"][data-param-prop="text"]`);
+      const v2 = document.querySelector('[data-property-inspector-version="2"]');
+      return Boolean(editor && v2 && (editor.compareDocumentPosition(v2) & Node.DOCUMENT_POSITION_FOLLOWING));
+    }, fixture.title.id);
+    const textToolbarVisible = await page.getByRole('button', { name: '上标 x²', exact: true }).count() === 1
+      && await page.getByRole('button', { name: '下标 x₂', exact: true }).count() === 1
+      && await page.getByRole('button', { name: '换行 ↵', exact: true }).count() === 1;
     const fontSizeControls = page.locator(`input[data-param-role="number"][data-param-gid="${fixture.title.id}"][data-param-prop="fontsize"]`);
     const fontSizeCount = await fontSizeControls.count();
     const fontFamilyCount = await page.locator(`[data-property-control="fontfamily"][data-param-gid="${fixture.title.id}"]`).count();
-    record('P2-visibility', v2Count === 1 && fontSizeCount === 1 && fontFamilyCount === 1,
-      `inspector=${v2Count}, fontsize=${fontSizeCount}, fontfamily=${fontFamilyCount}, capabilityBacked=${fixture.capabilityBacked}`);
+    record('P2-visibility', v2Count === 1 && legacyTextEditorCount === 1 && textEditorBeforeV2 && textToolbarVisible && fontSizeCount === 1 && fontFamilyCount === 1,
+      `inspector=${v2Count}, textEditor=${legacyTextEditorCount}, textFirst=${textEditorBeforeV2}, textToolbar=${textToolbarVisible}, fontsize=${fontSizeCount}, fontfamily=${fontFamilyCount}, capabilityBacked=${fixture.capabilityBacked}`);
     record(
       'P2-capability-source',
       fixture.capabilityBacked || !REQUIRE_CAPABILITY_MANIFEST,

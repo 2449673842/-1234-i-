@@ -3038,6 +3038,8 @@ export function RightSidebar({
       && prop !== 'anchor_position'
       && !descriptorProps.has(prop)
     ));
+    const textEditable = legacyEditable.filter(prop => prop === 'text');
+    const remainingLegacyEditable = legacyEditable.filter(prop => prop !== 'text');
 
     return (
       <div className="space-y-6">
@@ -3047,6 +3049,10 @@ export function RightSidebar({
           <div className="font-mono truncate" title={obj.id}>GID：{obj.id}</div>
         </div>
         <div className="space-y-4">
+          {textEditable.map((prop) => {
+            const val = obj.currentProps[prop];
+            return renderField(obj.id, prop, typeof val, val);
+          })}
           {descriptorProjections.length > 0 && (
             <div className="space-y-3" data-property-inspector-version="2">
               {descriptorProjections.map(projection => {
@@ -3101,7 +3107,7 @@ export function RightSidebar({
               </select>
             </div>
           )}
-          {legacyEditable.map((prop) => {
+          {remainingLegacyEditable.map((prop) => {
             const val = obj.currentProps[prop];
             return renderField(obj.id, prop, typeof val, val);
           })}
