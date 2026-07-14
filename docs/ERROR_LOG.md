@@ -2157,6 +2157,12 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 - V2 字号精确 patch、字体中心混合值和刻度旋转继续通过。
 - production build、PropertyControl 单测 5/5、`git diff --check` 通过。
 
+**生产状态**
+
+- 2026-07-14 23:04:50 +08:00：已随 build `c0128df-jd9` 发布。
+- 公网真实浏览器确认文字编辑器唯一可见、位于 V2 控件之前，上标/下标/换行完整，字号精确 patch 正常。
+- 同一回归中的后续刻度旋转请求仍携带上一条已应用字号 patch；这是既有 Draft 清理差异，已独立保留为后续修复项，不影响本次文字面板排序结论。
+
 **防复发规则**
 
 - 协议控件升级不得改变高频专用编辑器的首要操作位置。
