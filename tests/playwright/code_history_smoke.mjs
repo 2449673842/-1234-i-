@@ -135,9 +135,9 @@ async function run() {
   });
 
   try {
-    await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await setAppState(page, spec, rendered);
-    await page.reload({ waitUntil: 'networkidle', timeout: 60000 });
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
     await waitForSvgText(page, 'CODE_HISTORY_BASELINE');
 
     const viewTabs = page.getByTestId('workspace-view-tabs');

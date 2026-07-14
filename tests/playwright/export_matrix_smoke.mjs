@@ -426,9 +426,9 @@ async function runPendingExportBrowserCheck(projectId, spec, rendered) {
       await route.continue();
     });
 
-    await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await setAppState(page, projectId, spec, rendered, 'editor');
-    await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
     await waitForPreviewReady(page);
 
     const renderClicked = await clickText(page, '同步至引擎并预览 SVG', 5000);
