@@ -2236,6 +2236,13 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 
 - SVG/PDF/EPS 的文字与线条是矢量对象，整体清晰度不由 DPI 决定；DPI 主要作用于 PNG/TIFF及矢量文件中的栅格化对象。
 
+**生产状态**
+
+- 2026-07-15 00:42:05 +08:00：已随 build `8f956ca-jd10` 发布到公网调试服务器。
+- 发布后 readiness=`ready`、单实例 active、SQLite `integrity_check=ok`，用户/项目计数保持 `5/7`。
+- 公网真实浏览器窄测试通过：属性页 600 DPI 同步到 Figure/导出配置，矢量格式禁用 DPI 控件，PNG 保留 600 DPI 且控件可用，console error=0。
+- 公网完整导出矩阵已通过 SVG/PNG/PDF/TIFF、150/300/600 DPI 像素倍率和子图导出；后续因 10 秒 TCP 连接超时中断，未将该次完整矩阵记为全部通过。测试项目已清理。
+
 **防复发规则**
 
 - 属性页和导出页不得各自维护独立 DPI 事实来源。
