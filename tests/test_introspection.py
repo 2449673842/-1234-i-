@@ -861,6 +861,71 @@ ax.set_xticklabels(["A", "B", "C"])
         self.assertFalse(xtick["currentProps"]["positionEditable"])
         self.assertIn("axis layout engine", xtick["currentProps"]["positionUnsupportedReason"])
 
+    def test_axis_label_drag_replays_effective_axes_position(self):
+        script = '''
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(figsize=(5, 3.5))
+ax.plot([0, 1, 2], [1, 3, 2])
+ax.set_xlabel("X Axis")
+ax.set_ylabel("Y Axis")
+fig.tight_layout()
+'''
+        baseline = replay_render(script)
+        baseline_objects = baseline["figures"][0]["manifest"]["objects"]
+        xlabel = next(obj for obj in baseline_objects if obj["id"] == "xlabel.0")
+        ylabel = next(obj for obj in baseline_objects if obj["id"] == "ylabel.0")
+
+        self.assertIn("position", xlabel["editable"])
+        self.assertIn("position", ylabel["editable"])
+        self.assertEqual(xlabel["currentProps"]["coord_system"], "axes")
+        self.assertEqual(ylabel["currentProps"]["coord_system"], "axes")
+        self.assertAlmostEqual(xlabel["currentProps"]["x"], 0.5, places=3)
+        self.assertLess(xlabel["currentProps"]["y"], 0)
+        self.assertLess(ylabel["currentProps"]["x"], 0)
+        self.assertAlmostEqual(ylabel["currentProps"]["y"], 0.5, places=3)
+
+        xlabel_target = {
+            "x": xlabel["currentProps"]["x"] + 0.16,
+            "y": xlabel["currentProps"]["y"] - 0.12,
+            "coord_system": "axes",
+        }
+        ylabel_target = {
+            "x": ylabel["currentProps"]["x"] - 0.14,
+            "y": ylabel["currentProps"]["y"] + 0.18,
+            "coord_system": "axes",
+        }
+        patched = replay_render(script, edit_log=[
+            {"gid": "xlabel.0", "prop": "position", "value": xlabel_target, "mode": "backend_patch"},
+            {"gid": "ylabel.0", "prop": "position", "value": ylabel_target, "mode": "backend_patch"},
+        ])
+        patched_objects = patched["figures"][0]["manifest"]["objects"]
+        patched_xlabel = next(obj for obj in patched_objects if obj["id"] == "xlabel.0")
+        patched_ylabel = next(obj for obj in patched_objects if obj["id"] == "ylabel.0")
+
+        for prop in ("x", "y"):
+            self.assertAlmostEqual(patched_xlabel["currentProps"][prop], xlabel_target[prop], places=4)
+            self.assertAlmostEqual(patched_ylabel["currentProps"][prop], ylabel_target[prop], places=4)
+        self.assertEqual(patched_xlabel["currentProps"]["coord_system"], "axes")
+        self.assertEqual(patched_ylabel["currentProps"]["coord_system"], "axes")
+
+        legacy = replay_render(script, edit_log=[
+            {
+                "gid": "xlabel.0",
+                "prop": "position",
+                "value": {"x": 0.5, "y": 23.5, "coord_system": "axes"},
+                "mode": "backend_patch",
+            },
+        ])
+        legacy_xlabel = next(
+            obj for obj in legacy["figures"][0]["manifest"]["objects"]
+            if obj["id"] == "xlabel.0"
+        )
+        self.assertLess(legacy_xlabel["currentProps"]["y"], 0)
+        self.assertIn(
+            "unsupported_legacy_axis_label_position",
+            [warning.get("type") for warning in legacy.get("warnings", [])],
+        )
+
     def test_axis_tick_label_offset_moves_text_without_changing_axis_limits(self):
         script = """
 import matplotlib.pyplot as plt

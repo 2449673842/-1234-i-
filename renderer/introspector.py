@@ -591,6 +591,10 @@ def _get_text_coord_system(artist) -> str:
     except Exception:
         pass
 
+    axis_label = _axis_label_context(artist)
+    if axis_label is not None:
+        return "axes"
+
     transform = artist.get_transform()
     ax = artist.axes
     if ax is not None:
@@ -603,6 +607,18 @@ def _get_text_coord_system(artist) -> str:
         if transform == fig.transFigure:
             return "figure"
     return "axes"
+
+
+def _axis_label_context(artist):
+    fig = getattr(artist, "figure", None)
+    if fig is None:
+        return None
+    for ax in getattr(fig, "axes", []):
+        if artist is ax.xaxis.label:
+            return ax, ax.xaxis
+        if artist is ax.yaxis.label:
+            return ax, ax.yaxis
+    return None
 
 
 def _annotation_coord_system(value: Any) -> str:
@@ -628,6 +644,14 @@ def _matplotlib_annotation_coord(value: str) -> Optional[str]:
 
 def _read_text_props(artist) -> dict:
     x, y = artist.get_position()
+    axis_label = _axis_label_context(artist)
+    if axis_label is not None:
+        ax, _ = axis_label
+        try:
+            display_position = artist.get_transform().transform((x, y))
+            x, y = ax.transAxes.inverted().transform(display_position)
+        except Exception:
+            pass
     
     from matplotlib import colors as mcolors
     def to_hex_safe(c):
@@ -2827,6 +2851,15 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         coord_system = value.get("coord_system", "axes")
         ax = artist.axes
         fig = artist.figure
+        axis_label = _axis_label_context(artist)
+        if axis_label is not None:
+            label_ax, axis = axis_label
+            if coord_system != "axes":
+                return "unsupported_axis_label_position_coord"
+            if max(abs(x), abs(y)) > 10:
+                return "unsupported_legacy_axis_label_position"
+            axis.set_label_coords(x, y, transform=label_ax.transAxes)
+            return
         try:
             from matplotlib.text import Annotation
             if isinstance(artist, Annotation):

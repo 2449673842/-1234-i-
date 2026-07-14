@@ -266,12 +266,16 @@ async function preparePythonProject(page) {
     }));
     const objects = rendered.figures[0]?.manifest?.objects || [];
     const annotation = objects.find(object => object?.currentProps?.text === 'DRAG_ANN');
+    const xlabel = objects.find(object => object?.id === 'xlabel.0');
+    const ylabel = objects.find(object => object?.id === 'ylabel.0');
     return {
       projectId: created.id,
       objectCount: objects.length,
       annotationId: annotation?.id || null,
       annotationArrowId: annotation?.identity?.relation?.arrowId || null,
       annotationRole: annotation?.role || null,
+      xlabelPosition: xlabel?.currentProps || null,
+      ylabelPosition: ylabel?.currentProps || null,
     };
   }, { baseUrl: BASE_URL, script });
 
@@ -378,6 +382,7 @@ async function run() {
   const context = await browser.newContext({ viewport: { width: 1440, height: 950 } });
   await installBrowserAuthentication(context, authToken);
   const page = await context.newPage();
+  let fixtureProjectId = null;
 
   page.on('console', (msg) => {
     if (['error'].includes(msg.type())) consoleErrors.push(msg.text());
@@ -392,6 +397,7 @@ async function run() {
   try {
     await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
     const fixture = await preparePythonProject(page);
+    fixtureProjectId = fixture.projectId;
     const boxA = await findBoxByText(page, 'DRAG_A');
     const boxB = await findBoxByText(page, 'DRAG_B');
     const boxC = await findBoxByText(page, 'DRAG_C');
@@ -463,6 +469,62 @@ async function run() {
         dragModeOn && multiConfirm && confirmed && patchRequests.length === 1 && positionPatches.length === expectedMultiCount ? 'PASS' : 'FAIL',
         `dragMode=${dragModeOn}, confirmBar=${multiConfirm}, confirmed=${confirmed}, patchRequests=${patchRequests.length}, positionPatches=${positionPatches.length}`,
       );
+
+      await setSelectedGidsAndReload(page, []);
+      const xlabelBox = await findBoxByText(page, 'X Axis');
+      const ylabelBox = await findBoxByText(page, 'Y Axis');
+      const axisDragModeOn = await ensureDragMode(page, true);
+      if (!xlabelBox || !ylabelBox || !fixture.xlabelPosition || !fixture.ylabelPosition) {
+        record('D1b-axis-label-drag', 'BLOCKED', `xlabel=${Boolean(xlabelBox)}, ylabel=${Boolean(ylabelBox)}`);
+      } else {
+        await dragBox(page, xlabelBox, 60, 30);
+        const xlabelPending = (await getBodyText(page)).includes('已累计移动 1 个文本对象');
+        await dragBox(page, await findBoxByText(page, 'Y Axis'), -45, -25);
+        const ylabelPending = (await getBodyText(page)).includes('已累计移动 2 个文本对象');
+        const axisConfirmStart = apiRequests.length;
+        const axisResponsePromise = page.waitForResponse(response => (
+          response.url().includes('/api/figure/patch')
+          && response.request().method() === 'POST'
+        ), { timeout: 30000 });
+        const axisConfirmed = ylabelPending && await clickVisibleText(page, '确认位置', 3000);
+        const axisResponse = axisConfirmed ? await axisResponsePromise : null;
+        const axisResponseBody = axisResponse ? await axisResponse.json().catch(() => null) : null;
+        if (axisConfirmed) {
+          await waitForApiSettle(page, axisConfirmStart, 30000);
+          await waitForPreviewReady(page);
+        }
+        const axisRequests = apiRequests.slice(axisConfirmStart).filter(request => request.url.includes('/api/figure/patch'));
+        const axisRequestBody = parseJson(axisRequests[0]?.postData);
+        const axisPatches = Array.isArray(axisRequestBody?.patches)
+          ? axisRequestBody.patches.filter(patch => patch?.prop === 'position')
+          : [];
+        const xlabelPatch = axisPatches.find(patch => patch?.gid === 'xlabel.0');
+        const ylabelPatch = axisPatches.find(patch => patch?.gid === 'ylabel.0');
+        const returnedObjects = axisResponseBody?.manifest?.objects || [];
+        const returnedXlabel = returnedObjects.find(object => object?.id === 'xlabel.0');
+        const returnedYlabel = returnedObjects.find(object => object?.id === 'ylabel.0');
+        const returnedMatches = [
+          [returnedXlabel, xlabelPatch],
+          [returnedYlabel, ylabelPatch],
+        ].every(([object, patch]) => (
+          object && patch
+          && Math.abs(Number(object.currentProps?.x) - Number(patch.value?.x)) < 0.01
+          && Math.abs(Number(object.currentProps?.y) - Number(patch.value?.y)) < 0.01
+          && object.currentProps?.coord_system === 'axes'
+        ));
+        const directionsCorrect = xlabelPatch
+          && ylabelPatch
+          && Number(xlabelPatch.value?.x) > Number(fixture.xlabelPosition.x)
+          && Number(xlabelPatch.value?.y) < Number(fixture.xlabelPosition.y)
+          && Number(ylabelPatch.value?.x) < Number(fixture.ylabelPosition.x)
+          && Number(ylabelPatch.value?.y) > Number(fixture.ylabelPosition.y);
+        record(
+          'D1b-axis-label-drag',
+          axisDragModeOn && xlabelPending && ylabelPending && axisConfirmed && axisRequests.length === 1
+            && axisPatches.length === 2 && directionsCorrect && returnedMatches ? 'PASS' : 'FAIL',
+          `dragMode=${axisDragModeOn}, xlabelPending=${xlabelPending}, ylabelPending=${ylabelPending}, confirmed=${axisConfirmed}, patches=${JSON.stringify(axisPatches)}, returnedMatches=${returnedMatches}`,
+        );
+      }
 
       await setSelectedGidsAndReload(page, [boxA.id]);
       await ensureDragMode(page, true);
@@ -551,6 +613,9 @@ async function run() {
     diagnostics.consoleErrors = consoleErrors;
     diagnostics.pageErrors = pageErrors;
     await browser.close();
+    if (fixtureProjectId) {
+      await requestJson(`/api/projects/${fixtureProjectId}`, { method: 'DELETE' }).catch(() => null);
+    }
     await cleanupSmokeProjects().catch(() => null);
   }
 
