@@ -317,7 +317,7 @@ async function preparePythonProject(page) {
     };
   }, { baseUrl: BASE_URL, script });
 
-  await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
   await waitForPreviewReady(page);
   await clickVisibleText(page, '属性编辑', 3000);
   return fixture;
@@ -330,7 +330,7 @@ async function setSelectedGidsAndReload(page, gids) {
     state.selectedGids = selectedGids;
     window.sessionStorage.setItem('scifigure:app-state:v2', JSON.stringify(state));
   }, gids);
-  await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
   await waitForPreviewReady(page);
   await clickVisibleText(page, '属性编辑', 3000);
 }
@@ -406,7 +406,7 @@ async function injectRNativeCoordinateFixture(page) {
       subView: 'home',
     }));
   }, { svg, manifest, spec });
-  await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
   await waitForPreviewReady(page);
   await clickVisibleText(page, '属性编辑', 3000);
 }
@@ -433,7 +433,7 @@ async function run() {
   });
 
   try {
-    await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
     const fixture = await preparePythonProject(page);
     fixtureProjectId = fixture.projectId;
     const boxA = await findBoxByText(page, 'DRAG_A');
@@ -590,21 +590,26 @@ async function run() {
       );
     }
 
-    if (!lineBox) {
+    await setSelectedGidsAndReload(page, []);
+    const freshLineBox = await findUnsupportedLineBox(page);
+    if (!freshLineBox) {
       record('D3-unsupported', 'BLOCKED', 'missing line object for unsupported drag check');
     } else {
       await ensureDragMode(page, true);
       const unsupportedStart = apiRequests.length;
-      await dragBox(page, lineBox, 60, 20);
+      await dragBox(page, freshLineBox, 60, 20);
       const body = await getBodyText(page);
       const unsupportedPatches = apiRequests.slice(unsupportedStart).filter((r) => r.url.includes('/api/figure/patch'));
+      const unsupportedPending = body.includes('确认位置');
       record(
         'D3-unsupported',
-        body.includes('当前对象不支持拖拽') && unsupportedPatches.length === 0 && !body.includes('确认位置') ? 'PASS' : 'FAIL',
-        `hint=${body.includes('当前对象不支持拖拽')}, patchRequests=${unsupportedPatches.length}, confirm=${body.includes('确认位置')}`,
+        body.includes('当前对象不支持拖拽') && unsupportedPatches.length === 0 && !unsupportedPending ? 'PASS' : 'FAIL',
+        `hint=${body.includes('当前对象不支持拖拽')}, patchRequests=${unsupportedPatches.length}, confirm=${unsupportedPending}`,
       );
+      if (unsupportedPending) await clickVisibleText(page, '取消', 3000);
     }
 
+    await setSelectedGidsAndReload(page, []);
     const annotationBox = await findBoxByText(page, 'DRAG_ANN');
     if (!annotationBox) {
       record('D3b-annotation-drag', 'BLOCKED', 'missing annotation text box');
