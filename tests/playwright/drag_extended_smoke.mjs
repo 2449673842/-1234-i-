@@ -171,12 +171,50 @@ async function findUnsupportedLineBox(page) {
 }
 
 async function dragBox(page, box, dx = 80, dy = 28) {
+  const before = await page.evaluate((gid) => {
+    const escaped = CSS.escape(gid);
+    const node = document.querySelector(`svg #${escaped}, svg [data-fig-id="${escaped}"]`);
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, tag: node.tagName, transform: node.getAttribute('transform') };
+  }, box.id);
   await page.mouse.move(box.x, box.y);
   await page.mouse.down();
   await page.mouse.move(box.x + dx, box.y + dy, { steps: 10 });
   await page.waitForTimeout(150);
+  const during = await page.evaluate((gid) => {
+    const escaped = CSS.escape(gid);
+    const node = document.querySelector(`svg #${escaped}, svg [data-fig-id="${escaped}"]`);
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, tag: node.tagName, transform: node.getAttribute('transform') };
+  }, box.id);
   await page.mouse.up();
   await page.waitForTimeout(700);
+  const after = await page.evaluate((gid) => {
+    const escaped = CSS.escape(gid);
+    const node = document.querySelector(`svg #${escaped}, svg [data-fig-id="${escaped}"]`);
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, tag: node.tagName, transform: node.getAttribute('transform') };
+  }, box.id);
+  return { before, during, after };
+}
+
+function didObjectFollowDrag(geometry, minimumDistance = 20) {
+  return Boolean(
+    geometry?.before
+    && geometry?.during
+    && geometry?.after
+    && Math.hypot(
+      geometry.during.x - geometry.before.x,
+      geometry.during.y - geometry.before.y,
+    ) > minimumDistance
+    && Math.hypot(
+      geometry.after.x - geometry.before.x,
+      geometry.after.y - geometry.before.y,
+    ) > minimumDistance
+  );
 }
 
 async function waitForApiSettle(page, startIndex, timeoutMs = 30000) {
@@ -421,7 +459,13 @@ async function run() {
 
       await setSelectedGidsAndReload(page, []);
       const sequentialDragModeOn = await ensureDragMode(page, true);
-      await dragBox(page, await findBoxByText(page, 'DRAG_A'), 70, 25);
+      const firstDragGeometry = await dragBox(page, await findBoxByText(page, 'DRAG_A'), 70, 25);
+      diagnostics.firstDragGeometry = firstDragGeometry;
+      record(
+        'D1a-live-object-preview',
+        didObjectFollowDrag(firstDragGeometry) ? 'PASS' : 'FAIL',
+        `geometry=${JSON.stringify(firstDragGeometry)}`,
+      );
       const bodyAfterFirstSequentialDrag = await getBodyText(page);
       const firstSequentialPending = bodyAfterFirstSequentialDrag.includes('已累计移动 1 个文本对象');
       await dragBox(page, await findBoxByText(page, 'DRAG_B'), -60, 35);
@@ -477,9 +521,12 @@ async function run() {
       if (!xlabelBox || !ylabelBox || !fixture.xlabelPosition || !fixture.ylabelPosition) {
         record('D1b-axis-label-drag', 'BLOCKED', `xlabel=${Boolean(xlabelBox)}, ylabel=${Boolean(ylabelBox)}`);
       } else {
-        await dragBox(page, xlabelBox, 60, 30);
+        const xlabelDragGeometry = await dragBox(page, xlabelBox, 60, 30);
         const xlabelPending = (await getBodyText(page)).includes('已累计移动 1 个文本对象');
-        await dragBox(page, await findBoxByText(page, 'Y Axis'), -45, -25);
+        const ylabelDragGeometry = await dragBox(page, await findBoxByText(page, 'Y Axis'), -45, -25);
+        diagnostics.axisLabelDragGeometry = { xlabel: xlabelDragGeometry, ylabel: ylabelDragGeometry };
+        const axisLabelsFollowed = didObjectFollowDrag(xlabelDragGeometry)
+          && didObjectFollowDrag(ylabelDragGeometry);
         const ylabelPending = (await getBodyText(page)).includes('已累计移动 2 个文本对象');
         const axisConfirmStart = apiRequests.length;
         const axisResponsePromise = page.waitForResponse(response => (
@@ -520,9 +567,9 @@ async function run() {
           && Number(ylabelPatch.value?.y) > Number(fixture.ylabelPosition.y);
         record(
           'D1b-axis-label-drag',
-          axisDragModeOn && xlabelPending && ylabelPending && axisConfirmed && axisRequests.length === 1
+          axisDragModeOn && axisLabelsFollowed && xlabelPending && ylabelPending && axisConfirmed && axisRequests.length === 1
             && axisPatches.length === 2 && directionsCorrect && returnedMatches ? 'PASS' : 'FAIL',
-          `dragMode=${axisDragModeOn}, xlabelPending=${xlabelPending}, ylabelPending=${ylabelPending}, confirmed=${axisConfirmed}, patches=${JSON.stringify(axisPatches)}, returnedMatches=${returnedMatches}`,
+          `dragMode=${axisDragModeOn}, livePreview=${axisLabelsFollowed}, xlabelPending=${xlabelPending}, ylabelPending=${ylabelPending}, confirmed=${axisConfirmed}, patches=${JSON.stringify(axisPatches)}, returnedMatches=${returnedMatches}`,
         );
       }
 

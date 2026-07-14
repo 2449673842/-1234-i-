@@ -121,6 +121,10 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     const sanitized = sanitizeChartPreviewSvg(safeRenderedSvg);
     return { ...sanitized, sanitizeCount: chartPreviewSanitizeCount };
   }, [safeRenderedSvg]);
+  const renderedSvgMarkup = useMemo(
+    () => ({ __html: sanitizedRenderedSvg.html }),
+    [sanitizedRenderedSvg.html],
+  );
   const containerRef = useRef<HTMLDivElement | null>(null);
   const svgContainerRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -1212,7 +1216,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
                 data-svg-sanitize-count={sanitizedRenderedSvg.sanitizeCount}
                 data-svg-sanitize-cache-hit={sanitizedRenderedSvg.cacheHit ? 'true' : 'false'}
                 className="flex items-center justify-center shadow-sm [&>svg]:block [&>svg]:h-auto [&>svg]:max-h-none [&>svg]:max-w-none [&>svg]:w-auto"
-                dangerouslySetInnerHTML={{ __html: sanitizedRenderedSvg.html }}
+                dangerouslySetInnerHTML={renderedSvgMarkup}
               />
             ) : (
               <div
