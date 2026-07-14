@@ -32,6 +32,7 @@ import {
   type HelpCategoryId,
   type PublicPromptLanguage,
 } from '../content/helpContent';
+import { copyTextToClipboard } from '../utils/clipboard';
 import { LandingAuthDialog, type LandingAuthMode } from './LandingAuthDialog';
 
 interface HelpCenterPageProps {
@@ -51,12 +52,12 @@ const categoryIcons: Record<HelpCategoryId, typeof BookOpen> = {
 };
 
 function CopyButton({ value, label }: { value: string; label: string }) {
-  const [copied, setCopied] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
 
   const copy = async () => {
-    await navigator.clipboard.writeText(value);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1800);
+    const copied = await copyTextToClipboard(value);
+    setCopyStatus(copied ? 'copied' : 'failed');
+    window.setTimeout(() => setCopyStatus('idle'), 1800);
   };
 
   return (
@@ -66,8 +67,8 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       className="inline-flex h-9 items-center gap-2 border border-white/15 bg-white/[0.06] px-3 text-xs font-bold text-white transition hover:border-[#8de6d1]/60 hover:bg-[#8de6d1]/10"
       aria-label={label}
     >
-      {copied ? <Check className="h-3.5 w-3.5 text-[#8de6d1]" /> : <Copy className="h-3.5 w-3.5" />}
-      {copied ? '已复制' : label}
+      {copyStatus === 'copied' ? <Check className="h-3.5 w-3.5 text-[#8de6d1]" /> : <Copy className="h-3.5 w-3.5" />}
+      {copyStatus === 'copied' ? '已复制' : copyStatus === 'failed' ? '复制失败' : label}
     </button>
   );
 }

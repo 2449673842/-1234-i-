@@ -15,6 +15,7 @@ import type { StandardFigureModel } from '../schemas/standardFigureModel';
 import type { DraftPatch } from '../schemas/draftPatchBatch';
 import { buildCompositionRisks, planCompositionLayout } from '../utils/compositionPlanner';
 import { draftsEligibleForDirectPersistence, draftsRequiringEngineApply } from '../utils/draftTransaction';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 interface MainWorkspaceProps {
   spec: FigureSpec;
@@ -547,16 +548,16 @@ export function MainWorkspace({
 
   const copyCompositionPrompt = async (prompt = compositionPrompt) => {
     if (!prompt) return;
-    try {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error('Clipboard API unavailable');
-      }
-      await navigator.clipboard.writeText(prompt);
-      setCompositionCopyStatus('已复制到剪贴板');
-    } catch {
-      setCompositionCopyStatus('复制失败，请手动选中文本复制');
-    }
+    const copied = await copyTextToClipboard(prompt);
+    setCompositionCopyStatus(copied ? '已复制到剪贴板' : '复制失败，请手动选中文本复制');
     window.setTimeout(() => setCompositionCopyStatus(null), 2400);
+  };
+
+  const copyWorkspaceText = async (text: string) => {
+    const copied = await copyTextToClipboard(text);
+    if (!copied) {
+      window.alert('自动复制失败，请手动选中文本复制。');
+    }
   };
 
   const createCompositionProject = async () => {
@@ -1726,7 +1727,7 @@ export function MainWorkspace({
                       </div>
                       <button
                         type="button"
-                        onClick={() => navigator.clipboard.writeText(activeCodeSlice.code || '')}
+                        onClick={() => { void copyWorkspaceText(activeCodeSlice.code || ''); }}
                         className="shrink-0 rounded border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-semibold hover:bg-white/15"
                       >
                         复制本图片段
@@ -1941,7 +1942,7 @@ export function MainWorkspace({
               <button type="button" className="hover:text-slate-600 transition-colors"><Maximize className="w-4 h-4" /></button>
               <button
                 type="button"
-                onClick={() => { navigator.clipboard.writeText(activeScript); }}
+                onClick={() => { void copyWorkspaceText(activeScript); }}
                 className="hover:text-slate-600 transition-colors text-xs px-2 py-0.5 border border-slate-200 rounded bg-white text-slate-500"
                 title="复制代码"
               >

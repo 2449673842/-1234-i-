@@ -106,6 +106,35 @@ async function main() {
     assert(await publicPage.getByRole('heading', { name: /从第一段代码到/ }).count() === 0, 'Anonymous refresh remained on help instead of returning to the public landing page');
     await publicContext.close();
 
+    const legacyClipboardContext = await browser.newContext({ viewport: { width: 1280, height: 820 } });
+    await legacyClipboardContext.addInitScript(() => {
+      Object.defineProperty(Navigator.prototype, 'clipboard', {
+        configurable: true,
+        get: () => undefined,
+      });
+      Object.defineProperty(Document.prototype, 'execCommand', {
+        configurable: true,
+        value(command) {
+          if (command !== 'copy') return false;
+          globalThis.__legacyClipboardText = String(document.activeElement?.value || '');
+          return true;
+        },
+      });
+    });
+    const legacyClipboardPage = await legacyClipboardContext.newPage();
+    legacyClipboardPage.setDefaultTimeout(15_000);
+    legacyClipboardPage.on('pageerror', error => errors.push(error.message));
+    await installAuthRoutes(legacyClipboardPage, false);
+    await legacyClipboardPage.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await legacyClipboardPage.getByRole('button', { name: '帮助中心', exact: true }).click();
+    await legacyClipboardPage.getByRole('button', { name: /热图 \+ 色条/ }).click();
+    await legacyClipboardPage.getByLabel('模板内容').getByRole('tab', { name: 'Python' }).click();
+    await legacyClipboardPage.getByRole('button', { name: '复制代码' }).click();
+    await legacyClipboardPage.getByText('已复制', { exact: true }).waitFor();
+    const legacyClipboardText = await legacyClipboardPage.evaluate(() => globalThis.__legacyClipboardText || '');
+    assert(legacyClipboardText.includes('fig.colorbar'), 'HTTP-compatible clipboard fallback did not copy the selected template');
+    await legacyClipboardContext.close();
+
     const mobileContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const mobilePage = await mobileContext.newPage();
     await installAuthRoutes(mobilePage, false);

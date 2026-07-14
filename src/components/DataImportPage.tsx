@@ -9,6 +9,7 @@ import {
   inferFieldTypes,
   type DataRow,
 } from '../utils/scriptTranslationContract';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 function inferScriptLanguage(fileName: string, fallback: 'python' | 'r' = 'python'): 'python' | 'r' {
   const lower = fileName.toLowerCase();
@@ -287,15 +288,17 @@ export function DataImportPage({ onNavigate, spec, onSpecChange }: { onNavigate:
     onNavigate('editor');
   };
 
-  const copyPrompt = () => {
+  const copyPrompt = async () => {
     const fullPrompt = getAiPrompt();
-    navigator.clipboard.writeText(fullPrompt).then(() => {
+    const copied = await copyTextToClipboard(fullPrompt);
+    if (copied) {
       alert('✅ 提示词 + 脚本已复制到剪贴板！\n\n粘贴到 ChatGPT / DeepSeek / Gemini 等 AI，将改写结果复制回来粘贴到下方。');
-    }).catch(() => {
-      // Fallback: select all text in the prompt display
-      const ta = document.getElementById('ai-prompt-display') as HTMLTextAreaElement;
-      if (ta) { ta.select(); document.execCommand('copy'); }
-    });
+      return;
+    }
+
+    const ta = document.getElementById('ai-prompt-display') as HTMLTextAreaElement | null;
+    ta?.select();
+    alert('自动复制失败，已选中提示词，请按 Ctrl+C 手动复制。');
   };
 
   const handleAiResultPaste = () => {

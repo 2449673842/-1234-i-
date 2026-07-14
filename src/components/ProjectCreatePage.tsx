@@ -22,6 +22,7 @@ import {
   normalizeValue,
 } from '../utils/scriptTranslationContract';
 import { extractReferencedDataFiles, matchesReferencedDataFile } from '../utils/scriptDataDependencies';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 const DEFAULT_TEMPLATE = `import matplotlib.pyplot as plt
 import pandas as pd
@@ -369,12 +370,11 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
     reader.readAsText(file);
   };
 
-  const handleCopyPrompt = () => {
-    navigator.clipboard.writeText(aiPrompt).then(() => {
-      setCopyLabel('已复制 ✓');
-      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-      copyTimerRef.current = setTimeout(() => setCopyLabel('复制 AI 提示词'), 2000);
-    });
+  const handleCopyPrompt = async () => {
+    const copied = await copyTextToClipboard(aiPrompt);
+    setCopyLabel(copied ? '已复制 ✓' : '复制失败，请手动复制');
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => setCopyLabel('复制 AI 提示词'), 2000);
   };
 
   const applyAiResult = () => {
