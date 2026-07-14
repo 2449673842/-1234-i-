@@ -1941,6 +1941,7 @@ build_figure(fl9_data, stats_df, opr_fep_df)
 - 新增 `project_create_script_drop_smoke.mjs`，真实构造浏览器 `DataTransfer + File` 并触发 `dragenter/dragover/drop`。
 - R fixture 成功写入编辑器、识别为 `R / ggplot2`，并将 `stats.csv` 标记为待上传。
 - `scriptDataDependencies` 单测补充直接 `read.csv("stats.csv")` 覆盖。
+- 公网 `http://117.72.208.91` 使用同一 `DataTransfer/drop` 脚本复测通过，线上 build 为 `eea68fb-jd7`。
 
 **防复发规则**
 
@@ -1969,6 +1970,7 @@ build_figure(fl9_data, stats_df, opr_fep_df)
 - 管理后台专项 smoke 通过：匿名/普通用户拒绝、AI 包脱敏、错误密码拒绝、令牌过期和一次性、幂等重放、订阅授权和资源聚合不变。
 - `npm run test:admin-authorization`、`npm run lint`、`npm run build` 通过。
 - 真实浏览器检查桌面订阅对话框和 390px 移动端错误详情；未发现遮挡或表单溢出。
+- `eea68fb-jd7` 部署后 `/api/admin/overview` 未登录返回 401 而非功能关闭的 404，确认管理员开关生效；数据库完整性和用户资源计数保持不变。
 
 **防复发规则**
 
