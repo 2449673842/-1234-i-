@@ -125,6 +125,7 @@ cat > "$release_dir/dist/unified-editing-build.json" <<EOF
   "paletteResolverV2": true,
   "paletteControlsV2": true,
   "layoutControlsV2": true,
+  "adminConsole": true,
   "legacyRetireObservationV1": true
 }
 EOF

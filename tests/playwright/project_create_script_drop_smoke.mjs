@@ -70,7 +70,6 @@ async function main() {
     await page.getByText('待上传', { exact: true }).waitFor();
     assert(errors.length === 0, `Browser errors: ${errors.join(' | ')}`);
 
-    await page.screenshot({ path: 'output/playwright/project-create-script-drop.png', fullPage: true });
     console.log(JSON.stringify({ status: 'PASS', baseUrl: BASE_URL, scriptLanguage: 'r', dependency: 'stats.csv' }, null, 2));
   } finally {
     await context.close();
