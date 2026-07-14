@@ -1881,3 +1881,34 @@ build_figure(fl9_data, stats_df, opr_fep_df)
 - drift/orphan 检查必须同时认识真实 artist GID 和 renderer 声明的虚拟可重放 GID。
 - 导出必须以最后一次成功预览状态为基准，不得只相信可能被兼容流程清理过的 session editLog。
 - 导出回归必须比较 preview 与 export 的 viewBox、物理宽高和方向，revision 相同不代表内容天然一致。
+
+---
+
+## 2026-07-14 11:35:28 +08:00 新建项目首屏脚本上传区文案支持拖入但未绑定 drop 事件
+
+**现象**
+
+- “1. 先读取绘图脚本”明确提示支持拖入 `.py/.R`，但把文件拖到该区域没有反应。
+- 页面下方脚本编辑框和进入工作区后的代码编辑器支持拖放，导致同一流程的交互不一致。
+
+**根因**
+
+- 首屏区域只有隐藏文件输入框和点击上传标签，没有 `dragenter/dragover/dragleave/drop` 事件。
+- 既有网页测试只调用文件输入框 `setInputFiles()`，没有构造真实 `DataTransfer` 和 `File`，因此未覆盖文案承诺的拖放路径。
+
+**修复**
+
+- 首屏整个脚本区域成为明确 drop zone，拖入时显示边框和“松开以上传”状态。
+- drop 继续复用 `readScriptFile()`，只接受 `.py/.R`，保留原语言识别、脚本内容和数据文件依赖提取逻辑。
+- 使用拖入深度计数处理子元素间的 `dragenter/dragleave`，减少状态闪烁。
+
+**验证**
+
+- 新增 `project_create_script_drop_smoke.mjs`，真实构造浏览器 `DataTransfer + File` 并触发 `dragenter/dragover/drop`。
+- R fixture 成功写入编辑器、识别为 `R / ggplot2`，并将 `stats.csv` 标记为待上传。
+- `scriptDataDependencies` 单测补充直接 `read.csv("stats.csv")` 覆盖。
+
+**防复发规则**
+
+- 上传区文案只要出现“拖入/拖拽”，对应区域必须有真实 drop 回归，不能用点击文件输入框代替。
+- 文件上传测试至少分别覆盖 file input 和 `DataTransfer/drop` 两条浏览器事件链。

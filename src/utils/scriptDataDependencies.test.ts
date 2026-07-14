@@ -14,7 +14,8 @@ again = pandas.read_csv('stats.csv')
     expect(extractReferencedDataFiles(`
 stats <- read.csv(uploaded_file_paths[["统计表.csv"]])
 matrix <- readxl::read_excel("data/matrix.xlsx")
-`)).toEqual(['统计表.csv', 'matrix.xlsx']);
+direct <- read.csv("stats.csv")
+`)).toEqual(['统计表.csv', 'matrix.xlsx', 'stats.csv']);
   });
 
   it('ignores URLs and non-tabular files', () => {

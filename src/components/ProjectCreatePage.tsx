@@ -169,11 +169,13 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
   const [isParsingData, setIsParsingData] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [copyLabel, setCopyLabel] = useState('复制 AI 提示词');
+  const [scriptUploadDragOver, setScriptUploadDragOver] = useState(false);
   const [scriptDragOver, setScriptDragOver] = useState(false);
   const [dataDragOver, setDataDragOver] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dataFileInputRef = useRef<HTMLInputElement>(null);
+  const scriptUploadDragDepthRef = useRef(0);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
@@ -611,7 +613,37 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
             </div>
           </div>
 
-          <section className="rounded-xl border border-emerald-200 bg-white p-6 shadow-sm">
+          <section
+            aria-label="脚本上传区域"
+            className={`rounded-xl border p-6 shadow-sm transition-colors ${
+              scriptUploadDragOver ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200' : 'border-emerald-200 bg-white'
+            }`}
+            onDragEnter={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              scriptUploadDragDepthRef.current += 1;
+              setScriptUploadDragOver(true);
+            }}
+            onDragOver={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              event.dataTransfer.dropEffect = 'copy';
+            }}
+            onDragLeave={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              scriptUploadDragDepthRef.current = Math.max(0, scriptUploadDragDepthRef.current - 1);
+              if (scriptUploadDragDepthRef.current === 0) setScriptUploadDragOver(false);
+            }}
+            onDrop={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              scriptUploadDragDepthRef.current = 0;
+              setScriptUploadDragOver(false);
+              const file = event.dataTransfer.files?.[0];
+              if (file) readScriptFile(file);
+            }}
+          >
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-800">1. 先读取绘图脚本</h2>
@@ -631,6 +663,11 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                 />
               </label>
             </div>
+            {scriptUploadDragOver && (
+              <div className="mt-4 rounded-lg border border-emerald-300 bg-white px-4 py-3 text-sm font-semibold text-emerald-800" role="status">
+                松开以上传 Python / R 绘图脚本
+              </div>
+            )}
             <div className="mt-5 grid gap-4 lg:grid-cols-[0.55fr,1.45fr]">
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                 <div className="text-xs font-semibold text-slate-700">脚本状态</div>
