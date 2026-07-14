@@ -170,6 +170,33 @@ function initSchema() {
       ON admin_audit_logs(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_admin_audit_actor
       ON admin_audit_logs(actor_user_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS error_reports (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      source TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      title TEXT,
+      message TEXT,
+      component TEXT,
+      operation TEXT,
+      error_name TEXT,
+      error_code TEXT,
+      route TEXT,
+      project_id TEXT,
+      figure_id TEXT,
+      client_version TEXT,
+      user_agent_family TEXT,
+      fingerprint TEXT NOT NULL UNIQUE,
+      occurrence_count INTEGER NOT NULL DEFAULT 1,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_error_reports_last_seen
+      ON error_reports(last_seen_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_error_reports_filters
+      ON error_reports(source, severity, status, last_seen_at DESC);
   `);
 
   const ignoreDuplicateColumnOnly = (e: unknown) => {
@@ -197,6 +224,8 @@ function initSchema() {
     "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
     "ALTER TABLE auth_sessions ADD COLUMN refresh_token_hash TEXT",
     "ALTER TABLE auth_sessions ADD COLUMN refresh_expires_at TEXT",
+    "ALTER TABLE error_reports ADD COLUMN project_id TEXT",
+    "ALTER TABLE error_reports ADD COLUMN figure_id TEXT",
   ].forEach((sql) => {
     try {
       db.prepare(sql).run();
@@ -209,6 +238,12 @@ function initSchema() {
       ON projects(user_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_user_updated
       ON sessions(user_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_project_files_project
+      ON project_files(project_id);
+    CREATE INDEX IF NOT EXISTS idx_project_figures_project
+      ON project_figures(project_id);
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_expires
+      ON auth_sessions(user_id, expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_sessions_refresh_hash
       ON auth_sessions(refresh_token_hash);
   `);
@@ -465,6 +500,216 @@ export function logAdminAudit(input: AdminAuditLogInput): void {
     input.userAgent?.slice(0, 512) ?? null,
     metadata,
   );
+}
+
+export type ErrorReportSeverity = 'info' | 'warning' | 'error' | 'critical';
+export type ErrorReportStatus = 'open' | 'triaged' | 'resolved' | 'ignored';
+
+export interface ErrorReportInput {
+  userId: string;
+  source: string;
+  severity: ErrorReportSeverity;
+  title?: string | null;
+  message?: string | null;
+  component?: string | null;
+  operation?: string | null;
+  errorName?: string | null;
+  errorCode?: string | null;
+  route?: string | null;
+  projectId?: string | null;
+  figureId?: string | null;
+  clientVersion?: string | null;
+  userAgentFamily?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ErrorReportSummary {
+  id: string;
+  userId: string;
+  userEmail: string | null;
+  source: string;
+  severity: ErrorReportSeverity;
+  status: ErrorReportStatus;
+  title: string | null;
+  message: string | null;
+  component: string | null;
+  operation: string | null;
+  errorName: string | null;
+  errorCode: string | null;
+  route: string | null;
+  projectId: string | null;
+  figureId: string | null;
+  clientVersion: string | null;
+  userAgentFamily: string | null;
+  fingerprint: string;
+  occurrenceCount: number;
+  metadata: Record<string, unknown>;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface ErrorReportListResult {
+  reports: ErrorReportSummary[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+function normalizeErrorReportSeverity(value: string): ErrorReportSeverity {
+  return value === 'critical' || value === 'warning' || value === 'info' ? value : 'error';
+}
+
+function normalizeErrorReportStatus(value: string): ErrorReportStatus {
+  return value === 'triaged' || value === 'resolved' || value === 'ignored' ? value : 'open';
+}
+
+function errorReportFingerprint(input: ErrorReportInput): string {
+  return sha256(JSON.stringify({
+    userId: input.userId,
+    source: input.source,
+    severity: input.severity,
+    title: input.title || '',
+    message: input.message || '',
+    component: input.component || '',
+    operation: input.operation || '',
+    errorName: input.errorName || '',
+    errorCode: input.errorCode || '',
+    route: input.route || '',
+    projectId: input.projectId || '',
+    figureId: input.figureId || '',
+  }));
+}
+
+function mapErrorReport(row: any): ErrorReportSummary {
+  let metadata: Record<string, unknown> = {};
+  try {
+    metadata = JSON.parse(row.metadata || '{}');
+  } catch {
+    metadata = { invalidMetadata: true };
+  }
+  return {
+    id: row.id,
+    userId: row.user_id,
+    userEmail: row.user_email ?? null,
+    source: row.source,
+    severity: normalizeErrorReportSeverity(row.severity),
+    status: normalizeErrorReportStatus(row.status),
+    title: row.title ?? null,
+    message: row.message ?? null,
+    component: row.component ?? null,
+    operation: row.operation ?? null,
+    errorName: row.error_name ?? null,
+    errorCode: row.error_code ?? null,
+    route: row.route ?? null,
+    projectId: row.project_id ?? null,
+    figureId: row.figure_id ?? null,
+    clientVersion: row.client_version ?? null,
+    userAgentFamily: row.user_agent_family ?? null,
+    fingerprint: row.fingerprint,
+    occurrenceCount: Number(row.occurrence_count || 0),
+    metadata,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+  };
+}
+
+export function upsertErrorReport(input: ErrorReportInput): ErrorReportSummary {
+  const fingerprint = errorReportFingerprint(input);
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO error_reports (
+      id, user_id, source, severity, title, message, component, operation,
+      error_name, error_code, route, project_id, figure_id, client_version,
+      user_agent_family, fingerprint, metadata
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(fingerprint) DO UPDATE SET
+      occurrence_count = occurrence_count + 1,
+      last_seen_at = datetime('now'),
+      metadata = excluded.metadata
+  `).run(
+    `er_${crypto.randomUUID()}`,
+    input.userId,
+    input.source,
+    input.severity,
+    input.title ?? null,
+    input.message ?? null,
+    input.component ?? null,
+    input.operation ?? null,
+    input.errorName ?? null,
+    input.errorCode ?? null,
+    input.route ?? null,
+    input.projectId ?? null,
+    input.figureId ?? null,
+    input.clientVersion ?? null,
+    input.userAgentFamily ?? null,
+    fingerprint,
+    JSON.stringify(input.metadata ?? {}).slice(0, 4096),
+  );
+  const row = db.prepare(`
+    SELECT er.*, u.email AS user_email
+    FROM error_reports er
+    LEFT JOIN users u ON u.id = er.user_id
+    WHERE er.fingerprint = ?
+  `).get(fingerprint);
+  return mapErrorReport(row);
+}
+
+export function listErrorReports(args: {
+  page?: number;
+  pageSize?: number;
+  source?: string | null;
+  severity?: string | null;
+  status?: string | null;
+  query?: string | null;
+}): ErrorReportListResult {
+  const page = Math.max(1, Math.floor(Number(args.page || 1)));
+  const pageSize = Math.max(1, Math.min(100, Math.floor(Number(args.pageSize || 25))));
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (args.source) {
+    where.push('er.source = ?');
+    params.push(args.source);
+  }
+  if (args.severity) {
+    where.push('er.severity = ?');
+    params.push(args.severity);
+  }
+  if (args.status) {
+    where.push('er.status = ?');
+    params.push(args.status);
+  }
+  if (args.query) {
+    where.push('(er.title LIKE ? OR er.message LIKE ? OR er.component LIKE ? OR er.error_code LIKE ? OR u.email LIKE ?)');
+    const like = `%${args.query}%`;
+    params.push(like, like, like, like, like);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const total = (getDb().prepare(`
+    SELECT COUNT(*) AS count
+    FROM error_reports er
+    LEFT JOIN users u ON u.id = er.user_id
+    ${whereSql}
+  `).get(...params) as { count: number }).count;
+  const rows = getDb().prepare(`
+    SELECT er.*, u.email AS user_email
+    FROM error_reports er
+    LEFT JOIN users u ON u.id = er.user_id
+    ${whereSql}
+    ORDER BY er.last_seen_at DESC, er.id DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, pageSize, (page - 1) * pageSize);
+  return { reports: rows.map(mapErrorReport), page, pageSize, total };
+}
+
+export function getErrorReportById(id: string): ErrorReportSummary | null {
+  const row = getDb().prepare(`
+    SELECT er.*, u.email AS user_email
+    FROM error_reports er
+    LEFT JOIN users u ON u.id = er.user_id
+    WHERE er.id = ?
+  `).get(id);
+  return row ? mapErrorReport(row) : null;
 }
 
 export function listAdminAuditLogs(limit = 100): AdminAuditLogEntry[] {

@@ -30,6 +30,7 @@ import {
   type DeploymentJobKind,
   type DeploymentMode,
 } from './src/utils/deploymentLifecycle';
+import { installAdminConsoleRoutes } from './server/admin/console';
 import { 
   listProjects, 
   getProject, 
@@ -232,6 +233,19 @@ async function startServer() {
     message: '管理操作过于频繁，请稍后再试。',
   });
 
+  const errorReportRateLimit = createRateLimiter({
+    windowMs: 60 * 1000,
+    max: Number(process.env.ERROR_REPORT_RATE_LIMIT_PER_MINUTE || 30),
+    message: '错误上报过于频繁，请稍后再试。',
+    key: req => {
+      const token = readBearerToken(req);
+      const tokenKey = token
+        ? crypto.createHash('sha256').update(token).digest('hex').slice(0, 24)
+        : 'anonymous';
+      return `${clientIp(req)}:${tokenKey}`;
+    },
+  });
+
   function renderConcurrencyLimit(): number {
     return boundedNumber(process.env.SCIFIGURE_RENDER_CONCURRENCY, 4, 1, 8);
   }
@@ -243,6 +257,16 @@ async function startServer() {
         ...renderWorkQueue.snapshot(),
         workers: activeRendererAborters.size,
       },
+    };
+  }
+
+  function adminConsoleRendererSnapshot() {
+    const snapshot = renderWorkQueue.snapshot();
+    return {
+      active: Number(snapshot.active || 0),
+      queued: Number(snapshot.queued || 0),
+      workers: activeRendererAborters.size,
+      concurrency: renderConcurrencyLimit(),
     };
   }
 
@@ -1307,6 +1331,15 @@ ${inner}
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '1mb', extended: false }));
   app.use(apiErrorHandler);
+
+  installAdminConsoleRoutes(app, {
+    requireAuth,
+    requireAdmin,
+    adminRateLimit,
+    errorReportRateLimit,
+    writeAdminAudit,
+    rendererSnapshot: adminConsoleRendererSnapshot,
+  });
 
   app.get('/api/health/live', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');

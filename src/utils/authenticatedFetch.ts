@@ -11,6 +11,8 @@ function isProtectedApiRequest(input: RequestInfo | URL): boolean {
       url.pathname.startsWith('/api/projects')
       || url.pathname.startsWith('/api/figure')
       || url.pathname.startsWith('/api/license')
+      || url.pathname.startsWith('/api/admin')
+      || url.pathname === '/api/error-reports'
       || url.pathname === '/api/auth/me'
       || url.pathname === '/api/auth/logout'
       || url.pathname === '/api/internal/legacy-retire-observation'

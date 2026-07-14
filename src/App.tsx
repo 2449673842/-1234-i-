@@ -32,6 +32,7 @@ import {
 } from './utils/draftTransaction';
 import { summarizeCodeChange } from './utils/codeHistory';
 import { AUTH_TOKEN_STORAGE_KEY } from './utils/authenticatedFetch';
+import { reportClientError } from './utils/clientErrorReporter';
 import type { FigureSession, EditEntry, PatchEntry, HistorySnapshot, ProjectHistoryState } from './schemas/manifest';
 import type { DraftPatch } from './schemas/draftPatchBatch';
 import type { EditingIntentApplyReport, EditingIntentSkippedTarget } from './schemas/editingIntent';
@@ -47,6 +48,13 @@ class EditorErrorBoundary extends React.Component<
   }
   componentDidCatch(error: Error, _info: ErrorInfo) {
     console.error('Editor crashed:', error, _info.componentStack);
+    void reportClientError({
+      source: 'editor',
+      severity: 'critical',
+      title: '编辑器组件崩溃',
+      message: error.message || '编辑器发生未知错误',
+      errorCode: 'editor_error_boundary',
+    });
   }
   render() {
     if (this.state.hasError) {
@@ -476,6 +484,20 @@ export default function App() {
   const [renderProgressText, setRenderProgressText] = useState<string | null>(null);
   const latestRequestIdByFigure = useRef<Record<string, string>>({});
   const activeProjectRenderRequests = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!renderError) return;
+    void reportClientError({
+      source: 'render',
+      severity: 'error',
+      title: `${spec.script_language === 'r' ? 'R' : 'Python'} 渲染失败`,
+      message: renderError,
+      errorCode: 'figure_render_failed',
+      projectId,
+      figureId: activeFigureId,
+      metadata: { language: spec.script_language || 'python' },
+    });
+  }, [activeFigureId, projectId, renderError, spec.script_language]);
 
   const beginProjectRenderRequest = (requestId: string) => {
     activeProjectRenderRequests.current.add(requestId);

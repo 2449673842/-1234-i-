@@ -1,7 +1,7 @@
 # SciFigure 安全、部署与运维副文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-13 19:42:42 +08:00
+> 更新时间：2026-07-14 09:55:23 +08:00
 > 复核范围：当前本地工作区；尚未等同于已提交发布版本  
 > 适用范围：用户账号、数据保护、代码执行、Docker、备份、管理员能力和生产上线
 
@@ -145,16 +145,21 @@ users.role: user/admin
 兑换码明文不进入数据库审计日志
 ```
 
-当前管理员通过服务器命令和受认证 API 操作。网页管理员后台已经有独立计划，但尚未实现。
+当前管理员授权/撤销仍通过服务器命令完成。独立网页管理员后台已在 `feature/admin-console` 完成 Phase A 和部分 Phase B，尚未合并或部署到云服务器。
 
-当前已实现的管理 API 只有：
+当前已实现的管理 API 包括：
 
 ```text
 POST /api/admin/redeem-codes
 GET /api/admin/audit-logs
+GET /api/admin/overview
+GET /api/admin/users
+GET /api/admin/error-reports
+GET /api/admin/error-reports/:id
+POST /api/error-reports（认证用户的脱敏结构化错误上报）
 ```
 
-用户列表、账号暂停、会话撤销、订阅修正、recent re-auth、2FA 和最后管理员保护仍属于管理员后台计划，不是当前能力。
+用户元数据列表已实现；账号暂停、会话撤销、订阅修正、recent re-auth、2FA 和最后管理员保护仍属于后续计划，不是当前能力。
 
 ### 3.4 Web 与接口
 
@@ -479,6 +484,15 @@ src/admin 独立前端模块
 ```
 
 后台不得提供任意命令、SQL、文件浏览、用户代码/数据查看或网页备份恢复。
+
+当前实现状态：
+
+```text
+已完成：/admin 独立分包、功能开关、概览、用户元数据、错误中心、审计日志
+已完成：错误上报限流、字段白名单、路径/敏感键拒绝、去重计数
+待完成：订阅/兑换码只读页、备份/渲染指标、错误处理状态写入
+待完成：Phase C 的 recent re-auth、reason、幂等和最后管理员保护
+```
 
 写操作必须具备：
 
