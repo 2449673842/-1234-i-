@@ -18,7 +18,12 @@ release_root=/opt/scifigure/releases
 release_dir="${release_root}/${build_id}"
 current_link=/opt/scifigure/current
 release_env=/etc/scifigure/release.env
+service_unit=/etc/systemd/system/scifigure.service
 state_dir=/var/lib/scifigure/deployment
+previous_file="$state_dir/previous-release"
+previous_env="$state_dir/previous-release.env"
+previous_unit="$state_dir/previous-service-unit"
+current_file="$state_dir/current-release"
 ready_url=http://127.0.0.1:3101/api/health/ready
 
 wait_for_ready() {
@@ -77,7 +82,7 @@ install -d -o scifigure -g scifigure -m 0750 "$release_dir"
 tar -xzf "$artifact" -C "$release_dir" --no-same-owner --no-same-permissions
 chown -R scifigure:scifigure "$release_dir"
 
-for required in package.json package-lock.json server.ts Dockerfile.renderer renderer; do
+for required in package.json package-lock.json server.ts Dockerfile.renderer renderer ops/systemd/scifigure.service; do
   if [[ ! -e "$release_dir/$required" ]]; then
     echo "Release artifact is missing: $required" >&2
     exit 1
@@ -147,19 +152,34 @@ chown -R root:scifigure "$release_dir"
 find "$release_dir" -type d -exec chmod 0750 {} +
 find "$release_dir" -type f -exec chmod 0640 {} +
 find "$release_dir/node_modules/.bin" -type f -exec chmod 0750 {} + 2>/dev/null || true
+candidate_unit="$release_dir/ops/systemd/scifigure.service"
+systemd-analyze verify "$candidate_unit"
 
 install -d -m 0755 "$state_dir"
+metadata_backup="$(mktemp -d "${state_dir}/metadata-backup.XXXXXX")"
+for state_name in previous-release previous-release.env previous-service-unit current-release; do
+  if [[ -e "$state_dir/$state_name" ]]; then
+    cp -a -- "$state_dir/$state_name" "$metadata_backup/$state_name"
+  fi
+done
 old_release="$(readlink -f "$current_link" 2>/dev/null || true)"
 old_env="$(mktemp "${state_dir}/release-env.XXXXXX")"
+old_unit="$(mktemp "${state_dir}/service-unit.XXXXXX")"
 if [[ -f "$release_env" ]]; then
   cp -- "$release_env" "$old_env"
 else
   : > "$old_env"
 fi
+if [[ -f "$service_unit" ]]; then
+  cp -- "$service_unit" "$old_unit"
+else
+  : > "$old_unit"
+fi
 
 next_link="${current_link}.next"
 ln -sfn "$release_dir" "$next_link"
 next_env="${release_env}.next"
+next_unit="${service_unit}.next"
 cat > "$next_env" <<EOF
 PORT=3101
 SCIFIGURE_BUILD_ID=${build_id}
@@ -167,50 +187,124 @@ SCIFIGURE_RENDERER_IMAGE=${renderer_image}
 EOF
 chown root:scifigure "$next_env"
 chmod 0640 "$next_env"
+install -o root -g root -m 0644 "$candidate_unit" "$next_unit"
+
+cleanup_deploy_temps() {
+  rm -f -- "$old_env" "$old_unit" "$next_link" "$next_env" "$next_unit"
+  rm -f -- "$state_dir"/*.next "$state_dir"/*.restore
+  rm -rf -- "$metadata_backup"
+}
+
+restore_metadata_snapshot() {
+  local state_name target restore
+  for state_name in previous-release previous-release.env previous-service-unit current-release; do
+    target="$state_dir/$state_name"
+    restore="${target}.restore"
+    rm -f -- "$restore"
+    if [[ -e "$metadata_backup/$state_name" ]]; then
+      cp -a -- "$metadata_backup/$state_name" "$restore" || return 1
+      mv -Tf "$restore" "$target" || return 1
+    else
+      rm -f -- "$target" || return 1
+    fi
+  done
+}
+
+restore_previous_state() {
+  local label="$1"
+  trap - ERR
+  set +e
+  if ! stop_service; then
+    echo "FATAL: failed candidate is still running; release pointers were not restored" >&2
+    return 1
+  fi
+
+  if [[ -n "$old_release" && -r "$old_release/dist/server.cjs" ]]; then
+    ln -sfn "$old_release" "$next_link" && mv -Tf "$next_link" "$current_link" || return 1
+  else
+    rm -f -- "$current_link" || return 1
+  fi
+
+  if [[ -s "$old_env" ]]; then
+    cp -- "$old_env" "$next_env" || return 1
+    chown root:scifigure "$next_env" || return 1
+    chmod 0640 "$next_env" || return 1
+    mv -f "$next_env" "$release_env" || return 1
+  else
+    rm -f -- "$release_env" || return 1
+  fi
+
+  if [[ -s "$old_unit" ]]; then
+    install -o root -g root -m 0644 "$old_unit" "$next_unit" || return 1
+    mv -Tf "$next_unit" "$service_unit" || return 1
+  else
+    rm -f -- "$service_unit" || return 1
+  fi
+  systemctl daemon-reload || return 1
+  restore_metadata_snapshot || return 1
+
+  if [[ -n "$old_release" && -r "$old_release/dist/server.cjs" ]]; then
+    start_and_wait "$label"
+    return $?
+  fi
+  return 0
+}
+
+transaction_active=0
+handle_deploy_error() {
+  local exit_code=$?
+  trap - ERR
+  set +e
+  if (( transaction_active )); then
+    restore_previous_state "restored previous release after deployment command failure" || true
+  fi
+  cleanup_deploy_temps
+  exit "$exit_code"
+}
+trap handle_deploy_error ERR
 
 if ! stop_service; then
   echo "Current service is still active; refusing to replace the SQLite writer" >&2
+  trap - ERR
+  cleanup_deploy_temps
   exit 1
 fi
+transaction_active=1
+mv -Tf "$next_unit" "$service_unit"
 mv -Tf "$next_link" "$current_link"
 mv -f "$next_env" "$release_env"
 systemctl daemon-reload
-systemctl enable scifigure.service >/dev/null
 if ! start_and_wait "candidate ${build_id}"; then
   journalctl -u scifigure.service -n 100 --no-pager >&2 || true
-  if ! stop_service; then
-    echo "FATAL: failed candidate is still running; release pointers were not restored" >&2
-    rm -f -- "$old_env"
-    exit 1
-  fi
-  if [[ -n "$old_release" && -r "$old_release/dist/server.cjs" ]]; then
-    ln -sfn "$old_release" "$next_link"
-    mv -Tf "$next_link" "$current_link"
-    if [[ -s "$old_env" ]]; then
-      cp -- "$old_env" "$release_env"
-      chown root:scifigure "$release_env"
-      chmod 0640 "$release_env"
-    fi
-    if start_and_wait "restored previous release"; then
-      echo "Candidate failed readiness; previous release restored: $old_release" >&2
-    else
-      journalctl -u scifigure.service -n 100 --no-pager >&2 || true
-      echo "FATAL: candidate and previous release both failed readiness" >&2
-    fi
+  if restore_previous_state "restored previous release"; then
+    echo "Candidate failed readiness; previous release restored: ${old_release:-none}" >&2
   else
-    echo "Initial release failed readiness; no previous release existed" >&2
+    journalctl -u scifigure.service -n 100 --no-pager >&2 || true
+    echo "FATAL: candidate and previous release both failed readiness" >&2
   fi
-  rm -f -- "$old_env"
+  transaction_active=0
+  trap - ERR
+  cleanup_deploy_temps
   exit 1
 fi
+systemctl enable scifigure.service >/dev/null
 
 if [[ -n "$old_release" && -r "$old_release/dist/server.cjs" ]]; then
-  printf '%s\n' "$old_release" > "$state_dir/previous-release"
-  cp -- "$old_env" "$state_dir/previous-release.env"
-  chmod 0600 "$state_dir/previous-release" "$state_dir/previous-release.env"
+  printf '%s\n' "$old_release" > "${previous_file}.next"
+  cp -- "$old_env" "${previous_env}.next"
+  cp -- "$old_unit" "${previous_unit}.next"
+  chmod 0600 "${previous_file}.next" "${previous_env}.next" "${previous_unit}.next"
 fi
-printf '%s\n' "$release_dir" > "$state_dir/current-release"
-chmod 0644 "$state_dir/current-release"
-rm -f -- "$old_env"
+printf '%s\n' "$release_dir" > "${current_file}.next"
+chmod 0644 "${current_file}.next"
+if [[ -e "${previous_file}.next" ]]; then
+  mv -Tf "${previous_file}.next" "$previous_file"
+  mv -Tf "${previous_env}.next" "$previous_env"
+  mv -Tf "${previous_unit}.next" "$previous_unit"
+fi
+mv -Tf "${current_file}.next" "$current_file"
+transaction_active=0
+trap - ERR
+cleanup_deploy_temps
 
 echo "Deployed ${build_id}; one SciFigure instance is active"

@@ -180,7 +180,7 @@ async function prepareProject(page) {
       vectorBBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'VECTOR_B') || null,
     };
   }, { baseUrl: BASE_URL, script });
-  await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
   await waitForPreviewReady(page);
   return fixture;
 }
@@ -515,7 +515,7 @@ async function run() {
 
   let projectId = null;
   try {
-    await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
     const fixture = await prepareProject(page);
     projectId = fixture.projectId;
     diagnostics.fixture = fixture;

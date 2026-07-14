@@ -26,7 +26,9 @@ StateDirectoryMode=0700
 NoNewPrivileges=true
 PrivateDevices=true
 ProtectSystem=strict
-ProtectHome=true
+# Rootless Docker exposes its socket under /run/user; keep that tree visible but immutable.
+ProtectHome=read-only
+InaccessiblePaths=/home /root
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

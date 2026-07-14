@@ -30,6 +30,9 @@ assert.match(service, /^WorkingDirectory=\/opt\/scifigure\/current$/m);
 assert.match(service, /^KillSignal=SIGTERM$/m);
 assert.match(service, /^TimeoutStopSec=210s$/m);
 assert.doesNotMatch(service, /^PrivateTmp=true$/m, 'PrivateTmp would hide bind mounts from rootless Docker');
+assert.match(service, /^ProtectHome=read-only$/m, 'Rootless Docker socket under /run/user must remain visible');
+assert.doesNotMatch(service, /^ProtectHome=true$/m, 'ProtectHome=true would hide the rootless Docker socket');
+assert.match(service, /^InaccessiblePaths=\/home \/root$/m);
 
 const commonEnv = read('ops/env/scifigure-common.env.example');
 assert.match(commonEnv, /^SCIFIGURE_BIND_HOST=127\.0\.0\.1$/m);
@@ -63,9 +66,18 @@ assert.doesNotMatch(deployScript, /systemctl stop scifigure\.service 2>\/dev\/nu
 assert.match(deployScript, /refusing to replace the SQLite writer/);
 assert.match(deployScript, /failed candidate is still running; release pointers were not restored/);
 assert.match(deployScript, /if ! start_and_wait "candidate \$\{build_id\}"/);
-assert.match(deployScript, /if start_and_wait "restored previous release"/);
+assert.match(deployScript, /if restore_previous_state "restored previous release"/);
 assert.match(deployScript, /Candidate failed readiness; previous release restored/);
 assert.match(deployScript, /previous-release\.env/);
+assert.match(deployScript, /previous-service-unit/);
+assert.match(deployScript, /systemd-analyze verify "\$candidate_unit"/);
+assert.match(deployScript, /install -o root -g root -m 0644 "\$candidate_unit" "\$next_unit"/);
+assert.match(deployScript, /mv -Tf "\$next_unit" "\$service_unit"/);
+assert.match(deployScript, /handle_deploy_error\(\)/);
+assert.match(deployScript, /restore_previous_state\(\)/);
+assert.match(deployScript, /metadata-backup/);
+assert.match(deployScript, /restore_metadata_snapshot\(\)/);
+assert.match(deployScript, /mv -Tf "\$\{previous_unit\}\.next" "\$previous_unit"/);
 assert.doesNotMatch(deployScript, /scifigure@(blue|green)/);
 for (const flag of [
   'VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2',
@@ -93,7 +105,15 @@ assert.match(rollback, /previous-release/);
 assert.match(rollback, /Rollback target failed readiness; current release restored/);
 assert.match(rollback, /failed rollback target is still running; release pointers were not restored/);
 assert.match(rollback, /if ! start_and_wait "rollback target"/);
-assert.match(rollback, /if start_and_wait "restored current release"/);
+assert.match(rollback, /if restore_current_state "restored current release"/);
+assert.match(rollback, /previous-service-unit/);
+assert.match(rollback, /install -o root -g root -m 0644 "\$previous_unit" "\$next_unit"/);
+assert.match(rollback, /mv -Tf "\$next_unit" "\$service_unit"/);
+assert.match(rollback, /handle_rollback_error\(\)/);
+assert.match(rollback, /restore_current_state\(\)/);
+assert.match(rollback, /rollback-metadata-backup/);
+assert.match(rollback, /restore_metadata_snapshot\(\)/);
+assert.match(rollback, /mv -Tf "\$\{current_file\}\.next" "\$current_file"/);
 assert.doesNotMatch(rollback, /systemctl stop scifigure\.service 2>\/dev\/null \|\| true/);
 assert.doesNotMatch(rollback, /target_slot/);
 
