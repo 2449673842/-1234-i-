@@ -1983,7 +1983,9 @@ ${inner}
       let copiedName = copiedBySource.get(source);
       if (!copiedName) {
         copiedName = `${copiedBySource.size}_${path.basename(source)}`;
-        fs.copyFileSync(source, path.join(filesDir, copiedName));
+        const copiedPath = path.join(filesDir, copiedName);
+        fs.copyFileSync(source, copiedPath);
+        fs.chmodSync(copiedPath, 0o444);
         copiedBySource.set(source, copiedName);
       }
       mapped[key] = `/work/files/${copiedName}`;
@@ -2008,12 +2010,23 @@ ${inner}
     const timeoutMs = options.timeoutMs ?? (runtime === 'r' ? configuredRTimeout : scriptName === 'introspector.py' ? 45_000 : 20_000);
     const image = process.env.SCIFIGURE_RENDERER_IMAGE || 'scifigure-renderer:latest';
     const containerName = `scifigure-render-${randomUUID().replace(/-/g, '')}`;
-    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-render-job-'));
-    const filesDir = path.join(workDir, 'files');
-    fs.mkdirSync(filesDir, { recursive: true });
-    const preparedPayload = copyAllowedRendererFiles(payload as any, filesDir);
-    const payloadFile = path.join(workDir, 'payload.json');
-    fs.writeFileSync(payloadFile, JSON.stringify(preparedPayload), 'utf-8');
+    const taskRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-render-task-'));
+    const workDir = path.join(taskRoot, 'work');
+    try {
+      fs.chmodSync(taskRoot, 0o700);
+      fs.mkdirSync(workDir, { mode: 0o755 });
+      fs.chmodSync(workDir, 0o755);
+      const filesDir = path.join(workDir, 'files');
+      fs.mkdirSync(filesDir, { mode: 0o755 });
+      fs.chmodSync(filesDir, 0o755);
+      const preparedPayload = copyAllowedRendererFiles(payload as any, filesDir);
+      const payloadFile = path.join(workDir, 'payload.json');
+      fs.writeFileSync(payloadFile, JSON.stringify(preparedPayload), 'utf-8');
+      fs.chmodSync(payloadFile, 0o444);
+    } catch (error) {
+      fs.rmSync(taskRoot, { recursive: true, force: true });
+      throw error;
+    }
     const payloadStageMs = roundedDuration(payloadStageStartedAt);
     const command = runtime === 'r'
       ? ['Rscript', '/opt/scifigure/renderer/r_renderer.R', '--payload-file', '/work/payload.json']
@@ -2056,7 +2069,7 @@ ${inner}
       };
       const untrackAborter = trackRendererAborter(abort);
       const cleanup = () => {
-        try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* already removed */ }
+        try { fs.rmSync(taskRoot, { recursive: true, force: true }); } catch { /* already removed */ }
       };
       const finishError = (error: Error) => {
         if (settled) return;

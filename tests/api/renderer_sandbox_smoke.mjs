@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 const repoRoot = process.cwd();
+const originalUmask = process.umask(0o077);
 let BASE_URL = process.env.SCIFIGURE_URL || '';
 let ownedServer = null;
 let tempDir = null;
@@ -204,4 +205,5 @@ try {
   process.exitCode = 1;
 } finally {
   await cleanupServer();
+  process.umask(originalUmask);
 }
