@@ -816,6 +816,13 @@ async function startServer() {
     return 'application/octet-stream';
   }
 
+  function rasterExportDpi(format: string, dpi: unknown): number | null {
+    const normalized = format.toLowerCase();
+    if (!['png', 'tiff', 'tif'].includes(normalized)) return null;
+    const parsed = Number(dpi || 300);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 300;
+  }
+
   function projectExportsDir(projectId: string): string {
     const projectDir = projectRootDir(projectId);
     const exportsDir = safeResolveUnder(projectDir, path.join(projectDir, 'exports'));
@@ -5083,7 +5090,7 @@ ${inner}
             figureId: targetFigId,
             name: assetName,
             format: effectiveFigureFormat,
-            dpi: dpi || 300,
+            dpi: rasterExportDpi(effectiveFigureFormat, dpi),
             svg: matchedFig.svg,
             binaryB64: matchedFig.binary_b64 || null,
             thumbnailSvg: matchedFig.svg,
@@ -5122,7 +5129,7 @@ ${inner}
                 figureId: `${targetFigId}:${panel.subplotId}`,
                 name: `${assetName}_panel_${panelIndex + 1}`,
                 format: subplotFormat,
-                dpi: dpi || 300,
+                dpi: rasterExportDpi(subplotFormat, dpi),
                 svg: panel.svg,
                 binaryB64: subplotBinaryB64,
                 thumbnailSvg: panel.svg,

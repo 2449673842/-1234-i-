@@ -1,10 +1,30 @@
 import type { EditEntry, Manifest } from '../schemas/manifest';
+import type { PatchEntry } from '../schemas/manifest';
+import type { FigureSpec } from '../types';
 
 const PREVIEW_GLOBAL_PROPS = ['figure.width_in', 'figure.height_in', 'figure.dpi'] as const;
 const DURABLE_VIRTUAL_GIDS = new Set(['global', 'font-center-xticks', 'font-center-yticks']);
 
 export function isDurableVirtualEditGid(gid: string): boolean {
   return DURABLE_VIRTUAL_GIDS.has(gid);
+}
+
+export function figureDpiFromPatches(patches: readonly PatchEntry[]): number | null {
+  for (let index = patches.length - 1; index >= 0; index -= 1) {
+    const patch = patches[index];
+    if (!('gid' in patch) || patch.gid !== 'global' || patch.prop !== 'figure.dpi') continue;
+    const dpi = Number(patch.value);
+    if (Number.isFinite(dpi) && dpi > 0) return dpi;
+  }
+  return null;
+}
+
+export function synchronizeFigureDpiSpec(spec: FigureSpec, dpi: number): FigureSpec {
+  return {
+    ...spec,
+    figure: { ...spec.figure, dpi },
+    export: { ...spec.export, dpi },
+  };
 }
 
 export function mergePreviewGlobalsIntoEditLog(

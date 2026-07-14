@@ -133,6 +133,12 @@ function bufferMagic(format, binaryB64) {
   return false;
 }
 
+function pngDimensions(binaryB64) {
+  const buf = Buffer.from(binaryB64 || '', 'base64');
+  if (buf.length < 24 || buf.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') return null;
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
 async function createProjectAndRender() {
   const spec = {
     plot_type: 'custom',
@@ -215,6 +221,7 @@ async function runApiExportMatrix(projectId) {
       : figure?.format === format && bufferMagic(format, figure?.binary_b64);
     const assetOk = figure?.asset?.figureId === 'fig_2'
       && figure?.asset?.format === figure?.format
+      && figure?.asset?.dpi === (['png', 'tiff'].includes(figure?.format) ? 300 : null)
       && figure?.asset?.metadata?.exportedFrom === 'fig_2'
       && figure?.asset?.metadata?.requestedFormat === format;
     matrix[format] = {
@@ -233,6 +240,30 @@ async function runApiExportMatrix(projectId) {
       JSON.stringify(matrix[format]),
     );
   }
+
+  const pngDpiExports = {};
+  for (const dpi of [150, 300, 600]) {
+    const data = await requestJson(`/api/projects/${projectId}/export`, {
+      method: 'POST',
+      body: JSON.stringify({ figureId: 'fig_1', format: 'png', dpi, saveToLibrary: false }),
+    });
+    const figure = data.figures?.[0];
+    pngDpiExports[dpi] = pngDimensions(figure?.binary_b64);
+  }
+  const dpi150 = pngDpiExports[150];
+  const dpi300 = pngDpiExports[300];
+  const dpi600 = pngDpiExports[600];
+  const pngDpiOk = dpi150 && dpi300 && dpi600
+    && Math.abs(dpi300.width / dpi150.width - 2) < 0.02
+    && Math.abs(dpi300.height / dpi150.height - 2) < 0.02
+    && Math.abs(dpi600.width / dpi300.width - 2) < 0.02
+    && Math.abs(dpi600.height / dpi300.height - 2) < 0.02;
+  diagnostics.pngDpiExports = pngDpiExports;
+  record(
+    'X1b-png-dpi-pixels',
+    pngDpiOk ? 'PASS' : 'FAIL',
+    JSON.stringify(pngDpiExports),
+  );
 
   const allSvg = await requestJson(`/api/projects/${projectId}/export`, {
     method: 'POST',
@@ -427,6 +458,42 @@ async function runPendingExportBrowserCheck(projectId, spec, rendered) {
     });
 
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await setAppState(page, projectId, spec, rendered, 'editor');
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+    await waitForPreviewReady(page);
+    const propertyDpi = page.locator('input[data-param-gid="global"][data-param-prop="figure.dpi"]');
+    await propertyDpi.fill('600');
+    await propertyDpi.blur();
+    const dpiPatchResponse = page.waitForResponse(response => (
+      response.url().includes('/api/figure/patch')
+      && response.request().method() === 'POST'
+      && response.status() >= 200
+      && response.status() < 300
+    ), { timeout: 90000 });
+    await page.getByRole('button', { name: /应用当前图/ }).first().click();
+    await dpiPatchResponse;
+    await waitForPreviewReady(page);
+    const dpiExportNav = await clickText(page, '导出图形', 3000) || await clickText(page, '导出', 3000);
+    await page.waitForTimeout(500);
+    const dpiControl = page.locator('select[data-export-dpi]');
+    const propertyDpiSynced = dpiExportNav && await dpiControl.inputValue() === '600';
+    record(
+      'X3a-property-dpi-sync',
+      propertyDpiSynced ? 'PASS' : 'FAIL',
+      `navigated=${dpiExportNav}, exportDpi=${await dpiControl.inputValue()}`,
+    );
+    const vectorDpiDisabled = await dpiControl.isDisabled().catch(() => false);
+    const vectorExplanation = (await getBodyText(page)).includes('当前为矢量格式');
+    const pngSelected = await clickText(page, 'PNG', 3000);
+    const rasterDpiEnabled = pngSelected && !(await dpiControl.isDisabled().catch(() => true));
+    if (rasterDpiEnabled) await dpiControl.selectOption('600');
+    const rasterExplanation = (await getBodyText(page)).includes('PNG/TIFF 的 DPI');
+    record(
+      'X3b-dpi-ui-semantics',
+      vectorDpiDisabled && vectorExplanation && rasterDpiEnabled && await dpiControl.inputValue() === '600' && rasterExplanation ? 'PASS' : 'FAIL',
+      `vectorDisabled=${vectorDpiDisabled}, vectorExplanation=${vectorExplanation}, rasterEnabled=${rasterDpiEnabled}, value=${await dpiControl.inputValue()}, rasterExplanation=${rasterExplanation}`,
+    );
+
     await setAppState(page, projectId, spec, rendered, 'editor');
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
     await waitForPreviewReady(page);

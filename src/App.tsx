@@ -33,6 +33,7 @@ import {
 import { summarizeCodeChange } from './utils/codeHistory';
 import { AUTH_TOKEN_STORAGE_KEY } from './utils/authenticatedFetch';
 import { reportClientError } from './utils/clientErrorReporter';
+import { figureDpiFromPatches, synchronizeFigureDpiSpec } from './utils/exportPreviewState';
 import type { FigureSession, EditEntry, PatchEntry, HistorySnapshot, ProjectHistoryState } from './schemas/manifest';
 import type { DraftPatch } from './schemas/draftPatchBatch';
 import type { EditingIntentApplyReport, EditingIntentSkippedTarget } from './schemas/editingIntent';
@@ -926,6 +927,10 @@ export default function App() {
         }
 
         if (data.status === 'success') {
+          const appliedDpi = figureDpiFromPatches(patches);
+          if (appliedDpi !== null) {
+            setSpec(current => synchronizeFigureDpiSpec(current, appliedDpi));
+          }
           if (needsBackendRender) {
             setRenderLog(prev => [...prev, `> [完成] ${targetFigureId} 参数已应用，预览已更新`]);
           }
@@ -1028,6 +1033,10 @@ export default function App() {
       try {
         const res = await patch(stripPatchMetadata(patches));
         if (res.status === 'success') {
+          const appliedDpi = figureDpiFromPatches(patches);
+          if (appliedDpi !== null) {
+            setSpec(current => synchronizeFigureDpiSpec(current, appliedDpi));
+          }
           if (needsBackendRender) {
             setRenderLog(prev => [...prev, `> [完成] 参数已应用，预览已更新`]);
           }

@@ -2220,7 +2220,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 "type": "number",
                 "value": fig.dpi if hasattr(fig, "dpi") else 150,
                 "min": 72,
-                "max": 600,
+                "max": 1200,
                 "step": 1,
             },
         },
@@ -3418,7 +3418,7 @@ def replay_render(
                 fig.savefig(png_buf, format='png', dpi=dpi, bbox_inches='tight')
                 png_buf.seek(0)
                 img = Image.open(png_buf)
-                img.save(buf, format='TIFF', compression='tiff_lzw')
+                img.save(buf, format='TIFF', compression='tiff_lzw', dpi=(dpi, dpi))
             else:
                 fig.savefig(buf, format=fmt, dpi=dpi, bbox_inches='tight')
             binary_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')

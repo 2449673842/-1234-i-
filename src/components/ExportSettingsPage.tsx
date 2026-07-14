@@ -12,6 +12,11 @@ const DPI_OPTIONS = [
   { value: 600, label: '600 dpi (高质量 - Nature/Science 推荐)' },
   { value: 1200, label: '1200 dpi (极高清晰度线图)' },
 ];
+const RASTER_EXPORT_FORMATS = new Set(['PNG', 'TIFF', 'TIF']);
+
+function isRasterExportFormat(format: string | undefined | null) {
+  return RASTER_EXPORT_FORMATS.has(String(format || '').toUpperCase());
+}
 
 interface ExportAsset {
   assetId: string;
@@ -130,6 +135,7 @@ export function ExportSettingsPage({
 }) {
   const exportConfig = spec.export ?? { format: 'PDF', dpi: 600, color_mode: 'RGB', embed_fonts: true };
   const figureConfig = spec.figure ?? { width: 100, height: 80, unit: 'mm', dpi: exportConfig.dpi };
+  const rasterDpiApplies = isRasterExportFormat(exportConfig.format);
   const [assets, setAssets] = useState<ExportAsset[]>([]);
   const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
   const [assetSearch, setAssetSearch] = useState('');
@@ -436,6 +442,7 @@ export function ExportSettingsPage({
     try {
       const selectedFormat = formatOverride || exportConfig.format || 'PDF';
       const selectedDpi = exportConfig.dpi || 600;
+      const selectedFormatUsesDpi = isRasterExportFormat(selectedFormat);
       const isProjectExport = Boolean(projectId && activeFigureId);
 
       if (!isProjectExport && !figSession?.sessionId) {
@@ -446,7 +453,7 @@ export function ExportSettingsPage({
       setIsExporting(true);
       setExportProgress({
         phase: '准备导出',
-        detail: `正在准备 ${selectedFormat.toUpperCase()} · ${selectedDpi} dpi${includeSubplotExports ? ' · 包含子图' : ''}`,
+        detail: `正在准备 ${selectedFormat.toUpperCase()} · ${selectedFormatUsesDpi ? `${selectedDpi} dpi` : '矢量输出'}${includeSubplotExports ? ' · 包含子图' : ''}`,
         percent: 12,
       });
 
@@ -633,14 +640,21 @@ export function ExportSettingsPage({
                 <div>
                   <label className="block text-sm font-semibold text-slate-700 mb-2">分辨率 (DPI)</label>
                   <select
+                    data-export-dpi
                     value={exportConfig.dpi}
                     onChange={(e) => updateExportDpi(Number(e.target.value))}
-                    className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={!rasterDpiApplies}
+                    className="w-full border border-slate-300 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400"
                   >
                     {DPI_OPTIONS.map(opt => (
                       <option key={opt.value} value={opt.value}>{opt.label}</option>
                     ))}
                   </select>
+                  <p className="mt-2 text-xs text-slate-500">
+                    {rasterDpiApplies
+                      ? 'PNG/TIFF 的 DPI 会同步改变输出像素尺寸，并写入文件分辨率元数据。'
+                      : '当前为矢量格式，线条和文字可无损缩放；DPI 不决定整体清晰度。'}
+                  </p>
                 </div>
 
                 <div>

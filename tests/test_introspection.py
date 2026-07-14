@@ -963,6 +963,33 @@ fig.tight_layout()
             self.assertAlmostEqual(patched_titles[gid]["currentProps"]["y"], target["y"], places=4)
             self.assertEqual(patched_titles[gid]["currentProps"]["coord_system"], "axes")
 
+    def test_raster_export_dpi_controls_pixels_and_tiff_metadata(self):
+        import base64
+        import io
+        from PIL import Image
+
+        script = '''
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(figsize=(4, 3))
+ax.plot([0, 1, 2], [1, 3, 2])
+ax.set_title("DPI export")
+'''
+        png_150 = replay_render(script, dpi=150, export_format="png")
+        png_300 = replay_render(script, dpi=300, export_format="png")
+        image_150 = Image.open(io.BytesIO(base64.b64decode(png_150["figures"][0]["binary_b64"])))
+        image_300 = Image.open(io.BytesIO(base64.b64decode(png_300["figures"][0]["binary_b64"])))
+        self.assertAlmostEqual(image_300.width / image_150.width, 2.0, delta=0.02)
+        self.assertAlmostEqual(image_300.height / image_150.height, 2.0, delta=0.02)
+        self.assertAlmostEqual(float(image_150.info["dpi"][0]), 150, delta=1)
+        self.assertAlmostEqual(float(image_300.info["dpi"][0]), 300, delta=1)
+
+        tiff_600 = replay_render(script, dpi=600, export_format="tiff")
+        tiff_image = Image.open(io.BytesIO(base64.b64decode(tiff_600["figures"][0]["binary_b64"])))
+        tiff_dpi = tiff_image.info.get("dpi")
+        self.assertIsNotNone(tiff_dpi)
+        self.assertAlmostEqual(float(tiff_dpi[0]), 600, delta=1)
+        self.assertAlmostEqual(float(tiff_dpi[1]), 600, delta=1)
+
     def test_axis_tick_label_offset_moves_text_without_changing_axis_limits(self):
         script = """
 import matplotlib.pyplot as plt

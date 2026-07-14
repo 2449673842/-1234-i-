@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { EditEntry, Manifest } from '../schemas/manifest';
-import { isDurableVirtualEditGid, mergePreviewGlobalsIntoEditLog } from './exportPreviewState';
+import { figureDpiFromPatches, isDurableVirtualEditGid, mergePreviewGlobalsIntoEditLog, synchronizeFigureDpiSpec } from './exportPreviewState';
+import { defaultSpec } from '../types';
 
 const existing: EditEntry[] = [{
   gid: 'title.0', prop: 'fontsize', value: 14, mode: 'backend_patch', timestamp: 10,
@@ -32,5 +33,15 @@ describe('export preview state recovery', () => {
     expect(isDurableVirtualEditGid('global')).toBe(true);
     expect(isDurableVirtualEditGid('font-center-xticks')).toBe(true);
     expect(isDurableVirtualEditGid('title.0')).toBe(false);
+  });
+
+  it('synchronizes an applied property-panel DPI with preview and export settings', () => {
+    const dpi = figureDpiFromPatches([
+      { op: 'set', mode: 'backend_patch', gid: 'global', prop: 'figure.dpi', value: 600 },
+    ]);
+    expect(dpi).toBe(600);
+    const synchronized = synchronizeFigureDpiSpec(defaultSpec, dpi!);
+    expect(synchronized.figure.dpi).toBe(600);
+    expect(synchronized.export.dpi).toBe(600);
   });
 });
