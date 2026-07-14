@@ -304,6 +304,7 @@ async function preparePythonProject(page) {
     }));
     const objects = rendered.figures[0]?.manifest?.objects || [];
     const annotation = objects.find(object => object?.currentProps?.text === 'DRAG_ANN');
+    const title = objects.find(object => object?.id === 'title.0');
     const xlabel = objects.find(object => object?.id === 'xlabel.0');
     const ylabel = objects.find(object => object?.id === 'ylabel.0');
     return {
@@ -312,6 +313,7 @@ async function preparePythonProject(page) {
       annotationId: annotation?.id || null,
       annotationArrowId: annotation?.identity?.relation?.arrowId || null,
       annotationRole: annotation?.role || null,
+      titlePosition: title?.currentProps || null,
       xlabelPosition: xlabel?.currentProps || null,
       ylabelPosition: ylabel?.currentProps || null,
     };
@@ -570,6 +572,56 @@ async function run() {
           axisDragModeOn && axisLabelsFollowed && xlabelPending && ylabelPending && axisConfirmed && axisRequests.length === 1
             && axisPatches.length === 2 && directionsCorrect && returnedMatches ? 'PASS' : 'FAIL',
           `dragMode=${axisDragModeOn}, livePreview=${axisLabelsFollowed}, xlabelPending=${xlabelPending}, ylabelPending=${ylabelPending}, confirmed=${axisConfirmed}, patches=${JSON.stringify(axisPatches)}, returnedMatches=${returnedMatches}`,
+        );
+      }
+
+      await setSelectedGidsAndReload(page, []);
+      const titleBox = await findBoxByText(page, 'Drag Extended Figure');
+      if (!titleBox || !fixture.titlePosition) {
+        record('D1c-title-drag', 'BLOCKED', `title=${Boolean(titleBox)}, props=${Boolean(fixture.titlePosition)}`);
+      } else {
+        await ensureDragMode(page, true);
+        const titleGeometry = await dragBox(page, titleBox, 55, -35);
+        diagnostics.titleDragGeometry = titleGeometry;
+        const titlePending = (await getBodyText(page)).includes('已累计移动 1 个文本对象');
+        const titleConfirmStart = apiRequests.length;
+        const titleResponsePromise = page.waitForResponse(response => (
+          response.url().includes('/api/figure/patch')
+          && response.request().method() === 'POST'
+        ), { timeout: 30000 });
+        const titleConfirmed = titlePending && await clickVisibleText(page, '确认位置', 3000);
+        const titleResponse = titleConfirmed ? await titleResponsePromise : null;
+        const titleResponseBody = titleResponse ? await titleResponse.json().catch(() => null) : null;
+        if (titleConfirmed) {
+          await waitForApiSettle(page, titleConfirmStart, 30000);
+          await waitForPreviewReady(page);
+        }
+        const titleRequests = apiRequests.slice(titleConfirmStart).filter(request => request.url.includes('/api/figure/patch'));
+        const titleRequestBody = parseJson(titleRequests[0]?.postData);
+        const titlePatches = Array.isArray(titleRequestBody?.patches)
+          ? titleRequestBody.patches.filter(patch => patch?.gid === 'title.0' && patch?.prop === 'position')
+          : [];
+        const titlePatch = titlePatches[0];
+        const returnedTitle = (titleResponseBody?.manifest?.objects || []).find(object => object?.id === 'title.0');
+        const returnedMatches = Boolean(
+          returnedTitle && titlePatch
+          && Math.abs(Number(returnedTitle.currentProps?.x) - Number(titlePatch.value?.x)) < 0.01
+          && Math.abs(Number(returnedTitle.currentProps?.y) - Number(titlePatch.value?.y)) < 0.01
+          && returnedTitle.currentProps?.coord_system === 'axes'
+        );
+        const directionsCorrect = titlePatch
+          && Number(titlePatch.value?.x) > Number(fixture.titlePosition.x)
+          && Number(titlePatch.value?.y) > Number(fixture.titlePosition.y);
+        record(
+          'D1c-title-drag',
+          didObjectFollowDrag(titleGeometry)
+            && titlePending
+            && titleConfirmed
+            && titleRequests.length === 1
+            && titlePatches.length === 1
+            && directionsCorrect
+            && returnedMatches ? 'PASS' : 'FAIL',
+          `livePreview=${didObjectFollowDrag(titleGeometry)}, pending=${titlePending}, confirmed=${titleConfirmed}, patches=${JSON.stringify(titlePatches)}, returnedMatches=${returnedMatches}`,
         );
       }
 

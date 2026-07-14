@@ -926,6 +926,43 @@ fig.tight_layout()
             [warning.get("type") for warning in legacy.get("warnings", [])],
         )
 
+    def test_axes_titles_drag_replays_without_auto_position_reset(self):
+        script = '''
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(figsize=(5, 3.5))
+ax.plot([0, 1, 2], [1, 3, 2])
+ax.set_title("Center title")
+ax.set_title("Left title", loc="left")
+ax.set_title("Right title", loc="right")
+fig.tight_layout()
+'''
+        baseline = replay_render(script)
+        baseline_objects = baseline["figures"][0]["manifest"]["objects"]
+        title_ids = ["title.0", "title.left.0", "title.right.0"]
+        titles = {obj["id"]: obj for obj in baseline_objects if obj["id"] in title_ids}
+        self.assertEqual(set(titles), set(title_ids))
+
+        x_offsets = {"title.0": 0.12, "title.left.0": 0.06, "title.right.0": -0.08}
+        targets = {
+            gid: {
+                "x": title["currentProps"]["x"] + x_offsets[gid],
+                "y": title["currentProps"]["y"] + 0.18,
+                "coord_system": "axes",
+            }
+            for gid, title in titles.items()
+        }
+        patched = replay_render(script, edit_log=[
+            {"gid": gid, "prop": "position", "value": target, "mode": "backend_patch"}
+            for gid, target in targets.items()
+        ])
+        patched_objects = patched["figures"][0]["manifest"]["objects"]
+        patched_titles = {obj["id"]: obj for obj in patched_objects if obj["id"] in title_ids}
+
+        for gid, target in targets.items():
+            self.assertAlmostEqual(patched_titles[gid]["currentProps"]["x"], target["x"], places=4)
+            self.assertAlmostEqual(patched_titles[gid]["currentProps"]["y"], target["y"], places=4)
+            self.assertEqual(patched_titles[gid]["currentProps"]["coord_system"], "axes")
+
     def test_axis_tick_label_offset_moves_text_without_changing_axis_limits(self):
         script = """
 import matplotlib.pyplot as plt

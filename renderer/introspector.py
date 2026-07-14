@@ -621,6 +621,20 @@ def _axis_label_context(artist):
     return None
 
 
+def _axes_title_context(artist):
+    fig = getattr(artist, "figure", None)
+    if fig is None:
+        return None
+    for ax in getattr(fig, "axes", []):
+        if artist is ax.title:
+            return ax, "center"
+        if artist is getattr(ax, "_left_title", None):
+            return ax, "left"
+        if artist is getattr(ax, "_right_title", None):
+            return ax, "right"
+    return None
+
+
 def _annotation_coord_system(value: Any) -> str:
     if not isinstance(value, str):
         return "native"
@@ -645,11 +659,12 @@ def _matplotlib_annotation_coord(value: str) -> Optional[str]:
 def _read_text_props(artist) -> dict:
     x, y = artist.get_position()
     axis_label = _axis_label_context(artist)
-    if axis_label is not None:
-        ax, _ = axis_label
+    axes_title = _axes_title_context(artist)
+    managed_axes = axis_label[0] if axis_label is not None else axes_title[0] if axes_title is not None else None
+    if managed_axes is not None:
         try:
             display_position = artist.get_transform().transform((x, y))
-            x, y = ax.transAxes.inverted().transform(display_position)
+            x, y = managed_axes.transAxes.inverted().transform(display_position)
         except Exception:
             pass
     
@@ -2859,6 +2874,17 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             if max(abs(x), abs(y)) > 10:
                 return "unsupported_legacy_axis_label_position"
             axis.set_label_coords(x, y, transform=label_ax.transAxes)
+            return
+        axes_title = _axes_title_context(artist)
+        if axes_title is not None:
+            title_ax, _ = axes_title
+            if coord_system != "axes":
+                return "unsupported_axes_title_position_coord"
+            if max(abs(x), abs(y)) > 10:
+                return "unsupported_legacy_axes_title_position"
+            title_ax._autotitlepos = False
+            artist.set_transform(title_ax.transAxes)
+            artist.set_position((x, y))
             return
         try:
             from matplotlib.text import Annotation
