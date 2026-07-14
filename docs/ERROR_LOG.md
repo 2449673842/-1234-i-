@@ -2163,6 +2163,38 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 - 公网真实浏览器确认文字编辑器唯一可见、位于 V2 控件之前，上标/下标/换行完整，字号精确 patch 正常。
 - 同一回归中的后续刻度旋转请求仍携带上一条已应用字号 patch；这是既有 Draft 清理差异，已独立保留为后续修复项，不影响本次文字面板排序结论。
 
+---
+
+## 2026-07-14 23:26:46 +08:00 子图标题拖动后被自动布局贴回框线
+
+**现象**
+
+- `title.0` 拖动时选框和标题本体可以跟随，但确认重绘后标题回到坐标轴框上方。
+- X/Y 轴标题和普通文本已修复，子图标题仍会复现。
+
+**根因**
+
+- Matplotlib `Axes._update_title_position()` 会在每次 draw 时把自动标题 Y 坐标重置为 `1.0`，再按装饰元素自动调整。
+- 普通 `Text.set_position()` 已执行成功，但随后被标题自动布局覆盖。
+- 既有拖拽回归没有单独覆盖 `title.*`。
+
+**修复**
+
+- 为 `title.0`、`title.left.0`、`title.right.0` 建立专用 axes 标题上下文。
+- 内省时将带 titlepad 的真实显示锚点反算为 axes fraction。
+- 确认位置后关闭该 Axes 的自动标题定位，并按 `ax.transAxes` 重放目标坐标。
+
+**验证**
+
+- Python introspection：41/41 PASS，覆盖中心、左、右三类标题。
+- 本地 3000 真实拖拽回归全部通过；`title.0` 预览跟随、单次确认和 renderer 返回坐标一致。
+- production build：PASS。
+
+**防复发规则**
+
+- Matplotlib 自动布局管理对象必须按专用语义回放，不能仅按 `kind=text` 调用通用 setter。
+- 拖拽回归必须分别覆盖普通文本、轴标题、子图标题、annotation 和图例容器。
+
 **防复发规则**
 
 - 协议控件升级不得改变高频专用编辑器的首要操作位置。
