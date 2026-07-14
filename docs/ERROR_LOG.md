@@ -1977,3 +1977,155 @@ build_figure(fl9_data, stats_df, opr_fep_df)
 - 错误中心给 AI 的内容必须使用固定脱敏 schema，禁止把用户脚本、数据、traceback、图像、账号身份、令牌或绝对路径加入交接包。
 - 管理员写操作不得仅依赖登录态；必须同时具备实时 admin 校验、recent re-auth、reason、幂等和审计。
 - 订阅调整测试必须比较操作前后的项目、Figure、文件、导出和会话聚合，确保权限变更不触碰用户内容。
+
+---
+
+## 2026-07-14 17:30:24 +08:00 生产统一编辑中心字体目标错配、strict 只读与重复 patch
+
+**现象**
+
+- 用户在生产网页选择 X/Y 轴后，字体、字重等多项显示只读，只剩部分刻度方向控制可用。
+- 同一张图在本地 3000 legacy 控件可修改，在生产 `eea68fb-jd7` V2 控件中部分操作不生成 patch。
+- 生产跨 Figure 修改“X 轴刻度文字”字号时，实际请求生成 `title.* / fontsize`，而不是 `axis.x.* / tick_labelsize`。
+- 组件中心连续应用时，第二次及后续请求会重复包含之前已经应用的 patch。
+
+**定位**
+
+- 生产默认启用 `PropertyDescriptor + propertyCapabilities` strict resolver；本地 3000 仍允许 legacy `editable` fallback。
+- `propertyDescriptors.ts` 在缺少属性级 capability 或作用域不匹配时会正确转为只读，但 font/component projection 存在目标属性映射不完整。
+- 连续组件请求的 patch 数从 1 条递增到 2、3、4 条，说明 apply 成功后的 draft 清理或状态回写未正确收敛。
+
+**验证**
+
+- 生产 Python semantic smoke：14/14 PASS，说明图元协议和配色主链路没有整体失效。
+- 生产 axis style smoke：3/5 PASS；边框组、网格线未形成 patch。本地 3000：5/5 PASS。
+- 生产 cross-Figure smoke：单图边框 fanout 到 4 个子图通过；字体跨图目标错配失败。
+- 生产 component container smoke：关系和控件可见性通过，但连续请求出现累计 patch。本地 3000 每次只发送当前 patch。
+
+**状态**
+
+- 生产仍可使用基础字体和图元编辑，但不能视为全部 V2 控件正常。
+- 尚未修复生产代码。后续必须在 strict resolver 内补齐精确 target/prop，禁止用全局 legacy fallback 回退。
+
+**详细报告**
+
+- `docs/current/03_PRODUCTION_REGRESSION_AND_LOCAL_COMPARISON_2026-07-14.md`
+
+---
+
+## 2026-07-14 17:31:12 +08:00 生产 XLSX 隔离解析因 UMask 0077 无法读取 staged workbook
+
+**现象**
+
+```text
+上传 FL9_classification_SHAP_results.xlsx 失败:
+Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
+```
+
+**根因**
+
+- 生产 systemd 使用 `UMask=0077`，`parseWorkbookIsolated()` 直接创建的临时目录为 `0700`、复制文件为 `0600`。
+- 表格解析容器使用 UID/GID `65532:65532`，只读 bind mount 成功，但容器进程没有权限读取 `/work/input.xlsx`。
+- `20c7c38` 已修复绘图 renderer 的同类 staging 权限，tabular parser 路径未复用该模型。
+
+**本地修复**
+
+- 使用随机 `0700` 私有外层目录保护宿主机临时任务。
+- 在其下创建容器 bind mount 的 `0755` 工作目录，并把 staged workbook 设置为 `0444`。
+- 仍保持只读挂载、禁网、低权限 UID 和原有资源限制，不放宽 systemd 全局 UMask。
+
+**验证**
+
+- `SCIFIGURE_SANDBOX_WORKBOOK_ONLY=1 node tests/api/renderer_sandbox_smoke.mjs`：PASS。
+- 在 `UMask=0077` 下，UID `65532` 容器成功解析 `sandbox-results.xlsx`，返回 `sample/value` 两列、2 行。
+- `npm.cmd run build`：PASS。
+
+**状态**
+
+- 本地升级分支已修复并验证。
+- 生产 `eea68fb-jd7` 尚未部署该修复，线上同类 XLSX 上传仍会失败。
+
+**防复发规则**
+
+- 所有宿主机到低权限容器的 staged input 必须在 `UMask=0077` 下做真实容器读取测试。
+- renderer、tabular parser、导出转换等隔离任务必须共享同一 staging 权限模型，不能只修主 renderer。
+
+---
+
+## 2026-07-14 18:26:45 +08:00 X/Y 轴标题拖拽后吸附框线、无法拖动或应用无反应
+
+**现象**
+
+- `xlabel.0` / `ylabel.0` 在拖拽预览时可以移动，但确认并重渲染后回到轴框附近，或者完全没有变化。
+- 同一问题同时存在于本机 3000 和生产统一编辑版。
+
+**根因**
+
+- Matplotlib axis label 使用“轴向坐标 + display offset”的混合 transform，`artist.axes` 为空，不是普通 `ax.transAxes` 文本。
+- renderer 把 axis label 的原始 `(0.5, displayY)` / `(displayX, 0.5)` 错报为 axes fraction。
+- 普通 text position replay 依赖 `artist.axes`，因此返回 `unsupported_text_position_coord`；预览 transform 随后被重渲染覆盖。
+- 现有拖拽 smoke 只覆盖普通 text 和 annotation，没有覆盖 `xlabel/ylabel`，所以长期未被自动化发现。
+
+**修复**
+
+- 内省时把 axis label 的真实 display anchor 反算为对应 axes fraction，保留原始 labelpad 外侧位置。
+- replay 时使用 `XAxis/YAxis.set_label_coords(..., transform=ax.transAxes)`，不再走普通 Text transform 分支。
+- 对历史遗留的像素型错误 axes 坐标进行保护性拒绝，避免升级后把标签甩出画布；新拖拽会覆盖旧 position patch。
+- 拖拽 smoke 新增 X/Y 标题连续拖动、单次确认、不同 gid、方向正确和 renderer response 坐标一致断言。
+- smoke 清理改为按 fixture projectId 删除，避免自动保存改名后残留测试项目。
+
+**验证**
+
+- 本机运行中的 3000：真实 Playwright 10/10 PASS，`xlabel.0=(0.649308,-0.304202)`、`ylabel.0=(-0.201334,0.630881)`，renderer 返回与请求一致。
+- 隔离统一编辑版：真实 Playwright 10/10 PASS。
+- Python introspection：40/40 PASS。
+- production build：PASS。
+
+**状态**
+
+- 本机 3000 已读取修复后的 renderer，真实浏览器验证通过。
+- 2026-07-14 22:21:29 +08:00：已随生产 build `6f6fcb7-jd8` 发布；公网 X/Y 标题连续拖动、真实对象跟随和 renderer 坐标一致性验证通过。
+
+**防复发规则**
+
+- axis label、tick label、legend child 和普通 text 必须分别声明 position 语义，禁止按 `kind=text` 一概复用。
+- 拖拽回归必须同时断言“能开始拖动、请求 patch、renderer response、最终 manifest/SVG”，不能只检查确认条出现。
+
+---
+
+## 2026-07-14 21:34:21 +08:00 拖拽预览只移动选框，真实 SVG 对象不跟随
+
+**现象**
+
+- 开启拖拽微调后，选区边框会跟随鼠标移动，但文字对象仍停留在原位置。
+- 松开鼠标后确认条和 position patch 均正常，因此旧测试会误判为拖拽功能正常。
+
+**根因**
+
+- `ChartPreview` 通过 DOM `transform` 实时移动 SVG 图元，同时用 React state 更新选框。
+- `dangerouslySetInnerHTML` 每次渲染都收到新的包装对象，React 状态更新后重新写入相同 SVG 内容，清除了刚设置的临时 `transform`。
+- 选框由 React 状态单独绘制，不受 SVG 内容重写影响，因此形成“只移动框”的视觉错觉。
+
+**修复**
+
+- 将 sanitized SVG 的 `dangerouslySetInnerHTML` 参数按 SVG 内容进行 memoize；拖动状态更新不再重建 SVG DOM。
+- 保留现有真实 SVG 节点变换、取消恢复、批量确认和后端重绘流程，不引入复制文本或伪预览层。
+- 拖拽 smoke 新增普通文本与 X/Y 轴标题的真实 DOM 中心点和 `transform` 断言。
+
+**验证**
+
+- 本机 3000 真实 Playwright：11/11 PASS。
+- 普通文本拖动 `70 x 25 px` 时，真实对象在拖动中及松手后均移动到对应位置。
+- `xlabel.0`、`ylabel.0` 连续拖动：真实对象跟随、单次确认、renderer 返回坐标一致。
+- 主线与统一编辑工作树 production build：PASS。
+
+**状态**
+
+- 本机 3000 已通过热更新生效。
+- 2026-07-14 22:21:29 +08:00：统一编辑 build `6f6fcb7-jd8` 已部署；公网真实 Playwright 全部通过。
+- 发布后 `/api/health/ready` 为 ready，数据库 `integrity_check=ok`，用户/项目计数为 5/7，测试项目清理后计数未变化。
+
+**防复发规则**
+
+- 所有拖拽 smoke 必须至少采样 `pointerdown` 前、`pointermove` 中、`pointerup` 后三个真实图元位置。
+- “选框移动、确认条出现、patch 请求成功”不能作为对象实时跟随的替代证据。
