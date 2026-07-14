@@ -14,6 +14,8 @@ const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
 const OUTPUT_DIR = path.join(ROOT, 'output', 'playwright', `property-inspector-v2-${RUN_ID}`);
 const results = [];
 const REQUIRE_CAPABILITY_MANIFEST = process.env.SCIFIGURE_REQUIRE_CAPABILITY_MANIFEST === '1';
+const ALLOW_PRODUCTION_TARGET = process.env.SCIFIGURE_ALLOW_PRODUCTION_TARGET === '1';
+const EXPECTED_BUILD_ID = process.env.SCIFIGURE_EXPECTED_BUILD_ID || '';
 
 function record(id, ok, evidence) {
   const status = ok ? 'PASS' : 'FAIL';
@@ -41,17 +43,25 @@ async function verifyStagingProvenance() {
   const profile = runtime.headers.get('x-scifigure-runtime-profile');
   const markerResponse = await fetch(`${BASE_URL}/unified-editing-build.json`, { cache: 'no-store' });
   const marker = await markerResponse.json().catch(() => null);
-  const valid = runtime.ok
+  const validStaging = runtime.ok
     && profile === 'unified-editing-staging'
     && markerResponse.ok
     && marker?.kind === 'unified-editing-staging'
     && marker?.propertyDescriptorV1 === true
     && marker?.propertyInspectorV2 === true
     && marker?.fontControlsV2 === true;
-  if (!valid) {
+  const validProduction = runtime.ok
+    && markerResponse.ok
+    && ALLOW_PRODUCTION_TARGET
+    && Boolean(EXPECTED_BUILD_ID)
+    && marker?.kind === 'unified-editing-production'
+    && marker?.buildId === EXPECTED_BUILD_ID
+    && marker?.propertyInspectorV2 === true
+    && marker?.fontControlsV2 === true;
+  if (!validStaging && !validProduction) {
     throw new Error(`Refusing non-staging target: profile=${profile}, marker=${JSON.stringify(marker)}`);
   }
-  return { profile, marker };
+  return { profile: validProduction ? 'unified-editing-production' : profile, marker };
 }
 
 async function cleanupFixtureProjects(token) {
