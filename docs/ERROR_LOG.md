@@ -2311,3 +2311,43 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 - 安装真实字体后不得保留会覆盖该字体的兼容 alias；Docker 字体门禁必须在最终 fontconfig 状态下执行。
 - 文字内容不得降级为纯前端 patch；Draft 清理必须比较 gid、prop、mode 和 value 后再删除。
 - 严格 capability 的兼容只能按明确对象类型和属性白名单开放，禁止全局回退。
+
+---
+
+## 2026-07-15 21:14:30 +08:00 导出资产库误报账号未登录
+
+**现象**
+
+- 用户已登录且编辑区可正常访问，但点击“历史导出资产”后立即提示账号未登录。
+- 本地 `3000` 与网页统一版同时存在，项目级导出资产列表不一定复现。
+
+**根因**
+
+- 全局认证请求包装器只覆盖 `/api/projects`、`/api/figure` 等受保护路径。
+- 导出资产库调用 `GET /api/export-assets`、`POST /api/export-assets/zip` 和 `DELETE /api/export-assets`，该全局路由根未加入匹配器。
+- 请求因此没有携带 Bearer Token；后端所有权校验正确返回 `401`，前端将其显示为未登录。
+
+**修复**
+
+- 在中央 `authenticatedFetch` 路径匹配器中精确加入 `/api/export-assets` 及其子路径。
+- 不在页面组件内手工拼接 Authorization，继续统一复用 token refresh、重试和退出登录行为。
+- 浏览器回归在 session/local storage 注入测试令牌，并直接断言资产库请求头为 `Bearer asset-smoke-token`。
+
+**验证**
+
+- 本地统一工作树隔离浏览器回归：PASS。
+- 本地正在运行的 `http://127.0.0.1:3000` 真实浏览器回归：PASS，未重启或停止服务。
+- 网页 `http://117.72.208.91` 真实浏览器回归：PASS。
+- 线上 build `864ce62-jd19`：live=`live`、ready=`ready`、`acceptingNewJobs=true`。
+
+**发布与下载源记录**
+
+- 认证热修复提交：`7ae65b4`。
+- 国内镜像部署基线提交：`864ce62`；线上 release：`864ce62-jd19`。
+- 官方 Debian 源在候选 `jd17` 下载阶段停滞，未切换线上流量；改用阿里云 Debian/PyPI 与 npmmirror npm 后，`jd18` 成功发布，随后 `jd19` 全层缓存发布约 25 秒完成。
+
+**防复发规则**
+
+- 新增受认证 API 根路径时，必须同步加入中央认证匹配器并增加请求头断言。
+- 页面级组件不得绕过中央 refresh/retry 链路自行管理 Bearer Token。
+- 认证回归不能只 mock `200` 响应，必须验证实际发出的 Authorization 请求头。
