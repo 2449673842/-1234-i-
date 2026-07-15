@@ -272,6 +272,26 @@ function initSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_global_usage_budgets_window
       ON global_usage_budgets(window_start);
+    CREATE TABLE IF NOT EXISTS auth_request_budgets (
+      category TEXT NOT NULL,
+      scope_hash TEXT NOT NULL,
+      window_start TEXT NOT NULL,
+      amount INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (category, scope_hash, window_start)
+    );
+    CREATE INDEX IF NOT EXISTS idx_auth_request_budgets_window
+      ON auth_request_budgets(window_start);
+    CREATE TABLE IF NOT EXISTS auth_login_throttles (
+      identifier_hash TEXT PRIMARY KEY,
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      window_started_at TEXT NOT NULL,
+      last_failed_at TEXT NOT NULL,
+      blocked_until TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_auth_login_throttles_updated
+      ON auth_login_throttles(updated_at);
   `);
 
   const ignoreDuplicateColumnOnly = (e: unknown) => {
@@ -415,6 +435,10 @@ function verifyLegacyPassword(password: string, salt: string, expectedHash: stri
   return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(expectedHash, 'hex'));
 }
 
+const DUMMY_ARGON2_HASH = '$argon2id$v=19$m=19456,t=2,p=1$aGYfkuzOM6XcL3p3C/b6GA$FIKNBbMyXsxcQShkMIO8B1tsVKN7UQAlXZSIQCgXDaY';
+const DUMMY_PBKDF2_SALT = '9f1c2a7b4d8e6f001122334455667788';
+const DUMMY_PBKDF2_HASH = '4b0497a5ffda7a5c644653c728e914a033d4c9c9fcb729ce7cefb5fbb9185bb5';
+
 export async function hashPasswordArgon2(password: string): Promise<string> {
   if (!validateAccountPassword(password).valid) {
     throw new Error('Account password violates the configured password policy');
@@ -435,6 +459,28 @@ export async function verifyPasswordAndMigrate(row: AuthUserRow, password: strin
   }
   const valid = verifyLegacyPassword(password, row.password_salt, row.password_hash);
   if (!valid) return false;
+  const nextHash = await hashPasswordArgon2(password);
+  getDb().prepare(`
+    UPDATE users SET password_hash = ?, password_salt = '', password_algorithm = 'argon2id'
+    WHERE id = ?
+  `).run(nextHash, row.id);
+  return true;
+}
+
+export async function verifyPasswordForLogin(row: AuthUserRow | null, password: string): Promise<boolean> {
+  if (!validateAccountPassword(password).valid) return false;
+  const algorithm = row?.password_algorithm || 'pbkdf2_sha256';
+  const legacy = Boolean(row) && algorithm !== 'argon2id' && !row!.password_hash.startsWith('$argon2id$');
+  const legacyValid = legacy
+    ? verifyLegacyPassword(password, row!.password_salt, row!.password_hash)
+    : verifyLegacyPassword(password, DUMMY_PBKDF2_SALT, DUMMY_PBKDF2_HASH);
+  const argonValid = await argon2.verify(
+    row && !legacy ? row.password_hash : DUMMY_ARGON2_HASH,
+    password,
+  ).catch(() => false);
+  if (!row) return false;
+  if (!legacy) return argonValid;
+  if (!legacyValid) return false;
   const nextHash = await hashPasswordArgon2(password);
   getDb().prepare(`
     UPDATE users SET password_hash = ?, password_salt = '', password_algorithm = 'argon2id'
@@ -1252,6 +1298,17 @@ export function getActiveDeviceCount(userId: string): number {
   return row.count;
 }
 
+export function isKnownDevice(userId: string, deviceFingerprint: string): boolean {
+  if (!userId || !deviceFingerprint) return false;
+  const row = getDb().prepare(`
+    SELECT 1 FROM devices
+    WHERE user_id = ? AND device_fingerprint = ?
+      AND datetime(last_seen_at) > datetime('now', '-45 days')
+    LIMIT 1
+  `).get(userId, deviceFingerprint.trim().slice(0, 160));
+  return Boolean(row);
+}
+
 export function getLicenseState(userId: string | null): LicenseState {
   if (!userId) {
     return {
@@ -1284,6 +1341,177 @@ export function getLicenseState(userId: string | null): LicenseState {
     isPro,
     entitlements: resolvePlanEntitlements({ authenticated: true, isPro }),
   };
+}
+
+export interface AuthRequestBudgetScope {
+  scopeHash: string;
+  limit: number;
+  label: string;
+}
+
+export interface AuthRequestBudgetResult {
+  allowed: boolean;
+  blockedScope: string | null;
+  used: number;
+  limit: number;
+  resetAt: string;
+}
+
+export function consumeAuthRequestBudget(
+  category: string,
+  scopes: AuthRequestBudgetScope[],
+  windowMs = 15 * 60 * 1000,
+  nowMs = Date.now(),
+): AuthRequestBudgetResult {
+  if (!/^[a-z][a-z0-9_]{1,39}$/.test(category)) throw new Error('Invalid authentication budget category');
+  const normalizedScopes = scopes.map(scope => ({
+    scopeHash: String(scope.scopeHash || '').toLowerCase(),
+    limit: Math.max(1, Math.floor(Number(scope.limit || 0))),
+    label: String(scope.label || 'unknown').slice(0, 40),
+  }));
+  if (!normalizedScopes.length || normalizedScopes.some(scope => !/^[a-f0-9]{64}$/.test(scope.scopeHash))) {
+    throw new Error('Invalid authentication budget scope');
+  }
+  const safeWindowMs = Math.max(60_000, Math.min(24 * 60 * 60 * 1000, Math.floor(windowMs)));
+  const windowStartMs = Math.floor(nowMs / safeWindowMs) * safeWindowMs;
+  const windowStart = new Date(windowStartMs).toISOString();
+  const resetAt = new Date(windowStartMs + safeWindowMs).toISOString();
+  const database = getDb();
+  return database.transaction(() => {
+    database.prepare('DELETE FROM auth_request_budgets WHERE window_start < ?')
+      .run(new Date(windowStartMs - 24 * 60 * 60 * 1000).toISOString());
+    for (const scope of normalizedScopes) {
+      const row = database.prepare(`
+        SELECT amount FROM auth_request_budgets
+        WHERE category = ? AND scope_hash = ? AND window_start = ?
+      `).get(category, scope.scopeHash, windowStart) as { amount: number } | undefined;
+      const used = Math.max(0, Number(row?.amount || 0));
+      if (used >= scope.limit) {
+        return {
+          allowed: false,
+          blockedScope: scope.label,
+          used,
+          limit: scope.limit,
+          resetAt,
+        };
+      }
+    }
+    for (const scope of normalizedScopes) {
+      database.prepare(`
+        INSERT INTO auth_request_budgets (
+          category, scope_hash, window_start, amount, updated_at
+        ) VALUES (?, ?, ?, 1, datetime('now'))
+        ON CONFLICT(category, scope_hash, window_start) DO UPDATE SET
+          amount = auth_request_budgets.amount + 1,
+          updated_at = datetime('now')
+      `).run(category, scope.scopeHash, windowStart);
+    }
+    const narrowest = normalizedScopes.reduce((current, scope) => scope.limit < current.limit ? scope : current);
+    const row = database.prepare(`
+      SELECT amount FROM auth_request_budgets
+      WHERE category = ? AND scope_hash = ? AND window_start = ?
+    `).get(category, narrowest.scopeHash, windowStart) as { amount: number };
+    return {
+      allowed: true,
+      blockedScope: null,
+      used: Number(row.amount),
+      limit: narrowest.limit,
+      resetAt,
+    };
+  }).immediate();
+}
+
+export interface AuthLoginThrottleState {
+  blocked: boolean;
+  failureCount: number;
+  blockedUntil: string | null;
+  retryAfterSeconds: number;
+}
+
+type AuthLoginThrottleRow = {
+  failure_count: number;
+  window_started_at: string;
+  blocked_until: string | null;
+};
+
+function validateAuthIdentifierHash(identifierHash: string): string {
+  const normalized = String(identifierHash || '').toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(normalized)) throw new Error('Invalid authentication identifier hash');
+  return normalized;
+}
+
+export function readAuthLoginThrottle(identifierHash: string, nowMs = Date.now()): AuthLoginThrottleState {
+  const normalized = validateAuthIdentifierHash(identifierHash);
+  const row = getDb().prepare(`
+    SELECT failure_count, window_started_at, blocked_until
+    FROM auth_login_throttles WHERE identifier_hash = ?
+  `).get(normalized) as AuthLoginThrottleRow | undefined;
+  const blockedUntilMs = row?.blocked_until ? Date.parse(row.blocked_until) : 0;
+  const blocked = Number.isFinite(blockedUntilMs) && blockedUntilMs > nowMs;
+  return {
+    blocked,
+    failureCount: Math.max(0, Number(row?.failure_count || 0)),
+    blockedUntil: blocked ? row?.blocked_until || null : null,
+    retryAfterSeconds: blocked ? Math.max(1, Math.ceil((blockedUntilMs - nowMs) / 1000)) : 0,
+  };
+}
+
+export function recordAuthLoginFailure(
+  identifierHash: string,
+  options: { maxFailures: number; windowMs: number; lockMs: number },
+  nowMs = Date.now(),
+): AuthLoginThrottleState {
+  const normalized = validateAuthIdentifierHash(identifierHash);
+  const maxFailures = Math.max(3, Math.min(100, Math.floor(options.maxFailures)));
+  const windowMs = Math.max(1_000, Math.min(24 * 60 * 60 * 1000, Math.floor(options.windowMs)));
+  const lockMs = Math.max(1_000, Math.min(24 * 60 * 60 * 1000, Math.floor(options.lockMs)));
+  const database = getDb();
+  return database.transaction(() => {
+    database.prepare(`
+      DELETE FROM auth_login_throttles
+      WHERE updated_at < datetime('now', '-7 days')
+    `).run();
+    const row = database.prepare(`
+      SELECT failure_count, window_started_at, blocked_until
+      FROM auth_login_throttles WHERE identifier_hash = ?
+    `).get(normalized) as AuthLoginThrottleRow | undefined;
+    const currentBlockedUntilMs = row?.blocked_until ? Date.parse(row.blocked_until) : 0;
+    if (Number.isFinite(currentBlockedUntilMs) && currentBlockedUntilMs > nowMs) {
+      return {
+        blocked: true,
+        failureCount: Math.max(0, Number(row?.failure_count || 0)),
+        blockedUntil: row?.blocked_until || null,
+        retryAfterSeconds: Math.max(1, Math.ceil((currentBlockedUntilMs - nowMs) / 1000)),
+      };
+    }
+    const existingWindowStartMs = row ? Date.parse(row.window_started_at) : 0;
+    const withinWindow = Number.isFinite(existingWindowStartMs) && nowMs - existingWindowStartMs < windowMs;
+    const failureCount = withinWindow ? Math.max(0, Number(row?.failure_count || 0)) + 1 : 1;
+    const windowStartedAt = new Date(withinWindow ? existingWindowStartMs : nowMs).toISOString();
+    const blockedUntil = failureCount >= maxFailures ? new Date(nowMs + lockMs).toISOString() : null;
+    database.prepare(`
+      INSERT INTO auth_login_throttles (
+        identifier_hash, failure_count, window_started_at, last_failed_at, blocked_until, updated_at
+      ) VALUES (?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(identifier_hash) DO UPDATE SET
+        failure_count = excluded.failure_count,
+        window_started_at = excluded.window_started_at,
+        last_failed_at = excluded.last_failed_at,
+        blocked_until = excluded.blocked_until,
+        updated_at = datetime('now')
+    `).run(normalized, failureCount, windowStartedAt, new Date(nowMs).toISOString(), blockedUntil);
+    return {
+      blocked: Boolean(blockedUntil),
+      failureCount,
+      blockedUntil,
+      retryAfterSeconds: blockedUntil ? Math.max(1, Math.ceil(lockMs / 1000)) : 0,
+    };
+  }).immediate();
+}
+
+export function clearAuthLoginThrottle(identifierHash: string): void {
+  getDb().prepare('DELETE FROM auth_login_throttles WHERE identifier_hash = ?')
+    .run(validateAuthIdentifierHash(identifierHash));
 }
 
 export interface UsageBudgetResult {

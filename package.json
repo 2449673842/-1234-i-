@@ -32,6 +32,7 @@
     "test:svg-sanitization": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/svg_sanitization_smoke.mjs",
     "test:user-isolation": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/user_data_isolation_smoke.mjs",
     "test:auth-refresh": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/auth_refresh_smoke.mjs",
+    "test:auth-throttle": "node tests/api/auth_login_throttle_smoke.mjs",
     "test:email-verification": "node tests/api/email_verification_smoke.mjs",
     "test:legacy-retire-observation": "node tests/api/legacy_retire_observation_smoke.mjs",
     "test:admin-authorization": "node tests/api/admin_authorization_smoke.mjs",

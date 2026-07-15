@@ -65,4 +65,44 @@ describe('persistent hourly usage budget', () => {
     const userAfterReject = databaseModule.consumeHourlyUsageBudget(userId, category, 100, 100, now + 2_000);
     expect(userAfterReject).toMatchObject({ allowed: true, used: 100 });
   });
+
+  it('persists authentication request budgets and rejects atomically', () => {
+    const now = Date.UTC(2026, 6, 15, 11, 0, 0);
+    const scopes = [
+      { scopeHash: 'a'.repeat(64), limit: 2, label: 'ip_email' },
+      { scopeHash: 'b'.repeat(64), limit: 10, label: 'global' },
+    ];
+    expect(databaseModule.consumeAuthRequestBudget('email_send', scopes, 15 * 60 * 1000, now)).toMatchObject({
+      allowed: true,
+      used: 1,
+    });
+    expect(databaseModule.consumeAuthRequestBudget('email_send', scopes, 15 * 60 * 1000, now + 1_000)).toMatchObject({
+      allowed: true,
+      used: 2,
+    });
+    expect(databaseModule.consumeAuthRequestBudget('email_send', scopes, 15 * 60 * 1000, now + 2_000)).toMatchObject({
+      allowed: false,
+      blockedScope: 'ip_email',
+      used: 2,
+    });
+    const globalRow = databaseModule.getDb().prepare(`
+      SELECT amount FROM auth_request_budgets
+      WHERE category = 'email_send' AND scope_hash = ?
+    `).get('b'.repeat(64)) as { amount: number };
+    expect(globalRow.amount).toBe(2);
+  });
+
+  it('persists login failures, expires cooldowns and clears successful identifiers', () => {
+    const identifierHash = 'c'.repeat(64);
+    const now = Date.UTC(2026, 6, 15, 12, 0, 0);
+    const policy = { maxFailures: 3, windowMs: 1_000, lockMs: 2_000 };
+    expect(databaseModule.recordAuthLoginFailure(identifierHash, policy, now)).toMatchObject({ blocked: false, failureCount: 1 });
+    expect(databaseModule.recordAuthLoginFailure(identifierHash, policy, now + 100)).toMatchObject({ blocked: false, failureCount: 2 });
+    expect(databaseModule.recordAuthLoginFailure(identifierHash, policy, now + 200)).toMatchObject({ blocked: true, failureCount: 3 });
+    expect(databaseModule.readAuthLoginThrottle(identifierHash, now + 300)).toMatchObject({ blocked: true });
+    expect(databaseModule.readAuthLoginThrottle(identifierHash, now + 2_300)).toMatchObject({ blocked: false });
+    expect(databaseModule.recordAuthLoginFailure(identifierHash, policy, now + 2_300)).toMatchObject({ blocked: false, failureCount: 1 });
+    databaseModule.clearAuthLoginThrottle(identifierHash);
+    expect(databaseModule.readAuthLoginThrottle(identifierHash, now + 2_400)).toMatchObject({ blocked: false, failureCount: 0 });
+  });
 });

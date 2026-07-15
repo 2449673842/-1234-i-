@@ -123,6 +123,7 @@ function startServer(port, enabled) {
       SCIFIGURE_VITE_HMR_PORT: String(port + 1_000),
       NODE_ENV: 'production',
       SCIFIGURE_ALLOW_UNVERIFIED_REGISTRATION_IN_PRODUCTION: '1',
+      SCIFIGURE_AUTH_THROTTLE_SECRET: 'isolated-admin-auth-throttle-secret-2026',
       DISABLE_HMR: 'true',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

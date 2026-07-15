@@ -39,6 +39,33 @@ assert.notEqual(rejectedExitCode, 0, 'Production server must reject missing emai
 assert.match(rejectedOutput.join(''), /生产环境必须启用邮箱验证/);
 fs.rmSync(rejectedRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 
+const throttleRejectedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-production-auth-throttle-gate-'));
+const throttleRejectedOutput = [];
+const {
+  SCIFIGURE_AUTH_THROTTLE_SECRET: _authThrottleSecret,
+  ...productionEnvWithoutThrottleSecret
+} = process.env;
+const throttleRejected = spawn(process.execPath, [bundle], {
+  cwd: root,
+  env: {
+    ...productionEnvWithoutThrottleSecret,
+    NODE_ENV: 'production',
+    SCIFIGURE_ALLOW_UNVERIFIED_REGISTRATION_IN_PRODUCTION: '1',
+    SCIFIGURE_DATA_DIR: path.join(throttleRejectedRoot, 'data'),
+    SCIFIGURE_DB_PATH: path.join(throttleRejectedRoot, 'data', 'scifigure.db'),
+  },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+throttleRejected.stdout.on('data', chunk => throttleRejectedOutput.push(chunk.toString()));
+throttleRejected.stderr.on('data', chunk => throttleRejectedOutput.push(chunk.toString()));
+const throttleRejectedExitCode = await Promise.race([
+  new Promise(resolve => throttleRejected.once('close', resolve)),
+  new Promise((_, reject) => setTimeout(() => reject(new Error('Production auth throttle secret gate did not stop startup')), 10_000)),
+]);
+assert.notEqual(throttleRejectedExitCode, 0, 'Production server must reject a missing authentication throttle secret');
+assert.match(throttleRejectedOutput.join(''), /AUTH_THROTTLE_SECRET/);
+fs.rmSync(throttleRejectedRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-production-bundle-'));
 const dataRoot = path.join(tempRoot, 'data');
 const port = 37_000 + Math.floor(Math.random() * 1_000);
@@ -49,6 +76,7 @@ const child = spawn(process.execPath, [bundle], {
     ...process.env,
     NODE_ENV: 'production',
     SCIFIGURE_ALLOW_UNVERIFIED_REGISTRATION_IN_PRODUCTION: '1',
+    SCIFIGURE_AUTH_THROTTLE_SECRET: 'production-bundle-auth-throttle-secret-2026',
     PORT: String(port),
     SCIFIGURE_BIND_HOST: '127.0.0.1',
     SCIFIGURE_DATA_DIR: dataRoot,
@@ -84,6 +112,7 @@ try {
     checks: [
       'production CJS bundle starts without eager Vite dependency',
       'production startup fails closed without email verification configuration',
+      'production startup fails closed without an authentication throttle secret',
       'loopback bind setting is honored',
       'public liveness endpoint responds',
     ],

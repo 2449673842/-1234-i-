@@ -43,6 +43,7 @@ import {
   sendEmailVerificationCode,
 } from './server/auth/emailVerification';
 import { validateAccountPassword } from './server/auth/passwordPolicy';
+import { assertAuthThrottleProductionConfig, hashAuthThrottleScope } from './server/auth/authThrottle';
 import { assertSafeSvgDocument } from './server/security/svgSafety';
 import { assertValidUploadedDataFile, decodeAndValidatePngBase64 } from './server/security/fileValidation';
 import {
@@ -96,11 +97,16 @@ import {
   touchUserLogin,
   createAuthSession,
   revokeAuthToken,
-  verifyPasswordAndMigrate,
+  verifyPasswordForLogin,
+  consumeAuthRequestBudget,
+  readAuthLoginThrottle,
+  recordAuthLoginFailure,
+  clearAuthLoginThrottle,
   rotateRefreshSession,
   revokeRefreshToken,
   upsertDevice,
   getActiveDeviceCount,
+  isKnownDevice,
   getLicenseState,
   redeemCodeForUser,
   createRedeemCode,
@@ -123,6 +129,7 @@ const PROJECTS_ROOT = path.join(DATA_ROOT, 'projects');
 
 async function startServer() {
   assertEmailVerificationProductionConfig();
+  assertAuthThrottleProductionConfig();
   getDb().exec(`
     CREATE TABLE IF NOT EXISTS render_cache (
       cache_key TEXT PRIMARY KEY,
@@ -287,6 +294,72 @@ async function startServer() {
     message: '邮箱验证码尝试过于频繁，请稍后再试。',
     key: req => `${clientIp(req)}:${String(req.body?.challengeId || '').trim().toLowerCase()}`,
   });
+
+  function assertPersistentEmailSendBudget(req: express.Request, res: express.Response, email: string): void {
+    const ip = clientIp(req);
+    const result = consumeAuthRequestBudget('email_send', [
+      {
+        scopeHash: hashAuthThrottleScope('email_ip_address', ip),
+        limit: boundedNumber(process.env.EMAIL_VERIFICATION_IP_RATE_LIMIT_PER_15_MINUTES, 20, 3, 500),
+        label: 'ip',
+      },
+      {
+        scopeHash: hashAuthThrottleScope('email_ip_pair', `${ip}\0${email}`),
+        limit: boundedNumber(process.env.EMAIL_VERIFICATION_RATE_LIMIT_PER_15_MINUTES, 8, 3, 100),
+        label: 'ip_email',
+      },
+      {
+        scopeHash: hashAuthThrottleScope('email_global', 'global'),
+        limit: boundedNumber(process.env.EMAIL_VERIFICATION_GLOBAL_RATE_LIMIT_PER_15_MINUTES, 500, 20, 10_000),
+        label: 'global',
+      },
+    ]);
+    if (result.allowed) return;
+    const retryAfterSeconds = Math.max(1, Math.ceil((Date.parse(result.resetAt) - Date.now()) / 1000));
+    res.setHeader('Retry-After', String(retryAfterSeconds));
+    const error = new Error('邮箱验证码请求过于频繁，请稍后再试。');
+    (error as any).statusCode = 429;
+    throw error;
+  }
+
+  function loginThrottlePolicy() {
+    return {
+      maxFailures: boundedNumber(process.env.AUTH_LOGIN_FAILURE_LIMIT_PER_15_MINUTES, 10, 3, 100),
+      windowMs: 15 * 60 * 1000,
+      lockMs: boundedNumber(process.env.AUTH_LOGIN_LOCK_MS, 15 * 60 * 1000, 1_000, 24 * 60 * 60 * 1000),
+    };
+  }
+
+  function assertPersistentLoginAttemptBudget(req: express.Request, res: express.Response): void {
+    const ip = clientIp(req);
+    const result = consumeAuthRequestBudget('login_attempt', [
+      {
+        scopeHash: hashAuthThrottleScope('login_ip_address', ip),
+        limit: boundedNumber(process.env.AUTH_LOGIN_IP_RATE_LIMIT_PER_15_MINUTES, 60, 10, 2_000),
+        label: 'ip',
+      },
+      {
+        scopeHash: hashAuthThrottleScope('login_global', 'global'),
+        limit: boundedNumber(process.env.AUTH_LOGIN_GLOBAL_RATE_LIMIT_PER_15_MINUTES, 2_000, 100, 100_000),
+        label: 'global',
+      },
+    ]);
+    if (result.allowed) return;
+    const retryAfterSeconds = Math.max(1, Math.ceil((Date.parse(result.resetAt) - Date.now()) / 1000));
+    res.setHeader('Retry-After', String(retryAfterSeconds));
+    const error = new Error('登录请求过于频繁，请稍后再试');
+    (error as any).statusCode = 429;
+    throw error;
+  }
+
+  function rejectThrottledLogin(res: express.Response, retryAfterSeconds: number) {
+    res.setHeader('Retry-After', String(Math.max(1, retryAfterSeconds)));
+    return res.status(429).json({
+      status: 'error',
+      message: '登录尝试过多，请稍后再试',
+      retryAfterSeconds: Math.max(1, retryAfterSeconds),
+    });
+  }
 
   const requireAdminOperationsEnabled = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (!adminOperationsEnabled()) {
@@ -1679,6 +1752,7 @@ ${inner}
       }
       const verificationRequired = emailVerificationRequired();
       if (verificationRequired) {
+        assertPersistentEmailSendBudget(req, res, email);
         const challenge = await issuePendingEmailRegistrationChallenge({
           email,
           displayName: displayName || email.split('@')[0],
@@ -1695,9 +1769,10 @@ ${inner}
       const user = await createUserAccount(email, password, displayName || email.split('@')[0]);
       return res.json({ status: 'success', ...issueAuthenticatedSession(req, res, user) });
     } catch (err: any) {
-      res.status(Number(err?.statusCode || 500)).json({
+      const statusCode = Number(err?.statusCode || 500);
+      res.status(statusCode).json({
         status: 'error',
-        message: Number(err?.statusCode) === 503 ? err.message : '注册失败，请稍后重试',
+        message: statusCode === 429 || statusCode === 503 ? err.message : '注册失败，请稍后重试',
       });
     }
   });
@@ -1766,6 +1841,7 @@ ${inner}
       },
     };
     try {
+      assertPersistentEmailSendBudget(req, res, email);
       const row = getUserByEmail(email);
       const pending = getPendingEmailRegistration(email);
       const challenge = await issuePendingEmailRegistrationChallenge({
@@ -1775,7 +1851,11 @@ ${inner}
       return res.json({ ...genericResponse, verification: challenge });
     } catch (err: any) {
       console.error('Email verification resend failed:', err?.message || err);
-      return res.status(503).json({ status: 'error', message: '验证码暂时无法发送，请稍后重试' });
+      const statusCode = Number(err?.statusCode || 503);
+      return res.status(statusCode).json({
+        status: 'error',
+        message: statusCode === 429 ? err.message : '验证码暂时无法发送，请稍后重试',
+      });
     }
   });
 
@@ -1783,10 +1863,31 @@ ${inner}
     try {
       const email = String(req.body?.email || '').trim().toLowerCase();
       const password = String(req.body?.password || '');
+      assertPersistentLoginAttemptBudget(req, res);
+      const identifierHash = hashAuthThrottleScope('login_identifier', email);
+      const existingThrottle = readAuthLoginThrottle(identifierHash);
       const row = getUserByEmail(email);
-      if (!row || !(await verifyPasswordAndMigrate(row, password))) {
+      let passwordValid = false;
+      if (existingThrottle.blocked) {
+        const fingerprint = readDeviceFingerprint(req);
+        if (!row || !fingerprint || !isKnownDevice(row.id, fingerprint)) {
+          return rejectThrottledLogin(res, existingThrottle.retryAfterSeconds);
+        }
+        passwordValid = await verifyPasswordForLogin(row, password);
+        if (!passwordValid) {
+          return rejectThrottledLogin(res, existingThrottle.retryAfterSeconds);
+        }
+      } else {
+        passwordValid = await verifyPasswordForLogin(row, password);
+      }
+      if (!row || !passwordValid) {
+        const throttle = recordAuthLoginFailure(identifierHash, loginThrottlePolicy());
+        if (throttle.blocked) {
+          return rejectThrottledLogin(res, throttle.retryAfterSeconds);
+        }
         return res.status(401).json({ status: 'error', message: '邮箱或密码错误' });
       }
+      clearAuthLoginThrottle(identifierHash);
       const user = getUserById(row.id);
       if (!user) {
         return res.status(401).json({ status: 'error', message: '用户不存在' });
@@ -1802,7 +1903,11 @@ ${inner}
       }
       return res.json({ status: 'success', ...issueAuthenticatedSession(req, res, user) });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      const statusCode = Number(err?.statusCode || 500);
+      res.status(statusCode).json({
+        status: 'error',
+        message: statusCode === 429 ? err.message : '登录暂时不可用，请稍后重试',
+      });
     }
   });
 
