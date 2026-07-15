@@ -10,6 +10,8 @@ function isProtectedApiRequest(input: RequestInfo | URL): boolean {
     && (
       url.pathname.startsWith('/api/projects')
       || url.pathname.startsWith('/api/figure')
+      || url.pathname === '/api/export-assets'
+      || url.pathname.startsWith('/api/export-assets/')
       || url.pathname.startsWith('/api/license')
       || url.pathname === '/api/auth/me'
       || url.pathname === '/api/auth/logout'
