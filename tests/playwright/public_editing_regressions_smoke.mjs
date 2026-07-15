@@ -333,12 +333,11 @@ async function runFontFamilyRegression(page, fixture) {
   const resolvedFamily = responseObject?.currentProps?.resolvedFontfamily || runtimeObject?.currentProps?.resolvedFontfamily || '';
   const resolvedActualTimes = /Times New Roman/i.test(resolvedFamily);
   const targetSvg = svgGroupByGid(responseFigure.svg || runtimeFigure?.svg || '', fixture.title.id);
-  const svgRequestedTimes = /Times New Roman/i.test(targetSvg);
-  const svgTimesCompatible = timesLike(targetSvg);
+  const svgTimesFirst = /font-family:\s*['"]Times New Roman['"]/i.test(targetSvg);
   record(
     'PUB-1-times-fontfamily',
-    draftVisible && requestedTimes && manifestTimes && resolvedActualTimes && svgRequestedTimes && svgTimesCompatible,
-    `draft=${draftVisible}, patches=${JSON.stringify(patches)}, manifestFamily=${responseObject?.currentProps?.fontfamily || runtimeObject?.currentProps?.fontfamily}, resolvedFamily=${resolvedFamily}, resolvedActualTimes=${resolvedActualTimes}, svgRequestedTimes=${svgRequestedTimes}, svgTimesCompatible=${svgTimesCompatible}, targetSvg=${JSON.stringify(targetSvg.slice(0, 300))}, patchRequests=${applied.patchRequests.length}`,
+    draftVisible && requestedTimes && manifestTimes && resolvedActualTimes && svgTimesFirst,
+    `draft=${draftVisible}, patches=${JSON.stringify(patches)}, manifestFamily=${responseObject?.currentProps?.fontfamily || runtimeObject?.currentProps?.fontfamily}, resolvedFamily=${resolvedFamily}, resolvedActualTimes=${resolvedActualTimes}, svgTimesFirst=${svgTimesFirst}, targetSvg=${JSON.stringify(targetSvg.slice(0, 300))}, patchRequests=${applied.patchRequests.length}`,
   );
 }
 

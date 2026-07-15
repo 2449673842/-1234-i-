@@ -39,7 +39,8 @@ WORKDIR /opt/scifigure
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements.txt
 COPY renderer/fontconfig-local.conf /etc/fonts/conf.d/52-scifigure-font-alias.conf
-RUN fc-cache -f
+RUN fc-cache -f \
+    && fc-match -f '%{family}\n' 'Times New Roman' | grep -qi 'Times New Roman'
 COPY renderer ./renderer
 
 RUN useradd --system --uid 65532 --home-dir /tmp --shell /usr/sbin/nologin renderer
