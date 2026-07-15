@@ -220,7 +220,7 @@ export function LandingAuthDialog({
               {verification
                 ? `请输入发送至 ${verification.maskedEmail} 的 6 位验证码。`
                 : isRegister
-                  ? '注册免费账号后，验证邮箱即可进入工作区。'
+                  ? '填写账号信息，完成注册后即可进入工作区。'
                   : '登录后继续访问已有项目和编辑历史。'}
             </p>
           </div>
@@ -378,7 +378,7 @@ export function LandingAuthDialog({
             className="flex w-full items-center justify-center gap-2 bg-cyan-200 px-4 py-3 text-sm font-black text-slate-950 transition hover:bg-white disabled:cursor-wait disabled:opacity-60"
           >
             {isRegister ? <UserPlus className="h-4 w-4" /> : <LogIn className="h-4 w-4" />}
-            {busy ? '处理中...' : isRegister ? '注册并发送验证码' : '登录并进入平台'}
+            {busy ? '处理中...' : isRegister ? '注册并继续' : '登录并进入平台'}
           </button>
         </form>
           </>

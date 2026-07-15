@@ -49,6 +49,7 @@
     "test:capability-matrix": "python -m unittest tests/test_capability_matrix.py -v",
     "test:code-history-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/code_history_smoke.mjs",
     "test:public-auth-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/public_landing_auth_smoke.mjs",
+    "test:public-mobile-header-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/public_landing_mobile_header_smoke.mjs",
     "test:help-center-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/help_center_smoke.mjs",
     "test:clipboard-http-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/clipboard_http_smoke.mjs",
     "test:workspace-visual-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/workspace_visual_smoke.mjs",

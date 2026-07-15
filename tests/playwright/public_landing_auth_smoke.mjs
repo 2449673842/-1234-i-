@@ -37,6 +37,21 @@ async function main() {
       body: JSON.stringify({ status: 'error', message: 'no test refresh session' }),
     }));
     await page.route('**/api/auth/register', async route => {
+      const body = route.request().postDataJSON();
+      if (body.email === 'direct-registration@example.test') {
+        authenticated = true;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            status: 'success',
+            token: 'direct-registration-smoke-token',
+            user: { id: 'direct-registration-user', email: body.email, displayName: 'Direct Registration' },
+            license: { status: 'free', isPro: false },
+          }),
+        });
+        return;
+      }
       await route.fulfill({
         status: 202,
         contentType: 'application/json',
@@ -79,11 +94,14 @@ async function main() {
     await page.locator('header').getByRole('button', { name: '免费注册', exact: true }).waitFor();
 
     await page.locator('header').getByRole('button', { name: '免费注册', exact: true }).click();
+    assert(await page.getByText('填写账号信息，完成注册后即可进入工作区。', { exact: true }).isVisible(), 'Registration guidance is not neutral');
+    assert(await page.getByText('注册免费账号后，验证邮箱即可进入工作区。', { exact: true }).count() === 0, 'Registration guidance still promises email verification');
+    assert(await page.getByRole('button', { name: '注册并发送验证码', exact: true }).count() === 0, 'Registration action still promises a verification email');
     await page.getByLabel('昵称').fill('UI Smoke');
     await page.getByLabel('邮箱').fill('ui-smoke@example.test');
     await page.getByLabel('密码', { exact: true }).fill('Public-Landing-Smoke-2026');
     await page.getByLabel('确认密码').fill('Public-Landing-Smoke-2026');
-    await page.getByRole('button', { name: '注册并发送验证码' }).click();
+    await page.getByRole('button', { name: '注册并继续' }).click();
     await page.getByLabel('邮箱验证码').fill('123456');
     await page.getByRole('button', { name: '验证并进入平台' }).click();
 
@@ -103,6 +121,15 @@ async function main() {
     await page.getByRole('button', { name: '退出登录' }).click();
     await page.locator('header').getByRole('button', { name: '免费注册', exact: true }).waitFor();
     assert(await page.getByRole('button', { name: '项目与资源' }).count() === 0, 'Workspace navigation remains visible after logout');
+
+    await page.locator('header').getByRole('button', { name: '免费注册', exact: true }).click();
+    await page.getByLabel('昵称').fill('Direct Registration');
+    await page.getByLabel('邮箱').fill('direct-registration@example.test');
+    await page.getByLabel('密码', { exact: true }).fill('Direct-Registration-Smoke-2026');
+    await page.getByLabel('确认密码').fill('Direct-Registration-Smoke-2026');
+    await page.getByRole('button', { name: '注册并继续' }).click();
+    await page.getByRole('button', { name: '项目与资源' }).waitFor();
+    assert(await page.getByLabel('邮箱验证码').count() === 0, 'Direct registration unexpectedly opened the verification step');
     assert(errors.length === 0, `Browser errors: ${errors.join(' | ')}`);
 
     console.log(JSON.stringify({ status: 'PASS', baseUrl: BASE_URL }, null, 2));

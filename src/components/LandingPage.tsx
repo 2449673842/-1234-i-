@@ -191,9 +191,9 @@ export function LandingPage({ onNavigate, publicMode = false, onAuthenticated }:
         {publicMode && (
           <header className="absolute inset-x-0 top-0 z-20 border-b border-white/10 bg-[#071411]/80 backdrop-blur-xl">
             <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
-              <div className="flex min-w-0 items-center gap-2.5">
+              <div className="flex min-w-0 items-center gap-2.5" role="img" aria-label="SciFigure Studio">
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center bg-[#8de6d1] text-base font-black text-[#071411] sm:h-9 sm:w-9">S</div>
-                <div className="whitespace-nowrap text-sm font-black text-white sm:text-base">SciFigure Studio</div>
+                <div className="hidden whitespace-nowrap text-sm font-black text-white min-[420px]:block sm:text-base">SciFigure Studio</div>
               </div>
               <div className="flex shrink-0 items-center gap-1 sm:gap-2">
                 <button
