@@ -27,6 +27,14 @@ RUN sed -i \
     fonts-freefont-ttf \
     && rm -rf /var/lib/apt/lists/*
 
+RUN sed -i -E 's/^Components: main$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && echo 'ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true' | debconf-set-selections \
+    && apt-get install -y --no-install-recommends ttf-mscorefonts-installer \
+    && fc-cache -f \
+    && fc-match -f '%{family}\n' 'Times New Roman' | grep -qi 'Times New Roman' \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /opt/scifigure
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements.txt

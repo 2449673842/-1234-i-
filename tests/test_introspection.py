@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import re
 import unittest
 
 # Ensure the renderer directory is in the Python search path
@@ -875,6 +876,13 @@ ax.legend(title="Legend")
         self.assertTrue(axis_x["currentProps"]["resolvedTickLabelfamily"])
         self.assertEqual(axis_x["currentProps"]["resolvedFontfamily"], axis_x["currentProps"]["resolvedTickLabelfamily"])
         self.assertNotEqual(axis_x["currentProps"]["resolvedTickLabelfamily"], "DejaVu Sans")
+
+        svg = result["figures"][0]["svg"]
+        for gid in ("text.0.0", "legend_text.0.0", "legend_title.0", "xtick.0.0"):
+            group = re.search(rf'<g id="{re.escape(gid)}">.*?</g>', svg, flags=re.DOTALL)
+            self.assertIsNotNone(group, gid)
+            self.assertIn("Times New Roman", group.group(0))
+            self.assertNotIn("DejaVu Sans", group.group(0))
 
     def test_text_content_requires_backend_patch_capability(self):
         result = replay_render("""

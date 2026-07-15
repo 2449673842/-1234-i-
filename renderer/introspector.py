@@ -440,7 +440,7 @@ def iter_artists(fig):
 
 _GENERIC_FONT_FAMILIES = {"serif", "sans-serif", "monospace", "cursive", "fantasy"}
 _TIMES_COMPAT_REQUESTS = {"times new roman", "times"}
-_TIMES_RUNTIME_CANDIDATES = ("Times", "Liberation Serif", "FreeSerif", "serif")
+_TIMES_RUNTIME_CANDIDATES = ("Times New Roman", "Times", "Liberation Serif", "FreeSerif", "serif")
 
 
 def _font_name_for_family(family: str) -> Optional[str]:
@@ -499,7 +499,13 @@ def _requested_fontfamily(artist) -> str:
 def _set_text_fontfamily(text, requested: Any):
     requested_family = str(requested or "").strip()
     setattr(text, "_scifigure_requested_fontfamily", requested_family)
-    text.set_fontname(_resolve_runtime_fontfamily(requested_family))
+    resolved_family = _resolve_runtime_fontfamily(requested_family)
+    families = [requested_family]
+    if resolved_family and resolved_family.lower() != requested_family.lower():
+        families.append(resolved_family)
+    if requested_family.lower() in _TIMES_COMPAT_REQUESTS:
+        families.append("serif")
+    text.set_fontfamily(families)
 
 
 def _normalise_text_runtime_font(text):
