@@ -2247,3 +2247,55 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 
 - 属性页和导出页不得各自维护独立 DPI 事实来源。
 - 栅格格式必须同时验证像素尺寸和文件 DPI 元数据；矢量格式不得记录误导性数值 DPI。
+
+---
+
+## 2026-07-15 10:30:21 +08:00 网页端字体、文本工具栏、Draft 与轴字体控件回归
+
+**现象**
+
+- 网页端选择 Times New Roman 后曾回退为 DejaVu Sans。
+- 换行、上下标和“立即应用”没有稳定进入 Draft 或触发后端重绘。
+- 切换属性、字体、组件和配色中心时，未应用 Draft 可能消失。
+- 组件中心的 X/Y 轴字体、字号、颜色和字重被错误显示为只读。
+
+**根因**
+
+- renderer 没有稳定区分用户请求字体和 Linux 实际解析字体，镜像也缺少 Times 兼容字体及显式别名。
+- 文字内容仍可能沿用 `local_patch`，但换行和 mathtext 必须由 renderer 重排。
+- 静默自动保存和立即应用完成后的 Draft 清理缺少事务边界，可能消费新输入或跨中心丢失状态。
+- 严格 component capability 只投影 group scope，旧 manifest 的 axis typography 实际只声明在 object scope。
+
+**修复**
+
+- 请求字体保留为 `Times New Roman`，renderer 使用 `Liberation Serif` 作为 Linux 运行时字体；Docker renderer 安装 `fonts-liberation` 并配置 fontconfig 别名。
+- 文字内容统一强制为 `backend_patch`；换行、上下标点击后立即写入 Draft，“立即应用”完成后只清理值完全匹配的 Draft。
+- 任何待处理 Draft 存在时，静默自动保存不再消费 Draft；Draft 在四个编辑中心间保持。
+- 仅为 axes 增加安全的 object-scope typography 兼容，并精确展开为 `axis.x.*`、`axis.y.*` patch，不放宽其他组件能力。
+
+**验证**
+
+- 本地候选：Vitest 38/38、Python introspection 45/45、semantic centers 14/14、axis semantics 5/5、production build 全部通过。
+- 公网真实浏览器 `public_editing_regressions_smoke`：6/6 PASS。
+- Times patch 为 `backend_patch`，manifest 请求值为 `Times New Roman`，解析值为 `Liberation Serif`，目标 `title.0` SVG 也使用 `Liberation Serif`。
+- 换行、上下标、立即应用、Draft 5 秒存活、跨中心保持、X/Y 轴字重双轴精确 patch 全部通过。
+- Console error=0，Page error=0。
+
+**生产状态**
+
+- 2026-07-15 10:06:08 +08:00：已发布 build `65d3b9e-jd12`；候选构建改用清华 Debian、Debian Security 和 PyPI 镜像。
+- 发布后 readiness=`ready`、单实例 active、SQLite `integrity_check=ok`，用户/项目计数保持 `5/7`。
+- renderer 内 `fc-match 'Times New Roman'` 返回 `Liberation Serif`。
+- 本地 `3000` 根目录和本机 Docker 均未在本轮修改或停止。
+
+**测试修正**
+
+- 首次公网 smoke 将整张 SVG 中其他未修改文本的 DejaVu Sans 误认为目标字体回退，产生 5/6 的假失败。
+- 断言现按被编辑 gid 提取目标 SVG group，只检查目标对象的字体声明，并保存目标响应 SVG 作为证据；修正后公网 6/6 PASS。
+
+**防复发规则**
+
+- 字体协议必须同时记录 requested family 和 resolved runtime family，不能用 Linux 替代字体覆盖用户选择值。
+- 字体 E2E 必须检查 patch、manifest 和目标 gid 的 SVG group，禁止用整张 SVG 的任意字体字符串判断单个对象结果。
+- 文字内容不得降级为纯前端 patch；Draft 清理必须比较 gid、prop、mode 和 value 后再删除。
+- 严格 capability 的兼容只能按明确对象类型和属性白名单开放，禁止全局回退。

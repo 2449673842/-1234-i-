@@ -299,6 +299,11 @@ function timesLike(value) {
     && !/dejavu/i.test(String(value || ''));
 }
 
+function svgGroupByGid(svg, gid) {
+  const escapedGid = String(gid).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return String(svg || '').match(new RegExp(`<g id="${escapedGid}">[\\s\\S]*?</g>`))?.[0] || '';
+}
+
 async function runFontFamilyRegression(page, fixture) {
   await clickCenter(page, '属性编辑');
   await selectObject(page, fixture.title.id);
@@ -313,6 +318,9 @@ async function runFontFamilyRegression(page, fixture) {
     manifest: applied.responseData?.manifest,
     svg: applied.responseData?.svg || '',
   };
+  if (responseFigure.svg) {
+    fs.writeFileSync(path.join(OUTPUT_DIR, 'times-fontfamily-response.svg'), responseFigure.svg, 'utf8');
+  }
   const responseObject = responseFigure.manifest?.objects?.find(object => object.id === fixture.title.id);
   const runtimeFigure = await readRuntimeFigure(page);
   const runtimeObject = runtimeFigure?.manifest?.objects?.find(object => object.id === fixture.title.id);
@@ -322,11 +330,12 @@ async function runFontFamilyRegression(page, fixture) {
     && patch.value === 'Times New Roman'
   ));
   const manifestTimes = timesLike(responseObject?.currentProps?.fontfamily || runtimeObject?.currentProps?.fontfamily);
-  const svgTimes = timesLike(responseFigure.svg || runtimeFigure?.svg || '');
+  const targetSvg = svgGroupByGid(responseFigure.svg || runtimeFigure?.svg || '', fixture.title.id);
+  const svgTimes = timesLike(targetSvg);
   record(
     'PUB-1-times-fontfamily',
     draftVisible && requestedTimes && manifestTimes && svgTimes,
-    `draft=${draftVisible}, patches=${JSON.stringify(patches)}, manifestFamily=${responseObject?.currentProps?.fontfamily || runtimeObject?.currentProps?.fontfamily}, svgTimes=${svgTimes}, patchRequests=${applied.patchRequests.length}`,
+    `draft=${draftVisible}, patches=${JSON.stringify(patches)}, manifestFamily=${responseObject?.currentProps?.fontfamily || runtimeObject?.currentProps?.fontfamily}, resolvedFamily=${responseObject?.currentProps?.resolvedFontfamily || runtimeObject?.currentProps?.resolvedFontfamily}, svgTimes=${svgTimes}, targetSvg=${JSON.stringify(targetSvg.slice(0, 300))}, patchRequests=${applied.patchRequests.length}`,
   );
 }
 
