@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import argon2 from 'argon2';
+import { resolvePlanEntitlements, type PlanEntitlements } from './src/schemas/planEntitlements';
 
 const DATA_ROOT = process.env.SCIFIGURE_DATA_DIR
   ? path.resolve(process.env.SCIFIGURE_DATA_DIR)
@@ -87,9 +88,24 @@ function initSchema() {
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user',
+      email_verified_at TEXT,
+      email_verification_required INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       last_login_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS email_verification_challenges (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      code_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5,
+      consumed_at TEXT,
+      sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_verification_user_expiry
+      ON email_verification_challenges(user_id, expires_at DESC);
     CREATE TABLE IF NOT EXISTS auth_sessions (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -222,6 +238,25 @@ function initSchema() {
       ON error_reports(last_seen_at DESC);
     CREATE INDEX IF NOT EXISTS idx_error_reports_filters
       ON error_reports(source, severity, status, last_seen_at DESC);
+    CREATE TABLE IF NOT EXISTS usage_budgets (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      category TEXT NOT NULL,
+      window_start TEXT NOT NULL,
+      amount INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, category, window_start)
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_budgets_window
+      ON usage_budgets(window_start);
+    CREATE TABLE IF NOT EXISTS global_usage_budgets (
+      category TEXT NOT NULL,
+      window_start TEXT NOT NULL,
+      amount INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (category, window_start)
+    );
+    CREATE INDEX IF NOT EXISTS idx_global_usage_budgets_window
+      ON global_usage_budgets(window_start);
   `);
 
   const ignoreDuplicateColumnOnly = (e: unknown) => {
@@ -247,6 +282,8 @@ function initSchema() {
     "ALTER TABLE sessions ADD COLUMN user_id TEXT",
     "ALTER TABLE users ADD COLUMN password_algorithm TEXT DEFAULT 'pbkdf2_sha256'",
     "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
+    "ALTER TABLE users ADD COLUMN email_verified_at TEXT",
+    "ALTER TABLE users ADD COLUMN email_verification_required INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE auth_sessions ADD COLUMN refresh_token_hash TEXT",
     "ALTER TABLE auth_sessions ADD COLUMN refresh_expires_at TEXT",
     "ALTER TABLE subscriptions ADD COLUMN actor_user_id TEXT",
@@ -382,6 +419,8 @@ export interface UserAccount {
   email: string;
   displayName: string | null;
   role: UserRole;
+  emailVerified: boolean;
+  emailVerificationRequired: boolean;
   createdAt: string;
   lastLoginAt: string | null;
 }
@@ -394,6 +433,8 @@ export interface AuthUserRow {
   password_salt: string;
   password_algorithm: string | null;
   role: string | null;
+  email_verified_at: string | null;
+  email_verification_required: number | null;
   created_at: string;
   last_login_at: string | null;
 }
@@ -404,6 +445,7 @@ export interface LicenseState {
   source: string;
   endsAt: string | null;
   isPro: boolean;
+  entitlements: PlanEntitlements;
 }
 
 function mapUser(row: AuthUserRow): UserAccount {
@@ -412,22 +454,144 @@ function mapUser(row: AuthUserRow): UserAccount {
     email: row.email,
     displayName: row.display_name,
     role: row.role === 'admin' ? 'admin' : 'user',
+    emailVerified: Boolean(row.email_verified_at) || row.email_verification_required !== 1,
+    emailVerificationRequired: row.email_verification_required === 1 && !row.email_verified_at,
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at,
   };
 }
 
-export async function createUserAccount(email: string, password: string, displayName?: string): Promise<UserAccount> {
+export async function createUserAccount(
+  email: string,
+  password: string,
+  displayName?: string,
+  options: { emailVerificationRequired?: boolean } = {},
+): Promise<UserAccount> {
   const normalizedEmail = email.trim().toLowerCase();
   const hash = await hashPasswordArgon2(password);
   const id = `usr_${crypto.randomUUID()}`;
+  const verificationRequired = options.emailVerificationRequired === true;
   getDb().prepare(`
-    INSERT INTO users (id, email, display_name, password_hash, password_salt, password_algorithm)
-    VALUES (?, ?, ?, ?, '', 'argon2id')
-  `).run(id, normalizedEmail, displayName?.trim() || null, hash);
+    INSERT INTO users (
+      id, email, display_name, password_hash, password_salt, password_algorithm,
+      email_verified_at, email_verification_required
+    )
+    VALUES (?, ?, ?, ?, '', 'argon2id', ?, ?)
+  `).run(
+    id,
+    normalizedEmail,
+    displayName?.trim() || null,
+    hash,
+    verificationRequired ? null : nowIso(),
+    verificationRequired ? 1 : 0,
+  );
   const row = getDb().prepare('SELECT * FROM users WHERE id = ?').get(id) as AuthUserRow;
   claimLegacyOwnership(id);
   return mapUser(row);
+}
+
+export interface EmailVerificationChallenge {
+  id: string;
+  userId: string;
+  expiresAt: string;
+  attemptCount: number;
+  maxAttempts: number;
+}
+
+export type EmailVerificationConsumeResult =
+  | { status: 'verified'; user: UserAccount }
+  | { status: 'invalid' | 'expired' | 'locked'; user: null };
+
+export function createEmailVerificationChallenge(input: {
+  id: string;
+  userId: string;
+  codeHash: string;
+  expiresAt: string;
+  maxAttempts?: number;
+}): EmailVerificationChallenge {
+  const database = getDb();
+  return database.transaction(() => {
+    database.prepare(`
+      UPDATE email_verification_challenges
+      SET consumed_at = COALESCE(consumed_at, datetime('now'))
+      WHERE user_id = ? AND consumed_at IS NULL
+    `).run(input.userId);
+    database.prepare(`
+      DELETE FROM email_verification_challenges
+      WHERE datetime(expires_at) <= datetime('now', '-1 day')
+    `).run();
+    const maxAttempts = Math.max(3, Math.min(10, Math.floor(input.maxAttempts || 5)));
+    database.prepare(`
+      INSERT INTO email_verification_challenges (
+        id, user_id, code_hash, expires_at, max_attempts
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(input.id, input.userId, input.codeHash, input.expiresAt, maxAttempts);
+    return {
+      id: input.id,
+      userId: input.userId,
+      expiresAt: input.expiresAt,
+      attemptCount: 0,
+      maxAttempts,
+    };
+  })();
+}
+
+function constantTimeHashEqual(actual: string, expected: string): boolean {
+  if (!/^[a-f0-9]{64}$/i.test(actual) || !/^[a-f0-9]{64}$/i.test(expected)) return false;
+  return crypto.timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'));
+}
+
+export function consumeEmailVerificationChallenge(
+  challengeId: string,
+  candidateCodeHash: string,
+): EmailVerificationConsumeResult {
+  const database = getDb();
+  return database.transaction((): EmailVerificationConsumeResult => {
+    const row = database.prepare(`
+      SELECT id, user_id, code_hash, expires_at, attempt_count, max_attempts, consumed_at
+      FROM email_verification_challenges
+      WHERE id = ?
+      LIMIT 1
+    `).get(challengeId) as {
+      id: string;
+      user_id: string;
+      code_hash: string;
+      expires_at: string;
+      attempt_count: number;
+      max_attempts: number;
+      consumed_at: string | null;
+    } | undefined;
+    if (!row || row.consumed_at) return { status: 'invalid', user: null };
+    if (Date.parse(row.expires_at) <= Date.now()) {
+      database.prepare("UPDATE email_verification_challenges SET consumed_at = datetime('now') WHERE id = ?").run(row.id);
+      return { status: 'expired', user: null };
+    }
+    if (row.attempt_count >= row.max_attempts) return { status: 'locked', user: null };
+
+    if (!constantTimeHashEqual(candidateCodeHash, row.code_hash)) {
+      const nextAttempts = row.attempt_count + 1;
+      database.prepare(`
+        UPDATE email_verification_challenges
+        SET attempt_count = ?, consumed_at = CASE WHEN ? >= max_attempts THEN datetime('now') ELSE consumed_at END
+        WHERE id = ?
+      `).run(nextAttempts, nextAttempts, row.id);
+      return { status: nextAttempts >= row.max_attempts ? 'locked' : 'invalid', user: null };
+    }
+
+    database.prepare(`
+      UPDATE email_verification_challenges
+      SET consumed_at = datetime('now')
+      WHERE user_id = ? AND consumed_at IS NULL
+    `).run(row.user_id);
+    database.prepare(`
+      UPDATE users
+      SET email_verified_at = COALESCE(email_verified_at, datetime('now')),
+          email_verification_required = 0
+      WHERE id = ?
+    `).run(row.user_id);
+    const userRow = database.prepare('SELECT * FROM users WHERE id = ?').get(row.user_id) as AuthUserRow;
+    return { status: 'verified', user: mapUser(userRow) };
+  })();
 }
 
 export function claimLegacyOwnership(requestingUserId: string): void {
@@ -557,7 +721,6 @@ export interface ErrorReportInput {
 export interface ErrorReportSummary {
   id: string;
   userId: string;
-  userEmail: string | null;
   source: string;
   severity: ErrorReportSeverity;
   status: ErrorReportStatus;
@@ -621,7 +784,6 @@ function mapErrorReport(row: any): ErrorReportSummary {
   return {
     id: row.id,
     userId: row.user_id,
-    userEmail: row.user_email ?? null,
     source: row.source,
     severity: normalizeErrorReportSeverity(row.severity),
     status: normalizeErrorReportStatus(row.status),
@@ -677,12 +839,7 @@ export function upsertErrorReport(input: ErrorReportInput): ErrorReportSummary {
     fingerprint,
     JSON.stringify(input.metadata ?? {}).slice(0, 4096),
   );
-  const row = db.prepare(`
-    SELECT er.*, u.email AS user_email
-    FROM error_reports er
-    LEFT JOIN users u ON u.id = er.user_id
-    WHERE er.fingerprint = ?
-  `).get(fingerprint);
+  const row = db.prepare('SELECT * FROM error_reports WHERE fingerprint = ?').get(fingerprint);
   return mapErrorReport(row);
 }
 
@@ -711,21 +868,19 @@ export function listErrorReports(args: {
     params.push(args.status);
   }
   if (args.query) {
-    where.push('(er.title LIKE ? OR er.message LIKE ? OR er.component LIKE ? OR er.error_code LIKE ? OR u.email LIKE ?)');
+    where.push('(er.title LIKE ? OR er.message LIKE ? OR er.component LIKE ? OR er.error_code LIKE ?)');
     const like = `%${args.query}%`;
-    params.push(like, like, like, like, like);
+    params.push(like, like, like, like);
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total = (getDb().prepare(`
     SELECT COUNT(*) AS count
     FROM error_reports er
-    LEFT JOIN users u ON u.id = er.user_id
     ${whereSql}
   `).get(...params) as { count: number }).count;
   const rows = getDb().prepare(`
-    SELECT er.*, u.email AS user_email
+    SELECT er.*
     FROM error_reports er
-    LEFT JOIN users u ON u.id = er.user_id
     ${whereSql}
     ORDER BY er.last_seen_at DESC, er.id DESC
     LIMIT ? OFFSET ?
@@ -734,12 +889,7 @@ export function listErrorReports(args: {
 }
 
 export function getErrorReportById(id: string): ErrorReportSummary | null {
-  const row = getDb().prepare(`
-    SELECT er.*, u.email AS user_email
-    FROM error_reports er
-    LEFT JOIN users u ON u.id = er.user_id
-    WHERE er.id = ?
-  `).get(id);
+  const row = getDb().prepare('SELECT * FROM error_reports WHERE id = ?').get(id);
   return row ? mapErrorReport(row) : null;
 }
 
@@ -818,7 +968,9 @@ export function getUserByAuthToken(token: string): UserAccount | null {
     SELECT u.*
     FROM auth_sessions s
     JOIN users u ON u.id = s.user_id
-    WHERE s.token_hash = ? AND datetime(s.expires_at) > datetime('now')
+    WHERE s.token_hash = ?
+      AND datetime(s.expires_at) > datetime('now')
+      AND (COALESCE(u.email_verification_required, 0) = 0 OR u.email_verified_at IS NOT NULL)
   `).get(hashAuthToken(token)) as AuthUserRow | undefined;
   if (!row) return null;
   getDb().prepare("UPDATE auth_sessions SET last_seen_at = datetime('now') WHERE token_hash = ?").run(hashAuthToken(token));
@@ -838,6 +990,7 @@ export function rotateRefreshSession(refreshToken: string, nextAccessToken: stri
       JOIN users u ON u.id = s.user_id
       WHERE s.refresh_token_hash = ?
         AND datetime(s.refresh_expires_at) > datetime('now')
+        AND (COALESCE(u.email_verification_required, 0) = 0 OR u.email_verified_at IS NOT NULL)
     `).get(hashAuthToken(refreshToken)) as (AuthUserRow & { session_id: string; refresh_expires_at: string }) | undefined;
     if (!row) return null;
     database.prepare(`
@@ -886,7 +1039,10 @@ export function getActiveDeviceCount(userId: string): number {
 
 export function getLicenseState(userId: string | null): LicenseState {
   if (!userId) {
-    return { plan: 'free', status: 'free', source: 'anonymous', endsAt: null, isPro: false };
+    return {
+      plan: 'free', status: 'free', source: 'anonymous', endsAt: null, isPro: false,
+      entitlements: resolvePlanEntitlements({ authenticated: false, isPro: false }),
+    };
   }
   const row = getDb().prepare(`
     SELECT plan, status, source, ends_at
@@ -899,9 +1055,191 @@ export function getLicenseState(userId: string | null): LicenseState {
     LIMIT 1
   `).get(userId) as { plan: string; status: string; source: string; ends_at: string | null } | undefined;
   if (!row) {
-    return { plan: 'free', status: 'free', source: 'none', endsAt: null, isPro: false };
+    return {
+      plan: 'free', status: 'free', source: 'none', endsAt: null, isPro: false,
+      entitlements: resolvePlanEntitlements({ authenticated: true, isPro: false }),
+    };
   }
-  return { plan: row.plan, status: 'pro', source: row.source, endsAt: row.ends_at, isPro: row.plan === 'pro' };
+  const isPro = row.plan === 'pro';
+  return {
+    plan: row.plan,
+    status: 'pro',
+    source: row.source,
+    endsAt: row.ends_at,
+    isPro,
+    entitlements: resolvePlanEntitlements({ authenticated: true, isPro }),
+  };
+}
+
+export interface UsageBudgetResult {
+  allowed: boolean;
+  used: number;
+  limit: number;
+  resetAt: string;
+}
+
+export interface ScopedUsageBudgetResult extends UsageBudgetResult {
+  blockedScope: 'user' | 'global' | null;
+  globalUsed: number;
+  globalLimit: number;
+}
+
+export function consumeScopedHourlyUsageBudget(
+  userId: string,
+  category: string,
+  amount: number,
+  userLimit: number,
+  globalLimit: number,
+  nowMs = Date.now(),
+): ScopedUsageBudgetResult {
+  if (!userId) throw new Error('Usage budget requires a user ID');
+  if (!/^[a-z][a-z0-9_]{1,39}$/.test(category)) throw new Error('Invalid usage budget category');
+  const safeAmount = Math.max(0, Math.floor(Number(amount || 0)));
+  const safeUserLimit = Math.max(1, Math.floor(Number(userLimit || 0)));
+  const safeGlobalLimit = Math.max(1, Math.floor(Number(globalLimit || 0)));
+  const windowStartMs = Math.floor(nowMs / 3_600_000) * 3_600_000;
+  const windowStart = new Date(windowStartMs).toISOString();
+  const resetAt = new Date(windowStartMs + 3_600_000).toISOString();
+  const database = getDb();
+  const consume = database.transaction(() => {
+    const retentionCutoff = new Date(windowStartMs - 48 * 3_600_000).toISOString();
+    database.prepare('DELETE FROM usage_budgets WHERE window_start < ?').run(retentionCutoff);
+    database.prepare('DELETE FROM global_usage_budgets WHERE window_start < ?').run(retentionCutoff);
+
+    const userRow = database.prepare(`
+      SELECT amount FROM usage_budgets
+      WHERE user_id = ? AND category = ? AND window_start = ?
+    `).get(userId, category, windowStart) as { amount: number } | undefined;
+    const globalRow = database.prepare(`
+      SELECT amount FROM global_usage_budgets
+      WHERE category = ? AND window_start = ?
+    `).get(category, windowStart) as { amount: number } | undefined;
+    const used = Math.max(0, Number(userRow?.amount || 0));
+    const globalUsed = Math.max(0, Number(globalRow?.amount || 0));
+
+    if (safeAmount > safeUserLimit - used) {
+      return {
+        allowed: false,
+        used,
+        limit: safeUserLimit,
+        resetAt,
+        blockedScope: 'user' as const,
+        globalUsed,
+        globalLimit: safeGlobalLimit,
+      };
+    }
+    if (safeAmount > safeGlobalLimit - globalUsed) {
+      return {
+        allowed: false,
+        used,
+        limit: safeUserLimit,
+        resetAt,
+        blockedScope: 'global' as const,
+        globalUsed,
+        globalLimit: safeGlobalLimit,
+      };
+    }
+
+    const nextUsed = used + safeAmount;
+    const nextGlobalUsed = globalUsed + safeAmount;
+    database.prepare(`
+      INSERT INTO usage_budgets (user_id, category, window_start, amount, updated_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(user_id, category, window_start) DO UPDATE SET
+        amount = excluded.amount,
+        updated_at = datetime('now')
+    `).run(userId, category, windowStart, nextUsed);
+    database.prepare(`
+      INSERT INTO global_usage_budgets (category, window_start, amount, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(category, window_start) DO UPDATE SET
+        amount = excluded.amount,
+        updated_at = datetime('now')
+    `).run(category, windowStart, nextGlobalUsed);
+    return {
+      allowed: true,
+      used: nextUsed,
+      limit: safeUserLimit,
+      resetAt,
+      blockedScope: null,
+      globalUsed: nextGlobalUsed,
+      globalLimit: safeGlobalLimit,
+    };
+  });
+  return consume.immediate();
+}
+
+export function consumeHourlyUsageBudget(
+  userId: string,
+  category: string,
+  amount: number,
+  limit: number,
+  nowMs = Date.now(),
+): UsageBudgetResult {
+  if (!/^[a-z][a-z0-9_]{1,39}$/.test(category)) throw new Error('Invalid usage budget category');
+  const safeAmount = Math.max(0, Math.floor(Number(amount || 0)));
+  const safeLimit = Math.max(1, Math.floor(Number(limit || 0)));
+  const windowStartMs = Math.floor(nowMs / 3_600_000) * 3_600_000;
+  const windowStart = new Date(windowStartMs).toISOString();
+  const resetAt = new Date(windowStartMs + 3_600_000).toISOString();
+  const database = getDb();
+  const consume = database.transaction(() => {
+    database.prepare('DELETE FROM usage_budgets WHERE window_start < ?').run(new Date(windowStartMs - 48 * 3_600_000).toISOString());
+    const row = database.prepare(`
+      SELECT amount FROM usage_budgets
+      WHERE user_id = ? AND category = ? AND window_start = ?
+    `).get(userId, category, windowStart) as { amount: number } | undefined;
+    const used = Math.max(0, Number(row?.amount || 0));
+    if (safeAmount > safeLimit - used) {
+      return { allowed: false, used, limit: safeLimit, resetAt };
+    }
+    const nextUsed = used + safeAmount;
+    database.prepare(`
+      INSERT INTO usage_budgets (user_id, category, window_start, amount, updated_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(user_id, category, window_start) DO UPDATE SET
+        amount = excluded.amount,
+        updated_at = datetime('now')
+    `).run(userId, category, windowStart, nextUsed);
+    return { allowed: true, used: nextUsed, limit: safeLimit, resetAt };
+  });
+  return consume.immediate();
+}
+
+export function consumeGlobalHourlyUsageBudget(
+  category: string,
+  amount: number,
+  limit: number,
+  nowMs = Date.now(),
+): UsageBudgetResult {
+  if (!/^[a-z][a-z0-9_]{1,39}$/.test(category)) throw new Error('Invalid global usage budget category');
+  const safeAmount = Math.max(0, Math.floor(Number(amount || 0)));
+  const safeLimit = Math.max(1, Math.floor(Number(limit || 0)));
+  const windowStartMs = Math.floor(nowMs / 3_600_000) * 3_600_000;
+  const windowStart = new Date(windowStartMs).toISOString();
+  const resetAt = new Date(windowStartMs + 3_600_000).toISOString();
+  const database = getDb();
+  const consume = database.transaction(() => {
+    database.prepare('DELETE FROM global_usage_budgets WHERE window_start < ?').run(new Date(windowStartMs - 48 * 3_600_000).toISOString());
+    const row = database.prepare(`
+      SELECT amount FROM global_usage_budgets
+      WHERE category = ? AND window_start = ?
+    `).get(category, windowStart) as { amount: number } | undefined;
+    const used = Math.max(0, Number(row?.amount || 0));
+    if (safeAmount > safeLimit - used) {
+      return { allowed: false, used, limit: safeLimit, resetAt };
+    }
+    const nextUsed = used + safeAmount;
+    database.prepare(`
+      INSERT INTO global_usage_budgets (category, window_start, amount, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT(category, window_start) DO UPDATE SET
+        amount = excluded.amount,
+        updated_at = datetime('now')
+    `).run(category, windowStart, nextUsed);
+    return { allowed: true, used: nextUsed, limit: safeLimit, resetAt };
+  });
+  return consume.immediate();
 }
 
 export function createRedeemCode(args: {

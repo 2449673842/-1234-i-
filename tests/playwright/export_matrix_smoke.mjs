@@ -450,7 +450,7 @@ async function runPendingExportBrowserCheck(projectId, spec, rendered) {
 
   try {
     await page.addInitScript((token) => {
-      window.localStorage.setItem('scifigure:auth-token', token);
+      window.sessionStorage.setItem('scifigure:auth-token', token);
     }, authToken);
     await page.route(`**/api/projects/${projectId}/figures/render`, async (route) => {
       await renderHold;

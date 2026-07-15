@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Blocks, CheckCircle2, Cpu, CreditCard, KeyRound, LogOut, Settings, Shield, User } from 'lucide-react';
-import { AUTH_TOKEN_STORAGE_KEY } from '../utils/authenticatedFetch';
-
-const TOKEN_KEY = AUTH_TOKEN_STORAGE_KEY;
+import { clearAccessToken, getAccessToken, setAccessToken } from '../utils/authenticatedFetch';
 const DEVICE_KEY = 'scifigure:device-fingerprint';
 
 interface AuthUser {
@@ -11,6 +9,13 @@ interface AuthUser {
   displayName: string | null;
   createdAt: string;
   lastLoginAt: string | null;
+  emailVerified?: boolean;
+}
+
+interface EmailVerificationState {
+  challengeId: string;
+  maskedEmail: string;
+  expiresAt: string;
 }
 
 interface LicenseState {
@@ -37,7 +42,7 @@ function getDeviceFingerprint() {
 }
 
 function getAuthHeaders(): HeadersInit {
-  const token = window.localStorage.getItem(TOKEN_KEY);
+  const token = getAccessToken();
   return {
     'Content-Type': 'application/json',
     'X-Device-Fingerprint': getDeviceFingerprint(),
@@ -58,6 +63,8 @@ export function SettingsPage({ subView }: { subView: string }) {
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
+  const [verification, setVerification] = useState<EmailVerificationState | null>(null);
+  const [verificationCode, setVerificationCode] = useState('');
   const [redeemCode, setRedeemCode] = useState('');
   const [isBusy, setIsBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -68,10 +75,10 @@ export function SettingsPage({ subView }: { subView: string }) {
     if (data.status === 'success' || data.status === 'anonymous') {
       setAuth({ user: data.user ?? null, license: data.license ?? defaultLicense(), deviceCount: data.deviceCount ?? 0 });
       if (data.status === 'anonymous') {
-        window.localStorage.removeItem(TOKEN_KEY);
+        clearAccessToken();
       }
     } else {
-      window.localStorage.removeItem(TOKEN_KEY);
+      clearAccessToken();
       setAuth({ user: null, license: defaultLicense() });
     }
   };
@@ -90,14 +97,62 @@ export function SettingsPage({ subView }: { subView: string }) {
         body: JSON.stringify({ email, password, displayName }),
       });
       const data = await res.json();
-      if (data.status !== 'success') throw new Error(data.message || '认证失败');
-      window.localStorage.setItem(TOKEN_KEY, data.token);
+      if (data?.verificationRequired && data?.verification?.challengeId) {
+        setVerification(data.verification);
+        setVerificationCode('');
+        setMessage(`验证码已发送至 ${data.verification.maskedEmail}`);
+        return;
+      }
+      if (res.status === 403 && data?.errorCode === 'EMAIL_VERIFICATION_REQUIRED') {
+        const resend = await fetch('/api/auth/resend-verification', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+        const resendData = await resend.json();
+        if (!resend.ok || !resendData?.verification?.challengeId) throw new Error(resendData?.message || '验证码发送失败');
+        setVerification(resendData.verification);
+        setVerificationCode('');
+        setMessage(`验证码已发送至 ${resendData.verification.maskedEmail}`);
+        return;
+      }
+      if (!res.ok || data.status !== 'success' || typeof data.token !== 'string') throw new Error(data.message || '认证失败');
+      setAccessToken(data.token);
       window.dispatchEvent(new CustomEvent('scifigure:auth-changed', { detail: { authenticated: true } }));
       setAuth({ user: data.user, license: data.license, deviceCount: data.deviceCount ?? 1 });
       setPassword('');
       setMessage(mode === 'login' ? '登录成功' : '注册成功，已创建免费版账号');
     } catch (err: any) {
       setMessage(err.message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const verifyEmail = async () => {
+    if (!verification || !/^\d{6}$/.test(verificationCode)) {
+      setMessage('请输入 6 位邮箱验证码');
+      return;
+    }
+    setIsBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch('/api/auth/verify-email', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ challengeId: verification.challengeId, code: verificationCode }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.status !== 'success' || typeof data.token !== 'string') throw new Error(data.message || '邮箱验证失败');
+      setAccessToken(data.token);
+      window.dispatchEvent(new CustomEvent('scifigure:auth-changed', { detail: { authenticated: true } }));
+      setAuth({ user: data.user, license: data.license, deviceCount: data.deviceCount ?? 1 });
+      setVerification(null);
+      setVerificationCode('');
+      setPassword('');
+      setMessage('邮箱验证成功');
+    } catch (err: any) {
+      setMessage(err.message || '邮箱验证失败');
     } finally {
       setIsBusy(false);
     }
@@ -126,7 +181,7 @@ export function SettingsPage({ subView }: { subView: string }) {
 
   const logout = async () => {
     await fetch('/api/auth/logout', { method: 'POST', headers: getAuthHeaders() }).catch(() => {});
-    window.localStorage.removeItem(TOKEN_KEY);
+    clearAccessToken();
     window.dispatchEvent(new CustomEvent('scifigure:auth-changed', { detail: { authenticated: false } }));
     setAuth({ user: null, license: defaultLicense() });
     setMessage('已退出登录');
@@ -197,6 +252,30 @@ export function SettingsPage({ subView }: { subView: string }) {
 
                 {!auth.user ? (
                   <div className="rounded-2xl border border-slate-200 bg-white p-6">
+                    {verification ? (
+                      <div className="space-y-4">
+                        <div>
+                          <h2 className="font-bold text-slate-900">验证邮箱</h2>
+                          <p className="mt-1 text-sm text-slate-500">请输入发送至 {verification.maskedEmail} 的 6 位验证码。</p>
+                        </div>
+                        <input
+                          value={verificationCode}
+                          onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                          className="w-full rounded-lg border border-slate-200 px-3 py-3 text-center text-xl font-black"
+                          placeholder="000000"
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
+                          maxLength={6}
+                        />
+                        <button onClick={verifyEmail} disabled={isBusy || verificationCode.length !== 6} className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50">
+                          {isBusy ? '正在验证...' : '验证并登录'}
+                        </button>
+                        <button onClick={() => { setVerification(null); setVerificationCode(''); setMessage(null); }} disabled={isBusy} className="w-full rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50">
+                          返回账号登录
+                        </button>
+                      </div>
+                    ) : (
+                      <>
                     <div className="flex gap-2 mb-5">
                       <button onClick={() => setMode('login')} className={`px-4 py-2 rounded-lg text-sm font-semibold ${mode === 'login' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'}`}>登录</button>
                       <button onClick={() => setMode('register')} className={`px-4 py-2 rounded-lg text-sm font-semibold ${mode === 'register' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'}`}>注册</button>
@@ -217,6 +296,8 @@ export function SettingsPage({ subView }: { subView: string }) {
                         {isBusy ? '处理中...' : mode === 'login' ? '登录账号' : '创建账号'}
                       </button>
                     </div>
+                      </>
+                    )}
                   </div>
                 ) : (
                   <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-6">

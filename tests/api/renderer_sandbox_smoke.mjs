@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import * as XLSX from 'xlsx';
 
 const repoRoot = process.cwd();
 const originalUmask = process.umask(0o077);
@@ -117,9 +118,66 @@ async function exportFigure(token, sessionId, format = 'png') {
   return { response, data: await response.json().catch(() => null) };
 }
 
+async function uploadWorkbook(token) {
+  const projectResponse = await fetch(`${BASE_URL}/api/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name: `Sandbox workbook ${Date.now()}`,
+      spec: { plot_type: 'custom', script_language: 'python' },
+    }),
+  });
+  const project = await projectResponse.json().catch(() => null);
+  assert(projectResponse.ok && project?.id, `Workbook project creation failed: ${projectResponse.status} ${JSON.stringify(project)}`);
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    XLSX.utils.aoa_to_sheet([
+      ['sample', 'value'],
+      ['A', 1],
+      ['B', 2],
+    ]),
+    'Results',
+  );
+  const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  const form = new FormData();
+  form.append('file', new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  }), 'sandbox-results.xlsx');
+  const uploadResponse = await fetch(`${BASE_URL}/api/projects/${project.id}/files`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const uploaded = await uploadResponse.json().catch(() => null);
+  assert(
+    uploadResponse.ok
+      && uploaded?.status === 'success'
+      && JSON.stringify(uploaded.columns) === JSON.stringify(['sample', 'value'])
+      && uploaded.rowCount === 2,
+    `Workbook sandbox parse failed: ${uploadResponse.status} ${JSON.stringify(uploaded)}`,
+  );
+  return uploaded;
+}
+
 async function main() {
   await ensureServer();
   const token = await register();
+  const workbook = await uploadWorkbook(token);
+  assert(workbook.fileName === 'sandbox-results.xlsx', `Unexpected workbook response: ${JSON.stringify(workbook)}`);
+  if (process.env.SCIFIGURE_SANDBOX_WORKBOOK_ONLY === '1') {
+    console.log(JSON.stringify({
+      status: 'PASS',
+      baseUrl: BASE_URL,
+      workbook: {
+        fileName: workbook.fileName,
+        columns: workbook.columns,
+        rowCount: workbook.rowCount,
+      },
+    }, null, 2));
+    return;
+  }
   const normal = await render(token, [
     'import matplotlib.pyplot as plt',
     'fig, ax = plt.subplots(figsize=(2, 1.5))',

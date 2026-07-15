@@ -31,7 +31,7 @@ import {
   settleDraftTransaction,
 } from './utils/draftTransaction';
 import { summarizeCodeChange } from './utils/codeHistory';
-import { AUTH_TOKEN_STORAGE_KEY } from './utils/authenticatedFetch';
+import { getAccessToken, setAccessToken } from './utils/authenticatedFetch';
 import { reportClientError } from './utils/clientErrorReporter';
 import { figureDpiFromPatches, synchronizeFigureDpiSpec } from './utils/exportPreviewState';
 import { isTextContentPatchProp } from './utils/propertyPatchMode';
@@ -312,6 +312,19 @@ function loadInitialState(): PersistedAppState {
   }
 }
 
+function renderErrorDiagnosticSummary(renderError: string, language: string | undefined) {
+  const messageLength = renderError.length;
+  return {
+    title: `${language === 'r' ? 'R' : 'Python'} 渲染失败`,
+    message: `Renderer failed with a client-side diagnostic summary (${messageLength} characters).`,
+    metadata: {
+      language: language || 'python',
+      messageLength,
+      hasMessage: messageLength > 0,
+    },
+  };
+}
+
 export default function App() {
   const initialState = useMemo(() => loadInitialState(), []);
   const hasRestoredProjectFiguresRef = useRef(false);
@@ -348,14 +361,14 @@ export default function App() {
       try {
         let response = await fetch('/api/auth/me');
         let data = await response.json().catch(() => null);
-        if (data?.status === 'anonymous' && !window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)) {
+        if (data?.status === 'anonymous' && !getAccessToken()) {
           const refreshed = await fetch('/api/auth/refresh', {
             method: 'POST',
             credentials: 'same-origin',
           });
           const refreshedData = await refreshed.json().catch(() => null);
           if (refreshed.ok && typeof refreshedData?.token === 'string') {
-            window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, refreshedData.token);
+            setAccessToken(refreshedData.token);
             response = await fetch('/api/auth/me');
             data = await response.json().catch(() => null);
           }
@@ -495,17 +508,18 @@ export default function App() {
 
   useEffect(() => {
     if (!renderError) return;
+    const diagnostic = renderErrorDiagnosticSummary(renderError, spec.script_language);
     void reportClientError({
       source: 'render',
       severity: 'error',
-      title: `${spec.script_language === 'r' ? 'R' : 'Python'} 渲染失败`,
-      message: renderError,
+      title: diagnostic.title,
+      message: diagnostic.message,
       component: 'FigureSession',
       operation: 'figure.render',
       errorCode: 'figure_render_failed',
       projectId,
       figureId: activeFigureId,
-      metadata: { language: spec.script_language || 'python' },
+      metadata: diagnostic.metadata,
     });
   }, [activeFigureId, projectId, renderError, spec.script_language]);
 

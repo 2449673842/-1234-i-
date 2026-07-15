@@ -7,6 +7,7 @@ import {
   ClipboardCopy,
   FileCode2,
   FileSpreadsheet,
+  Info,
   Play,
   Star,
   Trash2,
@@ -683,7 +684,17 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                   <div className="text-[11px] text-slate-400">仅提示，不限制额外上传</div>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {expectedDataFiles.length === 0 && <span className="text-xs text-slate-500">未发现固定 CSV / Excel 文件名，可继续上传任意数据表。</span>}
+                  {expectedDataFiles.length === 0 && (
+                    <div className="flex w-full items-start gap-2.5 rounded-md border border-blue-200 bg-blue-50 px-3 py-2.5 text-blue-900" role="status">
+                      <Info className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
+                      <div>
+                        <div className="text-sm font-semibold">没有识别到固定数据文件名</div>
+                        <p className="mt-1 text-xs leading-5 text-blue-800">
+                          脚本可能通过变量或动态路径读取数据。请继续上传脚本实际使用的 CSV / Excel；额外表格同样会保留并进入 AI 数据上下文，不会被限制或丢弃。
+                        </p>
+                      </div>
+                    </div>
+                  )}
                   {expectedDataFiles.map(fileName => {
                     const supplied = providedDataFileNames.some(actual => matchesReferencedDataFile(fileName, actual));
                     return (

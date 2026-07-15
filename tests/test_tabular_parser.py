@@ -31,10 +31,12 @@ class TabularParserTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def run_parser(self, mode, limit=None):
+    def run_parser(self, mode, limit=None, extra_args=None):
         command = [sys.executable, PARSER, "--input", self.xlsx_path, "--mode", mode]
         if limit is not None:
             command.extend(["--limit", str(limit)])
+        if extra_args:
+            command.extend(extra_args)
         completed = subprocess.run(
             command,
             check=True,
@@ -81,6 +83,11 @@ class TabularParserTests(unittest.TestCase):
         result = json.loads(completed.stdout)
         self.assertEqual(result["status"], "error")
         self.assertIn("Workbook parsing failed", result["message"])
+
+    def test_shape_budget_is_checked_before_materializing_records(self):
+        result = self.run_parser("metadata", extra_args=["--max-columns", "2"])
+        self.assertEqual(result["status"], "error")
+        self.assertIn("more than 2 columns", result["message"])
 
 
 if __name__ == "__main__":

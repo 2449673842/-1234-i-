@@ -18,6 +18,12 @@ import { chromium } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import Database from 'better-sqlite3';
+import {
+  authenticateCapabilitySmokeUser,
+  bearerHeaders,
+  installBrowserAuthentication,
+} from './smokeAuth.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -64,8 +70,10 @@ async function clickVisibleText(page, text, timeout = 4000) {
   return false;
 }
 
-async function cleanupSmokeProjects() {
-  const res = await fetch(`${BASE_URL}/api/projects`).catch(() => null);
+async function cleanupSmokeProjects(token) {
+  const res = await fetch(`${BASE_URL}/api/projects`, {
+    headers: bearerHeaders(token),
+  }).catch(() => null);
   if (!res) return;
   const data = await res.json().catch(() => null);
   const projects = Array.isArray(data?.projects) ? data.projects : [];
@@ -73,7 +81,10 @@ async function cleanupSmokeProjects() {
     .filter((project) => String(project?.name || '').startsWith('Drag smoke'))
     .map((project) => {
       const id = project.id || project.projectId;
-      return id ? fetch(`${BASE_URL}/api/projects/${id}`, { method: 'DELETE' }).catch(() => null) : null;
+      return id ? fetch(`${BASE_URL}/api/projects/${id}`, {
+        method: 'DELETE',
+        headers: bearerHeaders(token),
+      }).catch(() => null) : null;
     }));
 }
 
@@ -427,7 +438,13 @@ async function prepareDragFixtureProject(page) {
       'ax.set_xlabel("X Axis")',
       'ax.set_ylabel("Y Axis")',
       'ax.text(0.5, 0.65, "DRAG_ME", transform=ax.transAxes, ha="center", va="center", fontsize=14)',
-      'plt.tight_layout()',
+      'fig.tight_layout()',
+      'fig2, ax2 = plt.subplots(figsize=(5, 3))',
+      'ax2.scatter([0, 1, 2], [2, 1, 3], color="#8b5e34")',
+      'ax2.set_title("Second Smoke Figure")',
+      'ax2.set_xlabel("Second X")',
+      'ax2.set_ylabel("Second Y")',
+      'fig2.tight_layout()',
     ].join('\n');
     const spec = {
       plot_type: 'custom',
@@ -582,23 +599,57 @@ async function triggerProjectSvgExportAndReadResponse(page) {
   return { clicked: true, data };
 }
 
+async function verifyRejectedProjectExportRollsBack(projectId, authToken) {
+  if (process.env.SCIFIGURE_TEST_ISOLATED !== '1' || !process.env.SCIFIGURE_DB_PATH || !process.env.SCIFIGURE_DATA_DIR) {
+    return { checked: false };
+  }
+  const database = new Database(process.env.SCIFIGURE_DB_PATH);
+  const beforeAssets = database.prepare('SELECT COUNT(*) AS count FROM export_assets WHERE project_id = ?').get(projectId).count;
+  const exportsDir = path.join(process.env.SCIFIGURE_DATA_DIR, 'projects', projectId, 'exports');
+  const beforeFiles = fs.existsSync(exportsDir) ? fs.readdirSync(exportsDir).length : 0;
+  const windowStartMs = Math.floor(Date.now() / 3_600_000) * 3_600_000;
+  const windowStart = new Date(windowStartMs).toISOString();
+  const configuredMb = Number(process.env.SCIFIGURE_GLOBAL_DOWNLOAD_MAX_MB_PER_HOUR || 512);
+  const globalLimitBytes = Math.max(100, Number.isFinite(configuredMb) ? configuredMb : 512) * 1024 * 1024;
+  database.prepare(`
+    INSERT INTO global_usage_budgets (category, window_start, amount, updated_at)
+    VALUES ('download_bytes', ?, ?, datetime('now'))
+    ON CONFLICT(category, window_start) DO UPDATE SET amount = excluded.amount, updated_at = datetime('now')
+  `).run(windowStart, globalLimitBytes);
+  database.close();
+
+  let response;
+  try {
+    response = await fetch(`${BASE_URL}/api/projects/${projectId}/export`, {
+      method: 'POST',
+      headers: bearerHeaders(authToken, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ figureId: 'fig_1', format: 'svg', dpi: 300, saveToLibrary: true }),
+    });
+  } finally {
+    const cleanupDb = new Database(process.env.SCIFIGURE_DB_PATH);
+    cleanupDb.prepare(`
+      DELETE FROM global_usage_budgets
+      WHERE category = 'download_bytes' AND window_start = ?
+    `).run(windowStart);
+    cleanupDb.close();
+  }
+
+  const verifyDb = new Database(process.env.SCIFIGURE_DB_PATH, { readonly: true });
+  const afterAssets = verifyDb.prepare('SELECT COUNT(*) AS count FROM export_assets WHERE project_id = ?').get(projectId).count;
+  verifyDb.close();
+  const afterFiles = fs.existsSync(exportsDir) ? fs.readdirSync(exportsDir).length : 0;
+  return { checked: true, status: response.status, beforeAssets, afterAssets, beforeFiles, afterFiles };
+}
+
 async function run() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-  await cleanupSmokeProjects();
+  const authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'behavior-smoke');
+  await cleanupSmokeProjects(authToken);
 
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await installBrowserAuthentication(context, authToken);
   const page = await context.newPage();
-
-  await page.route('**/api/auth/me', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({
-      status: 'success',
-      user: { id: 'behavior-smoke-user', email: 'behavior-smoke@example.test' },
-      license: { status: 'free' },
-    }),
-  }));
 
   await page.route('**/api/figure/patch', async (route) => {
     if (delayNextPatchRequest) {
@@ -636,6 +687,8 @@ async function run() {
   });
 
   try {
+    await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 30000 });
+    diagnostics.initialFixture = await prepareDragFixtureProject(page);
     const loaded = await navigateToEditor(page);
     if (!loaded) {
       await screenshot(page, '01-editor-blocked');
@@ -805,10 +858,15 @@ async function run() {
       previewHasUniqueText: exportSvgAfterApply.includes(exportUniqueText),
     };
 
-    const exportClicked = await clickVisibleText(page, '导出图形', 3000) || await clickVisibleText(page, '导出', 3000);
-    await page.waitForTimeout(1500);
-    const exportBody = await getBodyText(page);
-    const exportHasOptions = exportBody.includes('SVG') && (exportBody.includes('DPI') || exportBody.includes('PNG'));
+    const exportButton = page.getByRole('button', { name: /^导出图形$/ }).first();
+    const exportClicked = await exportButton.isVisible({ timeout: 3000 }).catch(() => false);
+    if (exportClicked) await exportButton.click();
+    const exportPageReady = await page.getByRole('heading', { name: '导出与出版设置' })
+      .isVisible({ timeout: 5000 })
+      .catch(() => false);
+    const exportHasOptions = exportPageReady
+      && await page.getByRole('button', { name: /^SVG$/ }).isVisible({ timeout: 3000 }).catch(() => false)
+      && await page.locator('[data-export-dpi]').isVisible({ timeout: 3000 }).catch(() => false);
     if (exportClicked && exportHasOptions) {
       await chooseExportFormat(page, 'SVG');
       const exported = await triggerProjectSvgExportAndReadResponse(page);
@@ -824,6 +882,19 @@ async function run() {
       record('L1', 'FAIL', `进入导出=${exportClicked}, 导出选项=${exportHasOptions}`);
     }
 
+    const rejectedExport = await verifyRejectedProjectExportRollsBack(diagnostics.initialFixture.projectId, authToken);
+    if (rejectedExport.checked) {
+      record(
+        'L2',
+        rejectedExport.status === 429
+          && rejectedExport.beforeAssets === rejectedExport.afterAssets
+          && rejectedExport.beforeFiles === rejectedExport.afterFiles
+          ? 'PASS'
+          : 'FAIL',
+        `status=${rejectedExport.status}, assets=${rejectedExport.beforeAssets}->${rejectedExport.afterAssets}, files=${rejectedExport.beforeFiles}->${rejectedExport.afterFiles}`,
+      );
+    }
+
     await runDragFixtureCheck(page);
 
     if (consoleErrors.length > 0 || pageErrors.length > 0) {
@@ -833,6 +904,7 @@ async function run() {
     }
   } finally {
     await browser.close();
+    await cleanupSmokeProjects(authToken);
   }
 }
 

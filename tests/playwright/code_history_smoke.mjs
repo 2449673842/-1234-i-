@@ -122,7 +122,7 @@ async function run() {
     viewport: { width: 1500, height: 950 },
     extraHTTPHeaders: { Authorization: `Bearer ${token}` },
   });
-  await context.addInitScript((accessToken) => localStorage.setItem('scifigure:auth-token', accessToken), token);
+  await context.addInitScript((accessToken) => sessionStorage.setItem('scifigure:auth-token', accessToken), token);
   const page = await context.newPage();
   const pageErrors = [];
   page.on('console', message => {

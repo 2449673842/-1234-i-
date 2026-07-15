@@ -71,6 +71,7 @@ const server = spawn(process.execPath, [tsxCli, 'server.ts'], {
     PORT: String(port),
     SCIFIGURE_DB_PATH: dbPath,
     SCIFIGURE_RENDER_MODE: 'local',
+    SCIFIGURE_ADMIN_CONSOLE_ENABLED: '1',
     NODE_ENV: 'development',
   },
   stdio: ['ignore', 'pipe', 'pipe'],

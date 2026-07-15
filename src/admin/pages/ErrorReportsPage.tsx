@@ -154,7 +154,6 @@ export function ErrorReportsPage() {
           <DetailField label="错误码">{selected.errorCode || '—'}</DetailField>
           <DetailField label="脱敏摘要">{selected.message}</DetailField>
           <DetailField label="路由">{selected.route || '—'}</DetailField>
-          <DetailField label="用户">{selected.userEmail || selected.userId || '—'}</DetailField>
           <DetailField label="项目 / Figure">{selected.projectId || '—'} / {selected.figureId || '—'}</DetailField>
           <DetailField label="首次发生">{formatDateTime(selected.firstSeenAt)}</DetailField>
           <DetailField label="最近发生">{formatDateTime(selected.lastSeenAt)}</DetailField>

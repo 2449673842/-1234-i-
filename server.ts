@@ -31,6 +31,35 @@ import {
   type DeploymentMode,
 } from './src/utils/deploymentLifecycle';
 import { installAdminConsoleRoutes } from './server/admin/console';
+import { adminOperationsEnabled } from './server/admin/featureFlags';
+import {
+  emailVerificationRequired,
+  emailVerificationTtlMinutes,
+  generateEmailVerificationCode,
+  hashEmailVerificationCode,
+  maskEmailAddress,
+  sendEmailVerificationCode,
+} from './server/auth/emailVerification';
+import { assertSafeSvgDocument } from './server/security/svgSafety';
+import { assertValidUploadedDataFile, decodeAndValidatePngBase64 } from './server/security/fileValidation';
+import {
+  assertRendererDataPayload,
+  assertTabularShape,
+  canInlineDataset,
+  inspectDelimitedFile,
+  loadDelimitedRows,
+  tabularInspectionLimits,
+  tabularSafetyLimits,
+} from './server/security/tabularSafety';
+import {
+  assertArchiveBudget,
+  assertGlobalStorageBudget,
+  assertProjectTotalStorageBudget,
+  assertProjectStorageBudget,
+  assertUserTotalStorageBudget,
+  assertUserStorageBudget,
+  singleUploadLimitBytes,
+} from './server/security/resourceBudgets';
 import { 
   listProjects, 
   getProject, 
@@ -55,6 +84,8 @@ import {
   getExportAsset,
   deleteExportAssets,
   createUserAccount,
+  createEmailVerificationChallenge,
+  consumeEmailVerificationChallenge,
   getUserByEmail,
   getUserById,
   getUserByAuthToken,
@@ -71,6 +102,7 @@ import {
   createRedeemCode,
   logLicenseCheck,
   logAdminAudit,
+  consumeScopedHourlyUsageBudget,
   listAdminAuditLogs,
   claimLegacyOwnership,
   type FigSessionInput,
@@ -157,6 +189,7 @@ async function startServer() {
   const activeRendererAborters = new Set<() => void>();
   const renderWorkQueue = new AbortableWorkQueue(() => renderConcurrencyLimit());
   app.disable('x-powered-by');
+  app.set('trust proxy', process.env.SCIFIGURE_TRUST_PROXY === 'loopback' ? 'loopback' : false);
 
   type RateLimitBucket = {
     count: number;
@@ -164,10 +197,6 @@ async function startServer() {
   };
 
   function clientIp(req: express.Request): string {
-    const forwarded = req.headers['x-forwarded-for'];
-    if (typeof forwarded === 'string' && forwarded.trim()) {
-      return forwarded.split(',')[0].trim();
-    }
     return req.ip || req.socket.remoteAddress || 'unknown';
   }
 
@@ -233,6 +262,20 @@ async function startServer() {
     message: '管理操作过于频繁，请稍后再试。',
   });
 
+  const emailVerificationRateLimit = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.EMAIL_VERIFICATION_RATE_LIMIT_PER_15_MINUTES || 8),
+    message: '邮箱验证码请求过于频繁，请稍后再试。',
+    key: req => `${clientIp(req)}:${String(req.body?.email || '').trim().toLowerCase()}`,
+  });
+
+  const requireAdminOperationsEnabled = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!adminOperationsEnabled()) {
+      return res.status(404).json({ status: 'error', message: 'Not found' });
+    }
+    return next();
+  };
+
   const errorReportRateLimit = createRateLimiter({
     windowMs: 60 * 1000,
     max: Number(process.env.ERROR_REPORT_RATE_LIMIT_PER_MINUTE || 30),
@@ -245,6 +288,81 @@ async function startServer() {
       return `${clientIp(req)}:${tokenKey}`;
     },
   });
+
+  function authenticatedRequestKey(req: express.Request): string {
+    const token = readBearerToken(req);
+    const tokenKey = token
+      ? crypto.createHash('sha256').update(token).digest('hex').slice(0, 24)
+      : 'anonymous';
+    return `${clientIp(req)}:${tokenKey}`;
+  }
+
+  const uploadRateLimit = createRateLimiter({
+    windowMs: 60 * 60 * 1000,
+    max: Number(process.env.UPLOAD_RATE_LIMIT_PER_HOUR || 30),
+    message: '数据文件上传过于频繁，请稍后再试。',
+    key: authenticatedRequestKey,
+  });
+
+  const downloadRateLimit = createRateLimiter({
+    windowMs: 60 * 60 * 1000,
+    max: Number(process.env.DOWNLOAD_RATE_LIMIT_PER_HOUR || 120),
+    message: '导出文件下载过于频繁，请稍后再试。',
+    key: authenticatedRequestKey,
+  });
+
+  function assertHourlyByteBudget(
+    req: express.Request,
+    res: express.Response,
+    category: 'upload_bytes' | 'download_bytes',
+    bytes: number,
+  ): void {
+    const configuredMb = category === 'upload_bytes'
+      ? boundedNumber(process.env.SCIFIGURE_UPLOAD_MAX_MB_PER_HOUR, 200, 50, 10_240)
+      : boundedNumber(process.env.SCIFIGURE_DOWNLOAD_MAX_MB_PER_HOUR, 250, 50, 10_240);
+    const globalMb = category === 'upload_bytes'
+      ? boundedNumber(process.env.SCIFIGURE_GLOBAL_UPLOAD_MAX_MB_PER_HOUR, 1_024, 100, 10_240)
+      : boundedNumber(process.env.SCIFIGURE_GLOBAL_DOWNLOAD_MAX_MB_PER_HOUR, 512, 100, 10_240);
+    const result = consumeScopedHourlyUsageBudget(
+      authenticatedUserId(req),
+      category,
+      Math.max(0, Math.floor(bytes)),
+      configuredMb * 1024 * 1024,
+      globalMb * 1024 * 1024,
+    );
+    if (!result.allowed) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((Date.parse(result.resetAt) - Date.now()) / 1000));
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      const action = category === 'upload_bytes' ? '上传' : '下载';
+      const error = new Error(result.blockedScope === 'global'
+        ? `平台本小时${action}流量已达到安全上限，请稍后再试`
+        : `该账号本小时${action}总量已达到 ${configuredMb} MB 安全上限`);
+      (error as any).statusCode = 429;
+      throw error;
+    }
+  }
+
+  function requestBodyByteLength(req: express.Request): number {
+    const captured = Number((req as any).scifigureRawBodyBytes);
+    if (Number.isFinite(captured) && captured >= 0) return Math.floor(captured);
+    const declared = Number(req.get('content-length'));
+    if (Number.isFinite(declared) && declared >= 0) return Math.floor(declared);
+    const error = new Error('该上传请求必须提供可计量的 Content-Length');
+    (error as any).statusCode = 411;
+    throw error;
+  }
+
+  function meterExportAssetImport(req: express.Request, res: express.Response, next: express.NextFunction) {
+    try {
+      assertHourlyByteBudget(req, res, 'upload_bytes', requestBodyByteLength(req));
+      if (!req.is('application/json')) {
+        return res.status(415).json({ status: 'error', message: '导出资产导入仅接受 application/json' });
+      }
+      return next();
+    } catch (err: any) {
+      return res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
+    }
+  }
 
   function renderConcurrencyLimit(): number {
     return boundedNumber(process.env.SCIFIGURE_RENDER_CONCURRENCY, 4, 1, 8);
@@ -367,6 +485,25 @@ async function startServer() {
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    const cspMode = String(process.env.SCIFIGURE_CSP_MODE || 'report-only').toLowerCase();
+    if (cspMode === 'report-only' || cspMode === 'enforce') {
+      const policy = [
+        "default-src 'self'",
+        "base-uri 'self'",
+        "object-src 'none'",
+        "frame-ancestors 'self'",
+        "form-action 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob:",
+        "font-src 'self' data:",
+        "connect-src 'self' ws: wss:",
+        "worker-src 'self' blob:",
+        "media-src 'none'",
+        "manifest-src 'self'",
+      ].join('; ');
+      res.setHeader(cspMode === 'enforce' ? 'Content-Security-Policy' : 'Content-Security-Policy-Report-Only', policy);
+    }
     if (process.env.SCIFIGURE_STAGING_INSTANCE === 'unified-editing') {
       res.setHeader('X-SciFigure-Runtime-Profile', 'unified-editing-staging');
     }
@@ -400,7 +537,7 @@ async function startServer() {
   const upload = multer({
     storage,
     limits: {
-      fileSize: 50 * 1024 * 1024,
+      fileSize: singleUploadLimitBytes(),
       files: 20,
     },
     fileFilter: (_req, file, cb) => {
@@ -693,6 +830,8 @@ async function startServer() {
       email: user.email,
       displayName: user.displayName,
       role: user.role,
+      emailVerified: user.emailVerified,
+      emailVerificationRequired: user.emailVerificationRequired,
       createdAt: user.createdAt,
       lastLoginAt: user.lastLoginAt,
     };
@@ -816,6 +955,50 @@ async function startServer() {
     return 'application/octet-stream';
   }
 
+  function issueAuthenticatedSession(req: express.Request, res: express.Response, user: UserAccount) {
+    const token = issueToken();
+    const refreshToken = issueToken();
+    const fingerprint = readDeviceFingerprint(req);
+    const deviceId = fingerprint
+      ? upsertDevice(user.id, fingerprint, String(req.headers['x-device-name'] || '').slice(0, 80) || null)
+      : null;
+    createAuthSession(user.id, token, refreshToken, deviceId, accessTokenMinutes(), refreshTokenDays());
+    setRefreshCookie(res, refreshToken);
+    touchUserLogin(user.id);
+    return {
+      token,
+      user: publicUserPayload(user),
+      license: getLicenseState(user.id),
+      deviceCount: getActiveDeviceCount(user.id),
+    };
+  }
+
+  async function issueEmailVerificationChallenge(user: { id: string; email: string }) {
+    const challengeId = `evc_${crypto.randomUUID()}`;
+    const code = generateEmailVerificationCode();
+    const expiresAt = new Date(Date.now() + emailVerificationTtlMinutes() * 60 * 1000).toISOString();
+    createEmailVerificationChallenge({
+      id: challengeId,
+      userId: user.id,
+      codeHash: hashEmailVerificationCode(challengeId, code),
+      expiresAt,
+      maxAttempts: 5,
+    });
+    try {
+      await sendEmailVerificationCode({ email: user.email, code, expiresAt });
+    } catch (error) {
+      console.error('Email verification delivery failed:', (error as Error)?.message || error);
+      const deliveryError = new Error('验证码暂时无法发送，请稍后重试');
+      (deliveryError as any).statusCode = 503;
+      throw deliveryError;
+    }
+    const testCode = process.env.SCIFIGURE_TEST_ISOLATED === '1'
+      && process.env.SCIFIGURE_TEST_EXPOSE_EMAIL_CODE === '1'
+      ? code
+      : undefined;
+    return { challengeId, expiresAt, maskedEmail: maskEmailAddress(user.email), testCode };
+  }
+
   function rasterExportDpi(format: string, dpi: unknown): number | null {
     const normalized = format.toLowerCase();
     if (!['png', 'tiff', 'tif'].includes(normalized)) return null;
@@ -830,6 +1013,79 @@ async function startServer() {
     return exportsDir;
   }
 
+  function registeredProjectStorageSizes(scope: { projectId?: string; userId?: string } = {}): number[] {
+    const fileRows = scope.projectId
+      ? getDb().prepare(`
+          SELECT stored_path AS storedPath FROM project_files WHERE project_id = ?
+          UNION ALL
+          SELECT file_path AS storedPath FROM export_assets WHERE project_id = ?
+        `).all(scope.projectId, scope.projectId) as Array<{ storedPath: string }>
+      : scope.userId
+        ? getDb().prepare(`
+            SELECT pf.stored_path AS storedPath
+            FROM project_files pf
+            INNER JOIN projects p ON p.id = pf.project_id
+            WHERE p.user_id = ?
+            UNION ALL
+            SELECT ea.file_path AS storedPath
+            FROM export_assets ea
+            INNER JOIN projects p ON p.id = ea.project_id
+            WHERE p.user_id = ?
+          `).all(scope.userId, scope.userId) as Array<{ storedPath: string }>
+        : getDb().prepare(`
+            SELECT stored_path AS storedPath FROM project_files
+            UNION ALL
+            SELECT file_path AS storedPath FROM export_assets
+          `).all() as Array<{ storedPath: string }>;
+    const fileSizes = fileRows.flatMap(row => {
+      try {
+        const absPath = safeResolveUnder(PROJECTS_ROOT, row.storedPath);
+        return fs.existsSync(absPath) ? [fs.statSync(absPath).size] : [];
+      } catch {
+        return [];
+      }
+    });
+    const thumbnailRows = scope.projectId
+      ? getDb().prepare(`
+          SELECT length(CAST(thumbnail_svg AS BLOB)) AS sizeBytes
+          FROM export_assets
+          WHERE project_id = ? AND thumbnail_svg IS NOT NULL
+        `).all(scope.projectId) as Array<{ sizeBytes: number | null }>
+      : scope.userId
+        ? getDb().prepare(`
+            SELECT length(CAST(ea.thumbnail_svg AS BLOB)) AS sizeBytes
+            FROM export_assets ea
+            INNER JOIN projects p ON p.id = ea.project_id
+            WHERE p.user_id = ? AND ea.thumbnail_svg IS NOT NULL
+          `).all(scope.userId) as Array<{ sizeBytes: number | null }>
+        : getDb().prepare(`
+            SELECT length(CAST(thumbnail_svg AS BLOB)) AS sizeBytes
+            FROM export_assets
+            WHERE thumbnail_svg IS NOT NULL
+          `).all() as Array<{ sizeBytes: number | null }>;
+    return fileSizes.concat(thumbnailRows.map(row => Math.max(0, Number(row.sizeBytes || 0))));
+  }
+
+  function assertProjectOwnedStorageBudgets(projectId: string, userId: string, incomingSize: number): void {
+    assertProjectTotalStorageBudget(registeredProjectStorageSizes({ projectId }), incomingSize);
+    assertUserTotalStorageBudget(registeredProjectStorageSizes({ userId }), incomingSize);
+    assertGlobalStorageBudget(registeredProjectStorageSizes(), incomingSize);
+  }
+
+  function removeNewExportAssets(projectId: string, assets: ExportAsset[]): void {
+    if (assets.length === 0) return;
+    const root = projectExportsDir(projectId);
+    for (const asset of assets) {
+      try {
+        const absPath = safeResolveUnder(root, asset.filePath);
+        if (fs.existsSync(absPath)) fs.unlinkSync(absPath);
+      } catch {
+        // The database delete below still prevents a failed export from entering history.
+      }
+    }
+    deleteExportAssets(projectId, assets.map(asset => asset.assetId));
+  }
+
   function persistProjectExportAsset(args: {
     projectId: string;
     figureId: string | null;
@@ -842,29 +1098,39 @@ async function startServer() {
     metadata?: Record<string, unknown>;
     tags?: string[];
   }): ExportAsset {
+    const owner = getDb().prepare('SELECT user_id AS userId FROM projects WHERE id = ?').get(args.projectId) as { userId: string | null } | undefined;
+    if (!owner?.userId) {
+      throw new Error('导出资产缺少有效的项目所有者');
+    }
     const assetId = `exp_${randomUUID()}`;
     const fmt = args.format.toLowerCase();
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `${stamp}_${safeExportName(args.figureId || args.name)}.${fmt}`;
     const absPath = path.join(projectExportsDir(args.projectId), filename);
     const relPath = path.relative(process.cwd(), absPath);
-    if (args.binaryB64) {
-      fs.writeFileSync(absPath, Buffer.from(args.binaryB64, 'base64'));
-    } else {
-      fs.writeFileSync(absPath, args.svg || '', 'utf8');
+    const fileBuffer = args.binaryB64
+      ? Buffer.from(args.binaryB64, 'base64')
+      : Buffer.from(args.svg || '', 'utf8');
+    const thumbnailBytes = Buffer.byteLength(args.thumbnailSvg ?? args.svg ?? '', 'utf8');
+    assertProjectOwnedStorageBudgets(args.projectId, owner.userId, fileBuffer.length + thumbnailBytes);
+    fs.writeFileSync(absPath, fileBuffer);
+    try {
+      return addExportAsset({
+        id: assetId,
+        projectId: args.projectId,
+        figureId: args.figureId,
+        name: args.name,
+        format: fmt,
+        dpi: args.dpi ?? null,
+        filePath: relPath,
+        thumbnailSvg: args.thumbnailSvg ?? args.svg ?? null,
+        metadata: args.metadata ?? {},
+        tags: args.tags ?? [],
+      });
+    } catch (error) {
+      try { fs.unlinkSync(absPath); } catch { /* failed asset was never registered */ }
+      throw error;
     }
-    return addExportAsset({
-      id: assetId,
-      projectId: args.projectId,
-      figureId: args.figureId,
-      name: args.name,
-      format: fmt,
-      dpi: args.dpi ?? null,
-      filePath: relPath,
-      thumbnailSvg: args.thumbnailSvg ?? args.svg ?? null,
-      metadata: args.metadata ?? {},
-      tags: args.tags ?? [],
-    });
   }
 
   function parseSvgViewBox(svg: string): { x: number; y: number; width: number; height: number } {
@@ -1233,6 +1499,17 @@ ${inner}
 
   function apiErrorHandler(err: any, req: express.Request, res: express.Response, next: express.NextFunction) {
     if (err instanceof SyntaxError && 'body' in err) {
+      if (/^\/api\/projects\/[^/]+\/export-assets\/import$/.test(req.path)) {
+        try {
+          authenticatedUserId(req);
+          assertHourlyByteBudget(req, res, 'upload_bytes', requestBodyByteLength(req));
+        } catch (budgetError: any) {
+          const status = Number(budgetError?.statusCode || 0);
+          if (status === 411 || status === 429) {
+            return res.status(status).json({ status: 'error', message: budgetError.message });
+          }
+        }
+      }
       return res.status(400).json({ status: 'error', message: 'Invalid JSON payload' });
     }
     if (err?.type === 'entity.too.large' || err?.code === 'LIMIT_FILE_SIZE') {
@@ -1335,7 +1612,12 @@ ${inner}
   );
 
   app.use(apiRateLimit);
-  app.use(express.json({ limit: '50mb' }));
+  app.use(express.json({
+    limit: '50mb',
+    verify: (req, _res, buffer) => {
+      (req as any).scifigureRawBodyBytes = buffer.length;
+    },
+  }));
   app.use(express.urlencoded({ limit: '1mb', extended: false }));
   app.use(apiErrorHandler);
 
@@ -1376,18 +1658,81 @@ ${inner}
       if (getUserByEmail(email)) {
         return res.status(409).json({ status: 'error', message: '该邮箱已注册' });
       }
-      const user = await createUserAccount(email, password, displayName || email.split('@')[0]);
-      const token = issueToken();
-      const refreshToken = issueToken();
-      const fingerprint = readDeviceFingerprint(req);
-      const deviceId = fingerprint ? upsertDevice(user.id, fingerprint, String(req.headers['x-device-name'] || '').slice(0, 80) || null) : null;
-      createAuthSession(user.id, token, refreshToken, deviceId, accessTokenMinutes(), refreshTokenDays());
-      setRefreshCookie(res, refreshToken);
-      touchUserLogin(user.id);
-      const license = getLicenseState(user.id);
-      res.json({ status: 'success', token, user: publicUserPayload(user), license });
+      const verificationRequired = emailVerificationRequired();
+      const user = await createUserAccount(
+        email,
+        password,
+        displayName || email.split('@')[0],
+        { emailVerificationRequired: verificationRequired },
+      );
+      if (verificationRequired) {
+        const challenge = await issueEmailVerificationChallenge(user);
+        return res.status(202).json({
+          status: 'success',
+          verificationRequired: true,
+          verification: challenge,
+        });
+      }
+      return res.json({ status: 'success', ...issueAuthenticatedSession(req, res, user) });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({
+        status: 'error',
+        message: Number(err?.statusCode) === 503 ? err.message : '注册失败，请稍后重试',
+      });
+    }
+  });
+
+  app.post('/api/auth/verify-email', emailVerificationRateLimit, (req, res) => {
+    try {
+      const challengeId = String(req.body?.challengeId || '').trim();
+      const code = String(req.body?.code || '').trim();
+      if (!/^evc_[0-9a-f-]{36}$/i.test(challengeId) || !/^\d{6}$/.test(code)) {
+        return res.status(400).json({ status: 'error', message: '验证码格式无效' });
+      }
+      const result = consumeEmailVerificationChallenge(
+        challengeId,
+        hashEmailVerificationCode(challengeId, code),
+      );
+      if (result.status !== 'verified') {
+        const message = result.status === 'expired'
+          ? '验证码已过期，请重新发送'
+          : result.status === 'locked'
+            ? '验证码尝试次数过多，请重新发送'
+            : '验证码错误';
+        return res.status(400).json({ status: 'error', errorCode: `EMAIL_VERIFICATION_${result.status.toUpperCase()}`, message });
+      }
+      return res.json({ status: 'success', ...issueAuthenticatedSession(req, res, result.user) });
+    } catch (err: any) {
+      console.error('Email verification failed:', err?.message || err);
+      return res.status(500).json({ status: 'error', message: '邮箱验证暂时不可用，请稍后重试' });
+    }
+  });
+
+  app.post('/api/auth/resend-verification', emailVerificationRateLimit, async (req, res) => {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ status: 'error', message: '请输入有效邮箱' });
+    }
+    const genericResponse = {
+      status: 'success',
+      message: '如果该邮箱存在待验证账号，新的验证码已发送',
+      verificationRequired: true,
+      verification: {
+        challengeId: `evc_${crypto.randomUUID()}`,
+        expiresAt: new Date(Date.now() + emailVerificationTtlMinutes() * 60 * 1000).toISOString(),
+        maskedEmail: maskEmailAddress(email),
+      },
+    };
+    try {
+      const row = getUserByEmail(email);
+      if (!row || row.email_verification_required !== 1 || row.email_verified_at) {
+        return res.json(genericResponse);
+      }
+      const challenge = await issueEmailVerificationChallenge({ id: row.id, email: row.email });
+      return res.json({ ...genericResponse, verification: challenge });
+    } catch (err: any) {
+      console.error('Email verification resend failed:', err?.message || err);
+      return res.status(503).json({ status: 'error', message: '验证码暂时无法发送，请稍后重试' });
     }
   });
 
@@ -1403,15 +1748,16 @@ ${inner}
       if (!user) {
         return res.status(401).json({ status: 'error', message: '用户不存在' });
       }
-      const token = issueToken();
-      const refreshToken = issueToken();
-      const fingerprint = readDeviceFingerprint(req);
-      const deviceId = fingerprint ? upsertDevice(user.id, fingerprint, String(req.headers['x-device-name'] || '').slice(0, 80) || null) : null;
-      createAuthSession(user.id, token, refreshToken, deviceId, accessTokenMinutes(), refreshTokenDays());
-      setRefreshCookie(res, refreshToken);
-      touchUserLogin(user.id);
-      const license = getLicenseState(user.id);
-      res.json({ status: 'success', token, user: publicUserPayload(user), license, deviceCount: getActiveDeviceCount(user.id) });
+      if (user.emailVerificationRequired) {
+        return res.status(403).json({
+          status: 'error',
+          errorCode: 'EMAIL_VERIFICATION_REQUIRED',
+          message: '请先完成邮箱验证',
+          verificationRequired: true,
+          maskedEmail: maskEmailAddress(user.email),
+        });
+      }
+      return res.json({ status: 'success', ...issueAuthenticatedSession(req, res, user) });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
@@ -1500,7 +1846,7 @@ ${inner}
     }
   });
 
-  app.post('/api/admin/redeem-codes', adminRateLimit, (req, res) => {
+  app.post('/api/admin/redeem-codes', requireAdminOperationsEnabled, adminRateLimit, (req, res) => {
     let actorUserId: string | null = null;
     try {
       const auth = requireAdmin(req);
@@ -1546,7 +1892,7 @@ ${inner}
     }
   });
 
-  app.get('/api/admin/audit-logs', adminRateLimit, (req, res) => {
+  app.get('/api/admin/audit-logs', requireAdminOperationsEnabled, adminRateLimit, (req, res) => {
     let actorUserId: string | null = null;
     try {
       const auth = requireAdmin(req);
@@ -1578,7 +1924,7 @@ ${inner}
     }
   });
 
-  app.get('/api/admin/deployment-state', (req, res) => {
+  app.get('/api/admin/deployment-state', requireAdminOperationsEnabled, (req, res) => {
     try {
       requireAdmin(req);
       res.setHeader('Cache-Control', 'no-store');
@@ -1588,7 +1934,7 @@ ${inner}
     }
   });
 
-  app.post('/api/admin/deployment-state', adminRateLimit, (req, res) => {
+  app.post('/api/admin/deployment-state', requireAdminOperationsEnabled, adminRateLimit, (req, res) => {
     let actorUserId: string | null = null;
     try {
       const auth = requireAdmin(req);
@@ -2191,6 +2537,7 @@ ${inner}
     payload: unknown,
     options: SpawnPythonOptions = {}
   ): Promise<any> {
+    assertRendererDataPayload(payload);
     if (rendererMode() === 'docker' && (scriptName === 'introspector.py' || scriptName === 'svg_convert.py')) {
       return spawnDockerRenderer('python', scriptName, payload, options);
     }
@@ -2329,6 +2676,7 @@ ${inner}
     payload: unknown,
     options: SpawnPythonOptions = {}
   ): Promise<any> {
+    assertRendererDataPayload(payload);
     const script = typeof (payload as any)?.script === 'string' ? (payload as any).script : '';
     const riskCheck = validateRScriptRisk(script, options.req);
     if (!riskCheck.ok) {
@@ -2645,10 +2993,20 @@ ${inner}
         throw new Error('仅支持解析 XLSX/XLS 文件');
       }
 
-      const workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'scifigure-tabular-'));
+      const taskRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'scifigure-tabular-task-'));
+      const workDir = path.join(taskRoot, 'work');
       const stagedName = `input${extension}`;
       const stagedPath = path.join(workDir, stagedName);
-      await fs.promises.copyFile(absPath, stagedPath);
+      try {
+        await fs.promises.chmod(taskRoot, 0o700);
+        await fs.promises.mkdir(workDir, { mode: 0o755 });
+        await fs.promises.chmod(workDir, 0o755);
+        await fs.promises.copyFile(absPath, stagedPath);
+        await fs.promises.chmod(stagedPath, 0o444);
+      } catch (error) {
+        await fs.promises.rm(taskRoot, { recursive: true, force: true });
+        throw error;
+      }
       const timeoutMs = boundedNumber(process.env.SCIFIGURE_TABULAR_TIMEOUT_MS, 30_000, 5_000, 120_000);
       const maxOutputMb = boundedNumber(process.env.SCIFIGURE_TABULAR_OUTPUT_MB, 24, 4, 64);
       const maxOutputBytes = maxOutputMb * 1024 * 1024;
@@ -2689,6 +3047,23 @@ ${inner}
       if (requestedLimit !== undefined && mode === 'records') {
         args.push('--limit', String(requestedLimit));
       }
+      const safetyLimits = mode === 'metadata' || requestedLimit !== undefined
+        ? tabularInspectionLimits()
+        : tabularSafetyLimits();
+      const safetyArgStart = args.length;
+      args.push(
+        '--max-rows', String(safetyLimits.maxRows),
+        '--max-columns', String(safetyLimits.maxColumns),
+        '--max-cells', String(safetyLimits.maxCells),
+        '--max-cell-chars', String(safetyLimits.maxCellChars),
+        '--max-entries', String(boundedNumber(process.env.SCIFIGURE_XLSX_MAX_ENTRIES, 2_048, 32, 20_000)),
+        '--max-uncompressed-bytes', String(
+          boundedNumber(process.env.SCIFIGURE_XLSX_MAX_UNCOMPRESSED_MB, 256, 16, 2_048) * 1024 * 1024,
+        ),
+        '--max-compression-ratio', String(
+          boundedNumber(process.env.SCIFIGURE_XLSX_MAX_COMPRESSION_RATIO, 200, 10, 1_000),
+        ),
+      );
 
       const forceRemoveContainer = () => {
         if (!containerName) return;
@@ -2701,8 +3076,8 @@ ${inner}
       };
 
       try {
-        const parsed = await new Promise<any>((resolve, reject) => {
-          const child = spawn(command, args, {
+        const runParserProcess = (parserArgs: string[]) => new Promise<any>((resolve, reject) => {
+          const child = spawn(command, parserArgs, {
             cwd: workDir,
             env: buildProcessEnvForBin(command),
             windowsHide: true,
@@ -2773,11 +3148,37 @@ ${inner}
           });
         });
 
+        let parsed: any;
+        try {
+          parsed = await runParserProcess(args);
+        } catch (error: any) {
+          const legacyParserMismatch = rendererMode() === 'docker'
+            && /unrecognized arguments:.*--max-/is.test(String(error?.message || error));
+          const canRetryLegacyParser = legacyParserMismatch
+            && process.env.NODE_ENV !== 'production'
+            && process.env.SCIFIGURE_ALLOW_LEGACY_TABULAR_PARSER === '1';
+          if (!canRetryLegacyParser) {
+            if (legacyParserMismatch) {
+              const mismatch = new Error('表格解析镜像版本过旧，缺少资源限制参数；请使用与当前服务同一版本构建 renderer 镜像');
+              (mismatch as any).statusCode = 503;
+              throw mismatch;
+            }
+            throw error;
+          }
+          const legacyArgs = args.slice(0, safetyArgStart);
+          containerName = `scifigure-tabular-${randomUUID().replace(/-/g, '')}`;
+          const nameIndex = legacyArgs.indexOf('--name');
+          if (nameIndex >= 0) legacyArgs[nameIndex + 1] = containerName;
+          console.warn('[tabular] development-only legacy parser compatibility is active');
+          parsed = await runParserProcess(legacyArgs);
+        }
+
         const value: WorkbookParseResult = {
           columns: Array.isArray(parsed.columns) ? parsed.columns.map(String) : [],
           rowCount: Math.max(0, Number(parsed.row_count || 0)),
           rows: mode === 'records' && Array.isArray(parsed.rows) ? parsed.rows : undefined,
         };
+        assertTabularShape(value.columns, value.rowCount);
         if (mode === 'metadata') {
           workbookParseCache.set(cacheKey, value);
           if (workbookParseCache.size > 4) {
@@ -2788,7 +3189,7 @@ ${inner}
         return value;
       } finally {
         forceRemoveContainer();
-        try { await fs.promises.rm(workDir, { recursive: true, force: true }); } catch { /* temp parser directory */ }
+        try { await fs.promises.rm(taskRoot, { recursive: true, force: true }); } catch { /* temp parser directory */ }
       }
     });
   }
@@ -2798,16 +3199,8 @@ ${inner}
     const ext = path.extname(absPath).toLowerCase();
 
     if (ext === '.csv' || ext === '.tsv' || ext === '.txt') {
-      const fileContent = fs.readFileSync(absPath, 'utf8');
       const delimiter = ext === '.tsv' ? '\t' : ',';
-      const parsed = Papa.parse(fileContent, {
-        header: true,
-        skipEmptyLines: true,
-        delimiter,
-        dynamicTyping: true,
-      });
-      const rows = Array.isArray(parsed.data) ? parsed.data as any[] : [];
-      return limit === undefined ? rows : rows.slice(0, limit);
+      return loadDelimitedRows(absPath, delimiter, limit);
     }
 
     if (ext === '.xlsx' || ext === '.xls') {
@@ -2823,9 +3216,16 @@ ${inner}
     }
 
     const firstDataset = datasets[0];
-    const customData = await loadDatasetRows(firstDataset.filePath);
+    const inline = canInlineDataset(firstDataset.columns, firstDataset.rowCount);
+    const customData = inline ? await loadDatasetRows(firstDataset.filePath) : [];
     return {
       custom_data: customData,
+      inlineData: {
+        status: inline ? 'included' : 'omitted',
+        reason: inline ? null : 'safety_budget',
+        rowCount: firstDataset.rowCount,
+        columnCount: firstDataset.columns.length,
+      },
       datasets: datasets.map(dataset => ({
         datasetId: dataset.datasetId,
         fileName: dataset.fileName,
@@ -3356,7 +3756,7 @@ ${inner}
       }
       res.json(result);
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   }));
 
@@ -3729,7 +4129,7 @@ ${inner}
       cache.set(requestId, response);
       res.json(response);
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   }));
 
@@ -3881,12 +4281,12 @@ ${inner}
 
       res.json(result);
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   }));
 
   // POST /api/figure/export — export SVG/PNG/PDF and reproducible bundle
-  app.post('/api/figure/export', renderRateLimit, deploymentJobHandler('export', async (req, res) => {
+  app.post('/api/figure/export', renderRateLimit, downloadRateLimit, deploymentJobHandler('export', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const { sessionId, format, dpi } = req.body;
@@ -3972,7 +4372,7 @@ ${inner}
         }
       };
 
-      res.json({
+      const responsePayload = {
         status: 'success',
         format: reqFormat,
         svg,
@@ -3980,9 +4380,17 @@ ${inner}
         bundle,
         format_note,
         warnings: result.warnings ?? []
-      });
+      };
+      assertHourlyByteBudget(
+        req,
+        res,
+        'download_bytes',
+        Buffer.byteLength(JSON.stringify(responsePayload), 'utf8'),
+      );
+
+      res.json(responsePayload);
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   }));
 
@@ -4264,11 +4672,11 @@ ${inner}
         limit,
       });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
-  app.post('/api/projects/:id/files', requireOwnedProjectBeforeUpload, upload.single('file'), async (req, res) => {
+  app.post('/api/projects/:id/files', requireOwnedProjectBeforeUpload, uploadRateLimit, upload.single('file'), async (req, res) => {
     let filePersisted = false;
     try {
       const userId = authenticatedUserId(req);
@@ -4282,22 +4690,37 @@ ${inner}
       if (!file) {
         return res.status(400).json({ status: 'error', message: 'No file uploaded' });
       }
+      assertHourlyByteBudget(req, res, 'upload_bytes', file.size);
+      assertProjectOwnedStorageBudgets(projectId, userId, file.size);
+      await assertValidUploadedDataFile(file.path, file.originalname);
+      const existingSizes = listProjectFiles(projectId).map(dataset => {
+        try {
+          return fs.statSync(resolveDatasetAbsolutePath(dataset.filePath)).size;
+        } catch {
+          return 0;
+        }
+      });
+      assertProjectStorageBudget(existingSizes, file.size);
+      const userSizes = listProjects(userId).flatMap(userProject =>
+        listProjectFiles(userProject.id).map(dataset => {
+          try {
+            return fs.statSync(resolveDatasetAbsolutePath(dataset.filePath)).size;
+          } catch {
+            return 0;
+          }
+        }),
+      );
+      assertUserStorageBudget(userSizes, file.size);
 
       let columns: string[] = [];
       let rowCount = 0;
 
       const ext = path.extname(file.originalname).toLowerCase();
       if (ext === '.csv' || ext === '.tsv' || ext === '.txt') {
-        const fileContent = fs.readFileSync(file.path, 'utf8');
         const delimiter = ext === '.tsv' ? '\t' : ',';
-        const parsed = Papa.parse(fileContent, {
-          header: false,
-          skipEmptyLines: true,
-          delimiter
-        });
-        const rows = parsed.data as string[][];
-        columns = rows.length > 0 ? rows[0] : [];
-        rowCount = rows.length > 0 ? Math.max(0, rows.length - 1) : 0;
+        const parsed = await inspectDelimitedFile(file.path, delimiter);
+        columns = parsed.columns;
+        rowCount = parsed.rowCount;
       } else if (ext === '.xlsx' || ext === '.xls') {
         const parsed = await parseWorkbookIsolated(file.path, 'metadata', { req });
         columns = parsed.columns;
@@ -4324,7 +4747,7 @@ ${inner}
       if (!filePersisted && req.file?.path) {
         try { fs.unlinkSync(req.file.path); } catch { /* unregistered upload already absent */ }
       }
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -4532,7 +4955,7 @@ ${inner}
 
       res.json(result);
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   }));
 
@@ -4772,13 +5195,14 @@ ${inner}
     }
   });
 
-  app.post('/api/export-assets/zip', deploymentJobHandler('archive', async (req, res) => {
+  app.post('/api/export-assets/zip', downloadRateLimit, deploymentJobHandler('archive', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const assetIds = new Set(Array.isArray(req.body?.assetIds) ? req.body.assetIds.map(String) : []);
       if (assetIds.size === 0) {
         return res.status(400).json({ status: 'error', message: '未选择任何导出资产' });
       }
+      assertArchiveBudget(assetIds.size, []);
       const selected = listProjects(userId).flatMap(project =>
         listExportAssets(project.id)
           .filter(asset => assetIds.has(asset.assetId))
@@ -4788,22 +5212,32 @@ ${inner}
         return res.status(404).json({ status: 'error', message: '未找到选中的资产' });
       }
 
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', 'attachment; filename=scifigure_exports.zip');
-      const archive = new archiver.ZipArchive({ zlib: { level: 9 } });
-      for (const { project, asset } of selected) {
+      const files = selected.flatMap(({ project, asset }) => {
         const root = projectExportsDir(project.id);
         const absPath = safeResolveUnder(root, asset.filePath);
-        if (fs.existsSync(absPath)) {
-          archive.file(absPath, {
-            name: `${safeExportName(project.name)}/${safeExportName(asset.name)}_${asset.assetId.slice(-8)}.${asset.format}`,
-          });
-        }
+        if (!fs.existsSync(absPath)) return [];
+        return [{
+          absPath,
+          sizeBytes: fs.statSync(absPath).size,
+          archiveName: `${safeExportName(project.name)}/${safeExportName(asset.name)}_${asset.assetId.slice(-8)}.${asset.format}`,
+        }];
+      });
+      if (files.length === 0) {
+        return res.status(404).json({ status: 'error', message: '选中的导出文件不存在' });
+      }
+      assertArchiveBudget(assetIds.size, files.map(file => file.sizeBytes));
+      assertHourlyByteBudget(req, res, 'download_bytes', files.reduce((sum, file) => sum + file.sizeBytes, 0));
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename=scifigure_exports.zip');
+      const archive = new archiver.ZipArchive({ zlib: { level: 6 } });
+      for (const file of files) {
+        archive.file(file.absPath, { name: file.archiveName });
       }
       await finalizeArchiveResponse(archive, req, res);
     } catch (err: any) {
       if (!res.headersSent) {
-        res.status(500).json({ status: 'error', message: err.message });
+        res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
       }
     }
   }));
@@ -4829,7 +5263,7 @@ ${inner}
     }
   });
 
-  app.get('/api/projects/:id/export-assets/:assetId/file', (req, res) => {
+  app.get('/api/projects/:id/export-assets/:assetId/file', downloadRateLimit, (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
@@ -4846,10 +5280,11 @@ ${inner}
       if (!absPath.startsWith(root + path.sep) || !fs.existsSync(absPath)) {
         return res.status(404).json({ status: 'error', message: '导出文件不存在' });
       }
+      assertHourlyByteBudget(req, res, 'download_bytes', fs.statSync(absPath).size);
       res.setHeader('Content-Type', exportMimeType(asset.format));
       res.download(absPath, `${safeExportName(asset.name)}.${asset.format}`);
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -4877,7 +5312,7 @@ ${inner}
     }
   });
 
-  app.post('/api/projects/:id/export-assets/zip', deploymentJobHandler('archive', async (req, res) => {
+  app.post('/api/projects/:id/export-assets/zip', downloadRateLimit, deploymentJobHandler('archive', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
@@ -4885,35 +5320,48 @@ ${inner}
       if (!getProject(projectId, userId)) {
         return res.status(404).json({ status: 'error', message: '项目不存在' });
       }
-      const assetIds = Array.isArray(req.body?.assetIds) ? req.body.assetIds.map(String) : [];
-      if (assetIds.length === 0) {
+      const assetIds = new Set(Array.isArray(req.body?.assetIds) ? req.body.assetIds.map(String) : []);
+      if (assetIds.size === 0) {
         return res.status(400).json({ status: 'error', message: '未选择任何导出资产' });
       }
-      const assets = listExportAssets(projectId).filter(asset => assetIds.includes(asset.assetId));
+      assertArchiveBudget(assetIds.size, []);
+      const assets = listExportAssets(projectId).filter(asset => assetIds.has(asset.assetId));
       if (assets.length === 0) {
         return res.status(404).json({ status: 'error', message: '未找到选中的资产' });
       }
 
+      const root = projectExportsDir(projectId);
+      const files = assets.flatMap(asset => {
+        const absPath = safeResolveUnder(root, asset.filePath);
+        if (!absPath.startsWith(root + path.sep) || !fs.existsSync(absPath)) return [];
+        return [{
+          absPath,
+          sizeBytes: fs.statSync(absPath).size,
+          archiveName: `${safeExportName(asset.name)}.${asset.format}`,
+        }];
+      });
+      if (files.length === 0) {
+        return res.status(404).json({ status: 'error', message: '选中的导出文件不存在' });
+      }
+      assertArchiveBudget(assetIds.size, files.map(file => file.sizeBytes));
+      assertHourlyByteBudget(req, res, 'download_bytes', files.reduce((sum, file) => sum + file.sizeBytes, 0));
+
       res.setHeader('Content-Type', 'application/zip');
       res.setHeader('Content-Disposition', `attachment; filename=exports_${projectId.slice(0, 8)}.zip`);
 
-      const archive = new archiver.ZipArchive({ zlib: { level: 9 } });
-      const root = projectExportsDir(projectId);
-      for (const asset of assets) {
-        const absPath = safeResolveUnder(root, asset.filePath);
-        if (absPath.startsWith(root + path.sep) && fs.existsSync(absPath)) {
-          archive.file(absPath, { name: `${safeExportName(asset.name)}.${asset.format}` });
-        }
+      const archive = new archiver.ZipArchive({ zlib: { level: 6 } });
+      for (const file of files) {
+        archive.file(file.absPath, { name: file.archiveName });
       }
       await finalizeArchiveResponse(archive, req, res);
     } catch (err: any) {
       if (!res.headersSent) {
-        res.status(500).json({ status: 'error', message: err.message });
+        res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
       }
     }
   }));
 
-  app.post('/api/projects/:id/export-assets/import', (req, res) => {
+  app.post('/api/projects/:id/export-assets/import', uploadRateLimit, meterExportAssetImport, (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
@@ -4933,21 +5381,55 @@ ${inner}
       if (format === 'png' && !binaryB64) {
         return res.status(400).json({ status: 'error', message: 'PNG 二进制内容不能为空' });
       }
+      const importedPngLimit = boundedNumber(
+        process.env.SCIFIGURE_IMPORTED_PNG_MAX_BYTES,
+        32 * 1024 * 1024,
+        64 * 1024,
+        64 * 1024 * 1024,
+      );
+      const safeBinaryB64 = binaryB64
+        ? decodeAndValidatePngBase64(binaryB64, importedPngLimit).toString('base64')
+        : undefined;
+      const importedSvgLimit = boundedNumber(
+        process.env.SCIFIGURE_IMPORTED_SVG_MAX_BYTES,
+        12 * 1024 * 1024,
+        64 * 1024,
+        32 * 1024 * 1024,
+      );
+      const safeSvg = svg ? assertSafeSvgDocument(svg, importedSvgLimit) : undefined;
+      const rawThumbnailSvg = typeof req.body?.thumbnailSvg === 'string'
+        ? req.body.thumbnailSvg
+        : safeSvg || null;
+      const safeThumbnailSvg = rawThumbnailSvg
+        ? assertSafeSvgDocument(rawThumbnailSvg, importedSvgLimit)
+        : null;
+      const rawMetadata = req.body?.metadata;
+      const metadata = rawMetadata && typeof rawMetadata === 'object' && !Array.isArray(rawMetadata)
+        ? rawMetadata as Record<string, unknown>
+        : { kind: 'client-imported-export' };
+      if (Buffer.byteLength(JSON.stringify(metadata), 'utf8') > 64 * 1024) {
+        const error = new Error('导出资产元数据不能超过 64 KB');
+        (error as any).statusCode = 413;
+        throw error;
+      }
+      const tags = Array.isArray(req.body?.tags)
+        ? req.body.tags.slice(0, 32).map((tag: unknown) => String(tag).slice(0, 64))
+        : ['composite'];
       const asset = persistProjectExportAsset({
         projectId,
         figureId: req.body?.figureId || 'composite',
         name: req.body?.name || '组合图',
         format,
         dpi: req.body?.dpi ?? null,
-        svg,
-        binaryB64,
-        thumbnailSvg: req.body?.thumbnailSvg || svg || null,
-        metadata: req.body?.metadata || { kind: 'client-imported-export' },
-        tags: Array.isArray(req.body?.tags) ? req.body.tags : ['composite'],
+        svg: safeSvg,
+        binaryB64: safeBinaryB64,
+        thumbnailSvg: safeThumbnailSvg,
+        metadata,
+        tags,
       });
       res.json({ status: 'success', asset });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -5015,10 +5497,13 @@ ${inner}
   }));
 
   // POST /api/projects/:id/export — export single or all project figures
-  app.post('/api/projects/:id/export', renderRateLimit, deploymentJobHandler('export', async (req, res) => {
+  app.post('/api/projects/:id/export', renderRateLimit, downloadRateLimit, deploymentJobHandler('export', async (req, res) => {
+    const newlyPersistedAssets: ExportAsset[] = [];
+    let cleanupProjectId: string | null = null;
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
+      cleanupProjectId = projectId;
       assertSafeProjectId(projectId);
       const project = getProject(projectId, userId);
       if (!project) {
@@ -5085,23 +5570,27 @@ ${inner}
           const assetName = figureId ? (name || targetFigId) : targetFigId;
           const exportAnchor = buildExportEditLogAnchor(exportEditLog);
           const effectiveFigureFormat = matchedFig.binary_b64 ? reqFormat : 'svg';
-          const asset = saveToLibrary !== false ? persistProjectExportAsset({
-            projectId,
-            figureId: targetFigId,
-            name: assetName,
-            format: effectiveFigureFormat,
-            dpi: rasterExportDpi(effectiveFigureFormat, dpi),
-            svg: matchedFig.svg,
-            binaryB64: matchedFig.binary_b64 || null,
-            thumbnailSvg: matchedFig.svg,
-            metadata: {
-              exportedFrom: targetFigId,
-              requestedFormat: reqFormat,
-              revision: session?.revision || 1,
-              ...exportAnchor,
-            },
-            tags: ['figure'],
-          }) : null;
+          let asset: ExportAsset | null = null;
+          if (saveToLibrary !== false) {
+            asset = persistProjectExportAsset({
+              projectId,
+              figureId: targetFigId,
+              name: assetName,
+              format: effectiveFigureFormat,
+              dpi: rasterExportDpi(effectiveFigureFormat, dpi),
+              svg: matchedFig.svg,
+              binaryB64: matchedFig.binary_b64 || null,
+              thumbnailSvg: matchedFig.svg,
+              metadata: {
+                exportedFrom: targetFigId,
+                requestedFormat: reqFormat,
+                revision: session?.revision || 1,
+                ...exportAnchor,
+              },
+              tags: ['figure'],
+            });
+            newlyPersistedAssets.push(asset);
+          }
           const subplotAssets: ExportAsset[] = [];
           const subplotFormatNotes: string[] = [];
           if (saveToLibrary !== false && includeSubplots) {
@@ -5124,7 +5613,7 @@ ${inner}
                   subplotFormatNotes.push(subplotFormatNote);
                 }
               }
-              subplotAssets.push(persistProjectExportAsset({
+              const subplotAsset = persistProjectExportAsset({
                 projectId,
                 figureId: `${targetFigId}:${panel.subplotId}`,
                 name: `${assetName}_panel_${panelIndex + 1}`,
@@ -5147,7 +5636,9 @@ ${inner}
                   bounds: panel.bounds,
                 },
                 tags: ['subplot', 'axes-bounds'],
-              }));
+              });
+              subplotAssets.push(subplotAsset);
+              newlyPersistedAssets.push(subplotAsset);
             }
           }
           results.push({
@@ -5162,12 +5653,20 @@ ${inner}
         }
       }
 
-      res.json({
+      const responsePayload = {
         status: 'success',
         figures: results
-      });
+      };
+      assertHourlyByteBudget(
+        req,
+        res,
+        'download_bytes',
+        Buffer.byteLength(JSON.stringify(responsePayload), 'utf8'),
+      );
+      res.json(responsePayload);
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      if (cleanupProjectId) removeNewExportAssets(cleanupProjectId, newlyPersistedAssets);
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   }));
 

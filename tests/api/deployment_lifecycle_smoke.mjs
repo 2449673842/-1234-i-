@@ -112,6 +112,7 @@ const server = spawn(process.execPath, [tsxCli, 'server.ts'], {
     SCIFIGURE_DATA_DIR: dataRoot,
     SCIFIGURE_DB_PATH: dbPath,
     SCIFIGURE_RENDER_MODE: 'local',
+    SCIFIGURE_ADMIN_OPERATIONS_ENABLED: '1',
     SCIFIGURE_GRACEFUL_SHUTDOWN_MS: '15000',
     SCIFIGURE_VITE_HMR_PORT: String(port + 1_000),
     NODE_ENV: 'development',

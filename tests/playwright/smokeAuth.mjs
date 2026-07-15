@@ -41,6 +41,6 @@ export function bearerHeaders(token, headers = {}) {
 export async function installBrowserAuthentication(context, token) {
   await context.setExtraHTTPHeaders(bearerHeaders(token));
   await context.addInitScript(({ storageKey, accessToken }) => {
-    window.localStorage.setItem(storageKey, accessToken);
+    window.sessionStorage.setItem(storageKey, accessToken);
   }, { storageKey: AUTH_TOKEN_STORAGE_KEY, accessToken: token });
 }

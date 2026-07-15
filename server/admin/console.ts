@@ -1,4 +1,5 @@
 import type express from 'express';
+import { adminConsoleEnabled } from './featureFlags';
 import crypto from 'crypto';
 import os from 'os';
 import {
@@ -38,15 +39,38 @@ export interface AdminConsoleDeps {
 const ALLOWED_SOURCES = new Set(['client', 'render', 'renderer', 'editor', 'export', 'import']);
 const ALLOWED_SEVERITIES = new Set(['info', 'warning', 'error', 'critical']);
 const ALLOWED_STATUSES = new Set(['open', 'triaged', 'resolved', 'ignored']);
-const SENSITIVE_KEY_PATTERN = /(script|data|dataset|payload|trace|traceback|stack|path|file|content|token|password|secret|cookie|authorization)/i;
-const ABSOLUTE_PATH_PATTERN = /(?:[A-Za-z]:\\|\/(?:Users|home|var|tmp|etc|opt|root|mnt|Volumes)\/)/;
+const SENSITIVE_KEY_PATTERN = /(script|data|dataset|payload|trace|traceback|stack|path|file|content|token|password|secret|cookie|authorization|email|fingerprint|svg|image|export)/i;
+const ALLOWED_METADATA_KEYS = new Set([
+  'browser',
+  'browserName',
+  'component',
+  'durationMs',
+  'elapsedMs',
+  'engine',
+  'errorCategory',
+  'hasMessage',
+  'httpStatus',
+  'language',
+  'messageLength',
+  'operation',
+  'online',
+  'phase',
+  'retryable',
+  'routeName',
+  'statusCode',
+  'step',
+  'viewportHeight',
+  'viewportWidth',
+]);
+const DISALLOWED_METADATA_VALUE_PATTERN = /(<svg\b|<script\b|data:image\/|base64,|function\s*\(|=>|\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b|\b(?:fingerprint|authorization|bearer|password|secret|cookie|access[_ -]?token|refresh[_ -]?token)\b)/i;
+const ABSOLUTE_PATH_PATTERN = /(?:[A-Za-z]:[\\/]|\/(?:Users|home|var|tmp|etc|opt|root|mnt|Volumes)\/)/i;
+const EMAIL_VALUE_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
+const UUID_VALUE_PATTERN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i;
+const HIGH_ENTROPY_VALUE_PATTERN = /\b(?:[A-Fa-f0-9]{40,}|[A-Za-z0-9+/]{48,}={0,2})\b/;
+const STRUCTURED_CONTENT_PATTERN = /[\r\n]|[{}\[\]]|(?:^|[,;])\s*[A-Za-z_][A-Za-z0-9_]*\s*[:=]/;
 const ADMIN_REAUTH_PURPOSE = 'subscription_adjustment';
 const ALLOWED_SUBSCRIPTION_PLANS = new Set(['free', 'pro']);
 const ALLOWED_SUBSCRIPTION_STATUSES = new Set(['active', 'paused', 'expired']);
-
-function adminConsoleEnabled(): boolean {
-  return process.env.SCIFIGURE_ADMIN_CONSOLE_ENABLED === '1';
-}
 
 function clampPage(value: unknown): number {
   return Math.max(1, Math.floor(Number(value || 1)));
@@ -83,16 +107,52 @@ function queryText(value: unknown, maxLength = 120): string | null {
 function sanitizeRoute(value: unknown): string | null {
   const route = boundedText(value, 160);
   if (!route) return null;
-  if (/^https?:\/\//i.test(route)) {
-    try {
-      const url = new URL(route);
-      return `${url.pathname}${url.search}`.slice(0, 160);
-    } catch {
-      return null;
-    }
+  try {
+    const url = new URL(route, 'https://scifigure.invalid');
+    return url.pathname.startsWith('/') ? url.pathname.slice(0, 160) : null;
+  } catch {
+    return null;
   }
-  if (ABSOLUTE_PATH_PATTERN.test(route)) return null;
-  return route;
+}
+
+function diagnosticIdentifier(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (
+    !raw
+    || ABSOLUTE_PATH_PATTERN.test(raw)
+    || EMAIL_VALUE_PATTERN.test(raw)
+    || UUID_VALUE_PATTERN.test(raw)
+    || HIGH_ENTROPY_VALUE_PATTERN.test(raw)
+    || DISALLOWED_METADATA_VALUE_PATTERN.test(raw)
+    || STRUCTURED_CONTENT_PATTERN.test(raw)
+  ) return null;
+  const text = boundedText(value, maxLength);
+  return text && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(text) ? text : null;
+}
+
+function diagnosticPresentation(input: {
+  source: string;
+  component?: string | null;
+  operation?: string | null;
+  errorName?: string | null;
+  errorCode?: string | null;
+}): { title: string; message: string } {
+  const titles: Record<string, string> = {
+    render: '图形渲染异常',
+    editor: '图形编辑异常',
+    export: '图形导出异常',
+    import: '数据导入异常',
+    client: '客户端运行异常',
+  };
+  const descriptors = [input.component, input.operation, input.errorName, input.errorCode]
+    .filter((value): value is string => Boolean(value));
+  return {
+    title: titles[input.source] || titles.client,
+    message: descriptors.length > 0
+      ? `已记录结构化诊断：${descriptors.join(' / ')}`
+      : '已记录不包含用户内容的结构化诊断。',
+  };
 }
 
 function sanitizeMetadata(value: unknown): Record<string, unknown> {
@@ -100,14 +160,24 @@ function sanitizeMetadata(value: unknown): Record<string, unknown> {
   const output: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
     if (Object.keys(output).length >= 16) break;
-    if (SENSITIVE_KEY_PATTERN.test(key)) continue;
+    if (!ALLOWED_METADATA_KEYS.has(key) || SENSITIVE_KEY_PATTERN.test(key)) continue;
     if (typeof raw === 'string') {
+      const rawText = raw.trim();
+      if (
+        !rawText
+        || EMAIL_VALUE_PATTERN.test(rawText)
+        || UUID_VALUE_PATTERN.test(rawText)
+        || HIGH_ENTROPY_VALUE_PATTERN.test(rawText)
+        || ABSOLUTE_PATH_PATTERN.test(rawText)
+        || DISALLOWED_METADATA_VALUE_PATTERN.test(rawText)
+        || STRUCTURED_CONTENT_PATTERN.test(rawText)
+      ) continue;
       const text = boundedText(raw, 160);
-      if (text && !ABSOLUTE_PATH_PATTERN.test(text)) output[key.slice(0, 40)] = text;
+      if (text) output[key] = text;
     } else if (typeof raw === 'number' && Number.isFinite(raw)) {
-      output[key.slice(0, 40)] = raw;
+      output[key] = raw;
     } else if (typeof raw === 'boolean') {
-      output[key.slice(0, 40)] = raw;
+      output[key] = raw;
     }
   }
   return output;
@@ -156,18 +226,21 @@ function userAgentFamily(req: express.Request): string {
 }
 
 function publicSubmittedErrorReport(report: ReturnType<typeof upsertErrorReport>) {
+  const presentation = diagnosticPresentation(report);
   return {
     id: report.id,
     source: report.source,
     severity: report.severity,
     status: report.status,
-    title: report.title,
-    message: report.message,
+    title: presentation.title,
+    message: presentation.message,
     component: report.component,
     operation: report.operation,
     errorName: report.errorName,
     errorCode: report.errorCode,
     route: report.route,
+    projectId: report.projectId,
+    figureId: report.figureId,
     clientVersion: report.clientVersion,
     userAgentFamily: report.userAgentFamily,
     occurrenceCount: report.occurrenceCount,
@@ -175,6 +248,63 @@ function publicSubmittedErrorReport(report: ReturnType<typeof upsertErrorReport>
     firstSeenAt: report.firstSeenAt,
     lastSeenAt: report.lastSeenAt,
   };
+}
+
+function adminErrorReportDto(report: ErrorReportSummary) {
+  const presentation = diagnosticPresentation(report);
+  return {
+    id: report.id,
+    source: report.source,
+    severity: report.severity,
+    status: report.status,
+    title: presentation.title,
+    message: presentation.message,
+    component: report.component,
+    operation: report.operation,
+    errorName: report.errorName,
+    errorCode: report.errorCode,
+    route: report.route,
+    projectId: report.projectId,
+    figureId: report.figureId,
+    clientVersion: report.clientVersion,
+    userAgentFamily: report.userAgentFamily,
+    occurrenceCount: report.occurrenceCount,
+    metadata: sanitizeMetadata(report.metadata),
+    firstSeenAt: report.firstSeenAt,
+    lastSeenAt: report.lastSeenAt,
+  };
+}
+
+function figureIndexFromId(figureId: string): number | null {
+  const match = /^fig_(\d+)$/.exec(figureId);
+  if (!match) return null;
+  const index = Number(match[1]);
+  return Number.isSafeInteger(index) && index > 0 ? index - 1 : null;
+}
+
+function resolveErrorReportScope(userId: string, rawProjectId: unknown, rawFigureId: unknown): {
+  projectId: string | null;
+  figureId: string | null;
+} {
+  const projectId = boundedText(rawProjectId, 120);
+  const figureId = boundedText(rawFigureId, 120);
+  if (figureId && !projectId) throw httpError(400, 'Figure error reports require a valid projectId');
+  if (!projectId) return { projectId: null, figureId: null };
+
+  const project = getDb().prepare('SELECT user_id FROM projects WHERE id = ?').get(projectId) as { user_id: string | null } | undefined;
+  if (!project) throw httpError(404, 'Project not found');
+  if (project.user_id !== userId) throw httpError(403, 'Project does not belong to the authenticated user');
+  if (!figureId) return { projectId, figureId: null };
+
+  const figureIndex = figureIndexFromId(figureId);
+  if (figureIndex === null) throw httpError(400, 'figureId must use fig_N format');
+  const figure = getDb().prepare(`
+    SELECT id FROM project_figures
+    WHERE project_id = ? AND figure_index = ?
+    LIMIT 1
+  `).get(projectId, figureIndex);
+  if (!figure) throw httpError(404, 'Figure not found');
+  return { projectId, figureId };
 }
 
 function rejectSensitiveBody(body: unknown): boolean {
@@ -187,6 +317,7 @@ function rejectSensitiveBody(body: unknown): boolean {
     }
     if (Array.isArray(value)) return value.some(visit);
     return Object.entries(value as Record<string, unknown>).some(([key, child]) => {
+      if (key === 'metadata') return false;
       if (key !== 'metadata' && SENSITIVE_KEY_PATTERN.test(key)) return true;
       return visit(child);
     });
@@ -261,6 +392,7 @@ function suggestedRepairContext(report: ErrorReportSummary): { codeAreas: string
 
 function aiRepairPackage(report: ErrorReportSummary) {
   const suggested = suggestedRepairContext(report);
+  const presentation = diagnosticPresentation(report);
   return {
     schemaVersion: 'scifigure.error-handoff.v1',
     generatedAt: new Date().toISOString(),
@@ -268,8 +400,8 @@ function aiRepairPackage(report: ErrorReportSummary) {
     source: report.source,
     severity: report.severity,
     status: report.status,
-    title: report.title || 'Untitled platform error',
-    message: report.message || 'No sanitized message was recorded.',
+    title: presentation.title,
+    message: presentation.message,
     errorName: report.errorName,
     errorCode: report.errorCode,
     component: report.component,
@@ -563,20 +695,27 @@ export function installAdminConsoleRoutes(app: express.Express, deps: AdminConso
       if (!title || !message) {
         return res.status(400).json({ status: 'error', message: 'Error report title and message are required' });
       }
+      const scope = resolveErrorReportScope(auth.user.id, req.body?.projectId, req.body?.figureId);
+      const source = normalizeSource(req.body?.source);
+      const component = diagnosticIdentifier(req.body?.component, 120);
+      const operation = diagnosticIdentifier(req.body?.operation, 120);
+      const errorName = diagnosticIdentifier(req.body?.errorName || req.body?.name, 120);
+      const errorCode = diagnosticIdentifier(req.body?.errorCode || req.body?.code, 80);
+      const presentation = diagnosticPresentation({ source, component, operation, errorName, errorCode });
       const report = upsertErrorReport({
         userId: auth.user.id,
-        source: normalizeSource(req.body?.source),
+        source,
         severity: normalizeSeverity(req.body?.severity),
-        title,
-        message,
-        component: boundedText(req.body?.component, 120),
-        operation: boundedText(req.body?.operation, 120),
-        errorName: boundedText(req.body?.errorName || req.body?.name, 120),
-        errorCode: boundedText(req.body?.errorCode || req.body?.code, 80),
+        title: presentation.title,
+        message: presentation.message,
+        component,
+        operation,
+        errorName,
+        errorCode,
         route: sanitizeRoute(req.body?.route),
-        projectId: boundedText(req.body?.projectId, 120),
-        figureId: boundedText(req.body?.figureId, 120),
-        clientVersion: boundedText(req.body?.clientVersion, 80),
+        projectId: scope.projectId,
+        figureId: scope.figureId,
+        clientVersion: diagnosticIdentifier(req.body?.clientVersion, 80),
         userAgentFamily: userAgentFamily(req),
         metadata: sanitizeMetadata(req.body?.metadata),
       });
@@ -617,7 +756,7 @@ export function installAdminConsoleRoutes(app: express.Express, deps: AdminConso
         status: status && ALLOWED_STATUSES.has(status) ? status : null,
         query: queryText(req.query.query || req.query.q),
       });
-      return { items: result.reports, total: result.total, page: result.page, pageSize: result.pageSize };
+      return { items: result.reports.map(adminErrorReportDto), total: result.total, page: result.page, pageSize: result.pageSize };
     },
   ));
 
@@ -665,7 +804,7 @@ export function installAdminConsoleRoutes(app: express.Express, deps: AdminConso
         (err as any).statusCode = 404;
         throw err;
       }
-      return { report };
+      return { report: adminErrorReportDto(report) };
     },
   ));
 

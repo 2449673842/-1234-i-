@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Eye, EyeOff, LogIn, UserPlus, X } from 'lucide-react';
-import { AUTH_TOKEN_STORAGE_KEY } from '../utils/authenticatedFetch';
+import { ArrowLeft, Eye, EyeOff, LogIn, MailCheck, RefreshCw, UserPlus, X } from 'lucide-react';
+import { setAccessToken } from '../utils/authenticatedFetch';
 
 export type LandingAuthMode = 'login' | 'register';
 
@@ -13,6 +13,12 @@ interface LandingAuthDialogProps {
 }
 
 const DEVICE_KEY = 'scifigure:device-fingerprint';
+
+interface EmailVerificationState {
+  challengeId: string;
+  expiresAt: string;
+  maskedEmail: string;
+}
 
 function getDeviceFingerprint(): string {
   let fingerprint = window.localStorage.getItem(DEVICE_KEY);
@@ -40,10 +46,16 @@ export function LandingAuthDialog({
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [verification, setVerification] = useState<EmailVerificationState | null>(null);
+  const [verificationCode, setVerificationCode] = useState('');
 
   useEffect(() => {
     if (!open) return;
     setError(null);
+    setNotice(null);
+    setVerification(null);
+    setVerificationCode('');
     setPassword('');
     setConfirmPassword('');
   }, [mode, open]);
@@ -59,9 +71,31 @@ export function LandingAuthDialog({
 
   if (!open) return null;
 
+  const finishAuthentication = (token: string) => {
+    setAccessToken(token);
+    window.dispatchEvent(new CustomEvent('scifigure:auth-changed', {
+      detail: { authenticated: true },
+    }));
+    onAuthenticated();
+  };
+
+  const requestVerificationCode = async (normalizedEmail: string): Promise<EmailVerificationState> => {
+    const response = await fetch('/api/auth/resend-verification', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: normalizedEmail }),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok || data?.status !== 'success' || !data?.verification?.challengeId) {
+      throw new Error(data?.message || '验证码暂时无法发送');
+    }
+    return data.verification as EmailVerificationState;
+  };
+
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
+    setNotice(null);
     const normalizedEmail = email.trim().toLowerCase();
     if (!normalizedEmail) {
       setError('请输入邮箱地址');
@@ -92,16 +126,72 @@ export function LandingAuthDialog({
         }),
       });
       const data = await response.json().catch(() => null);
+      if (data?.verificationRequired && data?.verification?.challengeId) {
+        setVerification(data.verification as EmailVerificationState);
+        setVerificationCode('');
+        setNotice(`验证码已发送至 ${data.verification.maskedEmail}`);
+        return;
+      }
+      if (response.status === 403 && data?.errorCode === 'EMAIL_VERIFICATION_REQUIRED') {
+        const nextVerification = await requestVerificationCode(normalizedEmail);
+        setVerification(nextVerification);
+        setVerificationCode('');
+        setNotice(`验证码已重新发送至 ${nextVerification.maskedEmail}`);
+        return;
+      }
       if (!response.ok || data?.status !== 'success' || typeof data?.token !== 'string') {
         throw new Error(data?.message || `${mode === 'login' ? '登录' : '注册'}失败，请稍后重试`);
       }
-      window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, data.token);
-      window.dispatchEvent(new CustomEvent('scifigure:auth-changed', {
-        detail: { authenticated: true },
-      }));
-      onAuthenticated();
+      finishAuthentication(data.token);
     } catch (authError) {
       setError(authError instanceof Error ? authError.message : '认证失败，请稍后重试');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyEmail = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!verification || !/^\d{6}$/.test(verificationCode)) {
+      setError('请输入 6 位邮箱验证码');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch('/api/auth/verify-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Fingerprint': getDeviceFingerprint(),
+          'X-Device-Name': navigator.userAgent.slice(0, 80),
+        },
+        body: JSON.stringify({ challengeId: verification.challengeId, code: verificationCode }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || data?.status !== 'success' || typeof data?.token !== 'string') {
+        throw new Error(data?.message || '邮箱验证失败');
+      }
+      finishAuthentication(data.token);
+    } catch (verificationError) {
+      setError(verificationError instanceof Error ? verificationError.message : '邮箱验证失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resendVerification = async () => {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const nextVerification = await requestVerificationCode(email.trim().toLowerCase());
+      setVerification(nextVerification);
+      setVerificationCode('');
+      setNotice(`新验证码已发送至 ${nextVerification.maskedEmail}`);
+    } catch (resendError) {
+      setError(resendError instanceof Error ? resendError.message : '验证码暂时无法发送');
     } finally {
       setBusy(false);
     }
@@ -124,10 +214,14 @@ export function LandingAuthDialog({
           <div>
             <div className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-200/75">SciFigure Studio</div>
             <h2 id="landing-auth-title" className="mt-3 text-2xl font-black text-white">
-              {isRegister ? '创建科研作图工作区' : '登录你的工作区'}
+              {verification ? '验证邮箱地址' : isRegister ? '创建科研作图工作区' : '登录你的工作区'}
             </h2>
             <p className="mt-2 text-sm leading-6 text-slate-400">
-              {isRegister ? '注册免费账号后即可进入项目、编辑器和导出功能。' : '登录后继续访问已有项目和编辑历史。'}
+              {verification
+                ? `请输入发送至 ${verification.maskedEmail} 的 6 位验证码。`
+                : isRegister
+                  ? '注册免费账号后，验证邮箱即可进入工作区。'
+                  : '登录后继续访问已有项目和编辑历史。'}
             </p>
           </div>
           <button
@@ -142,6 +236,47 @@ export function LandingAuthDialog({
           </button>
         </div>
 
+        {verification ? (
+          <form className="mt-7 space-y-4" onSubmit={verifyEmail}>
+            <div className="flex items-center gap-3 border border-cyan-200/15 bg-cyan-200/[0.06] px-3 py-3 text-sm text-cyan-50">
+              <MailCheck className="h-5 w-5 shrink-0 text-cyan-200" />
+              <span>验证码在短时间内有效，连续输错 5 次后需要重新发送。</span>
+            </div>
+            <label className="block text-sm font-semibold text-slate-200">
+              邮箱验证码
+              <input
+                value={verificationCode}
+                onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="mt-2 w-full border border-white/12 bg-white/[0.06] px-3 py-3 text-center text-xl font-black text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-200/70"
+                placeholder="000000"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                required
+                autoFocus
+              />
+            </label>
+            {notice && <div role="status" className="border border-cyan-200/15 bg-cyan-200/[0.06] px-3 py-2.5 text-sm text-cyan-50">{notice}</div>}
+            {error && <div role="alert" className="border border-red-300/20 bg-red-500/10 px-3 py-2.5 text-sm text-red-100">{error}</div>}
+            <button
+              type="submit"
+              disabled={busy || verificationCode.length !== 6}
+              className="flex w-full items-center justify-center gap-2 bg-cyan-200 px-4 py-3 text-sm font-black text-slate-950 transition hover:bg-white disabled:cursor-wait disabled:opacity-60"
+            >
+              <MailCheck className="h-4 w-4" />
+              {busy ? '正在验证...' : '验证并进入平台'}
+            </button>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" className="flex items-center justify-center gap-2 border border-white/10 px-3 py-2.5 text-sm font-bold text-slate-300 transition hover:border-white/25 hover:text-white" disabled={busy} onClick={() => { setVerification(null); setVerificationCode(''); setError(null); setNotice(null); }}>
+                <ArrowLeft className="h-4 w-4" />返回
+              </button>
+              <button type="button" className="flex items-center justify-center gap-2 border border-white/10 px-3 py-2.5 text-sm font-bold text-slate-300 transition hover:border-white/25 hover:text-white" disabled={busy} onClick={() => void resendVerification()}>
+                <RefreshCw className="h-4 w-4" />重新发送
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
         <div className="mt-7 grid grid-cols-2 border border-white/10 bg-white/[0.04] p-1">
           <button
             type="button"
@@ -225,6 +360,12 @@ export function LandingAuthDialog({
             </label>
           )}
 
+          {notice && (
+            <div role="status" className="border border-cyan-200/15 bg-cyan-200/[0.06] px-3 py-2.5 text-sm text-cyan-50">
+              {notice}
+            </div>
+          )}
+
           {error && (
             <div role="alert" className="border border-red-300/20 bg-red-500/10 px-3 py-2.5 text-sm text-red-100">
               {error}
@@ -237,9 +378,11 @@ export function LandingAuthDialog({
             className="flex w-full items-center justify-center gap-2 bg-cyan-200 px-4 py-3 text-sm font-black text-slate-950 transition hover:bg-white disabled:cursor-wait disabled:opacity-60"
           >
             {isRegister ? <UserPlus className="h-4 w-4" /> : <LogIn className="h-4 w-4" />}
-            {busy ? '处理中...' : isRegister ? '注册并进入平台' : '登录并进入平台'}
+            {busy ? '处理中...' : isRegister ? '注册并发送验证码' : '登录并进入平台'}
           </button>
         </form>
+          </>
+        )}
       </div>
     </div>
   );

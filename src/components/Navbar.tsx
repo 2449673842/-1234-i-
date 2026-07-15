@@ -51,7 +51,7 @@ export function Navbar({ currentView, onNavigate }: NavbarProps) {
       </div>
 
       <div className="flex items-center gap-2">
-        {(currentView === 'editor' || currentView === 'export_settings' || currentView === 'composer') ? (
+        {(currentView === 'editor' || currentView === 'workspace' || currentView === 'export_settings' || currentView === 'composer') ? (
           <>
             <button type="button" onClick={() => onNavigate('project_reconfigure')} className="scifig-top-button hidden sm:flex">
               <UploadCloud className="w-4 h-4" />

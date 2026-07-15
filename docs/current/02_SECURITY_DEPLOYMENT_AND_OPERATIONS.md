@@ -1,7 +1,7 @@
 # SciFigure 安全、部署与运维副文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-14 15:52:21 +08:00
+> 更新时间：2026-07-15 18:30:41 +08:00
 > 复核范围：当前本地工作区；尚未等同于已提交发布版本  
 > 适用范围：用户账号、数据保护、代码执行、Docker、备份、管理员能力和生产上线
 
@@ -117,6 +117,9 @@ refresh token rotation
 logout 撤销
 设备记录
 登录/注册限流
+六位邮箱验证码可强制启用
+验证码只存 HMAC-SHA256，不存明文
+验证码十分钟过期、失败次数上限、单次使用和重发失效旧码
 ```
 
 平台使用不透明随机 Token，不依赖 `jsonwebtoken`。服务端数据库保存 Token 哈希而不是明文。
@@ -165,6 +168,8 @@ POST /api/error-reports（认证用户的脱敏结构化错误上报）
 
 用户元数据、订阅列表、错误 AI 修复交接包、订阅 recent re-auth 和幂等修正已在独立分支实现。账号暂停、会话撤销、2FA 和最后管理员保护仍属于后续计划，不是当前能力。
 
+错误中心与账号管理分离：错误列表、详情和 AI handoff 不返回用户邮箱、用户 ID 或服务端 fingerprint；`projectId/figureId` 必须先验证属于上报者。管理员后台不会联表读取项目脚本、数据文件、SVG、Figure 预览或导出资产内容。
+
 ### 3.4 Web 与接口
 
 ```text
@@ -177,7 +182,16 @@ nosniff、frame、referrer、permissions、CORP 等响应头
 JSON 请求体限制
 上传文件大小和数量限制
 统一 Multer 错误响应
+不信任客户端直接提交的 X-Forwarded-For
+生产仅信任同机 loopback Nginx 代理
+上传/下载次数和持久化小时字节预算
 ```
+
+当前防滥用默认安全天花板与商业套餐无关：单文件 50 MB（代码硬上限）、单项目数据 256 MB、单账号数据 1 GB；数据文件与导出资产合计另受单项目 1 GB、单账号 2 GB、全平台 20 GB 限制；账号上传 200 MB/小时、平台上传 1 GB/小时、账号下载 250 MB/小时、平台下载 512 MB/小时。Free/Pro 仍处于观察模式，详见 `05_FREE_PRO_ENTITLEMENT_REVIEW_2026-07-15.md`。
+
+单文件限制意味着当前版本不接受数 GB 表格。平台下载 512 MB/小时即使连续 31 天跑满，已计量下载理论上限约 381 GB/月，低于 2200 GB 套餐；这不是整机总流量保证，静态资源、系统更新和上游攻击仍需由云厂商流量告警、DDoS 防护及 Nginx 限速共同处理。建议在套餐用量 50%、70%、85% 设置告警，达到 85% 时人工关闭非必要导出并调查来源。
+
+上传和下载的账号额度与全平台额度在同一 SQLite 事务中检查和扣减。组合图/导出资产导入同样进入上传次数、上传字节和全平台存储预算，不能作为绕过入口。
 
 Content-Security-Policy 尚未强制。上线前应先使用 Report-Only 收集真实资源需求，不能直接复制包含宽泛 `unsafe-inline` 的模板。
 
@@ -194,6 +208,8 @@ safeResolveUnder 目录边界
 ```
 
 任何新增文件 API 必须复用同一边界，不能自行拼接路径。
+
+生产环境不允许在 renderer 表格解析器缺少资源限制参数时自动降级。服务与 renderer 必须从同一 commit 构建；旧解析器兼容仅能在非生产环境显式设置 `SCIFIGURE_ALLOW_LEGACY_TABULAR_PARSER=1` 临时启用。
 
 ## 4. 用户代码执行边界
 
@@ -275,8 +291,11 @@ R 正则扫描仍可被复杂反射绕过，不能替代沙箱。
 .xls/xlrd
 首 worksheet
 metadata 只读取表头和行数
-预览按 limit 读取
+CSV/TXT metadata 和预览使用流式解析
+预览按 limit 提前停止，不先物化整表
 records 不进入长期缓存
+表格行、列、单元格和单元长度预算
+XLSX entry 数、解压总量、单 entry 和压缩比预检
 parser 独立并发队列
 超时、输出、CPU、内存和 PID 限制
 解析失败清理未登记上传文件
@@ -298,6 +317,8 @@ R 生成的 SVG 转 PNG/PDF/TIFF 不再回流宿主机执行。Docker 模式下 
 下载 Content-Type/Content-Disposition
 不解析外部网络资源
 导出任务限流和超时
+单次 ZIP 文件数和累计字节预算
+账号与全平台持久化小时下载字节预算
 ```
 
 SVG 前端展示仍需持续检查 sanitize 和 CSP，不能把用户生成 SVG 当作普通可信 HTML。
@@ -514,7 +535,9 @@ reason
 
 ## 12. CSP 与浏览器安全
 
-当前 CSP 尚未正式部署。建议顺序：
+当前代码默认发送 `Content-Security-Policy-Report-Only`，已限制 `object-src`、`base-uri`、`frame-ancestors` 等高风险来源，但尚未切换强制模式。access token 已从跨会话 `localStorage` 迁移到当前标签页 `sessionStorage` 加内存缓存；旧 token 首次读取后自动迁移并删除，刷新认证继续依赖 HttpOnly refresh cookie。
+
+后续顺序：
 
 ```text
 资源清单
@@ -534,12 +557,14 @@ Content-Security-Policy-Report-Only
 | 认证 | 注册、登录、refresh rotation、logout、旧 token 重放 |
 | 用户隔离 | A 用户不能读写 B 用户项目、文件和导出资产 |
 | 管理员 | 普通用户 403、角色撤销即时、审计脱敏 |
+| 邮箱验证 | 注册前不发会话、错误次数、过期、单次使用、重发、数据库无明文验证码 |
 | 路径 | `..`、绝对路径、协议路径、符号链接逃逸 |
 | 数据根目录 | 默认 `./data` 兼容、自定义绝对路径、数据库/项目/导出同目录隔离 |
 | Python/R | 正常绘图成功，危险代码在 Docker 内无法读取宿主或联网 |
 | 超时 | 死循环强杀，后续任务恢复，无残留容器 |
-| XLS/XLSX | metadata、limit、损坏文件、超限和失败清理 |
-| 导出 | R PNG 转换在沙箱内，格式和输出受限 |
+| XLS/XLSX/CSV | 流式 metadata/preview、limit、伪签名、ZIP bomb、行列单元格超限和失败清理 |
+| 上传与存储 | 50 MB 单文件硬上限、项目/账号/平台累计存储、账号与平台小时上传预算、导出资产导入不可绕过 |
+| 导出 | R PNG 转换在沙箱内，格式、归档数量、累计字节和小时下载量受限 |
 | 发布控制 | readiness/draining、在途任务计数、503 门禁、管理员审计、恢复 accepting |
 | 仓库 | 用户数据、数据库、密钥不进入 Git |
 | 备份 | 可恢复，不只存在备份文件 |
@@ -553,8 +578,14 @@ npm run build
 npm run test:security-baseline
 npm run test:user-isolation
 npm run test:auth-refresh
+npm run test:email-verification
+npm run test:svg-sanitization
+npm run test:admin-console-readonly
 npm run test:admin-authorization
 npm run test:deployment-lifecycle
+npm run test:behavior-smoke
+npm run test:production-bundle
+npm run test:deployment-package
 npm run test:r-security-precheck
 npm run test:renderer-sandbox
 npm run security:repo-boundary
@@ -562,6 +593,8 @@ npm run test:capability-matrix
 python tests/test_r_renderer.py
 python tests/test_tabular_parser.py
 ```
+
+2026-07-15 18:30 +08:00 已完成的本地结果：`npm test` 为 235/235；严格行为 smoke 为 14/14，并验证下载额度拒绝时本次新建导出资产与文件均回滚；安全基线、用户隔离、refresh、邮箱验证、管理员只读/授权、部署生命周期、生产 bundle、部署包、仓库边界和生产构建通过。主数据只读审计计数与修改前一致且 `issueCount=0`。本机旧 renderer 镜像未重建，`test:renderer-sandbox` 仍需在发布时使用同 commit 镜像复跑。
 
 云端还需要人工执行：
 
@@ -581,7 +614,9 @@ SSH 配置检查
 静态 Python/R 规则仍可被复杂写法绕过
 浏览器端 xlsx 依赖仍存在
 镜像和 Python/R 依赖尚未完全固定
-CSP 尚未强制
+CSP 仍是 Report-Only，尚未根据真实浏览器违规报告切换强制模式
+access token 仍可被同页 XSS 读取；后续可在强制 CSP 稳定后评估纯内存 token
+生产邮件服务商、域名、TLS 和真实邮件送达尚未配置验证
 管理员 2FA 尚未实现
 独立 renderer worker 和持久任务队列尚未实现
 孤儿容器目前依赖唯一名称、强制删除和测试，缺少生产定时巡检
@@ -589,6 +624,7 @@ CSP 尚未强制
 本地 Git 状态中已有历史用户数据删除标记，不能擅自恢复或提交
 当前 Web 服务使用 X-Forwarded-For 参与客户端 IP 判断，生产代理必须清洗该请求头并建立可信代理边界
 当前 Compose 和 Web 镜像不能单独证明生产 renderer 已正确接通
+本机现有 renderer 镜像早于当前工作树，缺少最新 identity/propertyCapabilities；发布必须从同一 commit 重建镜像后复跑 renderer sandbox
 Windows 无法可靠模拟 Linux 子进程 SIGTERM；云端必须复测在途渲染完成后进程退出
 Linux 单实例原子替换和失败自动回滚尚未完成首次云端实测
 ```

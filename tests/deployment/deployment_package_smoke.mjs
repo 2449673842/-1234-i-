@@ -41,6 +41,13 @@ assert.match(commonEnv, /^SCIFIGURE_RENDER_CONCURRENCY=1$/m);
 assert.match(commonEnv, /^SCIFIGURE_RENDER_MEMORY=896m$/m);
 assert.match(commonEnv, /^DOCKER_HOST=unix:\/\/\/run\/user\/__SCIFIGURE_UID__\/docker\.sock$/m);
 assert.match(commonEnv, /^TMPDIR=\/var\/lib\/scifigure\/runtime$/m);
+assert.match(commonEnv, /^SCIFIGURE_SINGLE_UPLOAD_MAX_MB=50$/m);
+assert.match(commonEnv, /^SCIFIGURE_PROJECT_TOTAL_STORAGE_MAX_MB=1024$/m);
+assert.match(commonEnv, /^SCIFIGURE_USER_TOTAL_STORAGE_MAX_MB=2048$/m);
+assert.match(commonEnv, /^SCIFIGURE_GLOBAL_STORAGE_MAX_MB=20480$/m);
+assert.match(commonEnv, /^SCIFIGURE_GLOBAL_UPLOAD_MAX_MB_PER_HOUR=1024$/m);
+assert.match(commonEnv, /^SCIFIGURE_GLOBAL_DOWNLOAD_MAX_MB_PER_HOUR=512$/m);
+assert.match(commonEnv, /^SCIFIGURE_ALLOW_LEGACY_TABULAR_PARSER=0$/m);
 
 for (const nginxFile of [
   'ops/nginx/scifigure-bootstrap.conf.template',
@@ -49,6 +56,12 @@ for (const nginxFile of [
   const nginx = read(nginxFile);
   assert.match(nginx, /server 127\.0\.0\.1:3101;/);
   assert.match(nginx, /proxy_set_header X-Forwarded-For \$remote_addr;/);
+  assert.match(nginx, /client_max_body_size 64m;/);
+  assert.match(nginx, /client_body_timeout 30s;/);
+  assert.match(nginx, /limit_req_zone \$binary_remote_addr zone=scifigure_per_ip:10m rate=15r\/s;/);
+  assert.match(nginx, /limit_conn_zone \$binary_remote_addr zone=scifigure_connections:10m;/);
+  assert.match(nginx, /limit_req zone=scifigure_per_ip burst=60 nodelay;/);
+  assert.match(nginx, /limit_conn scifigure_connections 20;/);
   assert.doesNotMatch(nginx, /proxy_add_x_forwarded_for/);
   assert.doesNotMatch(nginx, /127\.0\.0\.1:3102/, 'Only one application instance may be routed');
 }
@@ -157,6 +170,7 @@ console.log(JSON.stringify({
     'readiness failure restores previous release',
     'last-known-good rollback metadata',
     'opt-in SSH-aware firewall rules',
+    'bounded upload, slow-request and per-IP edge protection',
     'fixed-host TLS redirect and renewal reload',
   ],
 }, null, 2));

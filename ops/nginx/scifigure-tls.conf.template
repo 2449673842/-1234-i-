@@ -3,6 +3,9 @@ map $http_upgrade $scifigure_connection_upgrade {
     '' close;
 }
 
+limit_req_zone $binary_remote_addr zone=scifigure_per_ip:10m rate=15r/s;
+limit_conn_zone $binary_remote_addr zone=scifigure_connections:10m;
+
 upstream scifigure_active {
     server 127.0.0.1:3101;
     keepalive 8;
@@ -27,6 +30,12 @@ server {
     listen [::]:443 ssl http2;
     server_name __SERVER_NAME__;
     client_max_body_size 64m;
+    client_body_timeout 30s;
+    client_header_timeout 15s;
+    keepalive_timeout 30s;
+    send_timeout 60s;
+    limit_req_status 429;
+    limit_conn_status 429;
 
     ssl_certificate /etc/letsencrypt/live/__SERVER_NAME__/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/__SERVER_NAME__/privkey.pem;
@@ -39,6 +48,8 @@ server {
     add_header Strict-Transport-Security "max-age=31536000" always;
 
     location / {
+        limit_req zone=scifigure_per_ip burst=60 nodelay;
+        limit_conn scifigure_connections 20;
         proxy_pass http://scifigure_active;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

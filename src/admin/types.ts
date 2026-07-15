@@ -55,8 +55,6 @@ export interface AdminUserRow {
 
 export interface AdminErrorReport {
   id: string;
-  userId: string | null;
-  userEmail?: string | null;
   source: string;
   severity: 'info' | 'warning' | 'error' | 'critical';
   status: 'open' | 'triaged' | 'resolved' | 'ignored';

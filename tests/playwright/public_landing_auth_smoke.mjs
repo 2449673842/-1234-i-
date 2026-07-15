@@ -37,6 +37,23 @@ async function main() {
       body: JSON.stringify({ status: 'error', message: 'no test refresh session' }),
     }));
     await page.route('**/api/auth/register', async route => {
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'success',
+          verificationRequired: true,
+          verification: {
+            challengeId: 'evc_12345678-1234-1234-1234-123456789abc',
+            maskedEmail: 'ui******@example.test',
+            expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          },
+        }),
+      });
+    });
+    await page.route('**/api/auth/verify-email', async route => {
+      const body = route.request().postDataJSON();
+      assert(body.challengeId === 'evc_12345678-1234-1234-1234-123456789abc' && body.code === '123456', `Unexpected verification payload: ${JSON.stringify(body)}`);
       authenticated = true;
       await route.fulfill({
         status: 200,
@@ -44,7 +61,7 @@ async function main() {
         body: JSON.stringify({
           status: 'success',
           token: 'public-landing-smoke-token',
-          user: { id: 'ui-smoke-user', email: 'ui-smoke@example.test', displayName: 'UI Smoke' },
+          user: { id: 'ui-smoke-user', email: 'ui-smoke@example.test', displayName: 'UI Smoke', emailVerified: true },
           license: { status: 'free', isPro: false },
         }),
       });
@@ -66,11 +83,17 @@ async function main() {
     await page.getByLabel('邮箱').fill('ui-smoke@example.test');
     await page.getByLabel('密码', { exact: true }).fill('Public-Landing-Smoke-2026');
     await page.getByLabel('确认密码').fill('Public-Landing-Smoke-2026');
-    await page.getByRole('button', { name: '注册并进入平台' }).click();
+    await page.getByRole('button', { name: '注册并发送验证码' }).click();
+    await page.getByLabel('邮箱验证码').fill('123456');
+    await page.getByRole('button', { name: '验证并进入平台' }).click();
 
     await page.getByRole('button', { name: '项目与资源' }).waitFor();
     assert(await page.getByRole('button', { name: '新建图形项目' }).isVisible(), 'Authenticated workspace did not open after registration');
-    assert(await page.evaluate(() => window.localStorage.getItem('scifigure:auth-token')) === 'public-landing-smoke-token', 'Access token was not persisted');
+    const tokenStorage = await page.evaluate(() => ({
+      local: window.localStorage.getItem('scifigure:auth-token'),
+      session: window.sessionStorage.getItem('scifigure:auth-token'),
+    }));
+    assert(tokenStorage.local === null && tokenStorage.session === 'public-landing-smoke-token', 'Access token was not migrated to session-only storage');
 
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: '项目与资源' }).waitFor();
