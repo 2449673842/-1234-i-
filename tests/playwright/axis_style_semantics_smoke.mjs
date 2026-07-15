@@ -24,7 +24,30 @@ function record(id, status, note) {
 }
 
 function makeObject(id, kind, editable, currentProps, extra = {}) {
-  return { id, kind, label: id, editable, currentProps, subplotId: 'subplot.0', ...extra };
+  const role = extra.role;
+  return {
+    id,
+    kind,
+    label: id,
+    editable,
+    currentProps,
+    subplotId: 'subplot.0',
+    identity: extra.identity || {
+      semanticKey: `${role || kind}:subplot.0`,
+      instanceKey: `subplot:${id}`,
+      scope: 'subplot',
+      coordinateSpace: 'axes',
+      relation: { subplotId: 'subplot.0' },
+    },
+    propertyCapabilities: editable.map(prop => ({
+      prop,
+      patchMode: ['color', 'visible', 'facecolor', 'edgecolor', 'alpha'].includes(prop) ? 'local_patch' : 'backend_patch',
+      scopes: role ? ['object', 'group', 'subplot', 'figure'] : ['object', 'subplot', 'figure'],
+      preview: ['color', 'visible', 'facecolor', 'edgecolor', 'alpha'].includes(prop) ? 'exact' : 'none',
+      replay: 'stable',
+    })),
+    ...extra,
+  };
 }
 
 function buildFixture() {
@@ -148,8 +171,12 @@ async function setNumber(page, card, prop, value) {
 }
 
 async function setColor(page, card, prop, value) {
-  const handle = await controlInCard(page, card, 'input[data-color-role="text"]', 'data-color-scope', `:${prop}`, true);
-  const element = handle.asElement();
+  let handle = await controlInCard(page, card, 'input[data-property-control="color-text"][type="text"]', 'data-param-prop', prop);
+  let element = handle.asElement();
+  if (!element) {
+    handle = await controlInCard(page, card, 'input[data-color-role="text"]', 'data-color-scope', `:${prop}`, true);
+    element = handle.asElement();
+  }
   if (!element) return false;
   await element.scrollIntoViewIfNeeded();
   await element.fill(value);

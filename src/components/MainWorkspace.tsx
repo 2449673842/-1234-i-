@@ -16,6 +16,7 @@ import type { DraftPatch } from '../schemas/draftPatchBatch';
 import { buildCompositionRisks, planCompositionLayout } from '../utils/compositionPlanner';
 import { draftsEligibleForDirectPersistence, draftsRequiringEngineApply } from '../utils/draftTransaction';
 import { copyTextToClipboard } from '../utils/clipboard';
+import { isTextContentPatchProp } from '../utils/propertyPatchMode';
 
 interface MainWorkspaceProps {
   spec: FigureSpec;
@@ -1174,8 +1175,19 @@ export function MainWorkspace({
   }, [projectId, showHistoryMenu]);
 
   const handleSave = async ({ silentIfBlocked = false }: { silentIfBlocked?: boolean } = {}) => {
-    const engineDrafts = Object.values(projectDrafts).flatMap(drafts => (
-      draftsRequiringEngineApply(Object.values(drafts || {}))
+    if (silentIfBlocked && Object.values(projectDrafts).some(drafts => Object.keys(drafts || {}).length > 0)) {
+      return;
+    }
+    const normalizeDraftForFigure = (figId: string, draft: DraftPatch): DraftPatch => {
+      if (draft.type === 'code_patch') return draft;
+      const object = projectFigures[figId]?.manifest?.objects?.find((item: any) => item.id === draft.gid);
+      if (isTextContentPatchProp(draft.prop, object) && draft.mode !== 'backend_patch') {
+        return { ...draft, mode: 'backend_patch' };
+      }
+      return draft;
+    };
+    const engineDrafts = Object.entries(projectDrafts).flatMap(([figId, drafts]) => (
+      draftsRequiringEngineApply(Object.values(drafts || {}).map(draft => normalizeDraftForFigure(figId, draft)))
     ));
     if (engineDrafts.length > 0) {
       if (!silentIfBlocked) {
@@ -1186,10 +1198,11 @@ export function MainWorkspace({
     setIsSaving(true);
     try {
       const previewSvg = await generateThumbnail(figSession?.svg);
-      const localDraftsByFigure = projectId
+      const shouldPersistLocalDrafts = !silentIfBlocked;
+      const localDraftsByFigure = projectId && shouldPersistLocalDrafts
         ? Object.fromEntries(Object.entries(projectDrafts).map(([figId, drafts]) => [
           figId,
-          draftsEligibleForDirectPersistence(Object.values(drafts || {})),
+          draftsEligibleForDirectPersistence(Object.values(drafts || {}).map(draft => normalizeDraftForFigure(figId, draft))),
         ]).filter(([, drafts]) => drafts.length > 0))
         : {};
       const figuresToPersist = projectId

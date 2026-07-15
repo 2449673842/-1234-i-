@@ -438,10 +438,90 @@ def iter_artists(fig):
             yield f"legend_collection.figure.{fig_legend_idx}.{i}", "collection", handle
 
 
+_GENERIC_FONT_FAMILIES = {"serif", "sans-serif", "monospace", "cursive", "fantasy"}
+_TIMES_COMPAT_REQUESTS = {"times new roman", "times"}
+_TIMES_RUNTIME_CANDIDATES = ("Times", "Liberation Serif", "FreeSerif", "serif")
+
+
+def _font_name_for_family(family: str) -> Optional[str]:
+    try:
+        from matplotlib.font_manager import FontProperties, findfont
+
+        path = findfont(FontProperties(family=[family]), fallback_to_default=False)
+        return FontProperties(fname=path).get_name()
+    except Exception:
+        return None
+
+
+def _resolve_runtime_fontfamily(requested: Any) -> str:
+    family = str(requested or "").strip()
+    if not family:
+        return family
+    if family.lower() not in _TIMES_COMPAT_REQUESTS:
+        return family
+    for candidate in _TIMES_RUNTIME_CANDIDATES:
+        if _font_name_for_family(candidate):
+            return candidate
+    return "serif"
+
+
+def _actual_fontfamily(artist) -> str:
+    try:
+        from matplotlib.font_manager import FontProperties, findfont
+
+        path = findfont(artist.get_fontproperties(), fallback_to_default=True)
+        return FontProperties(fname=path).get_name()
+    except Exception:
+        try:
+            return artist.get_fontname()
+        except Exception:
+            return ""
+
+
+def _requested_fontfamily(artist) -> str:
+    requested = getattr(artist, "_scifigure_requested_fontfamily", None)
+    if requested:
+        return str(requested)
+    try:
+        families = artist.get_fontfamily()
+        if isinstance(families, (list, tuple)) and families:
+            first = str(families[0])
+            if first.lower() not in _GENERIC_FONT_FAMILIES:
+                return first
+    except Exception:
+        pass
+    try:
+        return artist.get_fontname()
+    except Exception:
+        return ""
+
+
+def _set_text_fontfamily(text, requested: Any):
+    requested_family = str(requested or "").strip()
+    setattr(text, "_scifigure_requested_fontfamily", requested_family)
+    text.set_fontname(_resolve_runtime_fontfamily(requested_family))
+
+
+def _normalise_text_runtime_font(text):
+    requested_family = _requested_fontfamily(text)
+    if requested_family.lower() in _TIMES_COMPAT_REQUESTS:
+        _set_text_fontfamily(text, requested_family)
+
+
+def _normalise_runtime_fonts(raw_elements: list[tuple[str, str, Any]]):
+    seen: set[int] = set()
+    for _, kind, artist in raw_elements:
+        if kind != "text" or artist is None or id(artist) in seen:
+            continue
+        seen.add(id(artist))
+        _normalise_text_runtime_font(artist)
+
+
 def _snapshot_text_style(text):
     return {
         "fontsize": text.get_fontsize(),
         "fontname": text.get_fontname(),
+        "requested_fontfamily": getattr(text, "_scifigure_requested_fontfamily", None),
         "color": text.get_color(),
         "rotation": text.get_rotation(),
         "ha": text.get_horizontalalignment(),
@@ -455,7 +535,10 @@ def _snapshot_text_style(text):
 def _restore_text_style(text, style: dict):
     try:
         text.set_fontsize(style["fontsize"])
-        text.set_fontname(style["fontname"])
+        if style.get("requested_fontfamily"):
+            _set_text_fontfamily(text, style["requested_fontfamily"])
+        else:
+            text.set_fontname(style["fontname"])
         text.set_color(style["color"])
         text.set_rotation(style["rotation"])
         text.set_horizontalalignment(style["ha"])
@@ -679,7 +762,8 @@ def _read_text_props(artist) -> dict:
         "text": artist.get_text(),
         "fontsize": artist.get_fontsize(),
         "color": to_hex_safe(artist.get_color()),
-        "fontfamily": artist.get_fontname(),
+        "fontfamily": _requested_fontfamily(artist),
+        "resolvedFontfamily": _actual_fontfamily(artist),
         "fontweight": artist.get_fontweight(),
         "fontstyle": artist.get_fontstyle(),
         "x": float(x),
@@ -760,7 +844,8 @@ def _read_legend_props(artist) -> dict:
         "handletextpad": getattr(artist, "handletextpad", 0.8),
         "labelspacing": getattr(artist, "labelspacing", 0.5),
         "title": artist.get_title().get_text() if artist.get_title() is not None else "",
-        "fontfamily": artist.get_texts()[0].get_fontname() if artist.get_texts() else "",
+        "fontfamily": _requested_fontfamily(artist.get_texts()[0]) if artist.get_texts() else "",
+        "resolvedFontfamily": _actual_fontfamily(artist.get_texts()[0]) if artist.get_texts() else "",
         "x": position["x"],
         "y": position["y"],
         "coord_system": position["coord_system"],
@@ -988,7 +1073,9 @@ def _read_axis_props(axis, axis_name: str) -> dict:
         "show_minor_ticks": len(minor_ticks) > 0,
         "tick_labelsize": labels[0].get_fontsize() if labels else 10,
         "tick_labelcolor": tick_label_color,
-        "tick_labelfamily": labels[0].get_fontname() if labels else "",
+        "tick_labelfamily": _requested_fontfamily(labels[0]) if labels else "",
+        "resolvedTickLabelfamily": _actual_fontfamily(labels[0]) if labels else "",
+        "resolvedFontfamily": _actual_fontfamily(labels[0]) if labels else "",
         "tick_fontweight": labels[0].get_fontweight() if labels else "normal",
         "tick_fontstyle": labels[0].get_fontstyle() if labels else "normal",
         "tick_label_dx": _get_tick_label_offset(axis)[0],
@@ -1534,7 +1621,7 @@ def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) ->
 
 
 _LOCAL_PREVIEW_PROPS = {
-    "text", "color", "facecolor", "edgecolor", "alpha", "visible"
+    "color", "facecolor", "edgecolor", "alpha", "visible"
 }
 
 _CROSS_FIGURE_UNSAFE_PROPS = {
@@ -1545,6 +1632,15 @@ _CROSS_FIGURE_UNSAFE_PROPS = {
 _SERIES_KINDS = {
     "line", "collection", "patch", "bar_container", "errorbar_container",
     "stem_container", "boxplot_container", "violinplot_container", "heatmap"
+}
+
+_AXIS_TICK_TYPOGRAPHY_GROUP_PROPS = {
+    "tick_labelsize",
+    "tick_labelcolor",
+    "tick_labelfamily",
+    "tick_fontweight",
+    "tick_fontstyle",
+    "tick_rotation",
 }
 
 
@@ -1683,6 +1779,8 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
         scopes = ["object"]
         if obj.get("role") and prop not in {"position", "anchor_position"}:
             scopes.append("group")
+        if obj.get("kind") in {"axis_x", "axis_y"} and prop in _AXIS_TICK_TYPOGRAPHY_GROUP_PROPS:
+            scopes.append("group")
         if relation.get("subplotId"):
             scopes.append("subplot")
         if prop not in {"position", "left", "bottom", "width", "height"}:
@@ -1752,6 +1850,8 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             artist.set_gid(gid)
         artist_to_gid[artist] = gid
         raw_elements.append((gid, kind, artist))
+
+    _normalise_runtime_fonts(raw_elements)
 
     subplot_meta = _build_subplot_layout_meta(raw_elements)
 
@@ -2718,7 +2818,7 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             return
         if prop == "tick_labelfamily":
             for label in artist.get_ticklabels():
-                label.set_fontname(str(value))
+                _set_text_fontfamily(label, value)
             return
         if prop == "tick_fontweight":
             for label in artist.get_ticklabels():
@@ -2814,10 +2914,10 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             artist.set_title(str(value))
         elif prop == "fontfamily":
             for text in artist.get_texts():
-                text.set_fontname(str(value))
+                _set_text_fontfamily(text, value)
             title = artist.get_title()
             if title is not None:
-                title.set_fontname(str(value))
+                _set_text_fontfamily(title, value)
         elif prop == "position":
             x = float(value["x"])
             y = float(value["y"])
@@ -2922,6 +3022,9 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
     try:
         if prop == "color":
             return _apply_color_patch(artist, value)
+        if prop == "fontfamily":
+            _set_text_fontfamily(artist, value)
+            return None
         if prop == "zorder":
             setter(float(value))
         else:

@@ -144,6 +144,8 @@ const DEFAULT_STYLE_PRESETS: Record<string, FigureStylePreset> = {
   },
 };
 
+const AXES_OBJECT_SCOPE_COMPONENT_CONTROL_KEYS = new Set(['fontfamily', 'fontsize', 'fontweight', 'fontstyle', 'color']);
+
 type SubplotLayoutSettings = {
   marginLeft: number;
   marginRight: number;
@@ -1538,9 +1540,14 @@ export function RightSidebar({
 
   const renderTextInput = (gid: string, label: string, value: string, onValue: (nextValue: string) => void) => {
     const key = getDraftKey(gid, label);
-    const inputValue = draftValues[key] ?? value;
+    const stagedDraft = projectDrafts[currentFigureId]?.[`${gid}:${label}`];
+    const stagedDraftValue = stagedDraft && stagedDraft.gid === gid && stagedDraft.prop === label
+      ? String(stagedDraft.value ?? '')
+      : undefined;
+    const inputValue = draftValues[key] ?? stagedDraftValue ?? value;
     const dirty = isDirty(gid, label);
     const displayLabel = getPropLabel(label);
+    const latestTextValue = () => draftValues[key] ?? stagedDraftValue ?? value ?? '';
     const rememberSelection = (input: HTMLTextAreaElement) => {
       setTextSelections(prev => ({
         ...prev,
@@ -1550,16 +1557,22 @@ export function RightSidebar({
         },
       }));
     };
+    const stageTextValue = (nextValue: string) => {
+      updateDraft(gid, label, nextValue);
+      if (nextValue !== value || stagedDraftValue !== undefined) {
+        onValue(nextValue);
+      }
+    };
     const insertTextFragment = (fragmentFactory: (selected: string) => { fragment: string; cursorOffset: number }) => {
       const input = textInputRefs.current[key];
-      const baseValue = draftValues[key] ?? value ?? '';
+      const baseValue = latestTextValue();
       const saved = textSelections[key];
       const start = input?.selectionStart ?? saved?.start ?? baseValue.length;
       const end = input?.selectionEnd ?? saved?.end ?? start;
       const selected = baseValue.slice(start, end);
       const { fragment, cursorOffset } = fragmentFactory(selected);
       const nextValue = `${baseValue.slice(0, start)}${fragment}${baseValue.slice(end)}`;
-      updateDraft(gid, label, nextValue);
+      stageTextValue(nextValue);
       window.requestAnimationFrame(() => {
         const nextInput = textInputRefs.current[key];
         if (!nextInput) return;
@@ -1586,13 +1599,20 @@ export function RightSidebar({
       }
       clearDraft(gid, label);
     };
-    const applyTextImmediately = (nextVal: string) => {
-      if (nextVal === value) {
+    const applyTextImmediately = async (nextVal: string) => {
+      if (nextVal === value && stagedDraftValue === undefined) {
         clearDraft(gid, label);
         return;
       }
+      if (onImmediatePatch) {
+        const result = await onImmediatePatch([buildPatchEntry(gid, label, nextVal)]);
+        if (result && typeof result === 'object' && 'status' in result && result.status === 'error') {
+          return;
+        }
+      } else {
+        await onPatch([buildPatchEntry(gid, label, nextVal)]);
+      }
       clearDraft(gid, label);
-      void (onImmediatePatch || onPatch)([buildPatchEntry(gid, label, nextVal)]);
     };
     return (
       <div className="text-sm space-y-1.5" key={label}>
@@ -1675,7 +1695,7 @@ export function RightSidebar({
           <button
             type="button"
             onMouseDown={(event) => event.preventDefault()}
-            onClick={() => applyTextImmediately(draftValues[key] ?? value)}
+            onClick={() => void applyTextImmediately(latestTextValue())}
             className="px-2 py-1 rounded border border-blue-200 bg-blue-50 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
             title="立即写入当前 Figure 并重渲染"
           >
@@ -3861,15 +3881,32 @@ export function RightSidebar({
       if (patches.length > 0) void onPatch(patches);
     };
 
-    const projectComponentGroupControls = (items: ManifestObject[]) => (
-      projectPropertyDescriptors({
+    const projectComponentGroupControls = (items: ManifestObject[], groupId: string) => {
+      const groupScopeControls = projectPropertyDescriptors({
         center: 'components',
         objects: items,
         semanticRole: componentRoleForItems(items),
         scope: 'group',
         allowLegacyFallback: !COMPONENT_STRICT_RESOLVER_ACTIVE,
-      }).filter(projection => Object.values(projection.propByObjectId).some(Boolean))
-    );
+      }).filter(projection => Object.values(projection.propByObjectId).some(Boolean));
+      if (groupId !== 'axes') return groupScopeControls;
+
+      const objectScopeTypography = projectPropertyDescriptors({
+        center: 'components',
+        objects: items,
+        semanticRole: componentRoleForItems(items),
+        scope: 'object',
+        allowLegacyFallback: !COMPONENT_STRICT_RESOLVER_ACTIVE,
+      }).filter(projection => (
+        AXES_OBJECT_SCOPE_COMPONENT_CONTROL_KEYS.has(projection.key)
+        && projection.counts.editable > 0
+      ));
+      const objectScopeKeys = new Set(objectScopeTypography.map(projection => projection.key));
+      return [
+        ...objectScopeTypography,
+        ...groupScopeControls.filter(projection => !objectScopeKeys.has(projection.key)),
+      ];
+    };
 
     const patchProjectedComponentGroup = (
       items: ManifestObject[],
@@ -3988,7 +4025,7 @@ export function RightSidebar({
           const xAxisOffsetTargets = axisOffsetTargets.filter(obj => obj.kind === 'axis_x');
           const yAxisOffsetTargets = axisOffsetTargets.filter(obj => obj.kind === 'axis_y');
           const projectedControls = COMPONENT_CONTROLS_V2_ENABLED
-            ? projectComponentGroupControls(targetObjects)
+            ? projectComponentGroupControls(targetObjects, group.id)
             : [];
           return (
             <div

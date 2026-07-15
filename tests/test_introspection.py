@@ -841,6 +841,90 @@ ax.set_yticklabels(["low", "mid", "high"])
         self.assertEqual(x_target["currentProps"]["text"], "C$^{2}$")
         self.assertEqual(x_sibling["currentProps"]["text"], "B")
 
+    def test_times_new_roman_request_is_preserved_separately_from_resolved_font(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 2, 3], label="Series")
+ax.set_xticks([0, 1, 2])
+ax.set_xticklabels(["A", "B", "C"])
+ax.set_title("Title")
+ax.text(0.5, 0.5, "Body", transform=ax.transAxes)
+ax.legend(title="Legend")
+"""
+        result = replay_render(script, edit_log=[
+            {"gid": "text.0.0", "prop": "fontfamily", "value": "Times New Roman", "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "fontfamily", "value": "Times New Roman", "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_labelfamily", "value": "Times New Roman", "mode": "backend_patch"},
+        ])
+        self.assertEqual(result.get("status"), "success")
+        objects = {obj["id"]: obj for obj in result["figures"][0]["manifest"]["objects"]}
+
+        text_obj = objects["text.0.0"]
+        legend_text = objects["legend_text.0.0"]
+        legend_title = objects["legend_title.0"]
+        xtick = objects["xtick.0.0"]
+        axis_x = objects["axis.x.0"]
+
+        for obj in (text_obj, legend_text, legend_title, xtick):
+            self.assertEqual(obj["currentProps"]["fontfamily"], "Times New Roman")
+            self.assertTrue(obj["currentProps"]["resolvedFontfamily"])
+            self.assertNotEqual(obj["currentProps"]["resolvedFontfamily"], "DejaVu Sans")
+
+        self.assertEqual(axis_x["currentProps"]["tick_labelfamily"], "Times New Roman")
+        self.assertTrue(axis_x["currentProps"]["resolvedTickLabelfamily"])
+        self.assertEqual(axis_x["currentProps"]["resolvedFontfamily"], axis_x["currentProps"]["resolvedTickLabelfamily"])
+        self.assertNotEqual(axis_x["currentProps"]["resolvedTickLabelfamily"], "DejaVu Sans")
+
+    def test_text_content_requires_backend_patch_capability(self):
+        result = replay_render("""
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.text(0.5, 0.5, "A\\n$B^2$", transform=ax.transAxes)
+""")
+        self.assertEqual(result.get("status"), "success")
+        text_obj = next(
+            obj for obj in result["figures"][0]["manifest"]["objects"]
+            if obj["id"] == "text.0.0"
+        )
+        text_capability = next(
+            capability for capability in text_obj["propertyCapabilities"]
+            if capability["prop"] == "text"
+        )
+        self.assertEqual(text_capability["patchMode"], "backend_patch")
+        self.assertEqual(text_capability["preview"], "none")
+
+    def test_axis_tick_typography_has_narrow_group_scope(self):
+        result = replay_render("""
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 2, 3])
+ax.set_xticks([0, 1, 2])
+ax.set_xticklabels(["A", "B", "C"])
+""")
+        self.assertEqual(result.get("status"), "success")
+        axis_x = next(
+            obj for obj in result["figures"][0]["manifest"]["objects"]
+            if obj["id"] == "axis.x.0"
+        )
+        scopes_by_prop = {
+            capability["prop"]: capability["scopes"]
+            for capability in axis_x["propertyCapabilities"]
+        }
+
+        for prop in {
+            "tick_labelsize",
+            "tick_labelcolor",
+            "tick_labelfamily",
+            "tick_fontweight",
+            "tick_fontstyle",
+            "tick_rotation",
+        }:
+            self.assertIn("group", scopes_by_prop[prop])
+
+        for prop in {"limits", "label", "label_color", "tick_length", "tick_width"}:
+            self.assertNotIn("group", scopes_by_prop[prop])
+
     def test_tick_labels_do_not_expose_unstable_position_dragging(self):
         script = """
 import matplotlib.pyplot as plt

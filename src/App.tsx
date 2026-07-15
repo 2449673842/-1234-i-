@@ -34,6 +34,7 @@ import { summarizeCodeChange } from './utils/codeHistory';
 import { AUTH_TOKEN_STORAGE_KEY } from './utils/authenticatedFetch';
 import { reportClientError } from './utils/clientErrorReporter';
 import { figureDpiFromPatches, synchronizeFigureDpiSpec } from './utils/exportPreviewState';
+import { isTextContentPatchProp } from './utils/propertyPatchMode';
 import type { FigureSession, EditEntry, PatchEntry, HistorySnapshot, ProjectHistoryState } from './schemas/manifest';
 import type { DraftPatch } from './schemas/draftPatchBatch';
 import type { EditingIntentApplyReport, EditingIntentSkippedTarget } from './schemas/editingIntent';
@@ -203,6 +204,10 @@ function rebuildHistoryFromEditLog(editLog: EditEntry[], script?: string): Proje
     past.push(makeHistorySnapshot(accumulated, `恢复步骤 ${index + 1}`, script));
   });
   return { past, future: [] };
+}
+
+function sameDraftValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function mergeReturnedProjectFigures(
@@ -520,11 +525,21 @@ export default function App() {
   const [projectDrafts, setProjectDrafts] = useState<Record<string, Record<string, DraftPatch>>>(initialState.projectDrafts ?? {});
   const [editingIntentReports, setEditingIntentReports] = useState<EditingIntentApplyReport[]>([]);
 
+  const normalizeDraftForFigure = (figId: string, draft: DraftPatch): DraftPatch => {
+    if (draft.type === 'code_patch') return draft;
+    const object = projectFigures[figId]?.manifest?.objects?.find((item: any) => item.id === draft.gid);
+    if (isTextContentPatchProp(draft.prop, object) && draft.mode !== 'backend_patch') {
+      return { ...draft, mode: 'backend_patch' };
+    }
+    return draft;
+  };
+
   const handleUpdateDraft = (figId: string, patch: DraftPatch) => {
     setProjectDrafts(prev => {
       const figBucket = { ...(prev[figId] || {}) };
-      const key = `${patch.gid}:${patch.prop}`;
-      const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = patch;
+      const normalizedPatch = normalizeDraftForFigure(figId, patch);
+      const key = `${normalizedPatch.gid}:${normalizedPatch.prop}`;
+      const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = normalizedPatch;
       figBucket[key] = freshPatch;
       return { ...prev, [figId]: figBucket };
     });
@@ -534,8 +549,9 @@ export default function App() {
     setProjectDrafts(prev => {
       const figBucket = { ...(prev[figId] || {}) };
       patches.forEach(p => {
-        const key = `${p.gid}:${p.prop}`;
-        const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = p;
+        const normalizedPatch = normalizeDraftForFigure(figId, p);
+        const key = `${normalizedPatch.gid}:${normalizedPatch.prop}`;
+        const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = normalizedPatch;
         figBucket[key] = freshPatch;
       });
       return { ...prev, [figId]: figBucket };
@@ -556,7 +572,7 @@ export default function App() {
       const next = { ...prev };
       Object.entries(draftsByFigure).forEach(([figId, drafts]) => {
         const figure = next[figId];
-        const persistableDrafts = draftsEligibleForDirectPersistence(drafts);
+        const persistableDrafts = draftsEligibleForDirectPersistence(drafts.map(draft => normalizeDraftForFigure(figId, draft)));
         if (!figure || persistableDrafts.length === 0) return;
         const runtimePatches = persistableDrafts.map(draft => ({ gid: draft.gid, prop: draft.prop, value: draft.value }));
         const editEntries = persistableDrafts.map(draft => ({
@@ -579,7 +595,7 @@ export default function App() {
       const next = { ...prev };
       Object.entries(draftsByFigure).forEach(([figId, drafts]) => {
         const bucket = { ...(next[figId] || {}) };
-        draftsEligibleForDirectPersistence(drafts).forEach(draft => {
+        draftsEligibleForDirectPersistence(drafts.map(draft => normalizeDraftForFigure(figId, draft))).forEach(draft => {
           delete bucket[`${draft.gid}:${draft.prop}`];
         });
         if (Object.keys(bucket).length > 0) {
@@ -604,6 +620,7 @@ export default function App() {
       
       const figDrafts = (projectDrafts[activeFigureId] || {}) as Record<string, DraftPatch>;
       const localPatches = Object.values(figDrafts)
+        .map(d => normalizeDraftForFigure(activeFigureId, d))
         .filter(d => d.mode === 'local_patch')
         .map(d => ({ gid: d.gid, prop: d.prop, value: d.value }));
 
@@ -1140,6 +1157,7 @@ export default function App() {
     const skippedByTarget: Record<string, number> = {};
     const reportByTarget: Record<string, { appliedCount: number; skipped: EditingIntentSkippedTarget[] }> = {};
     const patchFromDraft = (draft: DraftPatch): PatchEntry => {
+      const normalizedDraft = normalizeDraftForFigure(figId, draft);
       if (draft.type === 'code_patch') {
         return {
           type: 'code_patch' as const,
@@ -1150,11 +1168,11 @@ export default function App() {
       }
       return {
         op: 'set' as const,
-        mode: draft.mode,
-        gid: draft.gid,
-        prop: draft.prop,
-        value: draft.value,
-        intent: draft.intent,
+        mode: normalizedDraft.mode,
+        gid: normalizedDraft.gid,
+        prop: normalizedDraft.prop,
+        value: normalizedDraft.value,
+        intent: normalizedDraft.intent,
       };
     };
     const compileDraftForTarget = (draft: DraftPatch, targetId: string): { patches: PatchEntry[]; skipped: EditingIntentSkippedTarget[] } => {
@@ -1324,6 +1342,33 @@ export default function App() {
   const handleImmediatePatch = async (patches: PatchEntry[]) => {
     const figureId = projectId ? activeFigureId : 'fig_1';
     const result = await executeSingleFigurePatch(figureId, patches);
+    if (result.success) {
+      setProjectDrafts(prev => {
+        const bucket = { ...(prev[figureId] || {}) };
+        patches.forEach((patch) => {
+          if (!('gid' in patch)) return;
+          const key = `${patch.gid}:${patch.prop}`;
+          const currentDraft = bucket[key];
+          if (!currentDraft) return;
+          const normalizedCurrent = normalizeDraftForFigure(figureId, currentDraft);
+          if (
+            normalizedCurrent.gid === patch.gid
+            && normalizedCurrent.prop === patch.prop
+            && normalizedCurrent.mode === patch.mode
+            && sameDraftValue(normalizedCurrent.value, patch.value)
+          ) {
+            delete bucket[key];
+          }
+        });
+        const next = { ...prev };
+        if (Object.keys(bucket).length > 0) {
+          next[figureId] = bucket;
+        } else {
+          delete next[figureId];
+        }
+        return next;
+      });
+    }
     return {
       status: result.success ? 'success' as const : 'error' as const,
       sessionId: `${projectId || 'project'}_${figureId}`,

@@ -21,6 +21,8 @@ RUN sed -i \
     r-cran-readxl \
     r-cran-svglite \
     libcairo2 \
+    fontconfig \
+    fonts-liberation \
     fonts-noto-cjk \
     fonts-freefont-ttf \
     && rm -rf /var/lib/apt/lists/*
@@ -28,6 +30,8 @@ RUN sed -i \
 WORKDIR /opt/scifigure
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements.txt
+COPY renderer/fontconfig-local.conf /etc/fonts/conf.d/52-scifigure-font-alias.conf
+RUN fc-cache -f
 COPY renderer ./renderer
 
 RUN useradd --system --uid 65532 --home-dir /tmp --shell /usr/sbin/nologin renderer
