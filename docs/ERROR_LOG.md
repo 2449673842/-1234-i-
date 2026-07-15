@@ -2293,9 +2293,21 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 - 首次公网 smoke 将整张 SVG 中其他未修改文本的 DejaVu Sans 误认为目标字体回退，产生 5/6 的假失败。
 - 断言现按被编辑 gid 提取目标 SVG group，只检查目标对象的字体声明，并保存目标响应 SVG 作为证据；修正后公网 6/6 PASS。
 
+**原版 Times New Roman 后续修正（2026-07-15 11:27:34 +08:00）**
+
+- 用户明确要求实际使用微软 Times New Roman，不接受界面显示 Times New Roman、renderer 实际使用 Liberation Serif 的兼容方案。
+- Docker renderer 启用 Debian `contrib`，通过 `ttf-mscorefonts-installer 3.8.1` 接受 Core Fonts 许可并安装 `Times.TTF`、粗体、斜体和粗斜体文件。
+- Matplotlib 字体解析优先查找真实 `Times New Roman`；SVG 字体链将 Times New Roman 放在第一位，兼容字体只作为不可用环境的后续 fallback。
+- 删除曾把 `Times New Roman` 反向覆盖为 Liberation Serif 的旧 fontconfig alias，只保留 `Times -> Times New Roman` 兼容映射。
+- Docker 构建门禁移到所有 fontconfig 配置加载之后，最终 `fc-match 'Times New Roman'` 必须返回 `Times_New_Roman.ttf`，否则禁止发布。
+- 公网 build `d625000-jd14` 验证：requested family=`Times New Roman`、resolved family=`Times New Roman`、目标 `title.0` SVG 第一字体=`Times New Roman`。
+- 公网真实浏览器回归 6/6 PASS，Console/Page Error=0；readiness=`ready`、单实例 active、SQLite `integrity_check=ok`，用户/项目保持 `5/7`。
+- 本地 `3000` 和本机 Docker 未修改、未停止。
+
 **防复发规则**
 
 - 字体协议必须同时记录 requested family 和 resolved runtime family，不能用 Linux 替代字体覆盖用户选择值。
-- 字体 E2E 必须检查 patch、manifest 和目标 gid 的 SVG group，禁止用整张 SVG 的任意字体字符串判断单个对象结果。
+- 字体 E2E 必须检查 patch、manifest requested/resolved family 和目标 gid 的 SVG 第一字体，禁止只检查下拉框标签或整张 SVG 的任意字体字符串。
+- 安装真实字体后不得保留会覆盖该字体的兼容 alias；Docker 字体门禁必须在最终 fontconfig 状态下执行。
 - 文字内容不得降级为纯前端 patch；Draft 清理必须比较 gid、prop、mode 和 value 后再删除。
 - 严格 capability 的兼容只能按明确对象类型和属性白名单开放，禁止全局回退。
