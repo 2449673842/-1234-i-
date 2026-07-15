@@ -9,6 +9,7 @@
  */
 
 import Database from 'better-sqlite3';
+import * as XLSX from 'xlsx';
 
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
 let authToken = '';
@@ -48,6 +49,13 @@ async function testSecurityHeaders() {
   assert((res.headers.get('permissions-policy') || '').includes('camera=()'), 'Missing Permissions-Policy');
   const csp = res.headers.get('content-security-policy-report-only') || '';
   assert(csp.includes("object-src 'none'") && csp.includes("base-uri 'self'"), 'Missing CSP Report-Only security boundary');
+
+  const unauthenticatedAssets = await request('/api/export-assets');
+  const unauthenticatedAssetsData = await unauthenticatedAssets.json().catch(() => null);
+  assert(
+    unauthenticatedAssets.status === 401 && unauthenticatedAssetsData?.status === 'error',
+    `Unauthenticated export library access must return 401, got ${unauthenticatedAssets.status} ${JSON.stringify(unauthenticatedAssetsData)}`,
+  );
 }
 
 async function testLargeJsonRejected() {
@@ -177,6 +185,32 @@ async function testUploadedFileSignatures(projectId) {
   assert(listedFilesResponse.ok && listedValidFile, 'Uploaded CSV must remain available after validation');
   assert(listedValidFile.filePath === listedValidFile.fileName, `Dataset API must expose only a logical filename, got ${listedValidFile.filePath}`);
 
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    ['sample', 'value'],
+    ['A', 1],
+    ['B', 2],
+  ]), 'Measurements');
+  const workbookBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+  const validWorkbook = new FormData();
+  validWorkbook.append('file', new Blob([workbookBuffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  }), 'valid.xlsx');
+  const validWorkbookResponse = await request(`/api/projects/${projectId}/files`, { method: 'POST', body: validWorkbook });
+  const validWorkbookData = await validWorkbookResponse.json().catch(() => null);
+  assert(validWorkbookResponse.ok, `Valid XLSX upload failed: ${validWorkbookResponse.status} ${JSON.stringify(validWorkbookData)}`);
+  assert(
+    JSON.stringify(validWorkbookData?.columns) === JSON.stringify(['sample', 'value']) && validWorkbookData?.rowCount === 2,
+    `XLSX upload must return isolated-parser metadata: ${JSON.stringify(validWorkbookData)}`,
+  );
+  const listedWorkbookResponse = await request(`/api/projects/${projectId}/files`);
+  const listedWorkbookData = await listedWorkbookResponse.json().catch(() => null);
+  const listedWorkbook = listedWorkbookData?.datasets?.find(dataset => dataset.fileName === 'valid.xlsx');
+  assert(
+    listedWorkbookResponse.ok && listedWorkbook?.rowCount === 2 && JSON.stringify(listedWorkbook?.columns) === JSON.stringify(['sample', 'value']),
+    `Validated XLSX metadata must remain registered: ${JSON.stringify(listedWorkbookData)}`,
+  );
+
   const wideText = new FormData();
   wideText.append('file', new Blob([`${Array.from({ length: 2049 }, (_, index) => `c${index}`).join(',')}\n`], { type: 'text/csv' }), 'too-wide.csv');
   const wideTextResponse = await request(`/api/projects/${projectId}/files`, { method: 'POST', body: wideText });
@@ -238,6 +272,44 @@ async function testResourceBudgets(projectId) {
     }),
   });
   assert(oversizedProject.status === 413, `Oversized project record should return 413, got ${oversizedProject.status} ${await oversizedProject.text()}`);
+
+  const invalidInlineProject = await request('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'invalid-inline-project-data',
+      spec: {
+        plot_type: 'custom',
+        raw_data: { custom_data: [{ value: { nested: 'not-a-cell' } }] },
+      },
+    }),
+  });
+  assert(invalidInlineProject.status === 413, `Project inline data must use the same tabular safety gate as rendering, got ${invalidInlineProject.status} ${await invalidInlineProject.text()}`);
+
+  const beforeUpdateResponse = await request(`/api/projects/${projectId}`);
+  const beforeUpdate = await beforeUpdateResponse.json().catch(() => null);
+  assert(beforeUpdateResponse.ok && beforeUpdate?.project, `Could not load project before rejected update: ${JSON.stringify(beforeUpdate)}`);
+  const beforeSpec = typeof beforeUpdate.project.spec === 'string'
+    ? JSON.parse(beforeUpdate.project.spec)
+    : beforeUpdate.project.spec;
+  const invalidInlineUpdate = await request(`/api/projects/${projectId}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      name: beforeUpdate.project.name,
+      spec: {
+        ...beforeSpec,
+        raw_data: { custom_data: [{ value: { nested: 'not-a-cell' } }] },
+      },
+    }),
+  });
+  assert(invalidInlineUpdate.status === 413, `Project update inline data must be rejected before persistence, got ${invalidInlineUpdate.status} ${await invalidInlineUpdate.text()}`);
+  const afterUpdateResponse = await request(`/api/projects/${projectId}`);
+  const afterUpdate = await afterUpdateResponse.json().catch(() => null);
+  const afterSpec = typeof afterUpdate?.project?.spec === 'string'
+    ? JSON.parse(afterUpdate.project.spec)
+    : afterUpdate?.project?.spec;
+  assert(afterUpdateResponse.ok, `Could not reload project after rejected update: ${JSON.stringify(afterUpdate)}`);
+  assert(JSON.stringify(afterSpec) === JSON.stringify(beforeSpec), 'Rejected project update must preserve the previous spec');
+  assert(afterUpdate.project.script === beforeUpdate.project.script, 'Rejected project update must preserve the previous script');
 }
 
 async function testExportImportHonorsGlobalUploadBudget(projectId) {

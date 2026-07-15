@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
-import Papa from 'papaparse';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -24,6 +23,10 @@ import {
 } from '../utils/scriptTranslationContract';
 import { extractReferencedDataFiles, matchesReferencedDataFile } from '../utils/scriptDataDependencies';
 import { copyTextToClipboard } from '../utils/clipboard';
+import {
+  parseClientTabularPreview,
+  validateClientDataFileSelection,
+} from '../utils/clientTabularPreview';
 
 const DEFAULT_TEMPLATE = `import matplotlib.pyplot as plt
 import pandas as pd
@@ -83,59 +86,13 @@ interface ParsedDataset {
   allData: DataRow[];
   numericFields: string[];
   stringFields: string[];
-}
-
-function readFileAsText(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
-    reader.readAsText(file);
-  });
-}
-
-function readFileAsArrayBuffer(file: File): Promise<ArrayBuffer> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as ArrayBuffer);
-    reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
-    reader.readAsArrayBuffer(file);
-  });
+  previewDeferredReason?: string;
 }
 
 async function parseDatasetFile(file: File): Promise<ParsedDataset> {
-  const lowerName = file.name.toLowerCase();
-
-  if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
-    const buffer = await readFileAsArrayBuffer(file);
-    const XLSX = await import('xlsx');
-    const workbook = XLSX.read(buffer, { type: 'array' });
-    const firstSheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[firstSheetName];
-    const json = XLSX.utils.sheet_to_json(worksheet, { defval: null }) as Array<Record<string, unknown>>;
-    const headers = json.length > 0 ? Object.keys(json[0]) : [];
-    const { numericFields, stringFields } = inferFieldTypes(json, headers);
-    return {
-      headers,
-      previewData: json.slice(0, 5),
-      allData: json,
-      numericFields,
-      stringFields,
-    };
-  }
-
-  const text = await readFileAsText(file);
-  const delimiter = lowerName.endsWith('.tsv') ? '\t' : ',';
-  const parsed = Papa.parse<Record<string, unknown>>(text, {
-    header: true,
-    dynamicTyping: true,
-    skipEmptyLines: true,
-    delimiter,
-  });
-  const allData = Array.isArray(parsed.data) ? parsed.data : [];
-  const headers = parsed.meta.fields && parsed.meta.fields.length > 0
-    ? parsed.meta.fields
-    : (allData[0] ? Object.keys(allData[0]) : []);
+  const preview = await parseClientTabularPreview(file);
+  const allData = preview.sampleRows;
+  const headers = preview.headers;
   const { numericFields, stringFields } = inferFieldTypes(allData, headers);
 
   return {
@@ -144,6 +101,7 @@ async function parseDatasetFile(file: File): Promise<ParsedDataset> {
     allData,
     numericFields,
     stringFields,
+    previewDeferredReason: preview.previewDeferredReason,
   };
 }
 
@@ -157,6 +115,8 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
   const [aiResult, setAiResult] = useState('');
   const [pendingDatasets, setPendingDatasets] = useState<PendingDataset[]>([]);
   const [parsedDatasets, setParsedDatasets] = useState<Record<string, ParsedDataset>>({});
+  const [parseErrors, setParseErrors] = useState<Record<string, string>>({});
+  const [dataSelectionError, setDataSelectionError] = useState<string | null>(null);
   const [primaryDatasetId, setPrimaryDatasetId] = useState<string | null>(null);
   const [headers, setHeaders] = useState<string[]>([]);
   const [previewData, setPreviewData] = useState<Array<Record<string, unknown>>>([]);
@@ -178,6 +138,11 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
   const dataFileInputRef = useRef<HTMLInputElement>(null);
   const scriptUploadDragDepthRef = useRef(0);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const selectedDatasetIdsRef = useRef(new Set<string>());
+  const parsedDatasetCacheRef = useRef(new Map<string, ParsedDataset>());
+  const parseErrorCacheRef = useRef(new Map<string, string>());
+  const parseJobCacheRef = useRef(new Map<string, Promise<ParsedDataset>>());
+  const parseQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     return () => {
@@ -194,30 +159,76 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
 
   useEffect(() => {
     let cancelled = false;
+    const selectedIds = new Set(pendingDatasets.map(item => item.id));
+    selectedDatasetIdsRef.current = selectedIds;
+    for (const id of parsedDatasetCacheRef.current.keys()) {
+      if (!selectedIds.has(id)) parsedDatasetCacheRef.current.delete(id);
+    }
+    for (const id of parseErrorCacheRef.current.keys()) {
+      if (!selectedIds.has(id)) parseErrorCacheRef.current.delete(id);
+    }
     if (pendingDatasets.length === 0) {
       setParsedDatasets({});
+      setParseErrors({});
       setIsParsingData(false);
       return;
     }
 
     setIsParsingData(true);
-    Promise.all(
-      pendingDatasets.map(async item => {
-        const parsed = await parseDatasetFile(item.file);
-        return [item.id, parsed] as const;
-      }),
-    )
-      .then(entries => {
+    const getOrStartPreview = (item: PendingDataset): Promise<ParsedDataset> => {
+      const cached = parsedDatasetCacheRef.current.get(item.id);
+      if (cached) return Promise.resolve(cached);
+      const cachedError = parseErrorCacheRef.current.get(item.id);
+      if (cachedError) return Promise.reject(new Error(cachedError));
+      const activeJob = parseJobCacheRef.current.get(item.id);
+      if (activeJob) return activeJob;
+
+      const queued = parseQueueRef.current.then(() => parseDatasetFile(item.file));
+      let tracked: Promise<ParsedDataset>;
+      tracked = queued
+        .then(parsed => {
+          if (selectedDatasetIdsRef.current.has(item.id)) {
+            parsedDatasetCacheRef.current.set(item.id, parsed);
+            parseErrorCacheRef.current.delete(item.id);
+          }
+          return parsed;
+        })
+        .catch(error => {
+          const message = error instanceof Error ? error.message : '数据预览解析失败';
+          if (selectedDatasetIdsRef.current.has(item.id)) {
+            parseErrorCacheRef.current.set(item.id, message);
+          }
+          throw error;
+        })
+        .finally(() => {
+          if (parseJobCacheRef.current.get(item.id) === tracked) {
+            parseJobCacheRef.current.delete(item.id);
+          }
+        });
+      parseQueueRef.current = tracked.then(() => undefined, () => undefined);
+      parseJobCacheRef.current.set(item.id, tracked);
+      return tracked;
+    };
+
+    const parsePending = async () => {
+      const parsedEntries: Array<readonly [string, ParsedDataset]> = [];
+      const nextErrors: Record<string, string> = {};
+      for (const item of pendingDatasets) {
         if (cancelled) return;
-        setParsedDatasets(Object.fromEntries(entries));
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setParsedDatasets({});
-      })
-      .finally(() => {
-        if (!cancelled) setIsParsingData(false);
-      });
+        try {
+          parsedEntries.push([item.id, await getOrStartPreview(item)] as const);
+        } catch (error) {
+          nextErrors[item.id] = error instanceof Error ? error.message : '数据预览解析失败';
+        }
+      }
+      if (!cancelled) {
+        setParsedDatasets(Object.fromEntries(parsedEntries));
+        setParseErrors(nextErrors);
+      }
+    };
+    void parsePending().finally(() => {
+      if (!cancelled) setIsParsingData(false);
+    });
 
     return () => {
       cancelled = true;
@@ -252,7 +263,9 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
   }, [primaryDataset, parsedDatasets]);
 
   const hasData = pendingDatasets.length > 0;
-  const dataReady = hasData && pendingDatasets.every(item => Boolean(parsedDatasets[item.id])) && headers.length > 0;
+  const dataReady = hasData
+    && pendingDatasets.every(item => Boolean(parsedDatasets[item.id]))
+    && Object.keys(parseErrors).length === 0;
   const hasScript = script.trim().length > 0;
   const activeStep = !hasScript ? 1 : !dataReady ? 2 : 3;
   const scriptLineCount = useMemo(() => script.split(/\r?\n/).length, [script]);
@@ -270,6 +283,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
           headers: parsed.headers,
           rows: parsed.allData,
           previewRows: parsed.previewData,
+          sampled: true,
           mapping,
         };
       })
@@ -281,6 +295,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
       headers,
       rows: allData,
       previewRows: previewData,
+      sampled: true,
       primaryDataFileName: primaryDataset?.file.name,
       additionalDatasets: additionalPromptDatasets,
       xField,
@@ -300,22 +315,28 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
 
   const addPendingFiles = (files: FileList | File[] | null | undefined) => {
     if (!files) return;
-    const allowed = new Set(['.csv', '.tsv', '.txt', '.xlsx', '.xls']);
-    const items = Array.from(files)
-      .filter(file => {
-        const dotIndex = file.name.lastIndexOf('.');
-        const ext = dotIndex >= 0 ? file.name.slice(dotIndex).toLowerCase() : '';
-        return allowed.has(ext);
-      })
-      .map(file => ({
+    const rejected: string[] = [];
+    const items = Array.from(files).flatMap(file => {
+      try {
+        validateClientDataFileSelection(file);
+        return [{
         id: `${file.name}_${file.size}_${file.lastModified}`,
         file,
-      }));
+        }];
+      } catch (error) {
+        rejected.push(error instanceof Error ? error.message : `${file.name} 不可用`);
+        return [];
+      }
+    });
+    setDataSelectionError(rejected.length > 0 ? rejected.join('；') : null);
 
     setPendingDatasets(prev => {
       const existingIds = new Set(prev.map(item => item.id));
       const deduped = items.filter(item => !existingIds.has(item.id));
-      const next = [...prev, ...deduped];
+      const next = [...prev, ...deduped].slice(0, 200);
+      if (prev.length + deduped.length > 200) {
+        setDataSelectionError('单个项目最多选择 200 个数据文件');
+      }
       if (!primaryDatasetId && next.length > 0) {
         setPrimaryDatasetId(next[0].id);
       }
@@ -434,47 +455,41 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
     }
 
     setSubmitting(true);
+    let createdProjectId: string | null = null;
     try {
-      const sourceMeta = primaryDataset ? {
-        file_name: primaryDataset.file.name,
-        file_type: primaryDataset.file.name.split('.').pop()?.toUpperCase() || 'UNKNOWN',
-        row_count: allData.length,
-        column_count: headers.length,
-        columns: headers,
-        imported_at: new Date().toISOString(),
-      } : undefined;
+      const baseSpec = {
+        plot_type: 'custom',
+        figure: { width: 100, height: 80, unit: 'mm', dpi: 150 },
+        colors: {},
+        custom_script: script,
+        script_language: scriptLanguage,
+        data: {
+          x: xField,
+          y: yField,
+          group: groupField,
+        },
+      };
 
       const createRes = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: name.trim(),
-          spec: {
-            plot_type: 'custom',
-            figure: { width: 100, height: 80, unit: 'mm', dpi: 150 },
-            colors: {},
-            custom_script: script,
-            script_language: scriptLanguage,
-            raw_data: { custom_data: allData },
-            source: sourceMeta,
-            data: {
-              x: xField,
-              y: yField,
-              group: groupField,
-            },
-          },
+          spec: baseSpec,
         }),
       });
-      const createData = await createRes.json();
-      if (createData.status !== 'success') {
-        throw new Error(createData.message || '创建项目失败');
+      const createData = await createRes.json().catch(() => null);
+      if (!createRes.ok || createData?.status !== 'success' || !createData?.id) {
+        throw new Error(createData?.message || '创建项目失败');
       }
 
       const projectId = createData.id as string;
+      createdProjectId = projectId;
       const orderedDatasets = [
         ...pendingDatasets.filter(item => item.id === primaryDatasetId),
         ...pendingDatasets.filter(item => item.id !== primaryDatasetId),
       ];
+      const uploadedByDatasetId = new Map<string, { fileId: string; columns: string[]; rowCount: number }>();
 
       for (const item of orderedDatasets) {
         const formData = new FormData();
@@ -483,11 +498,49 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
           method: 'POST',
           body: formData,
         });
-        const uploadData = await uploadRes.json();
-        if (uploadData.status !== 'success') {
-          throw new Error(`上传 ${item.file.name} 失败: ${uploadData.message || '未知错误'}`);
+        const uploadData = await uploadRes.json().catch(() => null);
+        if (!uploadRes.ok || uploadData?.status !== 'success') {
+          throw new Error(`上传 ${item.file.name} 失败: ${uploadData?.message || '未知错误'}`);
         }
+        uploadedByDatasetId.set(item.id, {
+          fileId: String(uploadData.fileId || ''),
+          columns: Array.isArray(uploadData.columns) ? uploadData.columns.map(String) : [],
+          rowCount: Math.max(0, Number(uploadData.rowCount || 0)),
+        });
       }
+
+      const primaryUpload = primaryDatasetId ? uploadedByDatasetId.get(primaryDatasetId) : undefined;
+      if (!primaryUpload?.fileId) {
+        throw new Error('主数据文件上传后缺少服务端文件标识');
+      }
+      const verifiedHeaders = primaryUpload?.columns || [];
+      const primaryPreviewRes = await fetch(
+        `/api/projects/${projectId}/files/${encodeURIComponent(primaryUpload.fileId)}/preview?limit=100`,
+      );
+      const primaryPreviewData = await primaryPreviewRes.json().catch(() => null);
+      if (!primaryPreviewRes.ok || primaryPreviewData?.status !== 'success' || !Array.isArray(primaryPreviewData?.rows)) {
+        throw new Error(primaryPreviewData?.message || '服务端无法读取主数据安全预览');
+      }
+      const primaryPreview = primaryPreviewData.rows as Array<Record<string, unknown>>;
+      const verifiedTypes = inferFieldTypes(primaryPreview, verifiedHeaders);
+      const verifiedDefaults = chooseDefaultFields(
+        verifiedHeaders,
+        primaryPreview,
+        verifiedTypes.numericFields,
+        verifiedTypes.stringFields,
+      );
+      const verifiedX = verifiedHeaders.includes(xField) ? xField : verifiedDefaults.xField;
+      const verifiedY = verifiedHeaders.includes(yField) ? yField : verifiedDefaults.yField;
+      const verifiedGroup = verifiedHeaders.includes(groupField) ? groupField : verifiedDefaults.groupField;
+      const sourceMeta = primaryDataset ? {
+        file_name: primaryDataset.file.name,
+        file_type: primaryDataset.file.name.split('.').pop()?.toUpperCase() || 'UNKNOWN',
+        row_count: primaryUpload?.rowCount ?? 0,
+        column_count: verifiedHeaders.length,
+        columns: verifiedHeaders,
+        preview_rows_analyzed: primaryPreview.length,
+        imported_at: new Date().toISOString(),
+      } : undefined;
 
       const updateRes = await fetch(`/api/projects/${projectId}`, {
         method: 'PUT',
@@ -495,24 +548,19 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
         body: JSON.stringify({
           name: name.trim(),
           spec: {
-            plot_type: 'custom',
-            figure: { width: 100, height: 80, unit: 'mm', dpi: 150 },
-            colors: {},
-            custom_script: script,
-            script_language: scriptLanguage,
-            raw_data: { custom_data: allData },
+            ...baseSpec,
             source: sourceMeta,
             data: {
-              x: xField,
-              y: yField,
-              group: groupField,
+              x: verifiedX,
+              y: verifiedY,
+              group: verifiedGroup,
             },
           },
         }),
       });
-      const updateData = await updateRes.json();
-      if (updateData.status !== 'success') {
-        throw new Error(updateData.message || '保存脚本失败');
+      const updateData = await updateRes.json().catch(() => null);
+      if (!updateRes.ok || updateData?.status !== 'success') {
+        throw new Error(updateData?.message || '保存脚本失败');
       }
 
       const getRes = await fetch(`/api/projects/${projectId}`);
@@ -521,8 +569,12 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
         throw new Error(getData.message || '载入项目失败');
       }
 
+      createdProjectId = null;
       onLoadProject(projectId, name.trim(), getData.project);
     } catch (err: any) {
+      if (createdProjectId) {
+        await fetch(`/api/projects/${createdProjectId}`, { method: 'DELETE' }).catch(() => null);
+      }
       alert(err.message || '创建流程失败');
     } finally {
       setSubmitting(false);
@@ -542,7 +594,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
         <div className="space-y-3">
           {[
             ['数据已选择', hasData],
-            ['全部数据已解析', dataReady],
+            ['全部数据已安全预检', dataReady],
             ['脚本已准备', hasScript],
             ['可进入编辑器', hasData && hasScript],
           ].map(([label, done]) => (
@@ -742,9 +794,14 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                   {dataDragOver ? '释放文件以加入本次项目' : '拖拽或点击选择数据文件'}
                 </div>
                 <div className="text-sm text-slate-500 text-center leading-6">
-                  支持 CSV、TSV、TXT、XLSX。每个文件都会独立识别字段，主数据只决定 `_uploaded_data`。
+                  支持 CSV、TSV、TXT、XLSX。浏览器只读取有界样本；完整文件由服务端隔离校验。
                 </div>
               </div>
+              {dataSelectionError && (
+                <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                  {dataSelectionError}
+                </div>
+              )}
 
               <div className="rounded-xl border border-slate-200 overflow-hidden">
                 <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700">
@@ -756,6 +813,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                       {pendingDatasets.map(item => {
                         const isPrimary = item.id === primaryDatasetId;
                         const parsed = parsedDatasets[item.id];
+                        const parseError = parseErrors[item.id];
                         const inferredMapping = parsed
                           ? chooseDefaultFields(parsed.headers, parsed.allData, parsed.numericFields, parsed.stringFields)
                           : null;
@@ -766,9 +824,13 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                               <div className="text-sm font-medium text-slate-800 truncate">{item.file.name}</div>
                               <div className="text-xs text-slate-500 flex flex-wrap gap-x-2 gap-y-1">
                                 <span>{(item.file.size / 1024).toFixed(1)} KB</span>
-                                {parsed ? (
+                                {parseError ? (
+                                  <span className="text-red-600">{parseError}</span>
+                                ) : parsed?.previewDeferredReason ? (
+                                  <span className="text-amber-700">{parsed.previewDeferredReason}</span>
+                                ) : parsed ? (
                                   <>
-                                    <span>{parsed.allData.length} 行</span>
+                                    <span>分析前 {parsed.allData.length} 行样本</span>
                                     <span>{parsed.headers.length} 列</span>
                                     {!isPrimary && inferredMapping && (
                                       <span className="text-blue-600">
@@ -823,6 +885,11 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                   </span>
                 </div>
                 <div className="overflow-x-auto">
+                  {primaryDatasetId && parsedDatasets[primaryDatasetId]?.previewDeferredReason && (
+                    <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                      {parsedDatasets[primaryDatasetId].previewDeferredReason}
+                    </div>
+                  )}
                   <table className="w-full text-sm text-left whitespace-nowrap">
                     <thead className="bg-slate-50 border-b border-slate-200 font-mono text-xs text-slate-500">
                       <tr>
@@ -1128,7 +1195,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                   type="button"
                 >
                   <Play className="w-4 h-4" />
-                  {submitting ? '创建并上传中...' : isParsingData ? '等待数据解析...' : '创建项目并进入编辑器'}
+                  {submitting ? '创建并上传中...' : isParsingData ? '等待安全预检...' : '创建项目并进入编辑器'}
                 </button>
               </div>
             </div>

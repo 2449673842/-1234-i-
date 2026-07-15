@@ -11,6 +11,9 @@
  *   The app is running at http://localhost:3000.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import Database from 'better-sqlite3';
 import { authenticateCapabilitySmokeUser, bearerHeaders } from '../playwright/smokeAuth.mjs';
 
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
@@ -273,6 +276,30 @@ async function main() {
     assert(rComposed.prompt.includes('Target language: R'), 'All-R composition should target R');
     assert(rComposed.prompt.includes('ggplot2::ggplotGrob') && rComposed.prompt.includes('grid::unit'), 'R prompt missing physical panel-size helper');
     assert(!rComposed.prompt.includes('fig.add_axes') && !rComposed.prompt.includes('plt.subplots'), 'R prompt contains contradictory Matplotlib instructions');
+
+    if (process.env.SCIFIGURE_TEST_ISOLATED === '1' && process.env.SCIFIGURE_DB_PATH) {
+      const database = new Database(process.env.SCIFIGURE_DB_PATH, { readonly: true });
+      const sourceFile = database.prepare('SELECT stored_path FROM project_files WHERE id = ?')
+        .get(sourceA.uploaded.fileId);
+      database.close();
+      assert(sourceFile?.stored_path, 'Corrupt-source fixture could not resolve its stored path');
+      const sourcePath = path.resolve(process.cwd(), sourceFile.stored_path);
+      fs.writeFileSync(sourcePath, Buffer.from([0x41, 0x00, 0x42]));
+      const corruptName = `Composition code project smoke corrupt ${Date.now()}`;
+      const corruptResponse = await fetch(`${BASE_URL}/api/projects/create-composition-project`, {
+        method: 'POST',
+        headers: bearerHeaders(authToken, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          name: corruptName,
+          layout: '1x1',
+          sources: [{ projectId: sourceA.projectId, figureId: 'fig_1' }],
+        }),
+      });
+      const corruptData = await corruptResponse.json().catch(() => null);
+      assert(corruptResponse.status === 400, `Corrupt source data must be rejected before composition copy, got ${corruptResponse.status} ${JSON.stringify(corruptData)}`);
+      const projectsAfterCorruptCopy = await requestJson('/api/projects');
+      assert(!projectsAfterCorruptCopy.projects.some(project => project.name === corruptName), 'Failed composition copy must roll back its target project');
+    }
 
     await requestJson(`/api/projects/${sourceB.projectId}/files/${sourceB.uploaded.fileId}`, { method: 'DELETE' });
     const missingDependencyResponse = await fetch(`${BASE_URL}/api/projects/create-composition-project`, {

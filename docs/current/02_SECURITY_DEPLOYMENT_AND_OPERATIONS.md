@@ -1,7 +1,7 @@
 # SciFigure 安全、部署与运维副文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-16 01:55:49 +08:00
+> 更新时间：2026-07-16 03:14:56 +08:00
 > 复核范围：当前本地工作区；尚未等同于已提交发布版本  
 > 适用范围：用户账号、数据保护、代码执行、Docker、备份、管理员能力和生产上线
 
@@ -223,13 +223,14 @@ JSON 请求体限制
 上传/下载次数和持久化小时字节预算
 脚本、内联数据、编辑记录、Figure 历史、临时会话和项目目录的独立容量预算
 持久渲染缓存与进程内幂等响应缓存的单项、单会话、数量和总字节边界
+未认证项目与导出资产请求保留 401，不再被通用 catch 误包装成 500
 ```
 
 当前防滥用默认安全天花板与商业套餐无关：单文件 50 MB（代码硬上限）、单项目数据 256 MB、单账号数据 1 GB；数据文件与导出资产合计另受单项目 1 GB、单账号 2 GB、全平台 20 GB 限制；账号上传 200 MB/小时、平台上传 1 GB/小时、账号下载 250 MB/小时、平台下载 512 MB/小时。Free/Pro 仍处于观察模式，详见 `05_FREE_PRO_ENTITLEMENT_REVIEW_2026-07-15.md`。
 
 单文件限制意味着当前版本不接受数 GB 表格。平台下载 512 MB/小时即使连续 31 天跑满，已计量下载理论上限约 381 GB/月，低于 2200 GB 套餐；这不是整机总流量保证，静态资源、系统更新和上游攻击仍需由云厂商流量告警、DDoS 防护及 Nginx 限速共同处理。建议在套餐用量 50%、70%、85% 设置告警，达到 85% 时人工关闭非必要导出并调查来源。
 
-上传和下载的账号额度与全平台额度在同一 SQLite 事务中检查和扣减。multipart 文件上传要求可计量的 `Content-Length`，并在 Multer 读取请求体前扣减小时预算；无长度请求返回 411，超过单文件请求边界返回 413。组合图/导出资产导入同样进入上传次数、上传字节和全平台存储预算，不能作为绕过入口。
+上传和下载的账号额度与全平台额度在同一 SQLite 事务中检查和扣减。项目文件、导出资产的所有权复核、项目/账号/全平台累计存储检查和数据库登记使用 SQLite `IMMEDIATE` 事务；多个 Node 进程共享数据库时也不能同时通过旧配额快照。multipart 文件上传要求可计量的 `Content-Length`，并在 Multer 读取请求体前扣减小时预算；无长度请求返回 411，超过单文件请求边界返回 413。组合图/导出资产导入同样进入上传次数、上传字节和全平台存储预算，不能作为绕过入口。登记失败会删除本次新落盘文件，不删除既有用户内容。
 
 Content-Security-Policy 尚未强制。上线前应先使用 Report-Only 收集真实资源需求，不能直接复制包含宽泛 `unsafe-inline` 的模板。
 
@@ -241,6 +242,7 @@ safeResolveUnder 目录边界
 绝对路径、协议路径和 NUL 拒绝
 真实路径和符号链接父级检查
 上传文件名清理
+落盘文件名加入随机 UUID 片段，避免同毫秒同名覆盖
 上传落盘前确认项目所有权
 组合项目只复制用户有权访问的文件
 组合项目每复制一个来源文件前重新核对目标项目、账号和全平台存储预算
@@ -338,9 +340,23 @@ XLSX entry 数、解压总量、单 entry 和压缩比预检
 parser 独立并发队列
 超时、输出、CPU、内存和 PID 限制
 解析失败清理未登记上传文件
+项目创建与更新提交的 inline custom_data 复用 renderer 表格安全门禁
 ```
 
-浏览器端仍保留 `xlsx` 用于本地预览兼容。真实 BIFF `.xls`、超大合法工作簿和复杂日期/公式仍需生产前回归。
+浏览器端只承担有界预览，不再承担完整数据导入：
+
+```text
+CSV/TSV/TXT 最多分析 100 行，并限制列数、单元格数和单元长度
+同一文件复用解析 Promise，所有工作簿经过单一队列，快速增删文件不会并行重复展开
+.xlsx 先校验中央目录、本地文件头、压缩方法、data descriptor、内部路径、重复条目、重叠范围、ZIP64、条目数、单项/总展开量和压缩比
+超过 20 MB 浏览器文件预算、64 MB 浏览器展开预算或 32 MB 单 entry 预算的合法 .xlsx 延迟到服务端隔离解析
+旧 BIFF .xls 只校验 OLE 签名后直接延迟到服务端，不在浏览器交给 SheetJS 展开
+浏览器只在 React 状态保存有界样本，项目 spec 不再持久化 raw_data.custom_data
+上传完成后由服务端返回权威列名/行数，并通过受 limit=100 约束的预览确定最终 x/y/group 映射
+表格文件名、列名和单元格内容在 AI 转译提示词中明确标记为不可信数据，不能作为指令执行
+```
+
+浏览器仍保留 `xlsx` 依赖用于预算内 `.xlsx` 预览兼容，但它不再是服务器安全边界。真实 BIFF `.xls`、超大合法工作簿和复杂日期/公式仍需生产前回归。
 
 ## 6. 导出安全
 
@@ -363,6 +379,8 @@ R 生成的 SVG 转 PNG/PDF/TIFF 不再回流宿主机执行。Docker 模式下 
 SVG 前端展示仍需持续检查 sanitize 和 CSP，不能把用户生成 SVG 当作普通可信 HTML。
 
 持久化导出资产还会约束名称、Figure ID、DPI、标签数量、元数据深度/键数/总量和危险对象键；SVG 主体及缩略图写入前执行服务端安全校验。API 只返回逻辑文件名和下载 URL，不返回服务器真实存储路径。Matplotlib 固定的 W3C SVG 1.1 `DOCTYPE` 会在精确匹配后被移除再校验；其他 DTD、实体、外部资源和主动内容仍被拒绝。
+
+导出资产先以随机资产 ID 生成唯一文件名，写入后在 SQLite `IMMEDIATE` 事务中重新确认项目所有者和累计存储预算，再登记数据库。事务失败会删除刚写入的文件；跨两个 Node 进程的并发测试证明只有预算内请求成功，拒绝请求不留下文件或 `export_assets` 记录。进程在文件写入与事务登记之间被强杀仍可能产生孤儿文件，生产运维需保留定期 orphan 扫描。
 
 ## 7. Docker 构建和镜像
 
@@ -603,8 +621,8 @@ Content-Security-Policy-Report-Only
 | 数据根目录 | 默认 `./data` 兼容、自定义绝对路径、数据库/项目/导出同目录隔离 |
 | Python/R | 正常绘图成功，危险代码在 Docker 内无法读取宿主或联网 |
 | 超时 | 死循环强杀，后续任务恢复，无残留容器 |
-| XLS/XLSX/CSV | 流式 metadata/preview、limit、伪签名、ZIP bomb、行列单元格超限和失败清理 |
-| 上传与存储 | 50 MB 单文件硬上限、上传前可计量长度、项目/账号/平台累计存储、会话/Figure 历史容量、组合复制和导出资产导入不可绕过 |
+| XLS/XLSX/CSV | 浏览器 100 行/单队列、XLSX 中央/本地/descriptor 一致性、旧 XLS 服务端专用、服务端流式 metadata/preview、limit、伪签名、ZIP bomb、行列单元格超限和失败清理 |
+| 上传与存储 | 50 MB 单文件硬上限、上传前可计量长度、项目/账号/平台累计存储、跨进程 IMMEDIATE 原子登记、失败无物理/数据库残留、组合源字节重校验和导出资产不可绕过 |
 | 导出与缓存 | R PNG 转换在沙箱内，格式、SVG/元数据/公开路径、缓存单项与累计容量、归档数量和小时下载量受限 |
 | 发布控制 | readiness/draining、在途任务计数、503 门禁、管理员审计、恢复 accepting |
 | 仓库 | 用户数据、数据库、密钥不进入 Git |
@@ -632,12 +650,16 @@ npm run test:deployment-package
 npm run test:r-security-precheck
 npm run test:renderer-sandbox
 npm run security:repo-boundary
+npm run test:storage-budget-atomicity
+npm run test:project-create-safe-import
+npm run test:project-create-real-import
+npm run test:composition-code-project
 npm run test:capability-matrix
 python tests/test_r_renderer.py
 python tests/test_tabular_parser.py
 ```
 
-2026-07-16 01:55:49 +08:00 已完成的本地结果：`npm test` 为 42/42 文件、266/266 测试；管理员 MFA、后台只读/授权、邮箱验证、refresh、部署生命周期、仓库边界、生产 bundle 和生产构建均通过。管理员验证覆盖设备绑定 challenge、TOTP time-step 防重放、恢复码一次性消费与轮换、角色变更注销会话、订阅 step-up 和后台原始身份最小化。Conda 环境内真实 R renderer 29 项、Python/R capability matrix 2 项通过；本机 R 不在全局 PATH 时通过 `RSCRIPT_BIN=<conda-env>\\Scripts\\Rscript.exe` 选择。前一批邮箱 outbox 故障恢复、session 所有权、Figure 历史、组合复制、缓存、导出和公开路径边界继续由单元/专项回归覆盖。所有 API/浏览器测试使用系统临时目录和随机端口，没有连接本地 3000、真实数据库或真实项目目录；本机 Docker 未启动、停止或修改任何容器。
+2026-07-16 03:14:56 +08:00 已完成的本地结果：`npm test` 为 43/43 文件、273/273 测试；管理员 MFA、后台只读/授权、邮箱验证与 outbox 恢复、refresh、认证限流、用户隔离、Free/Pro `observe`、安全基线、跨进程存储原子性、真实/模拟项目创建、组合复制回滚、导航重新配置、广泛浏览器行为、SVG 净化、项目历史、部署生命周期、仓库边界、生产 bundle、部署包和生产构建均通过。管理员验证覆盖设备绑定 challenge、TOTP time-step 防重放、恢复码一次性消费与轮换、角色变更注销会话、订阅 step-up 和后台原始身份最小化。上传验证覆盖浏览器工作簿最大并发 1、每文件只读一次、延迟 XLSX 服务端映射、正常压缩 XLSX、XLSX API 成功路径、恶意/损坏结构、POST/PUT inline data 拒绝、两个 Node 进程共享上传/导出配额和失败无残留。Conda 环境内真实 R renderer 29 项、Python/R capability matrix 2 项、表格 parser 5 项和 R 安全预检通过；本机 R 通过 `RSCRIPT_BIN=C:\\Users\\SZC\\.conda\\envs\\Machine-learning\\Scripts\\Rscript.exe` 显式选择。所有 API/浏览器测试使用系统临时目录和随机端口，没有连接本地 3000、真实数据库或真实项目目录；本机 Docker 未启动、停止或修改任何容器。
 
 本轮改动仍位于独立安全分支，尚未提交发布，也未部署到公网调试服务器。上线前必须配置真实邮件域名/提供器并完成送达、退信、额度和防滥用验证。
 
@@ -657,7 +679,7 @@ SSH 配置检查
 
 ```text
 静态 Python/R 规则仍可被复杂写法绕过
-浏览器端 xlsx 依赖仍存在
+预算内 `.xlsx` 浏览器预览仍依赖 SheetJS；虽然已有严格 ZIP 预检、单队列和资源预算，依赖自身解析缺陷仍属于残余风险
 镜像和 Python/R 依赖尚未完全固定
 CSP 仍是 Report-Only，尚未根据真实浏览器违规报告切换强制模式
 access token 仍可被同页 XSS 读取；后续可在强制 CSP 稳定后评估纯内存 token
@@ -668,6 +690,7 @@ access token 仍可被同页 XSS 读取；后续可在强制 CSP 稳定后评估
 独立 renderer worker 和持久任务队列尚未实现
 孤儿容器目前依赖唯一名称、强制删除和测试，缺少生产定时巡检
 真实 BIFF .xls 和大型工作簿覆盖有限
+文件写入后、SQLite 登记前若进程被强杀，仍可能留下未登记孤儿文件；生产需定期扫描并只处理可证明无数据库引用的文件
 本地 Git 状态中已有历史用户数据删除标记，不能擅自恢复或提交
 当前 Web 服务使用 X-Forwarded-For 参与客户端 IP 判断，生产代理必须清洗该请求头并建立可信代理边界
 当前 Compose 和 Web 镜像不能单独证明生产 renderer 已正确接通

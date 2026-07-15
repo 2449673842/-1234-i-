@@ -1,4 +1,5 @@
 import { chromium } from 'playwright';
+import * as XLSX from 'xlsx';
 
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://127.0.0.1:3000';
 
@@ -20,7 +21,7 @@ async function main() {
   try {
     await page.addInitScript(() => {
       sessionStorage.setItem('scifigure:app-state:v2', JSON.stringify({
-        currentView: 'project_create',
+        currentView: 'data_import',
         subView: 'home',
       }));
     });
@@ -67,28 +68,46 @@ async function main() {
     });
 
     const dataInput = page.locator('input[type="file"][multiple][accept*=".csv"]').first();
+    const measurementRows = Array.from({ length: 150 }, (_, index) => `${index + 1},${index * 2}`).join('\n');
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+      ['sample', 'score'],
+      ['A', 0.4],
+      ['B', 0.7],
+    ]), 'Scores');
+    const workbookBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx', compression: true });
     await dataInput.setInputFiles([
       {
         name: 'extra_measurements.csv',
         mimeType: 'text/csv',
-        buffer: Buffer.from('sample,value\nA,1\nB,2\n'),
+        buffer: Buffer.from(`sample,value\n${measurementRows}\n`),
       },
       {
         name: 'additional_metadata.csv',
         mimeType: 'text/csv',
         buffer: Buffer.from('sample,group\nA,control\nB,treatment\n'),
       },
+      {
+        name: 'additional_scores.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        buffer: workbookBuffer,
+      },
     ]);
 
     await page.getByText('extra_measurements.csv', { exact: true }).first().waitFor();
     await page.getByText('additional_metadata.csv', { exact: true }).first().waitFor();
+    await page.getByText('additional_scores.xlsx', { exact: true }).first().waitFor();
+    await page.getByText('分析前 100 行样本', { exact: true }).waitFor();
+    const promptValue = await page.locator('textarea[readonly]').last().inputValue();
     const importedNameCounts = {
       extraMeasurements: await page.getByText('extra_measurements.csv', { exact: true }).count(),
       additionalMetadata: await page.getByText('additional_metadata.csv', { exact: true }).count(),
+      additionalScores: await page.getByText('additional_scores.xlsx', { exact: true }).count(),
     };
     const unrestrictedLabelVisible = await page.getByText('仅提示，不限制额外上传', { exact: true }).isVisible();
 
     assert(unrestrictedLabelVisible, 'The dependency panel does not explain that extra uploads remain allowed');
+    assert(promptValue.includes('创建项目时由服务端校验（当前仅分析前 100 行样本）'), 'AI prompt must label browser data as a bounded sample');
     assert(errors.length === 0, `Browser errors: ${errors.join(' | ')}`);
 
     console.log(JSON.stringify({
@@ -97,7 +116,7 @@ async function main() {
       fixedDependencies: 0,
       genericHint: await genericHint.textContent(),
       hintMetrics,
-      extraFilesAccepted: ['extra_measurements.csv', 'additional_metadata.csv'],
+      extraFilesAccepted: ['extra_measurements.csv', 'additional_metadata.csv', 'additional_scores.xlsx'],
       unrestrictedLabelVisible,
       importedNameCounts,
     }, null, 2));

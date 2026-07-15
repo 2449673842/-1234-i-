@@ -75,8 +75,13 @@ async function main() {
     const errors = [];
     const appliedRequests = [];
     page.on('pageerror', error => errors.push(error.message));
+    page.on('response', async response => {
+      if (response.status() < 500) return;
+      const body = await response.text().catch(() => '');
+      errors.push(`HTTP ${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}: ${body.slice(0, 240)}`);
+    });
     page.on('console', message => {
-      if (message.type() === 'error' && !/vite|WebSocket/i.test(message.text())) errors.push(message.text());
+      if (message.type() === 'error' && !/vite|WebSocket|Failed to load resource/i.test(message.text())) errors.push(message.text());
     });
     await page.route('**/api/auth/me', route => route.fulfill({
       status: 200,
@@ -84,6 +89,11 @@ async function main() {
       body: JSON.stringify({ status: 'success', user: { id: 'navigation-user' }, license: { status: 'free' } }),
     }));
     await page.route('**/api/projects/navigation-reconfigure-fixture/export-assets', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ status: 'success', assets: [] }),
+    }));
+    await page.route('**/api/export-assets', route => route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ status: 'success', assets: [] }),

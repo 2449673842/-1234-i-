@@ -756,7 +756,7 @@ async function startServer() {
       const ext = path.extname(normalizedName);
       const base = path.basename(normalizedName, ext);
       const safeBase = base.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5.-]/g, '');
-      cb(null, `${Date.now()}_${safeBase}${ext}`);
+      cb(null, `${Date.now()}_${randomUUID().slice(0, 12)}_${safeBase || 'dataset'}${ext}`);
     }
   });
   const upload = multer({
@@ -1470,6 +1470,40 @@ async function startServer() {
     assertGlobalStorageBudget(registeredProjectStorageSizes(), incomingSize);
   }
 
+  function registerProjectFileWithBudgets(input: {
+    fileId: string;
+    projectId: string;
+    userId: string;
+    originalName: string;
+    storedPath: string;
+    columns: string[];
+    rowCount: number;
+    sizeBytes: number;
+  }): void {
+    getDb().transaction(() => {
+      if (!getProject(input.projectId, input.userId)) throw new Error('项目不存在或所有权已变更');
+      assertProjectOwnedStorageBudgets(input.projectId, input.userId, input.sizeBytes);
+      const projectDataSizes = listProjectFiles(input.projectId).map(dataset => {
+        try { return fs.statSync(resolveDatasetAbsolutePath(dataset.filePath)).size; } catch { return 0; }
+      });
+      assertProjectStorageBudget(projectDataSizes, input.sizeBytes);
+      const userDataSizes = listProjects(input.userId).flatMap(project =>
+        listProjectFiles(project.id).map(dataset => {
+          try { return fs.statSync(resolveDatasetAbsolutePath(dataset.filePath)).size; } catch { return 0; }
+        }),
+      );
+      assertUserStorageBudget(userDataSizes, input.sizeBytes);
+      addProjectFile(
+        input.fileId,
+        input.projectId,
+        input.originalName,
+        input.storedPath,
+        input.columns,
+        input.rowCount,
+      );
+    }).immediate();
+  }
+
   function removeNewExportAssets(projectId: string, assets: ExportAsset[]): void {
     if (assets.length === 0) return;
     const root = projectExportsDir(projectId);
@@ -1558,30 +1592,37 @@ async function startServer() {
     }
     const safeTags = (args.tags ?? []).slice(0, 32).map(tag => String(tag).slice(0, 64));
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `${stamp}_${safeExportName(safeFigureId || safeName)}.${fmt}`;
+    const filename = `${stamp}_${assetId.slice(-12)}_${safeExportName(safeFigureId || safeName)}.${fmt}`;
     const absPath = path.join(projectExportsDir(args.projectId), filename);
     const relPath = path.relative(process.cwd(), absPath);
     const fileBuffer = args.binaryB64
       ? Buffer.from(args.binaryB64, 'base64')
       : Buffer.from(safeSvg || '', 'utf8');
     const thumbnailBytes = Buffer.byteLength(safeThumbnailSvg || '', 'utf8');
-    assertProjectOwnedStorageBudgets(args.projectId, owner.userId, fileBuffer.length + thumbnailBytes);
     fs.writeFileSync(absPath, fileBuffer);
     try {
-      return addExportAsset({
-        id: assetId,
-        projectId: args.projectId,
-        figureId: safeFigureId,
-        name: safeName,
-        format: fmt,
-        dpi: args.dpi !== null && args.dpi !== undefined && Number.isFinite(Number(args.dpi))
-          ? Math.max(1, Math.min(2_400, Math.floor(Number(args.dpi))))
-          : null,
-        filePath: relPath,
-        thumbnailSvg: safeThumbnailSvg,
-        metadata: safeMetadata,
-        tags: safeTags,
-      });
+      return getDb().transaction(() => {
+        const currentOwner = getDb().prepare('SELECT user_id AS userId FROM projects WHERE id = ?')
+          .get(args.projectId) as { userId: string | null } | undefined;
+        if (!currentOwner?.userId || currentOwner.userId !== owner.userId) {
+          throw new Error('导出资产项目所有权已变更');
+        }
+        assertProjectOwnedStorageBudgets(args.projectId, currentOwner.userId, fileBuffer.length + thumbnailBytes);
+        return addExportAsset({
+          id: assetId,
+          projectId: args.projectId,
+          figureId: safeFigureId,
+          name: safeName,
+          format: fmt,
+          dpi: args.dpi !== null && args.dpi !== undefined && Number.isFinite(Number(args.dpi))
+            ? Math.max(1, Math.min(2_400, Math.floor(Number(args.dpi))))
+            : null,
+          filePath: relPath,
+          thumbnailSvg: safeThumbnailSvg,
+          metadata: safeMetadata,
+          tags: safeTags,
+        });
+      }).immediate();
     } catch (error) {
       try { fs.unlinkSync(absPath); } catch { /* failed asset was never registered */ }
       throw error;
@@ -2428,7 +2469,7 @@ ${inner}
       logLicenseCheck(user?.id ?? null, deviceId, license.isPro ? 'pro' : 'free', 'explicit_check');
       res.json({ status: 'success', user: user ? publicUserPayload(user) : null, license, deviceCount: user ? getActiveDeviceCount(user.id) : 0 });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -3806,6 +3847,23 @@ ${inner}
     return [];
   }
 
+  async function inspectValidatedProjectDataFile(
+    filePath: string,
+    originalName: string,
+    req?: express.Request,
+  ): Promise<{ columns: string[]; rowCount: number }> {
+    const absPath = resolveDatasetAbsolutePath(filePath);
+    await assertValidUploadedDataFile(absPath, originalName);
+    const ext = path.extname(originalName).toLowerCase();
+    if (ext === '.csv' || ext === '.tsv' || ext === '.txt') {
+      return inspectDelimitedFile(absPath, ext === '.tsv' ? '\t' : ',');
+    }
+    if (ext === '.xlsx' || ext === '.xls') {
+      return parseWorkbookIsolated(absPath, 'metadata', { req });
+    }
+    throw new Error('不支持的数据文件格式');
+  }
+
   async function buildProjectDataPayload(datasets: DatasetEntry[]): Promise<Record<string, unknown> | null> {
     if (!datasets || datasets.length === 0) {
       return null;
@@ -3959,7 +4017,12 @@ ${inner}
     });
   }
 
-  function copyCompositionProjectFiles(targetProjectId: string, userId: string, sources: ResolvedCompositionSource[]) {
+  async function copyCompositionProjectFiles(
+    targetProjectId: string,
+    userId: string,
+    sources: ResolvedCompositionSource[],
+    req?: express.Request,
+  ) {
     const targetDir = projectFilesDir(targetProjectId);
     fs.mkdirSync(targetDir, { recursive: true });
     const copied: Array<{
@@ -3974,26 +4037,16 @@ ${inner}
     }> = [];
     const copiedBySourcePath = new Map<string, string>();
 
-    sources.forEach((source) => {
-      source.datasets.forEach((dataset) => {
+    for (const source of sources) {
+      for (const dataset of source.datasets) {
         const sourceAbs = resolveDatasetAbsolutePath(dataset.filePath);
-        if (!fs.existsSync(sourceAbs)) return;
+        if (!fs.existsSync(sourceAbs)) continue;
 
         const sourceKey = sourceAbs.toLowerCase();
-        if (copiedBySourcePath.has(sourceKey)) return;
+        if (copiedBySourcePath.has(sourceKey)) continue;
 
         const incomingSize = fs.statSync(sourceAbs).size;
-        assertProjectOwnedStorageBudgets(targetProjectId, userId, incomingSize);
-        const targetDataSizes = listProjectFiles(targetProjectId).map(item => {
-          try { return fs.statSync(resolveDatasetAbsolutePath(item.filePath)).size; } catch { return 0; }
-        });
-        assertProjectStorageBudget(targetDataSizes, incomingSize);
-        const userDataSizes = listProjects(userId).flatMap(project =>
-          listProjectFiles(project.id).map(item => {
-            try { return fs.statSync(resolveDatasetAbsolutePath(item.filePath)).size; } catch { return 0; }
-          }),
-        );
-        assertUserStorageBudget(userDataSizes, incomingSize);
+        const inspected = await inspectValidatedProjectDataFile(sourceAbs, dataset.fileName, req);
 
         const ext = path.extname(dataset.fileName || path.basename(sourceAbs));
         const base = path.basename(dataset.fileName || path.basename(sourceAbs), ext).replace(/[^\w\u4e00-\u9fa5.-]+/g, '_') || 'dataset';
@@ -4002,7 +4055,21 @@ ${inner}
         const destAbs = safeResolveUnder(targetDir, path.join(targetDir, copiedFileName));
         fs.copyFileSync(sourceAbs, destAbs);
         const storedPath = path.relative(process.cwd(), destAbs).replace(/\\/g, '/');
-        addProjectFile(copiedDatasetId, targetProjectId, copiedFileName, storedPath, dataset.columns || [], dataset.rowCount || 0);
+        try {
+          registerProjectFileWithBudgets({
+            fileId: copiedDatasetId,
+            projectId: targetProjectId,
+            userId,
+            originalName: copiedFileName,
+            storedPath,
+            columns: inspected.columns,
+            rowCount: inspected.rowCount,
+            sizeBytes: incomingSize,
+          });
+        } catch (error) {
+          try { fs.unlinkSync(destAbs); } catch { /* failed copy was never registered */ }
+          throw error;
+        }
         copiedBySourcePath.set(sourceKey, copiedDatasetId);
         copied.push({
           sourceProjectId: source.projectId,
@@ -4011,11 +4078,11 @@ ${inner}
           sourceFileName: dataset.fileName,
           copiedDatasetId,
           copiedFileName,
-          columns: dataset.columns || [],
-          rowCount: dataset.rowCount || 0,
+          columns: inspected.columns,
+          rowCount: inspected.rowCount,
         });
-      });
-    });
+      }
+    }
 
     return copied;
   }
@@ -4098,7 +4165,7 @@ ${inner}
 
   function buildCompositionPrompt(args: {
     sources: ResolvedCompositionSource[];
-    copiedFiles: ReturnType<typeof copyCompositionProjectFiles>;
+    copiedFiles: Awaited<ReturnType<typeof copyCompositionProjectFiles>>;
     targetAxesWidthIn: number;
     targetAxesHeightIn: number;
     layout: string;
@@ -4220,7 +4287,12 @@ ${inner}
     ].join('\n');
   }
 
-  function createCompositionCodeProject(body: any, userId: string, fallbackProjectId?: string) {
+  async function createCompositionCodeProject(
+    body: any,
+    userId: string,
+    fallbackProjectId?: string,
+    req?: express.Request,
+  ) {
     const rawSources = normalizeCompositionSources(body, fallbackProjectId);
     const sources = resolveCompositionSources(rawSources, userId);
     const targetAxesWidthIn = Math.max(0.5, Math.min(12, Number(body?.targetAxesWidthIn || 2.2)));
@@ -4268,10 +4340,10 @@ ${inner}
     };
 
     createProject(targetProjectId, userId, targetName, spec, scaffold);
-    let copiedFiles: ReturnType<typeof copyCompositionProjectFiles> = [];
+    let copiedFiles: Awaited<ReturnType<typeof copyCompositionProjectFiles>> = [];
     let prompt = '';
     try {
-      copiedFiles = copyCompositionProjectFiles(targetProjectId, userId, sources);
+      copiedFiles = await copyCompositionProjectFiles(targetProjectId, userId, sources, req);
       prompt = buildCompositionPrompt({
         sources,
         copiedFiles,
@@ -5019,7 +5091,7 @@ ${inner}
       const projects = listProjects(authenticatedUserId(req));
       res.json({ status: 'success', projects });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -5084,7 +5156,7 @@ ${inner}
         }
       });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -5093,6 +5165,10 @@ ${inner}
       const userId = authenticatedUserId(req);
       const { name, spec } = req.body;
       if (!name || !spec) return res.status(400).json({ status: 'error', message: 'name and spec required' });
+      const inlineData = spec?.raw_data?.custom_data;
+      if (inlineData !== undefined) {
+        assertRendererDataPayload({ dataPayload: { custom_data: inlineData } });
+      }
       const id = randomUUID();
       const script = spec.custom_script || spec.script || '';
       createProject(id, userId, name, spec, script || undefined);
@@ -5103,15 +5179,15 @@ ${inner}
     }
   });
 
-  app.post('/api/projects/create-composition-project', (req, res) => {
+  app.post('/api/projects/create-composition-project', async (req, res) => {
     try {
-      res.json(createCompositionCodeProject(req.body, authenticatedUserId(req)));
+      res.json(await createCompositionCodeProject(req.body, authenticatedUserId(req), undefined, req));
     } catch (err: any) {
       res.status(Number(err?.statusCode || 400)).json({ status: 'error', message: err.message });
     }
   });
 
-  app.post('/api/projects/:id/create-composition-project', (req, res) => {
+  app.post('/api/projects/:id/create-composition-project', async (req, res) => {
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
@@ -5119,7 +5195,7 @@ ${inner}
       if (!getProject(projectId, userId)) {
         return res.status(404).json({ status: 'error', message: '项目不存在' });
       }
-      res.json(createCompositionCodeProject(req.body, userId, projectId));
+      res.json(await createCompositionCodeProject(req.body, userId, projectId, req));
     } catch (err: any) {
       res.status(Number(err?.statusCode || 400)).json({ status: 'error', message: err.message });
     }
@@ -5135,6 +5211,10 @@ ${inner}
       const existing = getProject(projectId, userId);
       if (!existing) return res.status(404).json({ status: 'error', message: 'Project not found' });
       if (spec) {
+        const inlineData = spec?.raw_data?.custom_data;
+        if (inlineData !== undefined) {
+          assertRendererDataPayload({ dataPayload: { custom_data: inlineData } });
+        }
         const script = spec.custom_script || spec.script || '';
         updateProject(req.params.id, userId, name, spec, script);
       } else {
@@ -5306,49 +5386,23 @@ ${inner}
       if (!file) {
         return res.status(400).json({ status: 'error', message: 'No file uploaded' });
       }
-      assertProjectOwnedStorageBudgets(projectId, userId, file.size);
-      await assertValidUploadedDataFile(file.path, file.originalname);
-      const existingSizes = listProjectFiles(projectId).map(dataset => {
-        try {
-          return fs.statSync(resolveDatasetAbsolutePath(dataset.filePath)).size;
-        } catch {
-          return 0;
-        }
-      });
-      assertProjectStorageBudget(existingSizes, file.size);
-      const userSizes = listProjects(userId).flatMap(userProject =>
-        listProjectFiles(userProject.id).map(dataset => {
-          try {
-            return fs.statSync(resolveDatasetAbsolutePath(dataset.filePath)).size;
-          } catch {
-            return 0;
-          }
-        }),
-      );
-      assertUserStorageBudget(userSizes, file.size);
-
-      let columns: string[] = [];
-      let rowCount = 0;
-
-      const ext = path.extname(file.originalname).toLowerCase();
-      if (ext === '.csv' || ext === '.tsv' || ext === '.txt') {
-        const delimiter = ext === '.tsv' ? '\t' : ',';
-        const parsed = await inspectDelimitedFile(file.path, delimiter);
-        columns = parsed.columns;
-        rowCount = parsed.rowCount;
-      } else if (ext === '.xlsx' || ext === '.xls') {
-        const parsed = await parseWorkbookIsolated(file.path, 'metadata', { req });
-        columns = parsed.columns;
-        rowCount = parsed.rowCount;
-      } else {
-        fs.unlinkSync(file.path);
-        return res.status(400).json({ status: 'error', message: 'Unsupported file format' });
-      }
+      const parsed = await inspectValidatedProjectDataFile(file.path, file.originalname, req);
+      const columns = parsed.columns;
+      const rowCount = parsed.rowCount;
 
       const fileId = randomUUID();
       const storedPath = path.relative(process.cwd(), file.path).replace(/\\/g, '/');
 
-      addProjectFile(fileId, projectId, file.originalname, storedPath, columns, rowCount);
+      registerProjectFileWithBudgets({
+        fileId,
+        projectId,
+        userId,
+        originalName: file.originalname,
+        storedPath,
+        columns,
+        rowCount,
+        sizeBytes: file.size,
+      });
       filePersisted = true;
 
       res.json({
@@ -5791,7 +5845,7 @@ ${inner}
       });
       res.json({ status: 'success', assets });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -5814,7 +5868,7 @@ ${inner}
       }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
       res.json({ status: 'success', assets });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -5882,7 +5936,7 @@ ${inner}
       }
       res.json({ status: 'success', deleted });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -5931,7 +5985,7 @@ ${inner}
       const deleted = deleteExportAssets(projectId, assetIds);
       res.json({ status: 'success', deleted });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 

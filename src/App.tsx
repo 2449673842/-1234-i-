@@ -7,7 +7,6 @@ import { MainWorkspace } from './components/MainWorkspace';
 import { HomeDashboard } from './components/HomeDashboard';
 import { TemplatesPage } from './components/TemplatesPage';
 import { AppSidebar } from './components/AppSidebar';
-import { DataImportPage } from './components/DataImportPage';
 import { ExportSettingsPage } from './components/ExportSettingsPage';
 import { ComposerPage } from './components/ComposerPage';
 import { ExportLibraryPage } from './components/ExportLibraryPage';
@@ -288,7 +287,7 @@ function loadInitialState(): PersistedAppState {
       selectedGids: parsed.selectedGids ?? [],
       projectHistory: normalizeProjectHistory(parsed.projectHistory),
       projectDrafts: parsed.projectDrafts ?? {},
-      currentView: parsed.currentView ?? 'home',
+      currentView: parsed.currentView === 'data_import' ? 'project_create' : parsed.currentView ?? 'home',
       subView: parsed.subView ?? 'home',
     };
   } catch {
@@ -2222,20 +2221,9 @@ export default function App() {
     handleNavigate('editor');
   };
 
-  const handleImportSpec = (nextSpec: FigureSpec) => {
-    const cloned = cloneSpec(nextSpec);
-    setSpec(cloned);
-    committedScriptRef.current = cloned.custom_script || '';
-    setSpecHistory([cloneSpec(cloned)]);
-    setHistoryIndex(0);
-    setProjectId(null);
-    setProjectName('未命名项目');
-    reset();
-    setRenderLog(['> 数据已导入，日志待机中...']);
-  };
-
   const handleNavigate = (requestedView: ViewState, sub?: string) => {
-    const view = requestedView === 'project_reconfigure' && !projectId ? 'project_create' : requestedView;
+    const normalizedView = requestedView === 'data_import' ? 'project_create' : requestedView;
+    const view = normalizedView === 'project_reconfigure' && !projectId ? 'project_create' : normalizedView;
     if (view === 'export_library' && currentView !== 'export_library') {
       exportLibraryReturnViewRef.current = currentView;
     }
@@ -2492,10 +2480,6 @@ export default function App() {
             <AppSidebar currentView="settings" subView={subView} onNavigate={handleNavigate} />
             <SettingsPage subView={subView} />
           </>
-        )}
-
-        {currentView === 'data_import' && (
-          <DataImportPage onNavigate={(v) => handleNavigate(v)} spec={spec} onSpecChange={handleImportSpec} />
         )}
 
         {currentView === 'export_settings' && (
