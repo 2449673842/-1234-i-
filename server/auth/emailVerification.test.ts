@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { assertEmailVerificationProductionConfig } from './emailVerification';
+import {
+  assertEmailVerificationProductionConfig,
+  deriveEmailVerificationCode,
+  hashEmailVerificationCode,
+} from './emailVerification';
 
 const originalEnv = { ...process.env };
 
@@ -24,6 +28,19 @@ function productionEnv(overrides: Record<string, string | undefined> = {}) {
 }
 
 describe('production email verification configuration', () => {
+  it('derives a stable secret-bound six-digit code for outbox recovery', () => {
+    process.env.NODE_ENV = 'test';
+    process.env.SCIFIGURE_EMAIL_VERIFICATION_SECRET = 'test-email-secret-at-least-32-characters';
+    const challengeId = 'evc_00000000-0000-4000-8000-000000000123';
+    const code = deriveEmailVerificationCode(challengeId);
+    expect(code).toMatch(/^\d{6}$/);
+    expect(deriveEmailVerificationCode(challengeId)).toBe(code);
+    expect(hashEmailVerificationCode(challengeId, code)).toMatch(/^[a-f0-9]{64}$/);
+
+    process.env.SCIFIGURE_EMAIL_VERIFICATION_SECRET = 'different-test-email-secret-32-plus';
+    expect(deriveEmailVerificationCode(challengeId)).not.toBe(code);
+  });
+
   it('fails closed when production verification is not explicitly enabled', () => {
     productionEnv();
     expect(() => assertEmailVerificationProductionConfig()).toThrow(/邮箱验证/);

@@ -35,9 +35,10 @@ import { adminOperationsEnabled } from './server/admin/featureFlags';
 import { sanitizeAdminAuditMetadata } from './server/admin/privacy';
 import {
   assertEmailVerificationProductionConfig,
+  deriveEmailVerificationCode,
+  EmailDeliveryError,
   emailVerificationRequired,
   emailVerificationTtlMinutes,
-  generateEmailVerificationCode,
   hashEmailVerificationCode,
   maskEmailAddress,
   sendEmailVerificationCode,
@@ -90,9 +91,13 @@ import {
   getExportAsset,
   deleteExportAssets,
   createUserAccount,
-  createPendingEmailRegistrationChallenge,
+  acceptPendingEmailRegistrationDelivery,
+  claimNextPendingEmailRegistrationDelivery,
   consumePendingEmailRegistrationChallenge,
   getPendingEmailRegistration,
+  getPendingEmailRegistrationDelivery,
+  preparePendingEmailRegistrationDelivery,
+  rejectPendingEmailRegistrationDelivery,
   getUserByEmail,
   getUserById,
   getUserByAuthToken,
@@ -382,6 +387,11 @@ async function startServer() {
         scopeHash: hashAuthThrottleScope('email_ip_pair', `${ip}\0${email}`),
         limit: boundedNumber(process.env.EMAIL_VERIFICATION_RATE_LIMIT_PER_15_MINUTES, 8, 3, 100),
         label: 'ip_email',
+      },
+      {
+        scopeHash: hashAuthThrottleScope('email_recipient', email),
+        limit: boundedNumber(process.env.EMAIL_VERIFICATION_EMAIL_RATE_LIMIT_PER_15_MINUTES, 8, 3, 100),
+        label: 'email',
       },
       {
         scopeHash: hashAuthThrottleScope('email_global', 'global'),
@@ -1141,31 +1151,161 @@ async function startServer() {
     };
   }
 
+  function emailOutboxSetting(name: string, fallback: number, min: number, max: number): number {
+    const parsed = Number(process.env[name]);
+    return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.floor(parsed))) : fallback;
+  }
+
+  function emailOutboxLeaseMs(): number {
+    return emailOutboxSetting(
+      'SCIFIGURE_EMAIL_OUTBOX_LEASE_MS',
+      30_000,
+      process.env.SCIFIGURE_TEST_ISOLATED === '1' ? 250 : 15_000,
+      120_000,
+    );
+  }
+
+  function emailOutboxPollMs(): number {
+    return emailOutboxSetting(
+      'SCIFIGURE_EMAIL_OUTBOX_POLL_MS',
+      5_000,
+      process.env.SCIFIGURE_TEST_ISOLATED === '1' ? 100 : 1_000,
+      60_000,
+    );
+  }
+
+  function emailOutboxMaxAttempts(): number {
+    return emailOutboxSetting('SCIFIGURE_EMAIL_OUTBOX_MAX_ATTEMPTS', 5, 2, 10);
+  }
+
+  function nextEmailOutboxAttemptAt(attempt: number): string {
+    const baseMs = emailOutboxSetting(
+      'SCIFIGURE_EMAIL_OUTBOX_RETRY_BASE_MS',
+      60_000,
+      process.env.SCIFIGURE_TEST_ISOLATED === '1' ? 100 : 1_000,
+      10 * 60_000,
+    );
+    const multiplier = Math.min(10, 2 ** Math.max(0, attempt - 1));
+    return new Date(Date.now() + baseMs * multiplier).toISOString();
+  }
+
+  function publicPendingEmailChallenge(delivery: { challengeId: string; email: string; expiresAt: string }) {
+    const testCode = process.env.SCIFIGURE_TEST_ISOLATED === '1'
+      && process.env.SCIFIGURE_TEST_EXPOSE_EMAIL_CODE === '1'
+      ? deriveEmailVerificationCode(delivery.challengeId)
+      : undefined;
+    return {
+      challengeId: delivery.challengeId,
+      expiresAt: delivery.expiresAt,
+      maskedEmail: maskEmailAddress(delivery.email),
+      testCode,
+    };
+  }
+
+  async function sendClaimedPendingEmailDelivery(delivery: {
+    challengeId: string;
+    email: string;
+    expiresAt: string;
+    sendAttemptCount: number;
+    leaseToken: string | null;
+  }): Promise<boolean> {
+    if (!delivery.leaseToken) return false;
+    const code = deriveEmailVerificationCode(delivery.challengeId);
+    try {
+      await sendEmailVerificationCode({
+        deliveryId: delivery.challengeId,
+        email: delivery.email,
+        code,
+        expiresAt: delivery.expiresAt,
+      });
+    } catch (error) {
+      const retryable = error instanceof EmailDeliveryError && error.retryable;
+      const errorCode = error instanceof EmailDeliveryError ? error.deliveryCode : 'delivery_configuration';
+      rejectPendingEmailRegistrationDelivery({
+        challengeId: delivery.challengeId,
+        leaseToken: delivery.leaseToken,
+        retryable,
+        errorCode,
+        nextAttemptAt: nextEmailOutboxAttemptAt(delivery.sendAttemptCount),
+        maxAttempts: emailOutboxMaxAttempts(),
+      });
+      console.error(`[email-verification] delivery ${errorCode}; retryable=${retryable}`);
+      return false;
+    }
+    if (
+      process.env.SCIFIGURE_TEST_ISOLATED === '1'
+      && process.env.NODE_ENV !== 'production'
+      && process.env.SCIFIGURE_TEST_EMAIL_EXIT_AFTER_PROVIDER_ACCEPT === '1'
+    ) {
+      process.exit(86);
+    }
+    try {
+      return acceptPendingEmailRegistrationDelivery(delivery.challengeId, delivery.leaseToken);
+    } catch {
+      // Provider acceptance is irreversible. Leave the lease intact so the
+      // recovery worker retries the same deterministic code after it expires.
+      console.error('[email-verification] provider accepted; challenge activation deferred to recovery');
+      return false;
+    }
+  }
+
+  async function waitForPendingEmailDelivery(challengeId: string): Promise<ReturnType<typeof getPendingEmailRegistrationDelivery>> {
+    const deadline = Date.now() + 11_000;
+    while (Date.now() < deadline) {
+      const delivery = getPendingEmailRegistrationDelivery(challengeId);
+      if (!delivery || delivery.status === 'accepted' || delivery.status === 'failed' || delivery.status === 'abandoned') {
+        return delivery;
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return getPendingEmailRegistrationDelivery(challengeId);
+  }
+
   async function issuePendingEmailRegistrationChallenge(input: { email: string; displayName?: string }) {
     const challengeId = `evc_${crypto.randomUUID()}`;
-    const code = generateEmailVerificationCode();
+    const code = deriveEmailVerificationCode(challengeId);
     const expiresAt = new Date(Date.now() + emailVerificationTtlMinutes() * 60 * 1000).toISOString();
-    try {
-      await sendEmailVerificationCode({ email: input.email, code, expiresAt });
-    } catch (error) {
-      console.error('Pending registration email delivery failed:', (error as Error)?.message || error);
-      const deliveryError = new Error('验证码暂时无法发送，请稍后重试');
-      (deliveryError as any).statusCode = 503;
-      throw deliveryError;
-    }
-    createPendingEmailRegistrationChallenge({
+    const prepared = preparePendingEmailRegistrationDelivery({
       id: challengeId,
       email: input.email,
       displayName: input.displayName,
       codeHash: hashEmailVerificationCode(challengeId, code),
       expiresAt,
       maxAttempts: 5,
+      leaseMs: emailOutboxLeaseMs(),
     });
-    const testCode = process.env.SCIFIGURE_TEST_ISOLATED === '1'
-      && process.env.SCIFIGURE_TEST_EXPOSE_EMAIL_CODE === '1'
-      ? code
-      : undefined;
-    return { challengeId, expiresAt, maskedEmail: maskEmailAddress(input.email), testCode };
+
+    if (prepared.state === 'owned') {
+      const accepted = await sendClaimedPendingEmailDelivery(prepared);
+      if (accepted) return publicPendingEmailChallenge(prepared);
+    } else {
+      const settled = await waitForPendingEmailDelivery(prepared.challengeId);
+      if (settled?.status === 'accepted') return publicPendingEmailChallenge(settled);
+    }
+
+    const deliveryError = new Error('验证码暂时无法发送，请稍后重试');
+    (deliveryError as any).statusCode = 503;
+    throw deliveryError;
+  }
+
+  let emailOutboxRecoveryRunning = false;
+  let emailOutboxRecoveryTimer: NodeJS.Timeout | null = null;
+
+  async function recoverPendingEmailDeliveries(): Promise<void> {
+    if (emailOutboxRecoveryRunning || !emailVerificationRequired()) return;
+    emailOutboxRecoveryRunning = true;
+    try {
+      for (let processed = 0; processed < 10; processed += 1) {
+        const delivery = claimNextPendingEmailRegistrationDelivery({
+          leaseMs: emailOutboxLeaseMs(),
+          maxAttempts: emailOutboxMaxAttempts(),
+        });
+        if (!delivery) break;
+        await sendClaimedPendingEmailDelivery(delivery);
+      }
+    } finally {
+      emailOutboxRecoveryRunning = false;
+    }
   }
 
   function meterProjectFileUploadBeforeBody(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -6038,6 +6178,13 @@ ${inner}
   const httpServer = app.listen(PORT, BIND_HOST, () => {
     console.log(`Server running on http://${BIND_HOST}:${PORT}`);
   });
+  if (emailVerificationRequired()) {
+    void recoverPendingEmailDeliveries();
+    emailOutboxRecoveryTimer = setInterval(() => {
+      void recoverPendingEmailDeliveries();
+    }, emailOutboxPollMs());
+    emailOutboxRecoveryTimer.unref();
+  }
 
   let shutdownStarted = false;
   async function waitForAllDeploymentJobs(timeoutMs: number): Promise<boolean> {
@@ -6056,6 +6203,7 @@ ${inner}
   async function gracefulShutdown(signal: 'SIGTERM' | 'SIGINT'): Promise<void> {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    if (emailOutboxRecoveryTimer) clearInterval(emailOutboxRecoveryTimer);
     deploymentLifecycle.setMode('draining', 'deployment');
     const timeoutMs = boundedNumber(process.env.SCIFIGURE_GRACEFUL_SHUTDOWN_MS, 180_000, 5_000, 600_000);
     console.log(`[deployment] ${signal}: draining started; active=${JSON.stringify(deploymentState())}`);

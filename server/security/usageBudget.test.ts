@@ -70,6 +70,31 @@ describe('persistent hourly usage budget', () => {
     expect(databaseModule.getSession(sessionId, userId)?.script).toBe('print("original")');
   });
 
+  it('does not abandon a final email delivery attempt while its lease is active', () => {
+    const challengeId = 'evc_00000000-0000-4000-8000-000000000777';
+    const prepared = databaseModule.preparePendingEmailRegistrationDelivery({
+      id: challengeId,
+      email: `leased-delivery-${Date.now()}@example.test`,
+      displayName: 'Leased Delivery',
+      codeHash: '7'.repeat(64),
+      expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      maxAttempts: 5,
+      leaseMs: 60_000,
+    });
+    expect(prepared.state).toBe('owned');
+    expect(prepared.leaseToken).toBeTruthy();
+    databaseModule.getDb().prepare(`
+      UPDATE email_verification_outbox
+      SET send_attempt_count = 5
+      WHERE challenge_id = ?
+    `).run(challengeId);
+
+    expect(databaseModule.claimNextPendingEmailRegistrationDelivery({ leaseMs: 60_000, maxAttempts: 5 })).toBeNull();
+    expect(databaseModule.getPendingEmailRegistrationDelivery(challengeId)?.status).toBe('sending');
+    expect(databaseModule.acceptPendingEmailRegistrationDelivery(challengeId, prepared.leaseToken || '')).toBe(true);
+    expect(databaseModule.getPendingEmailRegistrationDelivery(challengeId)?.status).toBe('accepted');
+  });
+
   it('persists consumption, rejects overflow and resets in the next hour', () => {
     const now = Date.UTC(2026, 6, 15, 8, 10, 0);
     expect(databaseModule.consumeHourlyUsageBudget(userId, 'download_bytes', 60, 100, now)).toMatchObject({

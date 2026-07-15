@@ -48,10 +48,6 @@ export function assertEmailVerificationProductionConfig(): void {
   throw new Error('生产环境必须配置 Resend 或 HTTPS webhook 邮件提供器');
 }
 
-export function generateEmailVerificationCode(): string {
-  return crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
-}
-
 function verificationSecret(): string {
   const configured = String(process.env.SCIFIGURE_EMAIL_VERIFICATION_SECRET || '');
   if (configured.length >= 32) return configured;
@@ -68,25 +64,56 @@ export function hashEmailVerificationCode(challengeId: string, code: string): st
     .digest('hex');
 }
 
+export function deriveEmailVerificationCode(challengeId: string): string {
+  if (!/^evc_[0-9a-f-]{36}$/i.test(challengeId)) {
+    throw new Error('Invalid email verification challenge id');
+  }
+  const digest = crypto
+    .createHmac('sha256', verificationSecret())
+    .update(`verification-code-v1:${challengeId}`)
+    .digest();
+  return (digest.readUInt32BE(0) % 1_000_000).toString().padStart(6, '0');
+}
+
 export function maskEmailAddress(email: string): string {
   const [local = '', domain = ''] = email.split('@');
   const visible = local.slice(0, Math.min(2, local.length));
   return `${visible}${'*'.repeat(Math.max(2, Math.min(6, local.length - visible.length)))}@${domain}`;
 }
 
+export class EmailDeliveryError extends Error {
+  constructor(
+    message: string,
+    public readonly retryable: boolean,
+    public readonly deliveryCode: string,
+  ) {
+    super(message);
+    this.name = 'EmailDeliveryError';
+  }
+}
+
 async function postJson(url: string, headers: Record<string, string>, body: Record<string, unknown>): Promise<void> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).slice(0, 300);
-      throw new Error(`邮件服务返回 ${response.status}${detail ? `: ${detail}` : ''}`);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new EmailDeliveryError('邮件服务暂时拒绝了发送请求', false, `provider_http_${response.status}`);
+      }
+    } catch (error) {
+      if (error instanceof EmailDeliveryError) throw error;
+      const isTimeout = (error as Error)?.name === 'AbortError';
+      throw new EmailDeliveryError(
+        isTimeout ? '邮件服务响应超时' : '邮件服务连接状态未知',
+        true,
+        isTimeout ? 'provider_timeout' : 'provider_transport_unknown',
+      );
     }
   } finally {
     clearTimeout(timeout);
@@ -94,6 +121,7 @@ async function postJson(url: string, headers: Record<string, string>, body: Reco
 }
 
 export async function sendEmailVerificationCode(input: {
+  deliveryId: string;
   email: string;
   code: string;
   expiresAt: string;
@@ -133,6 +161,7 @@ export async function sendEmailVerificationCode(input: {
     }
     await postJson(webhookUrl, webhookToken ? { Authorization: `Bearer ${webhookToken}` } : {}, {
       template: 'email_verification',
+      deliveryId: input.deliveryId,
       to: input.email,
       code: input.code,
       expiresAt: input.expiresAt,

@@ -124,11 +124,27 @@ function initSchema() {
       attempt_count INTEGER NOT NULL DEFAULT 0,
       max_attempts INTEGER NOT NULL DEFAULT 5,
       consumed_at TEXT,
+      deliverable_at TEXT,
       sent_at TEXT NOT NULL DEFAULT (datetime('now')),
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_pending_email_registration_expiry
       ON pending_email_registrations(email, expires_at DESC);
+    CREATE TABLE IF NOT EXISTS email_verification_outbox (
+      challenge_id TEXT PRIMARY KEY REFERENCES pending_email_registrations(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('queued', 'sending', 'accepted', 'failed', 'abandoned')),
+      idempotency_key TEXT NOT NULL UNIQUE,
+      send_attempt_count INTEGER NOT NULL DEFAULT 0,
+      lease_token TEXT,
+      lease_until TEXT,
+      next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+      accepted_at TEXT,
+      last_error_code TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_verification_outbox_due
+      ON email_verification_outbox(status, next_attempt_at, lease_until);
     CREATE TABLE IF NOT EXISTS auth_sessions (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -327,6 +343,7 @@ function initSchema() {
     "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
     "ALTER TABLE users ADD COLUMN email_verified_at TEXT",
     "ALTER TABLE users ADD COLUMN email_verification_required INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE pending_email_registrations ADD COLUMN deliverable_at TEXT",
     "ALTER TABLE auth_sessions ADD COLUMN refresh_token_hash TEXT",
     "ALTER TABLE auth_sessions ADD COLUMN refresh_expires_at TEXT",
     "ALTER TABLE subscriptions ADD COLUMN actor_user_id TEXT",
@@ -359,6 +376,15 @@ function initSchema() {
       ON subscriptions(request_id) WHERE request_id IS NOT NULL;
   `);
   db.exec(`
+    UPDATE pending_email_registrations
+    SET deliverable_at = COALESCE(deliverable_at, sent_at)
+    WHERE consumed_at IS NULL
+      AND deliverable_at IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM email_verification_outbox AS outbox
+        WHERE outbox.challenge_id = pending_email_registrations.id
+      );
+
     WITH ranked_pending_registrations AS (
       SELECT rowid,
              ROW_NUMBER() OVER (
@@ -366,7 +392,7 @@ function initSchema() {
                ORDER BY datetime(created_at) DESC, rowid DESC
              ) AS registration_rank
       FROM pending_email_registrations
-      WHERE consumed_at IS NULL
+      WHERE consumed_at IS NULL AND deliverable_at IS NOT NULL
     )
     UPDATE pending_email_registrations
     SET consumed_at = COALESCE(consumed_at, datetime('now'))
@@ -375,8 +401,30 @@ function initSchema() {
       FROM ranked_pending_registrations
       WHERE registration_rank > 1
     );
+
+    DROP INDEX IF EXISTS idx_pending_email_registration_active_email;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_email_registration_active_email
-      ON pending_email_registrations(email) WHERE consumed_at IS NULL;
+      ON pending_email_registrations(email)
+      WHERE consumed_at IS NULL AND deliverable_at IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_email_registration_staged_email
+      ON pending_email_registrations(email)
+      WHERE consumed_at IS NULL AND deliverable_at IS NULL;
+
+    CREATE TABLE IF NOT EXISTS email_verification_outbox (
+      challenge_id TEXT PRIMARY KEY REFERENCES pending_email_registrations(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('queued', 'sending', 'accepted', 'failed', 'abandoned')),
+      idempotency_key TEXT NOT NULL UNIQUE,
+      send_attempt_count INTEGER NOT NULL DEFAULT 0,
+      lease_token TEXT,
+      lease_until TEXT,
+      next_attempt_at TEXT NOT NULL DEFAULT (datetime('now')),
+      accepted_at TEXT,
+      last_error_code TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_verification_outbox_due
+      ON email_verification_outbox(status, next_attempt_at, lease_until);
   `);
   [
     "ALTER TABLE project_figures ADD COLUMN preview_svg TEXT",
@@ -620,11 +668,28 @@ type PendingEmailRegistrationRow = {
   attempt_count: number;
   max_attempts: number;
   consumed_at: string | null;
+  deliverable_at: string | null;
+};
+
+export type EmailVerificationOutboxStatus = 'queued' | 'sending' | 'accepted' | 'failed' | 'abandoned';
+
+export interface PendingEmailRegistrationDelivery {
+  challengeId: string;
+  email: string;
+  displayName: string | null;
+  expiresAt: string;
+  status: EmailVerificationOutboxStatus;
+  sendAttemptCount: number;
+  leaseToken: string | null;
+}
+
+export type PreparedPendingEmailRegistrationDelivery = PendingEmailRegistrationDelivery & {
+  state: 'owned' | 'in_flight';
 };
 
 function pendingEmailRegistrationRow(challengeId: string): PendingEmailRegistrationRow | undefined {
   return getDb().prepare(`
-    SELECT id, email, display_name, code_hash, expires_at, attempt_count, max_attempts, consumed_at
+    SELECT id, email, display_name, code_hash, expires_at, attempt_count, max_attempts, consumed_at, deliverable_at
     FROM pending_email_registrations
     WHERE id = ?
     LIMIT 1
@@ -637,6 +702,7 @@ export function getPendingEmailRegistration(email: string): PendingEmailRegistra
     FROM pending_email_registrations
     WHERE email = ?
       AND consumed_at IS NULL
+      AND deliverable_at IS NOT NULL
       AND datetime(expires_at) > datetime('now')
     ORDER BY datetime(created_at) DESC
     LIMIT 1
@@ -652,31 +718,85 @@ export function getPendingEmailRegistration(email: string): PendingEmailRegistra
   };
 }
 
-export function createPendingEmailRegistrationChallenge(input: {
+export function preparePendingEmailRegistrationDelivery(input: {
   id: string;
   email: string;
   displayName?: string;
   codeHash: string;
   expiresAt: string;
   maxAttempts?: number;
-}): PendingEmailRegistration {
+  leaseMs: number;
+}): PreparedPendingEmailRegistrationDelivery {
   const database = getDb();
   const normalizedEmail = input.email.trim().toLowerCase();
-  return database.transaction(() => {
+  return database.transaction((): PreparedPendingEmailRegistrationDelivery => {
+    database.prepare(`
+      UPDATE email_verification_outbox
+      SET status = 'abandoned', lease_token = NULL, lease_until = NULL,
+          last_error_code = 'challenge_expired', updated_at = datetime('now')
+      WHERE challenge_id IN (
+        SELECT id FROM pending_email_registrations
+        WHERE consumed_at IS NULL AND deliverable_at IS NULL
+          AND datetime(expires_at) <= datetime('now')
+      )
+        AND status IN ('queued', 'sending')
+    `).run();
     database.prepare(`
       UPDATE pending_email_registrations
       SET consumed_at = COALESCE(consumed_at, datetime('now'))
-      WHERE email = ? AND consumed_at IS NULL
-    `).run(normalizedEmail);
+      WHERE consumed_at IS NULL AND deliverable_at IS NULL
+        AND datetime(expires_at) <= datetime('now')
+    `).run();
     database.prepare(`
       DELETE FROM pending_email_registrations
       WHERE datetime(expires_at) <= datetime('now', '-1 day')
     `).run();
+    database.prepare(`
+      DELETE FROM email_verification_outbox
+      WHERE status IN ('accepted', 'failed', 'abandoned')
+        AND datetime(updated_at) <= datetime('now', '-7 days')
+    `).run();
+
+    const inFlight = database.prepare(`
+      SELECT p.id, p.email, p.display_name, p.expires_at,
+             o.status, o.send_attempt_count, o.lease_token
+      FROM pending_email_registrations AS p
+      INNER JOIN email_verification_outbox AS o ON o.challenge_id = p.id
+      WHERE p.email = ? AND p.consumed_at IS NULL AND p.deliverable_at IS NULL
+        AND datetime(p.expires_at) > datetime('now')
+        AND o.status IN ('queued', 'sending')
+      ORDER BY datetime(p.created_at) DESC
+      LIMIT 1
+    `).get(normalizedEmail) as {
+      id: string;
+      email: string;
+      display_name: string | null;
+      expires_at: string;
+      status: EmailVerificationOutboxStatus;
+      send_attempt_count: number;
+      lease_token: string | null;
+    } | undefined;
+    if (inFlight) {
+      return {
+        state: 'in_flight',
+        challengeId: inFlight.id,
+        email: inFlight.email,
+        displayName: inFlight.display_name,
+        expiresAt: inFlight.expires_at,
+        status: inFlight.status,
+        sendAttemptCount: inFlight.send_attempt_count,
+        leaseToken: null,
+      };
+    }
+
     const maxAttempts = Math.max(3, Math.min(10, Math.floor(input.maxAttempts || 5)));
+    const leaseToken = crypto.randomUUID();
+    const leaseMs = Math.max(1_000, Math.min(120_000, Math.floor(input.leaseMs)));
+    const leaseUntil = new Date(Date.now() + leaseMs).toISOString();
     database.prepare(`
       INSERT INTO pending_email_registrations (
-        id, email, display_name, code_hash, expires_at, max_attempts
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        id, email, display_name, code_hash, expires_at, max_attempts, deliverable_at
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL)
     `).run(
       input.id,
       normalizedEmail,
@@ -685,15 +805,209 @@ export function createPendingEmailRegistrationChallenge(input: {
       input.expiresAt,
       maxAttempts,
     );
+    database.prepare(`
+      INSERT INTO email_verification_outbox (
+        challenge_id, status, idempotency_key, send_attempt_count,
+        lease_token, lease_until, next_attempt_at
+      ) VALUES (?, 'sending', ?, 1, ?, ?, datetime('now'))
+    `).run(input.id, input.id, leaseToken, leaseUntil);
     return {
-      id: input.id,
+      state: 'owned',
+      challengeId: input.id,
       email: normalizedEmail,
       displayName: input.displayName?.trim() || null,
       expiresAt: input.expiresAt,
-      attemptCount: 0,
-      maxAttempts,
+      status: 'sending',
+      sendAttemptCount: 1,
+      leaseToken,
     };
-  })();
+  }).immediate();
+}
+
+function mapPendingEmailDelivery(row: {
+  id: string;
+  email: string;
+  display_name: string | null;
+  expires_at: string;
+  status: EmailVerificationOutboxStatus;
+  send_attempt_count: number;
+  lease_token: string | null;
+}): PendingEmailRegistrationDelivery {
+  return {
+    challengeId: row.id,
+    email: row.email,
+    displayName: row.display_name,
+    expiresAt: row.expires_at,
+    status: row.status,
+    sendAttemptCount: row.send_attempt_count,
+    leaseToken: row.lease_token,
+  };
+}
+
+export function getPendingEmailRegistrationDelivery(challengeId: string): PendingEmailRegistrationDelivery | null {
+  const row = getDb().prepare(`
+    SELECT p.id, p.email, p.display_name, p.expires_at,
+           o.status, o.send_attempt_count, o.lease_token
+    FROM pending_email_registrations AS p
+    INNER JOIN email_verification_outbox AS o ON o.challenge_id = p.id
+    WHERE p.id = ?
+    LIMIT 1
+  `).get(challengeId) as Parameters<typeof mapPendingEmailDelivery>[0] | undefined;
+  return row ? mapPendingEmailDelivery(row) : null;
+}
+
+export function claimNextPendingEmailRegistrationDelivery(input: {
+  leaseMs: number;
+  maxAttempts: number;
+}): PendingEmailRegistrationDelivery | null {
+  const database = getDb();
+  return database.transaction(() => {
+    database.prepare(`
+      UPDATE email_verification_outbox
+      SET status = 'abandoned', lease_token = NULL, lease_until = NULL,
+          last_error_code = CASE
+            WHEN send_attempt_count >= ? THEN 'attempt_limit'
+            ELSE 'challenge_expired'
+          END,
+          updated_at = datetime('now')
+      WHERE challenge_id IN (
+        SELECT id FROM pending_email_registrations
+        WHERE consumed_at IS NULL AND deliverable_at IS NULL
+          AND datetime(expires_at) <= datetime('now')
+      )
+         OR (status = 'queued' AND send_attempt_count >= ?)
+         OR (
+           status = 'sending' AND send_attempt_count >= ?
+           AND (lease_until IS NULL OR datetime(lease_until) <= datetime('now'))
+         )
+    `).run(input.maxAttempts, input.maxAttempts, input.maxAttempts);
+    database.prepare(`
+      UPDATE pending_email_registrations
+      SET consumed_at = COALESCE(consumed_at, datetime('now'))
+      WHERE consumed_at IS NULL AND deliverable_at IS NULL
+        AND (
+          datetime(expires_at) <= datetime('now')
+          OR id IN (
+            SELECT challenge_id FROM email_verification_outbox
+            WHERE status = 'abandoned'
+          )
+        )
+    `).run();
+
+    const row = database.prepare(`
+      SELECT p.id, p.email, p.display_name, p.expires_at,
+             o.status, o.send_attempt_count, o.lease_token
+      FROM pending_email_registrations AS p
+      INNER JOIN email_verification_outbox AS o ON o.challenge_id = p.id
+      WHERE p.consumed_at IS NULL AND p.deliverable_at IS NULL
+        AND datetime(p.expires_at) > datetime('now')
+        AND o.send_attempt_count < ?
+        AND (
+          (o.status = 'queued' AND datetime(o.next_attempt_at) <= datetime('now'))
+          OR (o.status = 'sending' AND datetime(o.lease_until) <= datetime('now'))
+        )
+      ORDER BY datetime(o.next_attempt_at), datetime(o.created_at)
+      LIMIT 1
+    `).get(input.maxAttempts) as Parameters<typeof mapPendingEmailDelivery>[0] | undefined;
+    if (!row) return null;
+
+    const leaseToken = crypto.randomUUID();
+    const leaseMs = Math.max(1_000, Math.min(120_000, Math.floor(input.leaseMs)));
+    const leaseUntil = new Date(Date.now() + leaseMs).toISOString();
+    database.prepare(`
+      UPDATE email_verification_outbox
+      SET status = 'sending', send_attempt_count = send_attempt_count + 1,
+          lease_token = ?, lease_until = ?, updated_at = datetime('now')
+      WHERE challenge_id = ?
+    `).run(leaseToken, leaseUntil, row.id);
+    return mapPendingEmailDelivery({
+      ...row,
+      status: 'sending',
+      send_attempt_count: row.send_attempt_count + 1,
+      lease_token: leaseToken,
+    });
+  }).immediate();
+}
+
+export function acceptPendingEmailRegistrationDelivery(challengeId: string, leaseToken: string): boolean {
+  const database = getDb();
+  return database.transaction(() => {
+    const row = database.prepare(`
+      SELECT p.email
+      FROM pending_email_registrations AS p
+      INNER JOIN email_verification_outbox AS o ON o.challenge_id = p.id
+      WHERE p.id = ? AND p.consumed_at IS NULL AND p.deliverable_at IS NULL
+        AND datetime(p.expires_at) > datetime('now')
+        AND o.status = 'sending' AND o.lease_token = ?
+      LIMIT 1
+    `).get(challengeId, leaseToken) as { email: string } | undefined;
+    if (!row) return false;
+
+    database.prepare(`
+      UPDATE pending_email_registrations
+      SET consumed_at = COALESCE(consumed_at, datetime('now'))
+      WHERE email = ? AND id <> ? AND consumed_at IS NULL AND deliverable_at IS NOT NULL
+    `).run(row.email, challengeId);
+    const challengeResult = database.prepare(`
+      UPDATE pending_email_registrations
+      SET deliverable_at = datetime('now'), sent_at = datetime('now')
+      WHERE id = ? AND consumed_at IS NULL AND deliverable_at IS NULL
+    `).run(challengeId);
+    const outboxResult = database.prepare(`
+      UPDATE email_verification_outbox
+      SET status = 'accepted', accepted_at = datetime('now'),
+          lease_token = NULL, lease_until = NULL, last_error_code = NULL,
+          updated_at = datetime('now')
+      WHERE challenge_id = ? AND status = 'sending' AND lease_token = ?
+    `).run(challengeId, leaseToken);
+    return challengeResult.changes === 1 && outboxResult.changes === 1;
+  }).immediate();
+}
+
+export function rejectPendingEmailRegistrationDelivery(input: {
+  challengeId: string;
+  leaseToken: string;
+  retryable: boolean;
+  errorCode: string;
+  nextAttemptAt: string;
+  maxAttempts: number;
+}): 'queued' | 'failed' | 'ignored' {
+  const database = getDb();
+  return database.transaction(() => {
+    const row = database.prepare(`
+      SELECT o.send_attempt_count, p.expires_at
+      FROM email_verification_outbox AS o
+      INNER JOIN pending_email_registrations AS p ON p.id = o.challenge_id
+      WHERE o.challenge_id = ? AND o.status = 'sending' AND o.lease_token = ?
+        AND p.consumed_at IS NULL AND p.deliverable_at IS NULL
+      LIMIT 1
+    `).get(input.challengeId, input.leaseToken) as { send_attempt_count: number; expires_at: string } | undefined;
+    if (!row) return 'ignored';
+    const canRetry = input.retryable
+      && row.send_attempt_count < input.maxAttempts
+      && Date.parse(row.expires_at) > Date.parse(input.nextAttemptAt);
+    if (canRetry) {
+      database.prepare(`
+        UPDATE email_verification_outbox
+        SET status = 'queued', lease_token = NULL, lease_until = NULL,
+            next_attempt_at = ?, last_error_code = ?, updated_at = datetime('now')
+        WHERE challenge_id = ? AND lease_token = ?
+      `).run(input.nextAttemptAt, input.errorCode.slice(0, 80), input.challengeId, input.leaseToken);
+      return 'queued';
+    }
+    database.prepare(`
+      UPDATE email_verification_outbox
+      SET status = 'failed', lease_token = NULL, lease_until = NULL,
+          last_error_code = ?, updated_at = datetime('now')
+      WHERE challenge_id = ? AND lease_token = ?
+    `).run(input.errorCode.slice(0, 80), input.challengeId, input.leaseToken);
+    database.prepare(`
+      UPDATE pending_email_registrations
+      SET consumed_at = COALESCE(consumed_at, datetime('now'))
+      WHERE id = ? AND deliverable_at IS NULL
+    `).run(input.challengeId);
+    return 'failed';
+  }).immediate();
 }
 
 export async function consumePendingEmailRegistrationChallenge(
@@ -705,7 +1019,7 @@ export async function consumePendingEmailRegistrationChallenge(
   const checked = database.transaction((): PendingEmailRegistrationConsumeResult | { status: 'ready'; row: PendingEmailRegistrationRow; user: null } => {
     const row = pendingEmailRegistrationRow(challengeId);
     if (!row) return { status: 'not_found', user: null };
-    if (row.consumed_at) return { status: 'invalid', user: null };
+    if (row.consumed_at || !row.deliverable_at) return { status: 'invalid', user: null };
     if (Date.parse(row.expires_at) <= Date.now()) {
       database.prepare("UPDATE pending_email_registrations SET consumed_at = datetime('now') WHERE id = ?").run(row.id);
       return { status: 'expired', user: null };
@@ -728,7 +1042,7 @@ export async function consumePendingEmailRegistrationChallenge(
   const passwordHash = await hashPasswordArgon2(password);
   const completed = database.transaction((): PendingEmailRegistrationConsumeResult => {
     const row = pendingEmailRegistrationRow(challengeId);
-    if (!row || row.consumed_at || Date.parse(row.expires_at) <= Date.now()) {
+    if (!row || row.consumed_at || !row.deliverable_at || Date.parse(row.expires_at) <= Date.now()) {
       return { status: 'invalid', user: null };
     }
     if (!constantTimeHashEqual(candidateCodeHash, row.code_hash)) {
@@ -763,6 +1077,16 @@ export async function consumePendingEmailRegistrationChallenge(
       UPDATE pending_email_registrations
       SET consumed_at = datetime('now')
       WHERE email = ? AND consumed_at IS NULL
+    `).run(row.email);
+    database.prepare(`
+      UPDATE email_verification_outbox
+      SET status = 'abandoned', lease_token = NULL, lease_until = NULL,
+          last_error_code = COALESCE(last_error_code, 'registration_completed'),
+          updated_at = datetime('now')
+      WHERE challenge_id IN (
+        SELECT id FROM pending_email_registrations WHERE email = ?
+      )
+        AND status IN ('queued', 'sending')
     `).run(row.email);
     const userRow = database.prepare('SELECT * FROM users WHERE id = ?').get(userId) as AuthUserRow;
     return { status: 'verified', user: mapUser(userRow) };

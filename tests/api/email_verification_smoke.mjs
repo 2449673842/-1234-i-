@@ -14,6 +14,8 @@ const tsxCli = path.join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverOutput = [];
 const emailDeliveries = [];
 let failNextEmailDelivery = false;
+let delayNextEmailDeliveryMs = 0;
+let auditDatabase = null;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -72,6 +74,11 @@ const emailWebhook = http.createServer(async (req, res) => {
     res.end('isolated delivery failure');
     return;
   }
+  if (delayNextEmailDeliveryMs > 0) {
+    const delayMs = delayNextEmailDeliveryMs;
+    delayNextEmailDeliveryMs = 0;
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
   res.statusCode = 200;
   res.setHeader('Content-Type', 'application/json');
   res.end('{"status":"accepted"}');
@@ -99,6 +106,7 @@ const server = spawn(process.execPath, [tsxCli, 'server.ts'], {
     SCIFIGURE_EMAIL_VERIFICATION_SECRET: 'email-verification-smoke-secret-2026-at-least-32',
     SCIFIGURE_TEST_EXPOSE_EMAIL_CODE: '1',
     EMAIL_VERIFICATION_RATE_LIMIT_PER_15_MINUTES: '100',
+    DISABLE_HMR: 'true',
     NODE_ENV: 'development',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -246,6 +254,38 @@ try {
   });
   assert(attackerLogin.response.status === 401 && victimLogin.response.ok, 'Only the password submitted with the verified challenge may authenticate');
 
+  const concurrentEmail = `concurrent-${Date.now()}@example.test`;
+  const concurrentPassword = 'Concurrent-Registration-2026';
+  const deliveriesBeforeConcurrent = emailDeliveries.length;
+  delayNextEmailDeliveryMs = 250;
+  const [concurrentA, concurrentB] = await Promise.all([
+    jsonRequest(baseUrl, '/api/auth/register', {
+      method: 'POST', body: JSON.stringify({ email: concurrentEmail, password: concurrentPassword }),
+    }),
+    jsonRequest(baseUrl, '/api/auth/register', {
+      method: 'POST', body: JSON.stringify({ email: concurrentEmail, password: concurrentPassword }),
+    }),
+  ]);
+  assert(concurrentA.response.status === 202 && concurrentB.response.status === 202, 'Concurrent registration requests must both keep the generic accepted response');
+  assert(
+    concurrentA.data?.verification?.challengeId === concurrentB.data?.verification?.challengeId,
+    'Concurrent registration requests must converge on the same in-flight challenge',
+  );
+  assert(
+    concurrentA.data?.verification?.testCode === concurrentB.data?.verification?.testCode,
+    'Concurrent registration requests must expose the same isolated-test code',
+  );
+  assert(emailDeliveries.length === deliveriesBeforeConcurrent + 1, 'Concurrent registration must invoke the provider only once');
+  const concurrentVerified = await jsonRequest(baseUrl, '/api/auth/verify-email', {
+    method: 'POST',
+    body: JSON.stringify({
+      challengeId: concurrentA.data.verification.challengeId,
+      code: concurrentA.data.verification.testCode,
+      password: concurrentPassword,
+    }),
+  });
+  assert(concurrentVerified.response.ok, 'The converged concurrent challenge must remain verifiable');
+
   const lockedEmail = `locked-${Date.now()}@example.test`;
   const lockedRegistration = await jsonRequest(baseUrl, '/api/auth/register', {
     method: 'POST', body: JSON.stringify({ email: lockedEmail, password }),
@@ -270,6 +310,7 @@ try {
   assert(resent.response.ok && resent.data?.verification?.challengeId !== lockedChallenge.challengeId, 'Resend must create a new challenge');
 
   const database = new Database(dbPath);
+  auditDatabase = database;
   const rows = database.prepare(`
     SELECT code_hash FROM email_verification_challenges
     UNION ALL
@@ -280,19 +321,57 @@ try {
     SELECT sql FROM sqlite_master
     WHERE type = 'index' AND name = 'idx_pending_email_registration_active_email'
   `).get();
+  const stagedIndex = database.prepare(`
+    SELECT sql FROM sqlite_master
+    WHERE type = 'index' AND name = 'idx_pending_email_registration_staged_email'
+  `).get();
   assert(/CREATE UNIQUE INDEX/i.test(activeIndex?.sql || '') && /consumed_at IS NULL/i.test(activeIndex?.sql || ''), 'Pending registration uniqueness must be enforced by a partial unique index');
+  assert(/deliverable_at IS NOT NULL/i.test(activeIndex?.sql || ''), 'Only delivered challenges may occupy the verifiable-email uniqueness boundary');
+  assert(/deliverable_at IS NULL/i.test(stagedIndex?.sql || ''), 'Database must enforce at most one staged delivery per normalized email');
   let duplicateActiveRejected = false;
   try {
     database.prepare(`
       INSERT INTO pending_email_registrations (
-        id, email, display_name, code_hash, expires_at, max_attempts
-      ) VALUES (?, ?, NULL, ?, datetime('now', '+10 minutes'), 5)
+        id, email, display_name, code_hash, expires_at, max_attempts, deliverable_at
+      ) VALUES (?, ?, NULL, ?, datetime('now', '+10 minutes'), 5, datetime('now'))
     `).run('evc_00000000-0000-4000-8000-000000000001', lockedEmail, '0'.repeat(64));
   } catch {
     duplicateActiveRejected = true;
   }
   assert(duplicateActiveRejected, 'Database must reject a second active challenge for the same normalized email');
+  const stagedEmail = `staged-unique-${Date.now()}@example.test`;
+  database.prepare(`
+    INSERT INTO pending_email_registrations (
+      id, email, display_name, code_hash, expires_at, max_attempts, deliverable_at
+    ) VALUES (?, ?, NULL, ?, datetime('now', '+10 minutes'), 5, NULL)
+  `).run('evc_00000000-0000-4000-8000-000000000002', stagedEmail, '1'.repeat(64));
+  let duplicateStagedRejected = false;
+  try {
+    database.prepare(`
+      INSERT INTO pending_email_registrations (
+        id, email, display_name, code_hash, expires_at, max_attempts, deliverable_at
+      ) VALUES (?, ?, NULL, ?, datetime('now', '+10 minutes'), 5, NULL)
+    `).run('evc_00000000-0000-4000-8000-000000000003', stagedEmail, '2'.repeat(64));
+  } catch {
+    duplicateStagedRejected = true;
+  }
+  assert(duplicateStagedRejected, 'Database must reject a second staged delivery for the same normalized email');
+  const outboxColumns = database.prepare('PRAGMA table_info(email_verification_outbox)').all().map(column => column.name);
+  const emailBudgetRows = database.prepare(`
+    SELECT scope_hash FROM auth_request_budgets WHERE category = 'email_send'
+  `).all();
+  assert(
+    !outboxColumns.some(name => ['email', 'recipient', 'code', 'payload', 'body'].includes(String(name).toLowerCase())),
+    `Outbox schema must not contain plaintext content columns: ${outboxColumns.join(',')}`,
+  );
+  assert(emailBudgetRows.length >= 3, 'Email delivery must persist multiple abuse-control scopes');
+  assert(
+    emailBudgetRows.every(row => /^[a-f0-9]{64}$/i.test(row.scope_hash))
+      && !JSON.stringify(emailBudgetRows).includes(concurrentEmail),
+    'Email delivery budgets must store only HMAC scope identifiers',
+  );
   database.close();
+  auditDatabase = null;
   assert(!lockedUser, 'Locked pending registration must not create a user');
   assert(rows.length >= 4, `Expected persisted verification audit rows, got ${rows.length}`);
   assert(
@@ -310,6 +389,8 @@ try {
       'existing and new accounts use the same provider-backed response path',
       'failed replacement delivery preserves the previous usable challenge',
       'database enforces one active challenge per normalized email',
+      'concurrent registration converges on one provider delivery and challenge',
+      'database enforces one staged delivery per normalized email',
       'password policy is enforced before email delivery',
       'only the password submitted with the verified challenge is accepted',
       'wrong codes fail and attempts are bounded',
@@ -317,18 +398,30 @@ try {
       'verified access and refresh sessions work',
       'resend replaces a locked challenge',
       'database stores only keyed code hashes',
+      'outbox schema stores no email or code payload',
+      'email delivery budgets store only HMAC recipient and network scopes',
     ],
   }, null, 2));
 } catch (error) {
   console.error(JSON.stringify({ status: 'FAIL', message: error.message, serverOutput: serverOutput.join('').slice(-10_000) }, null, 2));
   process.exitCode = 1;
 } finally {
+  if (auditDatabase) {
+    try { auditDatabase.close(); } catch {}
+    auditDatabase = null;
+  }
   server.kill('SIGTERM');
   await Promise.race([
     new Promise(resolve => server.once('exit', resolve)),
     new Promise(resolve => setTimeout(resolve, 3_000)),
   ]);
   if (server.exitCode === null) server.kill('SIGKILL');
+  if (server.exitCode === null) {
+    await Promise.race([
+      new Promise(resolve => server.once('exit', resolve)),
+      new Promise(resolve => setTimeout(resolve, 3_000)),
+    ]);
+  }
   await new Promise(resolve => emailWebhook.close(resolve));
   fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
