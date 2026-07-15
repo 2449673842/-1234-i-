@@ -8,7 +8,9 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 server_name="${1:-_}"
-docker_apt_base="${SCIFIGURE_DOCKER_APT_BASE_URL:-https://download.docker.com}"
+ubuntu_apt_mirror="${SCIFIGURE_UBUNTU_APT_MIRROR:-https://mirrors.aliyun.com/ubuntu}"
+docker_apt_base="${SCIFIGURE_DOCKER_APT_BASE_URL:-https://mirrors.aliyun.com/docker-ce}"
+docker_registry_mirror="${SCIFIGURE_DOCKER_REGISTRY_MIRROR:-https://docker.m.daocloud.io}"
 
 if [[ ! -r /etc/os-release ]]; then
   echo "Unable to identify the operating system" >&2
@@ -21,6 +23,14 @@ if [[ "${ID:-}" != "ubuntu" || "${VERSION_ID:-}" != "24.04" ]]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive
+for ubuntu_sources in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+  if [[ -f "$ubuntu_sources" ]]; then
+    sed -i -E \
+      -e "s|https?://archive.ubuntu.com/ubuntu/?|${ubuntu_apt_mirror%/}/|g" \
+      -e "s|https?://security.ubuntu.com/ubuntu/?|${ubuntu_apt_mirror%/}/|g" \
+      "$ubuntu_sources"
+  fi
+done
 apt-get update
 apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg nginx certbot python3-certbot-nginx \
@@ -86,6 +96,17 @@ fi
 scifigure_uid="$(id -u scifigure)"
 loginctl enable-linger scifigure
 systemctl start "user@${scifigure_uid}.service"
+docker_config_dir=/var/lib/scifigure/.config/docker
+if [[ ! -f "$docker_config_dir/daemon.json" ]]; then
+  install -d -o scifigure -g scifigure -m 0700 "$docker_config_dir"
+  cat > "$docker_config_dir/daemon.json" <<EOF
+{
+  "registry-mirrors": ["${docker_registry_mirror}"]
+}
+EOF
+  chown scifigure:scifigure "$docker_config_dir/daemon.json"
+  chmod 0600 "$docker_config_dir/daemon.json"
+fi
 if [[ ! -S "/run/user/${scifigure_uid}/docker.sock" ]]; then
   runuser -u scifigure -- env \
     HOME=/var/lib/scifigure \
@@ -114,6 +135,10 @@ fi
 
 if [[ ! -f /etc/scifigure/release.env ]]; then
   install -o root -g scifigure -m 0640 "$repo_root/ops/env/scifigure-release.env.example" /etc/scifigure/release.env
+fi
+
+if [[ ! -f /etc/scifigure/build.env ]]; then
+  install -o root -g scifigure -m 0640 "$repo_root/ops/env/scifigure-build.env.example" /etc/scifigure/build.env
 fi
 
 sed "s/__SERVER_NAME__/${server_name}/g" \

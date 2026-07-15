@@ -2,7 +2,7 @@
 
 > 状态：当前有效，首次云端部署执行中
 > 创建时间：2026-07-13 19:42:42 +08:00
-> 最后更新：2026-07-15 17:42:42 +08:00
+> 最后更新：2026-07-15 20:59:48 +08:00
 > 目标：2 核 4 GB 调试服务器；本人和少量协作者使用
 
 ## 1. 部署边界
@@ -65,7 +65,24 @@ sudo scifigure-rollback
 
 回滚只使用 `previous-release` 中记录的 last-known-good 版本，不猜测槽位。
 
-## 5. TLS 和公网入口
+## 5. 国内镜像与供应链边界
+
+重复发布默认从 `/etc/scifigure/build.env` 读取国内优先镜像配置：
+
+```text
+npm：registry.npmmirror.com
+renderer Debian / security：mirrors.aliyun.com
+renderer PyPI：mirrors.aliyun.com
+Ubuntu APT：mirrors.aliyun.com
+Docker CE APT：mirrors.aliyun.com
+Docker Hub 加速：docker.m.daocloud.io
+```
+
+`build.env` 必须由 root 持有且不可被组或其他用户写入，否则发布会拒绝继续。镜像地址可以由管理员显式覆盖，但不得关闭 TLS 或绕过包管理器的签名、哈希和镜像摘要校验。
+
+NodeSource 签名仓库和 `ttf-mscorefonts-installer` 获取的微软字体文件暂时保留上游来源：当前没有经过验证、持续同步且授权边界明确的国内替代源。不得为了“全量镜像化”改用来源不明的 Node 二进制或重新分发专有字体；这两个例外应通过缓存和构建层复用降低重复下载。
+
+## 6. TLS 和公网入口
 
 Node 端口只绑定 loopback，云安全组和 UFW 不开放 3101。公网仅开放：
 
@@ -79,7 +96,7 @@ Nginx 覆盖客户端传入的 `X-Forwarded-For`。TLS 配置使用固定域名�
 
 云控制台必须为月流量套餐设置 50%、70%、85% 告警。应用默认把已计量平台下载限制为 512 MB/小时，理论上约 381 GB/月，但不能覆盖静态资源、系统更新或云入口层 DDoS 流量；发现异常时应先在云防火墙/WAF 限制来源，再检查应用审计和预算表，不能依赖删除用户数据止损。
 
-## 6. 首次云端验收
+## 7. 首次云端验收
 
 必须保留证据：
 

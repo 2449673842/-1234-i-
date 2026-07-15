@@ -92,10 +92,38 @@ for required in package.json package-lock.json server.ts Dockerfile.renderer ren
 done
 bash -n "$release_dir/ops/deployment/deploy-release.sh" "$release_dir/ops/deployment/rollback.sh"
 
+build_env="${SCIFIGURE_BUILD_ENV_FILE:-/etc/scifigure/build.env}"
+if [[ -r "$build_env" ]]; then
+  if [[ "$(stat -c '%u' "$build_env")" != "0" ]] || [[ -n "$(find "$build_env" -prune -perm /022 -print -quit)" ]]; then
+    echo "Build environment must be root-owned and not group/world-writable: $build_env" >&2
+    exit 1
+  fi
+  while IFS='=' read -r mirror_key mirror_value || [[ -n "$mirror_key" ]]; do
+    if [[ -z "$mirror_key" || "$mirror_key" == \#* ]]; then
+      continue
+    fi
+    if [[ -z "$mirror_value" || "$mirror_key" =~ [[:space:]] || "$mirror_value" =~ [[:space:]] ]]; then
+      echo "Invalid build environment entry: $mirror_key" >&2
+      exit 1
+    fi
+    case "$mirror_key" in
+      SCIFIGURE_NPM_REGISTRY|SCIFIGURE_RENDERER_DEBIAN_MIRROR|SCIFIGURE_RENDERER_DEBIAN_SECURITY_MIRROR|SCIFIGURE_RENDERER_PIP_INDEX_URL|SCIFIGURE_UBUNTU_APT_MIRROR|SCIFIGURE_DOCKER_APT_BASE_URL|SCIFIGURE_DOCKER_REGISTRY_MIRROR)
+        export "$mirror_key=$mirror_value"
+        ;;
+      *)
+        echo "Unsupported build environment key: $mirror_key" >&2
+        exit 1
+        ;;
+    esac
+  done < "$build_env"
+fi
+npm_registry="${SCIFIGURE_NPM_REGISTRY:-https://registry.npmmirror.com}"
+
 runuser -u scifigure -- env \
   HOME=/var/lib/scifigure \
   NODE_OPTIONS=--max-old-space-size=2048 \
   npm_config_jobs=1 \
+  npm_config_registry="$npm_registry" \
   npm --prefix "$release_dir" ci --no-audit --no-fund
 runuser -u scifigure -- env \
   HOME=/var/lib/scifigure \
@@ -132,14 +160,15 @@ EOF
 runuser -u scifigure -- env \
   HOME=/var/lib/scifigure \
   npm_config_jobs=1 \
+  npm_config_registry="$npm_registry" \
   npm --prefix "$release_dir" prune --omit=dev --no-audit --no-fund
 
 scifigure_uid="$(id -u scifigure)"
 docker_host="unix:///run/user/${scifigure_uid}/docker.sock"
 renderer_image="scifigure-renderer:${build_id}"
-renderer_debian_mirror="${SCIFIGURE_RENDERER_DEBIAN_MIRROR:-http://deb.debian.org/debian}"
-renderer_security_mirror="${SCIFIGURE_RENDERER_DEBIAN_SECURITY_MIRROR:-http://deb.debian.org/debian-security}"
-renderer_pip_index="${SCIFIGURE_RENDERER_PIP_INDEX_URL:-https://pypi.org/simple}"
+renderer_debian_mirror="${SCIFIGURE_RENDERER_DEBIAN_MIRROR:-https://mirrors.aliyun.com/debian}"
+renderer_security_mirror="${SCIFIGURE_RENDERER_DEBIAN_SECURITY_MIRROR:-https://mirrors.aliyun.com/debian-security}"
+renderer_pip_index="${SCIFIGURE_RENDERER_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}"
 runuser -u scifigure -- env \
   HOME=/var/lib/scifigure \
   XDG_RUNTIME_DIR="/run/user/${scifigure_uid}" \

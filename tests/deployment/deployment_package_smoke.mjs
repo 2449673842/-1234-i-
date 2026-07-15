@@ -8,6 +8,7 @@ const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
 const files = [
   'ops/systemd/scifigure.service',
   'ops/env/scifigure-common.env.example',
+  'ops/env/scifigure-build.env.example',
   'ops/env/scifigure-release.env.example',
   'ops/nginx/scifigure-bootstrap.conf.template',
   'ops/nginx/scifigure-tls.conf.template',
@@ -73,6 +74,14 @@ assert.match(deployScript, /DOCKER_HOST="\$docker_host"/);
 assert.match(deployScript, /SCIFIGURE_RENDERER_DEBIAN_MIRROR/);
 assert.match(deployScript, /SCIFIGURE_RENDERER_DEBIAN_SECURITY_MIRROR/);
 assert.match(deployScript, /SCIFIGURE_RENDERER_PIP_INDEX_URL/);
+assert.match(deployScript, /SCIFIGURE_BUILD_ENV_FILE/);
+assert.match(deployScript, /Build environment must be root-owned and not group\/world-writable/);
+assert.match(deployScript, /Unsupported build environment key/);
+assert.doesNotMatch(deployScript, /source "\$build_env"/);
+assert.match(deployScript, /npm_config_registry="\$npm_registry"/);
+assert.match(deployScript, /https:\/\/registry\.npmmirror\.com/);
+assert.match(deployScript, /https:\/\/mirrors\.aliyun\.com\/debian/);
+assert.match(deployScript, /https:\/\/mirrors\.aliyun\.com\/pypi\/simple/);
 assert.match(deployScript, /SCIFIGURE_RENDERER_IMAGE=\$\{renderer_image\}/);
 assert.match(deployScript, /bash -n "\$release_dir\/ops\/deployment\/deploy-release\.sh" "\$release_dir\/ops\/deployment\/rollback\.sh"/);
 assert.match(deployScript, /stop_service\(\)/);
@@ -114,6 +123,10 @@ assert.match(bootstrap, /SCIFIGURE_ENABLE_UFW/);
 assert.match(bootstrap, /sshd -T/);
 assert.match(bootstrap, /SCIFIGURE_DISABLE_ROOTFUL_DOCKER/);
 assert.match(bootstrap, /SCIFIGURE_DOCKER_APT_BASE_URL/);
+assert.match(bootstrap, /SCIFIGURE_UBUNTU_APT_MIRROR/);
+assert.match(bootstrap, /SCIFIGURE_DOCKER_REGISTRY_MIRROR/);
+assert.match(bootstrap, /registry-mirrors/);
+assert.match(bootstrap, /scifigure-build\.env\.example/);
 assert.match(bootstrap, /refusing to disable it/);
 assert.doesNotMatch(bootstrap, /ufw allow 310[12]/);
 assert.match(bootstrap, /dockerd-rootless-setuptool\.sh install/);
@@ -146,9 +159,15 @@ assert.match(server, /SCIFIGURE_BIND_HOST/);
 assert.match(server, /\['DOCKER_HOST', 'XDG_RUNTIME_DIR'\]/);
 
 const rendererDockerfile = read('Dockerfile.renderer');
-assert.match(rendererDockerfile, /ARG DEBIAN_MIRROR=/);
-assert.match(rendererDockerfile, /ARG DEBIAN_SECURITY_MIRROR=/);
-assert.match(rendererDockerfile, /ARG PIP_INDEX_URL=/);
+assert.match(rendererDockerfile, /ARG DEBIAN_MIRROR=https:\/\/mirrors\.aliyun\.com\/debian/);
+assert.match(rendererDockerfile, /ARG DEBIAN_SECURITY_MIRROR=https:\/\/mirrors\.aliyun\.com\/debian-security/);
+assert.match(rendererDockerfile, /ARG PIP_INDEX_URL=https:\/\/mirrors\.aliyun\.com\/pypi\/simple/);
+
+const buildEnv = read('ops/env/scifigure-build.env.example');
+assert.match(buildEnv, /^SCIFIGURE_NPM_REGISTRY=https:\/\/registry\.npmmirror\.com$/m);
+assert.match(buildEnv, /^SCIFIGURE_RENDERER_DEBIAN_MIRROR=https:\/\/mirrors\.aliyun\.com\/debian$/m);
+assert.match(buildEnv, /^SCIFIGURE_RENDERER_PIP_INDEX_URL=https:\/\/mirrors\.aliyun\.com\/pypi\/simple$/m);
+assert.match(buildEnv, /^SCIFIGURE_DOCKER_REGISTRY_MIRROR=https:\/\/docker\.m\.daocloud\.io$/m);
 
 let bashSyntax = 'not available on this platform';
 if (process.platform !== 'win32') {
