@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +12,8 @@ const dataRoot = path.join(tempRoot, 'data');
 const dbPath = path.join(dataRoot, 'scifigure.db');
 const tsxCli = path.join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const serverOutput = [];
+const emailDeliveries = [];
+let failNextEmailDelivery = false;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -51,6 +54,33 @@ async function jsonRequest(baseUrl, pathname, options = {}) {
   return { response, data: await response.json().catch(() => null) };
 }
 
+const emailWebhookPort = await reservePort();
+const emailWebhook = http.createServer(async (req, res) => {
+  let rawBody = '';
+  for await (const chunk of req) rawBody += String(chunk);
+  let payload = null;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {}
+  emailDeliveries.push({
+    authorization: req.headers.authorization || '',
+    payload,
+  });
+  if (failNextEmailDelivery) {
+    failNextEmailDelivery = false;
+    res.statusCode = 503;
+    res.end('isolated delivery failure');
+    return;
+  }
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'application/json');
+  res.end('{"status":"accepted"}');
+});
+await new Promise((resolve, reject) => {
+  emailWebhook.once('error', reject);
+  emailWebhook.listen(emailWebhookPort, '127.0.0.1', resolve);
+});
+
 const port = await reservePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, [tsxCli, 'server.ts'], {
@@ -63,7 +93,9 @@ const server = spawn(process.execPath, [tsxCli, 'server.ts'], {
     SCIFIGURE_RENDER_MODE: 'local',
     SCIFIGURE_TEST_ISOLATED: '1',
     SCIFIGURE_EMAIL_VERIFICATION_REQUIRED: '1',
-    SCIFIGURE_EMAIL_PROVIDER: 'test',
+    SCIFIGURE_EMAIL_PROVIDER: 'webhook',
+    SCIFIGURE_EMAIL_WEBHOOK_URL: `http://127.0.0.1:${emailWebhookPort}/verification`,
+    SCIFIGURE_EMAIL_WEBHOOK_TOKEN: 'isolated-email-webhook-token',
     SCIFIGURE_EMAIL_VERIFICATION_SECRET: 'email-verification-smoke-secret-2026-at-least-32',
     SCIFIGURE_TEST_EXPOSE_EMAIL_CODE: '1',
     EMAIL_VERIFICATION_RATE_LIMIT_PER_15_MINUTES: '100',
@@ -78,6 +110,14 @@ try {
   await waitForServer(baseUrl, server);
   const email = `verified-${Date.now()}@example.test`;
   const password = 'Email-Verification-Test-2026';
+  const deliveriesBeforeInvalidPassword = emailDeliveries.length;
+  const oversizedPasswordRegistration = await jsonRequest(baseUrl, '/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email: `oversized-${Date.now()}@example.test`, password: 'x'.repeat(1025) }),
+  });
+  assert(oversizedPasswordRegistration.response.status === 400, 'Oversized registration password must be rejected');
+  assert(emailDeliveries.length === deliveriesBeforeInvalidPassword, 'Invalid passwords must be rejected before email delivery');
+
   const registration = await jsonRequest(baseUrl, '/api/auth/register', {
     method: 'POST',
     body: JSON.stringify({ email, password, displayName: 'Verified User' }),
@@ -87,21 +127,30 @@ try {
   const firstChallenge = registration.data?.verification;
   assert(/^evc_[0-9a-f-]{36}$/i.test(firstChallenge?.challengeId || ''), `Missing challenge id: ${JSON.stringify(registration.data)}`);
   assert(/^\d{6}$/.test(firstChallenge?.testCode || ''), 'Isolated test provider did not expose a six-digit code');
+  assert(emailDeliveries.some(delivery => delivery.payload?.to === email), 'Registration must use the configured email provider');
+  const pendingDatabase = new Database(dbPath, { readonly: true });
+  assert(pendingDatabase.prepare('SELECT COUNT(*) AS count FROM users').get().count === 0, 'Registration must not create a user before email verification');
+  assert(pendingDatabase.prepare('SELECT COUNT(*) AS count FROM pending_email_registrations WHERE email = ? AND consumed_at IS NULL').get(email).count === 1, 'Registration must create one pending challenge');
+  pendingDatabase.close();
 
   const preVerificationLogin = await jsonRequest(baseUrl, '/api/auth/login', {
     method: 'POST', body: JSON.stringify({ email, password }),
   });
-  assert(preVerificationLogin.response.status === 403 && preVerificationLogin.data?.errorCode === 'EMAIL_VERIFICATION_REQUIRED', 'Unverified login must be rejected');
+  assert(preVerificationLogin.response.status === 401 && preVerificationLogin.data?.message === '邮箱或密码错误', 'Pending registration must not be enumerable through login');
 
   const wrong = await jsonRequest(baseUrl, '/api/auth/verify-email', {
-    method: 'POST', body: JSON.stringify({ challengeId: firstChallenge.challengeId, code: '000000' === firstChallenge.testCode ? '000001' : '000000' }),
+    method: 'POST', body: JSON.stringify({
+      challengeId: firstChallenge.challengeId,
+      code: '000000' === firstChallenge.testCode ? '000001' : '000000',
+      password,
+    }),
   });
   assert(wrong.response.status === 400, `Wrong verification code should fail: ${wrong.response.status}`);
 
   const verified = await jsonRequest(baseUrl, '/api/auth/verify-email', {
     method: 'POST',
     headers: { 'X-Device-Fingerprint': 'email-smoke-device', 'X-Device-Name': 'Email smoke' },
-    body: JSON.stringify({ challengeId: firstChallenge.challengeId, code: firstChallenge.testCode }),
+    body: JSON.stringify({ challengeId: firstChallenge.challengeId, code: firstChallenge.testCode, password }),
   });
   assert(verified.response.ok && verified.data?.token, `Verification failed: ${verified.response.status} ${JSON.stringify(verified.data)}`);
   assert(verified.data?.user?.emailVerified === true && verified.data?.user?.emailVerificationRequired === false, 'Verified user payload is incorrect');
@@ -109,7 +158,7 @@ try {
   assert(refreshCookie?.includes('HttpOnly') && refreshCookie.includes('SameSite=Strict'), 'Verification response must issue a protected refresh cookie');
 
   const reuse = await jsonRequest(baseUrl, '/api/auth/verify-email', {
-    method: 'POST', body: JSON.stringify({ challengeId: firstChallenge.challengeId, code: firstChallenge.testCode }),
+    method: 'POST', body: JSON.stringify({ challengeId: firstChallenge.challengeId, code: firstChallenge.testCode, password }),
   });
   assert(reuse.response.status === 400, 'Verification challenge must be single-use');
 
@@ -117,6 +166,85 @@ try {
   assert(me.response.ok && me.data?.user?.email === email, 'Verified access token must authenticate');
   const refresh = await jsonRequest(baseUrl, '/api/auth/refresh', { method: 'POST', headers: { Cookie: refreshCookie.split(';')[0] } });
   assert(refresh.response.ok && refresh.data?.token, `Verified refresh session failed: ${refresh.response.status} ${JSON.stringify(refresh.data)}`);
+
+  const existingRegistration = await jsonRequest(baseUrl, '/api/auth/register', {
+    method: 'POST', body: JSON.stringify({ email, password: 'Different-Password-2026' }),
+  });
+  assert(existingRegistration.response.status === 202 && existingRegistration.data?.verificationRequired === true, 'Existing email registration must use the same generic response');
+  assert(/^\d{6}$/.test(existingRegistration.data?.verification?.testCode || ''), 'Existing accounts must traverse the same provider-backed challenge path');
+  assert(emailDeliveries.filter(delivery => delivery.payload?.to === email).length === 2, 'Existing and new accounts must both invoke the email provider');
+  const existingVerification = await jsonRequest(baseUrl, '/api/auth/verify-email', {
+    method: 'POST',
+    body: JSON.stringify({
+      challengeId: existingRegistration.data.verification.challengeId,
+      code: existingRegistration.data.verification.testCode,
+      password: 'Different-Password-2026',
+    }),
+  });
+  assert(
+    existingVerification.response.status === 400
+      && existingVerification.data?.errorCode === 'EMAIL_VERIFICATION_ALREADY_REGISTERED',
+    'A provider-backed challenge for an existing verified account must never replace its password',
+  );
+
+  const deliveryFailureEmail = `delivery-failure-${Date.now()}@example.test`;
+  const preservedPassword = 'Preserved-Password-2026';
+  const preservedRegistration = await jsonRequest(baseUrl, '/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email: deliveryFailureEmail, password: preservedPassword }),
+  });
+  const preservedChallenge = preservedRegistration.data?.verification;
+  failNextEmailDelivery = true;
+  const failedReplacement = await jsonRequest(baseUrl, '/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email: deliveryFailureEmail, password: 'Replacement-Password-2026' }),
+  });
+  assert(failedReplacement.response.status === 503, 'Provider failure must be surfaced as a temporary delivery failure');
+  const deliveryFailureDatabase = new Database(dbPath, { readonly: true });
+  const activeAfterDeliveryFailure = deliveryFailureDatabase.prepare(`
+    SELECT id FROM pending_email_registrations
+    WHERE email = ? AND consumed_at IS NULL
+  `).get(deliveryFailureEmail);
+  deliveryFailureDatabase.close();
+  assert(activeAfterDeliveryFailure?.id === preservedChallenge.challengeId, 'Failed delivery must preserve the previous usable challenge');
+  const preservedVerification = await jsonRequest(baseUrl, '/api/auth/verify-email', {
+    method: 'POST',
+    body: JSON.stringify({
+      challengeId: preservedChallenge.challengeId,
+      code: preservedChallenge.testCode,
+      password: preservedPassword,
+    }),
+  });
+  assert(preservedVerification.response.ok, 'The previous challenge must remain usable after replacement delivery fails');
+
+  const occupiedEmail = `occupied-${Date.now()}@example.test`;
+  const attackerPassword = 'Attacker-Password-2026';
+  const victimPassword = 'Victim-Password-2026';
+  const attackerRegistration = await jsonRequest(baseUrl, '/api/auth/register', {
+    method: 'POST', body: JSON.stringify({ email: occupiedEmail, password: attackerPassword, displayName: 'Attacker input' }),
+  });
+  const victimRegistration = await jsonRequest(baseUrl, '/api/auth/register', {
+    method: 'POST', body: JSON.stringify({ email: occupiedEmail, password: victimPassword, displayName: 'Email owner' }),
+  });
+  const attackerChallenge = attackerRegistration.data?.verification;
+  const victimChallenge = victimRegistration.data?.verification;
+  assert(attackerRegistration.response.status === 202 && victimRegistration.response.status === 202, 'Repeated pending registration must not return an account-existence conflict');
+  assert(attackerChallenge?.challengeId !== victimChallenge?.challengeId, 'Repeated registration must replace the pending challenge');
+  const staleAttackerVerification = await jsonRequest(baseUrl, '/api/auth/verify-email', {
+    method: 'POST', body: JSON.stringify({ challengeId: attackerChallenge.challengeId, code: attackerChallenge.testCode, password: attackerPassword }),
+  });
+  assert(staleAttackerVerification.response.status === 400, 'Replaced pending challenge must not create an account');
+  const victimVerification = await jsonRequest(baseUrl, '/api/auth/verify-email', {
+    method: 'POST', body: JSON.stringify({ challengeId: victimChallenge.challengeId, code: victimChallenge.testCode, password: victimPassword }),
+  });
+  assert(victimVerification.response.ok && victimVerification.data?.user?.email === occupiedEmail, 'Email owner must be able to complete the replacement registration');
+  const attackerLogin = await jsonRequest(baseUrl, '/api/auth/login', {
+    method: 'POST', body: JSON.stringify({ email: occupiedEmail, password: attackerPassword }),
+  });
+  const victimLogin = await jsonRequest(baseUrl, '/api/auth/login', {
+    method: 'POST', body: JSON.stringify({ email: occupiedEmail, password: victimPassword }),
+  });
+  assert(attackerLogin.response.status === 401 && victimLogin.response.ok, 'Only the password submitted with the verified challenge may authenticate');
 
   const lockedEmail = `locked-${Date.now()}@example.test`;
   const lockedRegistration = await jsonRequest(baseUrl, '/api/auth/register', {
@@ -128,12 +256,12 @@ try {
   let lastAttempt;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     lastAttempt = await jsonRequest(baseUrl, '/api/auth/verify-email', {
-      method: 'POST', body: JSON.stringify({ challengeId: lockedChallenge.challengeId, code: wrongCode }),
+      method: 'POST', body: JSON.stringify({ challengeId: lockedChallenge.challengeId, code: wrongCode, password }),
     });
   }
   assert(lastAttempt.response.status === 400 && lastAttempt.data?.errorCode === 'EMAIL_VERIFICATION_LOCKED', 'Challenge must lock after five failed attempts');
   const lockedCorrect = await jsonRequest(baseUrl, '/api/auth/verify-email', {
-    method: 'POST', body: JSON.stringify({ challengeId: lockedChallenge.challengeId, code: lockedChallenge.testCode }),
+    method: 'POST', body: JSON.stringify({ challengeId: lockedChallenge.challengeId, code: lockedChallenge.testCode, password }),
   });
   assert(lockedCorrect.response.status === 400, 'Locked challenge must reject the original correct code');
   const resent = await jsonRequest(baseUrl, '/api/auth/resend-verification', {
@@ -141,17 +269,49 @@ try {
   });
   assert(resent.response.ok && resent.data?.verification?.challengeId !== lockedChallenge.challengeId, 'Resend must create a new challenge');
 
-  const database = new Database(dbPath, { readonly: true });
-  const rows = database.prepare('SELECT code_hash FROM email_verification_challenges').all();
+  const database = new Database(dbPath);
+  const rows = database.prepare(`
+    SELECT code_hash FROM email_verification_challenges
+    UNION ALL
+    SELECT code_hash FROM pending_email_registrations
+  `).all();
+  const lockedUser = database.prepare('SELECT id FROM users WHERE email = ?').get(lockedEmail);
+  const activeIndex = database.prepare(`
+    SELECT sql FROM sqlite_master
+    WHERE type = 'index' AND name = 'idx_pending_email_registration_active_email'
+  `).get();
+  assert(/CREATE UNIQUE INDEX/i.test(activeIndex?.sql || '') && /consumed_at IS NULL/i.test(activeIndex?.sql || ''), 'Pending registration uniqueness must be enforced by a partial unique index');
+  let duplicateActiveRejected = false;
+  try {
+    database.prepare(`
+      INSERT INTO pending_email_registrations (
+        id, email, display_name, code_hash, expires_at, max_attempts
+      ) VALUES (?, ?, NULL, ?, datetime('now', '+10 minutes'), 5)
+    `).run('evc_00000000-0000-4000-8000-000000000001', lockedEmail, '0'.repeat(64));
+  } catch {
+    duplicateActiveRejected = true;
+  }
+  assert(duplicateActiveRejected, 'Database must reject a second active challenge for the same normalized email');
   database.close();
-  assert(rows.length >= 3 && rows.every(row => /^[a-f0-9]{64}$/i.test(row.code_hash)), 'Verification challenges must store only SHA-256 HMAC values');
+  assert(!lockedUser, 'Locked pending registration must not create a user');
+  assert(rows.length >= 4, `Expected persisted verification audit rows, got ${rows.length}`);
+  assert(
+    rows.every(row => /^[a-f0-9]{64}$/i.test(row.code_hash)),
+    `Verification challenges must store only SHA-256 HMAC values: ${JSON.stringify(rows)}`,
+  );
   assert(!JSON.stringify(rows).includes(firstChallenge.testCode), 'Database must not contain plaintext verification codes');
 
   console.log(JSON.stringify({
     status: 'PASS',
     checks: [
       'registration does not issue a session before verification',
-      'unverified login is rejected',
+      'registration does not create a user before verification',
+      'pending registration does not occupy or enumerate an email address',
+      'existing and new accounts use the same provider-backed response path',
+      'failed replacement delivery preserves the previous usable challenge',
+      'database enforces one active challenge per normalized email',
+      'password policy is enforced before email delivery',
+      'only the password submitted with the verified challenge is accepted',
       'wrong codes fail and attempts are bounded',
       'verification challenge is single-use',
       'verified access and refresh sessions work',
@@ -169,5 +329,6 @@ try {
     new Promise(resolve => setTimeout(resolve, 3_000)),
   ]);
   if (server.exitCode === null) server.kill('SIGKILL');
+  await new Promise(resolve => emailWebhook.close(resolve));
   fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

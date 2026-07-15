@@ -167,7 +167,7 @@ export function LandingAuthDialog({
           'X-Device-Fingerprint': getDeviceFingerprint(),
           'X-Device-Name': navigator.userAgent.slice(0, 80),
         },
-        body: JSON.stringify({ challengeId: verification.challengeId, code: verificationCode }),
+        body: JSON.stringify({ challengeId: verification.challengeId, code: verificationCode, password }),
       });
       const data = await response.json().catch(() => null);
       if (!response.ok || data?.status !== 'success' || typeof data?.token !== 'string') {

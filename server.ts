@@ -32,7 +32,9 @@ import {
 } from './src/utils/deploymentLifecycle';
 import { installAdminConsoleRoutes } from './server/admin/console';
 import { adminOperationsEnabled } from './server/admin/featureFlags';
+import { sanitizeAdminAuditMetadata } from './server/admin/privacy';
 import {
+  assertEmailVerificationProductionConfig,
   emailVerificationRequired,
   emailVerificationTtlMinutes,
   generateEmailVerificationCode,
@@ -40,6 +42,7 @@ import {
   maskEmailAddress,
   sendEmailVerificationCode,
 } from './server/auth/emailVerification';
+import { validateAccountPassword } from './server/auth/passwordPolicy';
 import { assertSafeSvgDocument } from './server/security/svgSafety';
 import { assertValidUploadedDataFile, decodeAndValidatePngBase64 } from './server/security/fileValidation';
 import {
@@ -84,8 +87,9 @@ import {
   getExportAsset,
   deleteExportAssets,
   createUserAccount,
-  createEmailVerificationChallenge,
-  consumeEmailVerificationChallenge,
+  createPendingEmailRegistrationChallenge,
+  consumePendingEmailRegistrationChallenge,
+  getPendingEmailRegistration,
   getUserByEmail,
   getUserById,
   getUserByAuthToken,
@@ -118,6 +122,7 @@ const DATA_ROOT = process.env.SCIFIGURE_DATA_DIR
 const PROJECTS_ROOT = path.join(DATA_ROOT, 'projects');
 
 async function startServer() {
+  assertEmailVerificationProductionConfig();
   getDb().exec(`
     CREATE TABLE IF NOT EXISTS render_cache (
       cache_key TEXT PRIMARY KEY,
@@ -262,11 +267,25 @@ async function startServer() {
     message: '管理操作过于频繁，请稍后再试。',
   });
 
-  const emailVerificationRateLimit = createRateLimiter({
+  const emailVerificationSendRateLimit = createRateLimiter({
     windowMs: 15 * 60 * 1000,
     max: Number(process.env.EMAIL_VERIFICATION_RATE_LIMIT_PER_15_MINUTES || 8),
     message: '邮箱验证码请求过于频繁，请稍后再试。',
     key: req => `${clientIp(req)}:${String(req.body?.email || '').trim().toLowerCase()}`,
+  });
+
+  const emailVerificationIpSendRateLimit = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.EMAIL_VERIFICATION_IP_RATE_LIMIT_PER_15_MINUTES || 20),
+    message: '该网络请求邮箱验证码过于频繁，请稍后再试。',
+    key: req => clientIp(req),
+  });
+
+  const emailVerificationAttemptRateLimit = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: Number(process.env.EMAIL_VERIFICATION_RATE_LIMIT_PER_15_MINUTES || 8),
+    message: '邮箱验证码尝试过于频繁，请稍后再试。',
+    key: req => `${clientIp(req)}:${String(req.body?.challengeId || '').trim().toLowerCase()}`,
   });
 
   const requireAdminOperationsEnabled = (_req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -898,6 +917,7 @@ async function startServer() {
     try {
       logAdminAudit({
         ...input,
+        metadata: sanitizeAdminAuditMetadata(input.metadata),
         ipAddress: clientIp(req),
         userAgent: String(req.headers['user-agent'] || '').slice(0, 512) || null,
       });
@@ -973,30 +993,31 @@ async function startServer() {
     };
   }
 
-  async function issueEmailVerificationChallenge(user: { id: string; email: string }) {
+  async function issuePendingEmailRegistrationChallenge(input: { email: string; displayName?: string }) {
     const challengeId = `evc_${crypto.randomUUID()}`;
     const code = generateEmailVerificationCode();
     const expiresAt = new Date(Date.now() + emailVerificationTtlMinutes() * 60 * 1000).toISOString();
-    createEmailVerificationChallenge({
-      id: challengeId,
-      userId: user.id,
-      codeHash: hashEmailVerificationCode(challengeId, code),
-      expiresAt,
-      maxAttempts: 5,
-    });
     try {
-      await sendEmailVerificationCode({ email: user.email, code, expiresAt });
+      await sendEmailVerificationCode({ email: input.email, code, expiresAt });
     } catch (error) {
-      console.error('Email verification delivery failed:', (error as Error)?.message || error);
+      console.error('Pending registration email delivery failed:', (error as Error)?.message || error);
       const deliveryError = new Error('验证码暂时无法发送，请稍后重试');
       (deliveryError as any).statusCode = 503;
       throw deliveryError;
     }
+    createPendingEmailRegistrationChallenge({
+      id: challengeId,
+      email: input.email,
+      displayName: input.displayName,
+      codeHash: hashEmailVerificationCode(challengeId, code),
+      expiresAt,
+      maxAttempts: 5,
+    });
     const testCode = process.env.SCIFIGURE_TEST_ISOLATED === '1'
       && process.env.SCIFIGURE_TEST_EXPOSE_EMAIL_CODE === '1'
       ? code
       : undefined;
-    return { challengeId, expiresAt, maskedEmail: maskEmailAddress(user.email), testCode };
+    return { challengeId, expiresAt, maskedEmail: maskEmailAddress(input.email), testCode };
   }
 
   function rasterExportDpi(format: string, dpi: unknown): number | null {
@@ -1644,7 +1665,7 @@ ${inner}
     });
   });
 
-  app.post('/api/auth/register', authRateLimit, async (req, res) => {
+  app.post('/api/auth/register', authRateLimit, emailVerificationIpSendRateLimit, emailVerificationSendRateLimit, async (req, res) => {
     try {
       const email = String(req.body?.email || '').trim().toLowerCase();
       const password = String(req.body?.password || '');
@@ -1652,27 +1673,26 @@ ${inner}
       if (!isValidEmail(email)) {
         return res.status(400).json({ status: 'error', message: '请输入有效邮箱' });
       }
-      if (password.length < 8) {
-        return res.status(400).json({ status: 'error', message: '密码至少需要 8 位' });
-      }
-      if (getUserByEmail(email)) {
-        return res.status(409).json({ status: 'error', message: '该邮箱已注册' });
+      const passwordValidation = validateAccountPassword(password);
+      if (passwordValidation.valid === false) {
+        return res.status(400).json({ status: 'error', message: passwordValidation.message });
       }
       const verificationRequired = emailVerificationRequired();
-      const user = await createUserAccount(
-        email,
-        password,
-        displayName || email.split('@')[0],
-        { emailVerificationRequired: verificationRequired },
-      );
       if (verificationRequired) {
-        const challenge = await issueEmailVerificationChallenge(user);
+        const challenge = await issuePendingEmailRegistrationChallenge({
+          email,
+          displayName: displayName || email.split('@')[0],
+        });
         return res.status(202).json({
           status: 'success',
           verificationRequired: true,
           verification: challenge,
         });
       }
+      if (getUserByEmail(email)) {
+        return res.status(409).json({ status: 'error', message: '该邮箱已注册' });
+      }
+      const user = await createUserAccount(email, password, displayName || email.split('@')[0]);
       return res.json({ status: 'success', ...issueAuthenticatedSession(req, res, user) });
     } catch (err: any) {
       res.status(Number(err?.statusCode || 500)).json({
@@ -1682,33 +1702,55 @@ ${inner}
     }
   });
 
-  app.post('/api/auth/verify-email', emailVerificationRateLimit, (req, res) => {
+  app.post('/api/auth/verify-email', emailVerificationAttemptRateLimit, async (req, res) => {
     try {
       const challengeId = String(req.body?.challengeId || '').trim();
       const code = String(req.body?.code || '').trim();
+      const password = String(req.body?.password || '');
       if (!/^evc_[0-9a-f-]{36}$/i.test(challengeId) || !/^\d{6}$/.test(code)) {
         return res.status(400).json({ status: 'error', message: '验证码格式无效' });
       }
-      const result = consumeEmailVerificationChallenge(
-        challengeId,
-        hashEmailVerificationCode(challengeId, code),
-      );
-      if (result.status !== 'verified') {
-        const message = result.status === 'expired'
-          ? '验证码已过期，请重新发送'
-          : result.status === 'locked'
-            ? '验证码尝试次数过多，请重新发送'
-            : '验证码错误';
-        return res.status(400).json({ status: 'error', errorCode: `EMAIL_VERIFICATION_${result.status.toUpperCase()}`, message });
+      const passwordValidation = validateAccountPassword(password);
+      if (passwordValidation.valid === false) {
+        return res.status(400).json({
+          status: 'error',
+          errorCode: 'EMAIL_VERIFICATION_PASSWORD_INVALID',
+          message: passwordValidation.message,
+        });
       }
-      return res.json({ status: 'success', ...issueAuthenticatedSession(req, res, result.user) });
+      const candidateCodeHash = hashEmailVerificationCode(challengeId, code);
+      const pendingResult = await consumePendingEmailRegistrationChallenge(
+        challengeId,
+        candidateCodeHash,
+        password,
+      );
+      if (pendingResult.status === 'verified') {
+        return res.json({ status: 'success', ...issueAuthenticatedSession(req, res, pendingResult.user) });
+      }
+      if (pendingResult.status !== 'not_found') {
+        const message = pendingResult.status === 'expired'
+          ? '验证码已过期，请重新发送'
+          : pendingResult.status === 'locked'
+            ? '验证码尝试次数过多，请重新发送'
+            : pendingResult.status === 'password_invalid'
+              ? '账号密码不符合长度要求'
+              : pendingResult.status === 'already_registered'
+                ? '验证请求已失效，请直接登录'
+                : '验证码错误';
+        return res.status(400).json({
+          status: 'error',
+          errorCode: `EMAIL_VERIFICATION_${pendingResult.status.toUpperCase()}`,
+          message,
+        });
+      }
+      return res.status(400).json({ status: 'error', errorCode: 'EMAIL_VERIFICATION_INVALID', message: '验证码错误或已失效，请重新发送' });
     } catch (err: any) {
       console.error('Email verification failed:', err?.message || err);
       return res.status(500).json({ status: 'error', message: '邮箱验证暂时不可用，请稍后重试' });
     }
   });
 
-  app.post('/api/auth/resend-verification', emailVerificationRateLimit, async (req, res) => {
+  app.post('/api/auth/resend-verification', emailVerificationIpSendRateLimit, emailVerificationSendRateLimit, async (req, res) => {
     const email = String(req.body?.email || '').trim().toLowerCase();
     if (!isValidEmail(email)) {
       return res.status(400).json({ status: 'error', message: '请输入有效邮箱' });
@@ -1725,10 +1767,11 @@ ${inner}
     };
     try {
       const row = getUserByEmail(email);
-      if (!row || row.email_verification_required !== 1 || row.email_verified_at) {
-        return res.json(genericResponse);
-      }
-      const challenge = await issueEmailVerificationChallenge({ id: row.id, email: row.email });
+      const pending = getPendingEmailRegistration(email);
+      const challenge = await issuePendingEmailRegistrationChallenge({
+        email,
+        displayName: pending?.displayName || row?.display_name || email.split('@')[0],
+      });
       return res.json({ ...genericResponse, verification: challenge });
     } catch (err: any) {
       console.error('Email verification resend failed:', err?.message || err);
@@ -1898,7 +1941,10 @@ ${inner}
       const auth = requireAdmin(req);
       actorUserId = auth.user.id;
       const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100)));
-      const logs = listAdminAuditLogs(limit);
+      const logs = listAdminAuditLogs(limit).map(log => ({
+        ...log,
+        metadata: sanitizeAdminAuditMetadata(log.metadata),
+      }));
       writeAdminAudit(req, {
         actorUserId,
         action: 'admin_audit_logs.read',

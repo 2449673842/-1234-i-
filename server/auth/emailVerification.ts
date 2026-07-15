@@ -17,6 +17,37 @@ export function emailVerificationProvider(): EmailVerificationProvider {
     : 'disabled';
 }
 
+export function assertEmailVerificationProductionConfig(): void {
+  if (process.env.NODE_ENV !== 'production') return;
+  if (!emailVerificationRequired()) {
+    if (process.env.SCIFIGURE_ALLOW_UNVERIFIED_REGISTRATION_IN_PRODUCTION === '1') return;
+    throw new Error('生产环境必须启用邮箱验证；仅紧急维护可显式允许未验证注册');
+  }
+  verificationSecret();
+  const provider = emailVerificationProvider();
+  if (provider === 'resend') {
+    if (!String(process.env.SCIFIGURE_RESEND_API_KEY || '').trim() || !String(process.env.SCIFIGURE_EMAIL_FROM || '').trim()) {
+      throw new Error('Resend 邮件提供器配置不完整');
+    }
+    return;
+  }
+  if (provider === 'webhook') {
+    const webhookUrl = String(process.env.SCIFIGURE_EMAIL_WEBHOOK_URL || '').trim();
+    const webhookToken = String(process.env.SCIFIGURE_EMAIL_WEBHOOK_TOKEN || '').trim();
+    let parsed: URL;
+    try {
+      parsed = new URL(webhookUrl);
+    } catch {
+      throw new Error('邮件 webhook URL 无效');
+    }
+    if (parsed.protocol !== 'https:' || !webhookToken) {
+      throw new Error('生产邮件 webhook 必须使用 HTTPS 并配置鉴权 token');
+    }
+    return;
+  }
+  throw new Error('生产环境必须配置 Resend 或 HTTPS webhook 邮件提供器');
+}
+
 export function generateEmailVerificationCode(): string {
   return crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
 }

@@ -122,6 +122,7 @@ function startServer(port, enabled) {
       SCIFIGURE_ADMIN_REAUTH_TTL_MS: '1000',
       SCIFIGURE_VITE_HMR_PORT: String(port + 1_000),
       NODE_ENV: 'production',
+      SCIFIGURE_ALLOW_UNVERIFIED_REGISTRATION_IN_PRODUCTION: '1',
       DISABLE_HMR: 'true',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -473,9 +474,12 @@ try {
   const reauth = await jsonResponse(reauthResponse);
   assert(reauthResponse.ok && reauth?.reauthToken && reauth?.expiresAt, 'Valid administrator password must create a reauth token');
   const requestId = `subscription-${Date.now()}`;
+  const pastedSecret = 'A'.repeat(64);
   const adjustmentBody = {
     plan: 'pro', status: 'active', endsAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
-    reason: 'Grant a seven-day test subscription', adminNote: 'Smoke test only', requestId,
+    reason: `Grant test access for ${userEmail} from C:\\Users\\Researcher\\private.csv with Bearer ${pastedSecret}`,
+    adminNote: 'sample,value\nA,1',
+    requestId,
     reauthToken: reauth.reauthToken,
   };
   const adjustmentResponse = await request(enabled.baseUrl, `/api/admin/users/${userData.user.id}/subscription`, {
@@ -484,6 +488,15 @@ try {
   const adjustment = await jsonResponse(adjustmentResponse);
   assert(adjustmentResponse.ok && adjustment?.subscription?.plan === 'pro' && adjustment?.license?.isPro === true, `Subscription adjustment failed: ${adjustmentResponse.status} ${JSON.stringify(adjustment)}`);
   assert(adjustment.replayed === false, 'First subscription request must not be marked as replayed');
+  const adjustmentText = JSON.stringify(adjustment);
+  assert(
+    adjustment.subscription.changeReason.includes('[redacted-email]')
+      && adjustment.subscription.changeReason.includes('[redacted-path]')
+      && adjustment.subscription.changeReason.includes('[redacted-secret]')
+      && adjustment.subscription.adminNote === '[redacted-content]',
+    `Subscription operational text was not sanitized: ${adjustmentText}`,
+  );
+  assert(!adjustmentText.includes(userEmail) && !adjustmentText.includes('private.csv') && !adjustmentText.includes(pastedSecret), 'Subscription response leaked pasted user content');
 
   const replayResponse = await request(enabled.baseUrl, `/api/admin/users/${userData.user.id}/subscription`, {
     method: 'POST', headers: { Authorization: `Bearer ${adminToken}` }, body: JSON.stringify(adjustmentBody),
@@ -510,6 +523,8 @@ try {
   });
   const subscriptionsAfter = await jsonResponse(subscriptionsAfterResponse);
   assert(subscriptionsAfterResponse.ok && subscriptionsAfter?.items?.[0]?.plan === 'pro' && subscriptionsAfter.items[0].historyCount === 1, 'Subscription list must show one idempotent Pro adjustment');
+  const subscriptionsAfterText = JSON.stringify(subscriptionsAfter);
+  assert(!subscriptionsAfterText.includes('private.csv') && !subscriptionsAfterText.includes(pastedSecret), 'Subscription list leaked pasted user content');
   const usersAfterResponse = await request(enabled.baseUrl, `/api/admin/users?pageSize=100&query=${encodeURIComponent(userEmail)}`, {
     headers: { Authorization: `Bearer ${adminToken}` },
   });
@@ -538,7 +553,13 @@ try {
   assert(auditData.logs.some(entry => entry.action === 'admin_console.subscription.adjust' && entry.success === true), 'Successful subscription adjustment must be audited');
   assert(auditData.logs.some(entry => entry.action === 'admin_console.error_reports.ai_handoff' && entry.success === true), 'AI repair handoff generation must be audited');
   const auditSerialized = JSON.stringify(auditData);
-  assert(!auditSerialized.includes(password) && !auditSerialized.includes(reauth.reauthToken), 'Audit output must not contain administrator password or reauth token');
+  assert(
+    !auditSerialized.includes(password)
+      && !auditSerialized.includes(reauth.reauthToken)
+      && !auditSerialized.includes('private.csv')
+      && !auditSerialized.includes(pastedSecret),
+    'Audit output must not contain passwords, tokens, paths or pasted user content',
+  );
 
   const unsafeIdentifierReport = await request(enabled.baseUrl, '/api/error-reports', {
     method: 'POST',

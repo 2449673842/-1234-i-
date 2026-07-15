@@ -4,6 +4,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import argon2 from 'argon2';
 import { resolvePlanEntitlements, type PlanEntitlements } from './src/schemas/planEntitlements';
+import { validateAccountPassword } from './server/auth/passwordPolicy';
 
 const DATA_ROOT = process.env.SCIFIGURE_DATA_DIR
   ? path.resolve(process.env.SCIFIGURE_DATA_DIR)
@@ -106,6 +107,20 @@ function initSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_email_verification_user_expiry
       ON email_verification_challenges(user_id, expires_at DESC);
+    CREATE TABLE IF NOT EXISTS pending_email_registrations (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      display_name TEXT,
+      code_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5,
+      consumed_at TEXT,
+      sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_pending_email_registration_expiry
+      ON pending_email_registrations(email, expires_at DESC);
     CREATE TABLE IF NOT EXISTS auth_sessions (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -315,6 +330,26 @@ function initSchema() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_request_id
       ON subscriptions(request_id) WHERE request_id IS NOT NULL;
   `);
+  db.exec(`
+    WITH ranked_pending_registrations AS (
+      SELECT rowid,
+             ROW_NUMBER() OVER (
+               PARTITION BY email
+               ORDER BY datetime(created_at) DESC, rowid DESC
+             ) AS registration_rank
+      FROM pending_email_registrations
+      WHERE consumed_at IS NULL
+    )
+    UPDATE pending_email_registrations
+    SET consumed_at = COALESCE(consumed_at, datetime('now'))
+    WHERE rowid IN (
+      SELECT rowid
+      FROM ranked_pending_registrations
+      WHERE registration_rank > 1
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_email_registration_active_email
+      ON pending_email_registrations(email) WHERE consumed_at IS NULL;
+  `);
   [
     "ALTER TABLE project_figures ADD COLUMN preview_svg TEXT",
     "ALTER TABLE project_figures ADD COLUMN manifest TEXT",
@@ -381,6 +416,9 @@ function verifyLegacyPassword(password: string, salt: string, expectedHash: stri
 }
 
 export async function hashPasswordArgon2(password: string): Promise<string> {
+  if (!validateAccountPassword(password).valid) {
+    throw new Error('Account password violates the configured password policy');
+  }
   return argon2.hash(password, {
     type: argon2.argon2id,
     memoryCost: 19_456,
@@ -390,6 +428,7 @@ export async function hashPasswordArgon2(password: string): Promise<string> {
 }
 
 export async function verifyPasswordAndMigrate(row: AuthUserRow, password: string): Promise<boolean> {
+  if (!validateAccountPassword(password).valid) return false;
   const algorithm = row.password_algorithm || 'pbkdf2_sha256';
   if (algorithm === 'argon2id' || row.password_hash.startsWith('$argon2id$')) {
     return argon2.verify(row.password_hash, password);
@@ -468,6 +507,9 @@ export async function createUserAccount(
   options: { emailVerificationRequired?: boolean } = {},
 ): Promise<UserAccount> {
   const normalizedEmail = email.trim().toLowerCase();
+  if (!validateAccountPassword(password).valid) {
+    throw new Error('Account password violates the configured password policy');
+  }
   const hash = await hashPasswordArgon2(password);
   const id = `usr_${crypto.randomUUID()}`;
   const verificationRequired = options.emailVerificationRequired === true;
@@ -501,6 +543,179 @@ export interface EmailVerificationChallenge {
 export type EmailVerificationConsumeResult =
   | { status: 'verified'; user: UserAccount }
   | { status: 'invalid' | 'expired' | 'locked'; user: null };
+
+export interface PendingEmailRegistration {
+  id: string;
+  email: string;
+  displayName: string | null;
+  expiresAt: string;
+  attemptCount: number;
+  maxAttempts: number;
+}
+
+export type PendingEmailRegistrationConsumeResult =
+  | { status: 'verified'; user: UserAccount }
+  | { status: 'not_found' | 'invalid' | 'expired' | 'locked' | 'password_invalid' | 'already_registered'; user: null };
+
+type PendingEmailRegistrationRow = {
+  id: string;
+  email: string;
+  display_name: string | null;
+  code_hash: string;
+  expires_at: string;
+  attempt_count: number;
+  max_attempts: number;
+  consumed_at: string | null;
+};
+
+function pendingEmailRegistrationRow(challengeId: string): PendingEmailRegistrationRow | undefined {
+  return getDb().prepare(`
+    SELECT id, email, display_name, code_hash, expires_at, attempt_count, max_attempts, consumed_at
+    FROM pending_email_registrations
+    WHERE id = ?
+    LIMIT 1
+  `).get(challengeId) as PendingEmailRegistrationRow | undefined;
+}
+
+export function getPendingEmailRegistration(email: string): PendingEmailRegistration | null {
+  const row = getDb().prepare(`
+    SELECT id, email, display_name, expires_at, attempt_count, max_attempts
+    FROM pending_email_registrations
+    WHERE email = ?
+      AND consumed_at IS NULL
+      AND datetime(expires_at) > datetime('now')
+    ORDER BY datetime(created_at) DESC
+    LIMIT 1
+  `).get(email.trim().toLowerCase()) as Omit<PendingEmailRegistrationRow, 'code_hash' | 'consumed_at'> | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    displayName: row.display_name,
+    expiresAt: row.expires_at,
+    attemptCount: row.attempt_count,
+    maxAttempts: row.max_attempts,
+  };
+}
+
+export function createPendingEmailRegistrationChallenge(input: {
+  id: string;
+  email: string;
+  displayName?: string;
+  codeHash: string;
+  expiresAt: string;
+  maxAttempts?: number;
+}): PendingEmailRegistration {
+  const database = getDb();
+  const normalizedEmail = input.email.trim().toLowerCase();
+  return database.transaction(() => {
+    database.prepare(`
+      UPDATE pending_email_registrations
+      SET consumed_at = COALESCE(consumed_at, datetime('now'))
+      WHERE email = ? AND consumed_at IS NULL
+    `).run(normalizedEmail);
+    database.prepare(`
+      DELETE FROM pending_email_registrations
+      WHERE datetime(expires_at) <= datetime('now', '-1 day')
+    `).run();
+    const maxAttempts = Math.max(3, Math.min(10, Math.floor(input.maxAttempts || 5)));
+    database.prepare(`
+      INSERT INTO pending_email_registrations (
+        id, email, display_name, code_hash, expires_at, max_attempts
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      input.id,
+      normalizedEmail,
+      input.displayName?.trim() || null,
+      input.codeHash,
+      input.expiresAt,
+      maxAttempts,
+    );
+    return {
+      id: input.id,
+      email: normalizedEmail,
+      displayName: input.displayName?.trim() || null,
+      expiresAt: input.expiresAt,
+      attemptCount: 0,
+      maxAttempts,
+    };
+  })();
+}
+
+export async function consumePendingEmailRegistrationChallenge(
+  challengeId: string,
+  candidateCodeHash: string,
+  password: string,
+): Promise<PendingEmailRegistrationConsumeResult> {
+  const database = getDb();
+  const checked = database.transaction((): PendingEmailRegistrationConsumeResult | { status: 'ready'; row: PendingEmailRegistrationRow; user: null } => {
+    const row = pendingEmailRegistrationRow(challengeId);
+    if (!row) return { status: 'not_found', user: null };
+    if (row.consumed_at) return { status: 'invalid', user: null };
+    if (Date.parse(row.expires_at) <= Date.now()) {
+      database.prepare("UPDATE pending_email_registrations SET consumed_at = datetime('now') WHERE id = ?").run(row.id);
+      return { status: 'expired', user: null };
+    }
+    if (row.attempt_count >= row.max_attempts) return { status: 'locked', user: null };
+    if (!constantTimeHashEqual(candidateCodeHash, row.code_hash)) {
+      const nextAttempts = row.attempt_count + 1;
+      database.prepare(`
+        UPDATE pending_email_registrations
+        SET attempt_count = ?, consumed_at = CASE WHEN ? >= max_attempts THEN datetime('now') ELSE consumed_at END
+        WHERE id = ?
+      `).run(nextAttempts, nextAttempts, row.id);
+      return { status: nextAttempts >= row.max_attempts ? 'locked' : 'invalid', user: null };
+    }
+    if (!validateAccountPassword(password).valid) return { status: 'password_invalid', user: null };
+    return { status: 'ready', row, user: null };
+  })();
+  if (checked.status !== 'ready') return checked;
+
+  const passwordHash = await hashPasswordArgon2(password);
+  const completed = database.transaction((): PendingEmailRegistrationConsumeResult => {
+    const row = pendingEmailRegistrationRow(challengeId);
+    if (!row || row.consumed_at || Date.parse(row.expires_at) <= Date.now()) {
+      return { status: 'invalid', user: null };
+    }
+    if (!constantTimeHashEqual(candidateCodeHash, row.code_hash)) {
+      return { status: 'invalid', user: null };
+    }
+
+    const existing = database.prepare('SELECT * FROM users WHERE email = ? LIMIT 1').get(row.email) as AuthUserRow | undefined;
+    if (existing && (existing.email_verification_required !== 1 || existing.email_verified_at)) {
+      database.prepare("UPDATE pending_email_registrations SET consumed_at = datetime('now') WHERE id = ?").run(row.id);
+      return { status: 'already_registered', user: null };
+    }
+
+    let userId = existing?.id;
+    if (existing) {
+      database.prepare(`
+        UPDATE users
+        SET password_hash = ?, password_salt = '', password_algorithm = 'argon2id',
+            display_name = COALESCE(?, display_name),
+            email_verified_at = datetime('now'), email_verification_required = 0
+        WHERE id = ?
+      `).run(passwordHash, row.display_name, existing.id);
+    } else {
+      userId = `usr_${crypto.randomUUID()}`;
+      database.prepare(`
+        INSERT INTO users (
+          id, email, display_name, password_hash, password_salt, password_algorithm,
+          email_verified_at, email_verification_required
+        ) VALUES (?, ?, ?, ?, '', 'argon2id', datetime('now'), 0)
+      `).run(userId, row.email, row.display_name, passwordHash);
+    }
+    database.prepare(`
+      UPDATE pending_email_registrations
+      SET consumed_at = datetime('now')
+      WHERE email = ? AND consumed_at IS NULL
+    `).run(row.email);
+    const userRow = database.prepare('SELECT * FROM users WHERE id = ?').get(userId) as AuthUserRow;
+    return { status: 'verified', user: mapUser(userRow) };
+  })();
+  if (completed.status === 'verified') claimLegacyOwnership(completed.user.id);
+  return completed;
+}
 
 export function createEmailVerificationChallenge(input: {
   id: string;

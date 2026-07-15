@@ -68,7 +68,12 @@ async function main() {
     });
     await page.route('**/api/auth/verify-email', async route => {
       const body = route.request().postDataJSON();
-      assert(body.challengeId === 'evc_12345678-1234-1234-1234-123456789abc' && body.code === '123456', `Unexpected verification payload: ${JSON.stringify(body)}`);
+      assert(
+        body.challengeId === 'evc_12345678-1234-1234-1234-123456789abc'
+          && body.code === '123456'
+          && body.password === 'Public-Landing-Smoke-2026',
+        `Unexpected verification payload: ${JSON.stringify(body)}`,
+      );
       authenticated = true;
       await route.fulfill({
         status: 200,

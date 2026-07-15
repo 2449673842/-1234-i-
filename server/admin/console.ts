@@ -2,6 +2,7 @@ import type express from 'express';
 import { adminConsoleEnabled } from './featureFlags';
 import crypto from 'crypto';
 import os from 'os';
+import { sanitizeAdminOperationalText } from './privacy';
 import {
   getDb,
   getErrorReportById,
@@ -510,8 +511,8 @@ function listSubscriptions(req: express.Request) {
       endsAt: row.ends_at ?? null,
       source: row.source ?? 'none',
       actorUserId: row.actor_user_id ?? null,
-      changeReason: row.change_reason ?? null,
-      adminNote: row.admin_note ?? null,
+      changeReason: sanitizeAdminOperationalText(row.change_reason, 500),
+      adminNote: sanitizeAdminOperationalText(row.admin_note, 500),
       createdAt: row.created_at ?? null,
       historyCount: Number(row.history_count || 0),
     })),
@@ -872,9 +873,9 @@ export function installAdminConsoleRoutes(app: express.Express, deps: AdminConso
       if (status === 'active' && endsAt && Date.parse(endsAt) <= Date.now()) {
         throw httpError(400, '有效订阅的到期时间必须晚于当前时间');
       }
-      const reason = boundedText(req.body?.reason, 500);
+      const reason = sanitizeAdminOperationalText(req.body?.reason, 500);
       if (!reason || reason.length < 3) throw httpError(400, '必须填写至少 3 个字符的调整原因');
-      const adminNote = boundedText(req.body?.adminNote, 500);
+      const adminNote = sanitizeAdminOperationalText(req.body?.adminNote, 500);
       const requestId = safeRequestId(req.body?.requestId);
       const reauthToken = typeof req.body?.reauthToken === 'string' ? req.body.reauthToken : '';
       if (!/^sfr_[A-Za-z0-9_-]{32,}$/.test(reauthToken)) throw httpError(401, '二次验证令牌无效');

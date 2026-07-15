@@ -140,7 +140,7 @@ export function SettingsPage({ subView }: { subView: string }) {
       const res = await fetch('/api/auth/verify-email', {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify({ challengeId: verification.challengeId, code: verificationCode }),
+        body: JSON.stringify({ challengeId: verification.challengeId, code: verificationCode, password }),
       });
       const data = await res.json();
       if (!res.ok || data.status !== 'success' || typeof data.token !== 'string') throw new Error(data.message || '邮箱验证失败');

@@ -11,6 +11,34 @@ assert.ok(fs.existsSync(bundle), 'Run npm run build before the production bundle
 const bundleSource = fs.readFileSync(bundle, 'utf8');
 assert.doesNotMatch(bundleSource.slice(0, 20_000), /require\(["']vite["']\)/, 'Production bundle must not load Vite eagerly');
 
+const rejectedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-production-email-gate-'));
+const rejectedOutput = [];
+const {
+  SCIFIGURE_EMAIL_VERIFICATION_REQUIRED: _verificationRequired,
+  SCIFIGURE_ALLOW_UNVERIFIED_REGISTRATION_IN_PRODUCTION: _allowUnverified,
+  SCIFIGURE_EMAIL_PROVIDER: _emailProvider,
+  ...productionEnvWithoutEmail
+} = process.env;
+const rejected = spawn(process.execPath, [bundle], {
+  cwd: root,
+  env: {
+    ...productionEnvWithoutEmail,
+    NODE_ENV: 'production',
+    SCIFIGURE_DATA_DIR: path.join(rejectedRoot, 'data'),
+    SCIFIGURE_DB_PATH: path.join(rejectedRoot, 'data', 'scifigure.db'),
+  },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+rejected.stdout.on('data', chunk => rejectedOutput.push(chunk.toString()));
+rejected.stderr.on('data', chunk => rejectedOutput.push(chunk.toString()));
+const rejectedExitCode = await Promise.race([
+  new Promise(resolve => rejected.once('close', resolve)),
+  new Promise((_, reject) => setTimeout(() => reject(new Error('Production email gate did not stop startup')), 10_000)),
+]);
+assert.notEqual(rejectedExitCode, 0, 'Production server must reject missing email verification configuration');
+assert.match(rejectedOutput.join(''), /生产环境必须启用邮箱验证/);
+fs.rmSync(rejectedRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-production-bundle-'));
 const dataRoot = path.join(tempRoot, 'data');
 const port = 37_000 + Math.floor(Math.random() * 1_000);
@@ -20,6 +48,7 @@ const child = spawn(process.execPath, [bundle], {
   env: {
     ...process.env,
     NODE_ENV: 'production',
+    SCIFIGURE_ALLOW_UNVERIFIED_REGISTRATION_IN_PRODUCTION: '1',
     PORT: String(port),
     SCIFIGURE_BIND_HOST: '127.0.0.1',
     SCIFIGURE_DATA_DIR: dataRoot,
@@ -54,6 +83,7 @@ try {
     status: 'PASS',
     checks: [
       'production CJS bundle starts without eager Vite dependency',
+      'production startup fails closed without email verification configuration',
       'loopback bind setting is honored',
       'public liveness endpoint responds',
     ],
