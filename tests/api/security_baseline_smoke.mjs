@@ -129,11 +129,16 @@ async function testImportedSvgSafetyBoundary() {
   assert(projectResponse.ok && project?.id, `SVG security project failed: ${projectResponse.status} ${JSON.stringify(project)}`);
 
   const safeSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><defs><clipPath id="c"><rect width="10" height="10"/></clipPath></defs><rect clip-path="url(#c)" width="10" height="10" fill="#176b5b"/></svg>';
+  const metadataWithDangerousKey = JSON.parse('{"kind":"composite","__proto__":{"polluted":true}}');
   const safeResponse = await request(`/api/projects/${project.id}/export-assets/import`, {
     method: 'POST',
-    body: JSON.stringify({ format: 'svg', name: 'safe', svg: safeSvg }),
+    body: JSON.stringify({ format: 'svg', name: 'n'.repeat(500), svg: safeSvg, metadata: metadataWithDangerousKey }),
   });
-  assert(safeResponse.ok, `Safe SVG import failed: ${safeResponse.status} ${await safeResponse.text()}`);
+  const safeAsset = await safeResponse.json().catch(() => null);
+  assert(safeResponse.ok, `Safe SVG import failed: ${safeResponse.status} ${JSON.stringify(safeAsset)}`);
+  assert(safeAsset?.asset?.name?.length === 160, 'Export asset names must be bounded before persistence');
+  assert(!safeAsset?.asset?.metadata?.__proto__?.polluted, 'Dangerous export metadata keys must be removed');
+  assert(!/[\\/]/.test(safeAsset?.asset?.filePath || ''), `Export API must not expose server storage paths: ${safeAsset?.asset?.filePath}`);
 
   const maliciousPayloads = [
     '<svg xmlns="http://www.w3.org/2000/svg" onload=alert(1)></svg>',
@@ -166,6 +171,11 @@ async function testUploadedFileSignatures(projectId) {
   validText.append('file', new Blob(['sample,value\nA,1\n'], { type: 'text/csv' }), 'valid.csv');
   const validTextResponse = await request(`/api/projects/${projectId}/files`, { method: 'POST', body: validText });
   assert(validTextResponse.ok, `Valid CSV upload failed: ${validTextResponse.status} ${await validTextResponse.text()}`);
+  const listedFilesResponse = await request(`/api/projects/${projectId}/files`);
+  const listedFiles = await listedFilesResponse.json().catch(() => null);
+  const listedValidFile = listedFiles?.datasets?.find(dataset => dataset.fileName === 'valid.csv');
+  assert(listedFilesResponse.ok && listedValidFile, 'Uploaded CSV must remain available after validation');
+  assert(listedValidFile.filePath === listedValidFile.fileName, `Dataset API must expose only a logical filename, got ${listedValidFile.filePath}`);
 
   const wideText = new FormData();
   wideText.append('file', new Blob([`${Array.from({ length: 2049 }, (_, index) => `c${index}`).join(',')}\n`], { type: 'text/csv' }), 'too-wide.csv');
@@ -213,6 +223,21 @@ async function testResourceBudgets(projectId) {
     }),
   });
   assert(render.status === 413, `Renderer custom_data ceiling should return 413 before execution, got ${render.status} ${await render.text()}`);
+
+  const oversizedSessionScript = await request('/api/figure/render', {
+    method: 'POST',
+    body: JSON.stringify({ script: `#${'x'.repeat(2 * 1024 * 1024)}` }),
+  });
+  assert(oversizedSessionScript.status === 413, `Oversized session script should return 413 before execution, got ${oversizedSessionScript.status} ${await oversizedSessionScript.text()}`);
+
+  const oversizedProject = await request('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: 'oversized-project-record',
+      spec: { plot_type: 'custom', padding: 'x'.repeat(4 * 1024 * 1024) },
+    }),
+  });
+  assert(oversizedProject.status === 413, `Oversized project record should return 413, got ${oversizedProject.status} ${await oversizedProject.text()}`);
 }
 
 async function testExportImportHonorsGlobalUploadBudget(projectId) {

@@ -20,6 +20,16 @@ describe('SVG import safety boundary', () => {
     expect(assertSafeSvgDocument(safeSvg)).toBe(safeSvg);
   });
 
+  it('strips the fixed Matplotlib SVG 1.1 doctype before persistence', () => {
+    const matplotlibSvg = `<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+ "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns="http://www.w3.org/2000/svg"><text>safe</text></svg>`;
+    const normalized = assertSafeSvgDocument(matplotlibSvg);
+    expect(normalized).not.toContain('<!DOCTYPE');
+    expect(normalized).toContain('<svg');
+  });
+
   it.each([
     '<svg xmlns="http://www.w3.org/2000/svg" onload=alert(1)></svg>',
     '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><iframe src="https://evil.invalid" /></foreignObject></svg>',
@@ -27,6 +37,7 @@ describe('SVG import safety boundary', () => {
     '<svg xmlns="http://www.w3.org/2000/svg"><a href="&#x6a;avascript:alert(1)"><text>x</text></a></svg>',
     '<svg xmlns="http://www.w3.org/2000/svg"><rect style="fill:url(https://evil.invalid/pixel)" /></svg>',
     '<!DOCTYPE svg [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><svg xmlns="http://www.w3.org/2000/svg"><text>&xxe;</text></svg>',
+    '<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "https://evil.invalid/svg.dtd"><svg xmlns="http://www.w3.org/2000/svg" />',
   ])('rejects active or external SVG content', (payload) => {
     expect(() => assertSafeSvgDocument(payload)).toThrow(UnsafeSvgError);
   });

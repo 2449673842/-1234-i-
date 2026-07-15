@@ -5,6 +5,14 @@ import crypto from 'crypto';
 import argon2 from 'argon2';
 import { resolvePlanEntitlements, type PlanEntitlements } from './src/schemas/planEntitlements';
 import { validateAccountPassword } from './server/auth/passwordPolicy';
+import {
+  assertDisposableSessionStorageBudget,
+  assertProjectSessionBatchBudget,
+  assertUserProjectCatalogBudget,
+  figureHistorySizeBytes,
+  projectRecordSizeBytes,
+  sessionRecordSizeBytes,
+} from './server/security/resourceBudgets';
 
 const DATA_ROOT = process.env.SCIFIGURE_DATA_DIR
   ? path.resolve(process.env.SCIFIGURE_DATA_DIR)
@@ -1815,16 +1823,55 @@ export function getProject(id: string, userId: string): ProjectRow | null {
   return row ?? null;
 }
 
-export function createProject(id: string, userId: string, name: string, spec: object): void {
-  getDb().prepare('INSERT INTO projects (id, user_id, name, spec) VALUES (?, ?, ?, ?)').run(id, userId, name, JSON.stringify(spec));
+export function createProject(id: string, userId: string, name: string, spec: object, script?: string): void {
+  const normalizedName = name.trim();
+  const specJson = JSON.stringify(spec);
+  const normalizedScript = script === undefined ? null : script;
+  const incomingBytes = projectRecordSizeBytes(normalizedName, specJson, normalizedScript);
+  const database = getDb();
+  database.transaction(() => {
+    const catalog = database.prepare(`
+      SELECT COUNT(*) AS count,
+             COALESCE(SUM(
+               length(CAST(name AS BLOB))
+               + length(CAST(spec AS BLOB))
+               + length(CAST(COALESCE(script, '') AS BLOB))
+             ), 0) AS sizeBytes
+      FROM projects WHERE user_id = ?
+    `).get(userId) as { count: number; sizeBytes: number };
+    assertUserProjectCatalogBudget(Number(catalog.count || 0), Number(catalog.sizeBytes || 0), incomingBytes, true);
+    database.prepare('INSERT INTO projects (id, user_id, name, spec, script) VALUES (?, ?, ?, ?, ?)')
+      .run(id, userId, normalizedName, specJson, normalizedScript);
+  }).immediate();
 }
 
 export function updateProject(id: string, userId: string, name: string, spec: object, script?: string): void {
-  if (script !== undefined) {
-    getDb().prepare('UPDATE projects SET name = ?, spec = ?, script = ?, updated_at = datetime(\'now\') WHERE id = ? AND user_id = ?').run(name, JSON.stringify(spec), script, id, userId);
-  } else {
-    getDb().prepare('UPDATE projects SET name = ?, spec = ?, updated_at = datetime(\'now\') WHERE id = ? AND user_id = ?').run(name, JSON.stringify(spec), id, userId);
-  }
+  const normalizedName = name.trim();
+  const specJson = JSON.stringify(spec);
+  const database = getDb();
+  database.transaction(() => {
+    const existing = database.prepare('SELECT script FROM projects WHERE id = ? AND user_id = ?')
+      .get(id, userId) as { script: string | null } | undefined;
+    if (!existing) throw new Error('Project not found');
+    const nextScript = script !== undefined ? script : existing.script;
+    const incomingBytes = projectRecordSizeBytes(normalizedName, specJson, nextScript);
+    const catalog = database.prepare(`
+      SELECT COUNT(*) AS count,
+             COALESCE(SUM(
+               length(CAST(name AS BLOB))
+               + length(CAST(spec AS BLOB))
+               + length(CAST(COALESCE(script, '') AS BLOB))
+             ), 0) AS sizeBytes
+      FROM projects WHERE user_id = ? AND id <> ?
+    `).get(userId, id) as { count: number; sizeBytes: number };
+    assertUserProjectCatalogBudget(Number(catalog.count || 0), Number(catalog.sizeBytes || 0), incomingBytes, false);
+    const result = script !== undefined
+      ? database.prepare('UPDATE projects SET name = ?, spec = ?, script = ?, updated_at = datetime(\'now\') WHERE id = ? AND user_id = ?')
+        .run(normalizedName, specJson, script, id, userId)
+      : database.prepare('UPDATE projects SET name = ?, spec = ?, updated_at = datetime(\'now\') WHERE id = ? AND user_id = ?')
+        .run(normalizedName, specJson, id, userId);
+    if (result.changes !== 1) throw new Error('Project ownership conflict');
+  }).immediate();
 }
 
 export function deleteProject(id: string, userId: string): void {
@@ -1845,17 +1892,55 @@ export interface SessionRow {
 }
 
 export function saveSession(id: string, userId: string, script: string, dataPayload: Record<string, unknown> | null, editLog: unknown[], revision: number): void {
-  getDb().prepare(`
-    INSERT INTO sessions (id, user_id, script, data_payload, edit_log, revision, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET
-      user_id = excluded.user_id,
-      script = excluded.script,
-      data_payload = excluded.data_payload,
-      edit_log = excluded.edit_log,
-      revision = excluded.revision,
-      updated_at = datetime('now')
-  `).run(id, userId, script, dataPayload ? JSON.stringify(dataPayload) : null, JSON.stringify(editLog), revision);
+  const dataPayloadJson = dataPayload ? JSON.stringify(dataPayload) : null;
+  const editLogJson = JSON.stringify(editLog);
+  const incomingBytes = sessionRecordSizeBytes(script, dataPayloadJson, editLogJson);
+  const database = getDb();
+  database.transaction(() => {
+    const existing = database.prepare('SELECT user_id FROM sessions WHERE id = ?').get(id) as { user_id: string } | undefined;
+    if (existing && existing.user_id !== userId) throw new Error('Session ownership conflict');
+    const linkedProject = database.prepare(`
+      SELECT p.user_id AS userId
+      FROM project_figures pf
+      INNER JOIN projects p ON p.id = pf.project_id
+      WHERE pf.session_id = ?
+      LIMIT 1
+    `).get(id) as { userId: string | null } | undefined;
+    if (linkedProject?.userId && linkedProject.userId !== userId) throw new Error('Session ownership conflict');
+    if (!linkedProject) {
+      const disposable = database.prepare(`
+        SELECT COUNT(*) AS count,
+               COALESCE(SUM(
+                 length(CAST(s.script AS BLOB))
+                 + length(CAST(COALESCE(s.data_payload, '') AS BLOB))
+                 + length(CAST(s.edit_log AS BLOB))
+               ), 0) AS sizeBytes
+        FROM sessions s
+        WHERE s.user_id = ? AND s.id <> ?
+          AND NOT EXISTS (
+            SELECT 1 FROM project_figures pf WHERE pf.session_id = s.id
+          )
+      `).get(userId, id) as { count: number; sizeBytes: number };
+      assertDisposableSessionStorageBudget(
+        Number(disposable.count || 0),
+        Number(disposable.sizeBytes || 0),
+        incomingBytes,
+        true,
+      );
+    }
+    const result = database.prepare(`
+      INSERT INTO sessions (id, user_id, script, data_payload, edit_log, revision, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        script = excluded.script,
+        data_payload = excluded.data_payload,
+        edit_log = excluded.edit_log,
+        revision = excluded.revision,
+        updated_at = datetime('now')
+      WHERE sessions.user_id = excluded.user_id
+    `).run(id, userId, script, dataPayloadJson, editLogJson, revision);
+    if (result.changes !== 1) throw new Error('Session ownership conflict');
+  }).immediate();
 }
 
 export function getSession(id: string, userId: string): SessionRow | null {
@@ -2101,12 +2186,32 @@ export function replaceProjectFiguresAndSessions(
 ): void {
   const db = getDb();
   db.transaction(() => {
+    const ownedProject = db.prepare('SELECT 1 FROM projects WHERE id = ? AND user_id = ?').get(projectId, userId);
+    if (!ownedProject) throw new Error('Project ownership check failed');
+    const payload = dataPayload ? JSON.stringify(dataPayload) : null;
     const previousRows = db.prepare(`
       SELECT figure_index, history
       FROM project_figures
       WHERE project_id = ?
     `).all(projectId) as Array<{ figure_index: number; history?: string | null }>;
     const previousHistoryByIndex = new Map(previousRows.map(row => [row.figure_index, row.history]));
+    const emptyHistoryJson = JSON.stringify({ past: [], future: [] });
+    const preparedFigures = figures.map(fig => {
+      const editLogJson = JSON.stringify(fig.editLog || []);
+      const historyJson = fig.history !== undefined
+        ? JSON.stringify(fig.history) ?? emptyHistoryJson
+        : previousHistoryByIndex.get(fig.figureIndex) || emptyHistoryJson;
+      return {
+        fig,
+        editLogJson,
+        historyJson,
+        recordBytes: sessionRecordSizeBytes(script, payload, editLogJson) + figureHistorySizeBytes(historyJson),
+      };
+    });
+    assertProjectSessionBatchBudget(
+      preparedFigures.reduce((sum, item) => sum + item.recordBytes, 0),
+      preparedFigures.length,
+    );
     db.prepare('DELETE FROM project_figures WHERE project_id = ?').run(projectId);
     const insertFig = db.prepare(`
       INSERT INTO project_figures (
@@ -2120,15 +2225,15 @@ export function replaceProjectFiguresAndSessions(
       INSERT INTO sessions (id, user_id, script, data_payload, edit_log, revision, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT(id) DO UPDATE SET
-        user_id = excluded.user_id,
         script = excluded.script,
         data_payload = excluded.data_payload,
         edit_log = excluded.edit_log,
         revision = excluded.revision,
         updated_at = datetime('now')
+      WHERE sessions.user_id = excluded.user_id
     `);
 
-    figures.forEach(fig => {
+    preparedFigures.forEach(({ fig, editLogJson, historyJson }) => {
       insertFig.run(
         projectId + '_' + fig.figureIndex,
         projectId,
@@ -2139,21 +2244,21 @@ export function replaceProjectFiguresAndSessions(
         fig.manifest ? JSON.stringify(fig.manifest) : null,
         fig.codeSlice ? JSON.stringify(fig.codeSlice) : null,
         fig.fingerprint !== undefined && fig.fingerprint !== null ? String(fig.fingerprint) : null,
-        JSON.stringify(fig.editLog || []),
-        fig.history !== undefined
-          ? JSON.stringify(fig.history)
-          : previousHistoryByIndex.get(fig.figureIndex) || JSON.stringify({ past: [], future: [] })
+        editLogJson,
+        historyJson
       );
 
-      const payload = dataPayload ? JSON.stringify(dataPayload) : null;
-      insertSession.run(
+      const sessionResult = insertSession.run(
         fig.sessionId,
         userId,
         script,
         payload,
-        JSON.stringify(fig.editLog),
+        editLogJson,
         fig.revision
       );
+      if (sessionResult.changes !== 1) {
+        throw new Error('Project Figure session ownership conflict');
+      }
     });
   })();
 }

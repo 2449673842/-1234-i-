@@ -32,6 +32,41 @@ async function register(label) {
 async function main() {
   const tokenA = await register('a');
   const tokenB = await register('b');
+  const sharedScript = [
+    'import matplotlib.pyplot as plt',
+    'fig, ax = plt.subplots(figsize=(2, 1.5))',
+    'ax.plot([0, 1], [0, 1])',
+    'ax.set_title("shared script isolation")',
+  ].join('\n');
+  const directRenderA = await jsonRequest('/api/figure/render', tokenA, {
+    method: 'POST',
+    body: JSON.stringify({ script: sharedScript, language: 'python' }),
+  });
+  const directRenderB = await jsonRequest('/api/figure/render', tokenB, {
+    method: 'POST',
+    body: JSON.stringify({ script: sharedScript, language: 'python' }),
+  });
+  assert(directRenderA.response.ok && directRenderA.data?.sessionId, `User A direct render failed: ${JSON.stringify(directRenderA.data)}`);
+  assert(directRenderB.response.ok && directRenderB.data?.sessionId, `User B direct render failed: ${JSON.stringify(directRenderB.data)}`);
+  assert(directRenderA.data.sessionId !== directRenderB.data.sessionId, 'Identical scripts from different users must receive different server session IDs');
+
+  const crossUserPatch = await jsonRequest('/api/figure/patch', tokenB, {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId: directRenderA.data.sessionId,
+      patches: [{ gid: 'title.0', prop: 'visible', value: true, mode: 'local_patch' }],
+    }),
+  });
+  assert(crossUserPatch.response.status === 404, `User B must not patch User A session, got ${crossUserPatch.response.status}`);
+  const ownerPatchAfterCollision = await jsonRequest('/api/figure/patch', tokenA, {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId: directRenderA.data.sessionId,
+      patches: [{ gid: 'title.0', prop: 'visible', value: true, mode: 'local_patch' }],
+    }),
+  });
+  assert(ownerPatchAfterCollision.response.ok, 'User A session ownership must survive User B rendering the identical script');
+
   const created = await jsonRequest('/api/projects', tokenA, {
     method: 'POST',
     body: JSON.stringify({ name: 'owner-a-private-project', spec: { plot_type: 'custom' } }),
@@ -63,7 +98,16 @@ async function main() {
     await jsonRequest(`/api/projects/${projectId}`, tokenA, { method: 'DELETE' }).catch(() => null);
   }
 
-  console.log(JSON.stringify({ status: 'PASS', baseUrl: BASE_URL }, null, 2));
+  console.log(JSON.stringify({
+    status: 'PASS',
+    baseUrl: BASE_URL,
+    checks: [
+      'identical cross-user scripts receive distinct server session IDs',
+      'cross-user direct session patch is rejected',
+      'original session owner remains valid after another user renders the same script',
+      'project list/read/update/delete remain owner-scoped',
+    ],
+  }, null, 2));
 }
 
 main().catch(error => {

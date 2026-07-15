@@ -62,6 +62,8 @@ import {
   assertProjectStorageBudget,
   assertUserTotalStorageBudget,
   assertUserStorageBudget,
+  figureHistorySizeBytes,
+  sessionRecordSizeBytes,
   singleUploadLimitBytes,
 } from './server/security/resourceBudgets';
 import { 
@@ -144,13 +146,15 @@ async function startServer() {
     try {
       const row = getDb().prepare('SELECT svg, manifest, code_slice FROM render_cache WHERE cache_key = ?').get(cacheKey) as any;
       if (row) {
+        const safeSvg = assertSafeSvgDocument(row.svg, 32 * 1024 * 1024);
         return {
-          svg: row.svg,
+          svg: safeSvg,
           manifest: JSON.parse(row.manifest),
           codeSlice: row.code_slice ? JSON.parse(row.code_slice) : null
         };
       }
     } catch (e) {
+      try { getDb().prepare('DELETE FROM render_cache WHERE cache_key = ?').run(cacheKey); } catch { /* cache is disposable */ }
       console.error('Failed to read from render cache:', e);
     }
     return null;
@@ -158,10 +162,54 @@ async function startServer() {
 
   function setCachedRender(cacheKey: string, svg: string, manifest: any, codeSlice?: any) {
     try {
-      getDb().prepare(`
-        INSERT OR REPLACE INTO render_cache (cache_key, svg, manifest, code_slice)
-        VALUES (?, ?, ?, ?)
-      `).run(cacheKey, svg, JSON.stringify(manifest), codeSlice ? JSON.stringify(codeSlice) : null);
+      const safeSvg = assertSafeSvgDocument(svg, 32 * 1024 * 1024);
+      const manifestJson = JSON.stringify(manifest);
+      const codeSliceJson = codeSlice ? JSON.stringify(codeSlice) : null;
+      const entryBytes = Buffer.byteLength(safeSvg, 'utf8')
+        + Buffer.byteLength(manifestJson, 'utf8')
+        + (codeSliceJson ? Buffer.byteLength(codeSliceJson, 'utf8') : 0);
+      const maxEntryBytes = boundedNumber(process.env.SCIFIGURE_RENDER_CACHE_ENTRY_MAX_MB, 32, 4, 64) * 1024 * 1024;
+      if (entryBytes > maxEntryBytes) return;
+      const maxEntries = Math.floor(boundedNumber(process.env.SCIFIGURE_RENDER_CACHE_MAX_ENTRIES, 500, 20, 5_000));
+      const maxTotalBytes = boundedNumber(process.env.SCIFIGURE_RENDER_CACHE_MAX_MB, 512, 64, 4_096) * 1024 * 1024;
+      const database = getDb();
+      database.transaction(() => {
+        database.prepare("DELETE FROM render_cache WHERE created_at < datetime('now', '-7 days')").run();
+        database.prepare(`
+          INSERT OR REPLACE INTO render_cache (cache_key, svg, manifest, code_slice)
+          VALUES (?, ?, ?, ?)
+        `).run(cacheKey, safeSvg, manifestJson, codeSliceJson);
+        database.prepare(`
+          DELETE FROM render_cache
+          WHERE cache_key IN (
+            SELECT cache_key FROM render_cache
+            ORDER BY datetime(created_at) DESC
+            LIMIT -1 OFFSET ?
+          )
+        `).run(maxEntries);
+        let total = database.prepare(`
+          SELECT COALESCE(SUM(
+            length(CAST(svg AS BLOB))
+            + length(CAST(manifest AS BLOB))
+            + length(CAST(COALESCE(code_slice, '') AS BLOB))
+          ), 0) AS sizeBytes FROM render_cache
+        `).get() as { sizeBytes: number };
+        while (Number(total.sizeBytes || 0) > maxTotalBytes) {
+          const removed = database.prepare(`
+            DELETE FROM render_cache WHERE cache_key = (
+              SELECT cache_key FROM render_cache ORDER BY datetime(created_at) ASC LIMIT 1
+            )
+          `).run();
+          if (removed.changes !== 1) break;
+          total = database.prepare(`
+            SELECT COALESCE(SUM(
+              length(CAST(svg AS BLOB))
+              + length(CAST(manifest AS BLOB))
+              + length(CAST(COALESCE(code_slice, '') AS BLOB))
+            ), 0) AS sizeBytes FROM render_cache
+          `).get() as { sizeBytes: number };
+        }
+      }).immediate();
     } catch (e) {
       console.error('Failed to write to render cache:', e);
     }
@@ -200,6 +248,33 @@ async function startServer() {
   const deploymentLifecycle = new DeploymentLifecycle();
   const activeRendererAborters = new Set<() => void>();
   const renderWorkQueue = new AbortableWorkQueue(() => renderConcurrencyLimit());
+
+  function rememberIdempotentResponse(sessionId: string, requestId: string, response: any): void {
+    const processedIds = processedRequestIdsMap.get(sessionId);
+    const responseCache = responseCacheMap.get(sessionId);
+    if (!processedIds || !responseCache) return;
+    const maxResponseBytes = boundedNumber(process.env.SCIFIGURE_IDEMPOTENCY_RESPONSE_MAX_MB, 8, 1, 32) * 1024 * 1024;
+    let responseBytes = maxResponseBytes + 1;
+    try { responseBytes = Buffer.byteLength(JSON.stringify(response), 'utf8'); } catch { /* do not cache unserializable responses */ }
+    if (responseBytes <= maxResponseBytes) {
+      processedIds.add(requestId);
+      responseCache.set(requestId, response);
+    }
+    const perSessionLimit = Math.floor(boundedNumber(process.env.SCIFIGURE_IDEMPOTENCY_ENTRIES_PER_SESSION, 5, 1, 20));
+    while (processedIds.size > perSessionLimit) {
+      const oldestRequestId = processedIds.values().next().value;
+      if (!oldestRequestId) break;
+      processedIds.delete(oldestRequestId);
+      responseCache.delete(oldestRequestId);
+    }
+    const sessionLimit = Math.floor(boundedNumber(process.env.SCIFIGURE_IDEMPOTENCY_SESSION_LIMIT, 100, 10, 500));
+    while (processedRequestIdsMap.size > sessionLimit) {
+      const oldestSessionId = processedRequestIdsMap.keys().next().value;
+      if (!oldestSessionId) break;
+      processedRequestIdsMap.delete(oldestSessionId);
+      responseCacheMap.delete(oldestSessionId);
+    }
+  }
   app.disable('x-powered-by');
   app.set('trust proxy', process.env.SCIFIGURE_TRUST_PROXY === 'loopback' ? 'loopback' : false);
 
@@ -1093,6 +1168,20 @@ async function startServer() {
     return { challengeId, expiresAt, maskedEmail: maskEmailAddress(input.email), testCode };
   }
 
+  function meterProjectFileUploadBeforeBody(req: express.Request, res: express.Response, next: express.NextFunction) {
+    try {
+      const declaredBytes = requestBodyByteLength(req);
+      const maxMultipartBytes = singleUploadLimitBytes() + 1024 * 1024;
+      if (declaredBytes > maxMultipartBytes) {
+        return res.status(413).json({ status: 'error', message: '上传请求超过单文件安全上限' });
+      }
+      assertHourlyByteBudget(req, res, 'upload_bytes', declaredBytes);
+      return next();
+    } catch (err: any) {
+      return res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
+    }
+  }
+
   function rasterExportDpi(format: string, dpi: unknown): number | null {
     const normalized = format.toLowerCase();
     if (!['png', 'tiff', 'tif'].includes(normalized)) return null;
@@ -1180,6 +1269,44 @@ async function startServer() {
     deleteExportAssets(projectId, assets.map(asset => asset.assetId));
   }
 
+  function sanitizeExportMetadataValue(value: unknown, depth = 0): unknown {
+    if (value === null || typeof value === 'boolean') return value;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value === 'string') return value.slice(0, 4_096);
+    if (depth >= 6) return undefined;
+    if (Array.isArray(value)) {
+      return value.slice(0, 100)
+        .map(item => sanitizeExportMetadataValue(item, depth + 1))
+        .filter(item => item !== undefined);
+    }
+    if (value && typeof value === 'object') {
+      const output: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 100)) {
+        if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue;
+        const sanitized = sanitizeExportMetadataValue(item, depth + 1);
+        if (sanitized !== undefined) output[key.slice(0, 100)] = sanitized;
+      }
+      return output;
+    }
+    return undefined;
+  }
+
+  function publicDatasetEntry(dataset: DatasetEntry): DatasetEntry {
+    return { ...dataset, filePath: dataset.fileName };
+  }
+
+  function publicExportAsset(asset: ExportAsset): ExportAsset {
+    const name = String(asset.name || 'figure').slice(0, 160) || 'figure';
+    return {
+      ...asset,
+      figureId: asset.figureId === null ? null : String(asset.figureId || '').slice(0, 160) || null,
+      name,
+      filePath: `${safeExportName(name)}.${asset.format}`,
+      metadata: sanitizeExportMetadataValue(asset.metadata ?? {}) as Record<string, unknown>,
+      tags: (asset.tags || []).slice(0, 32).map(tag => String(tag).slice(0, 64)),
+    };
+  }
+
   function persistProjectExportAsset(args: {
     projectId: string;
     figureId: string | null;
@@ -1197,29 +1324,48 @@ async function startServer() {
       throw new Error('导出资产缺少有效的项目所有者');
     }
     const assetId = `exp_${randomUUID()}`;
-    const fmt = args.format.toLowerCase();
+    const fmt = String(args.format || '').toLowerCase();
+    if (!['svg', 'png', 'pdf', 'tiff', 'tif', 'eps'].includes(fmt)) {
+      throw new Error(`Unsupported export asset format: ${fmt}`);
+    }
+    const safeName = String(args.name || 'figure').trim().slice(0, 160) || 'figure';
+    const safeFigureId = args.figureId === null ? null : String(args.figureId || '').trim().slice(0, 160) || null;
+    const safeSvg = args.svg ? assertSafeSvgDocument(args.svg, 32 * 1024 * 1024) : undefined;
+    if (fmt === 'svg' && !safeSvg) throw new Error('SVG export asset content is required');
+    const safeThumbnailSvg = args.thumbnailSvg
+      ? assertSafeSvgDocument(args.thumbnailSvg, 32 * 1024 * 1024)
+      : safeSvg || null;
+    const safeMetadata = sanitizeExportMetadataValue(args.metadata ?? {}) as Record<string, unknown>;
+    if (Buffer.byteLength(JSON.stringify(safeMetadata), 'utf8') > 64 * 1024) {
+      const error = new Error('导出资产元数据不能超过 64 KB');
+      (error as any).statusCode = 413;
+      throw error;
+    }
+    const safeTags = (args.tags ?? []).slice(0, 32).map(tag => String(tag).slice(0, 64));
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `${stamp}_${safeExportName(args.figureId || args.name)}.${fmt}`;
+    const filename = `${stamp}_${safeExportName(safeFigureId || safeName)}.${fmt}`;
     const absPath = path.join(projectExportsDir(args.projectId), filename);
     const relPath = path.relative(process.cwd(), absPath);
     const fileBuffer = args.binaryB64
       ? Buffer.from(args.binaryB64, 'base64')
-      : Buffer.from(args.svg || '', 'utf8');
-    const thumbnailBytes = Buffer.byteLength(args.thumbnailSvg ?? args.svg ?? '', 'utf8');
+      : Buffer.from(safeSvg || '', 'utf8');
+    const thumbnailBytes = Buffer.byteLength(safeThumbnailSvg || '', 'utf8');
     assertProjectOwnedStorageBudgets(args.projectId, owner.userId, fileBuffer.length + thumbnailBytes);
     fs.writeFileSync(absPath, fileBuffer);
     try {
       return addExportAsset({
         id: assetId,
         projectId: args.projectId,
-        figureId: args.figureId,
-        name: args.name,
+        figureId: safeFigureId,
+        name: safeName,
         format: fmt,
-        dpi: args.dpi ?? null,
+        dpi: args.dpi !== null && args.dpi !== undefined && Number.isFinite(Number(args.dpi))
+          ? Math.max(1, Math.min(2_400, Math.floor(Number(args.dpi))))
+          : null,
         filePath: relPath,
-        thumbnailSvg: args.thumbnailSvg ?? args.svg ?? null,
-        metadata: args.metadata ?? {},
-        tags: args.tags ?? [],
+        thumbnailSvg: safeThumbnailSvg,
+        metadata: safeMetadata,
+        tags: safeTags,
       });
     } catch (error) {
       try { fs.unlinkSync(absPath); } catch { /* failed asset was never registered */ }
@@ -1961,7 +2107,7 @@ ${inner}
       clearRefreshCookie(res);
       res.json({ status: 'success', revoked });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -2312,7 +2458,14 @@ ${inner}
   }
 
   function resolveRscriptBin(): string {
-    return process.env.RSCRIPT_BIN || process.env.R_BIN || 'Rscript';
+    if (process.env.RSCRIPT_BIN || process.env.R_BIN) {
+      return process.env.RSCRIPT_BIN || process.env.R_BIN || 'Rscript';
+    }
+    const condaRscript = 'C:\\Users\\SZC\\.conda\\envs\\Machine-learning\\Scripts\\Rscript.exe';
+    if (process.platform === 'win32' && fs.existsSync(condaRscript)) {
+      return condaRscript;
+    }
+    return 'Rscript';
   }
 
   function buildProcessEnvForBin(executableBin: string): NodeJS.ProcessEnv {
@@ -3514,7 +3667,7 @@ ${inner}
     });
   }
 
-  function copyCompositionProjectFiles(targetProjectId: string, sources: ResolvedCompositionSource[]) {
+  function copyCompositionProjectFiles(targetProjectId: string, userId: string, sources: ResolvedCompositionSource[]) {
     const targetDir = projectFilesDir(targetProjectId);
     fs.mkdirSync(targetDir, { recursive: true });
     const copied: Array<{
@@ -3536,6 +3689,19 @@ ${inner}
 
         const sourceKey = sourceAbs.toLowerCase();
         if (copiedBySourcePath.has(sourceKey)) return;
+
+        const incomingSize = fs.statSync(sourceAbs).size;
+        assertProjectOwnedStorageBudgets(targetProjectId, userId, incomingSize);
+        const targetDataSizes = listProjectFiles(targetProjectId).map(item => {
+          try { return fs.statSync(resolveDatasetAbsolutePath(item.filePath)).size; } catch { return 0; }
+        });
+        assertProjectStorageBudget(targetDataSizes, incomingSize);
+        const userDataSizes = listProjects(userId).flatMap(project =>
+          listProjectFiles(project.id).map(item => {
+            try { return fs.statSync(resolveDatasetAbsolutePath(item.filePath)).size; } catch { return 0; }
+          }),
+        );
+        assertUserStorageBudget(userDataSizes, incomingSize);
 
         const ext = path.extname(dataset.fileName || path.basename(sourceAbs));
         const base = path.basename(dataset.fileName || path.basename(sourceAbs), ext).replace(/[^\w\u4e00-\u9fa5.-]+/g, '_') || 'dataset';
@@ -3809,17 +3975,25 @@ ${inner}
       },
     };
 
-    createProject(targetProjectId, userId, targetName, spec);
-    updateProject(targetProjectId, userId, targetName, spec, scaffold);
-    const copiedFiles = copyCompositionProjectFiles(targetProjectId, sources);
-    const prompt = buildCompositionPrompt({
-      sources,
-      copiedFiles,
-      targetAxesWidthIn,
-      targetAxesHeightIn,
-      layout,
-      language,
-    });
+    createProject(targetProjectId, userId, targetName, spec, scaffold);
+    let copiedFiles: ReturnType<typeof copyCompositionProjectFiles> = [];
+    let prompt = '';
+    try {
+      copiedFiles = copyCompositionProjectFiles(targetProjectId, userId, sources);
+      prompt = buildCompositionPrompt({
+        sources,
+        copiedFiles,
+        targetAxesWidthIn,
+        targetAxesHeightIn,
+        layout,
+        language,
+      });
+    } catch (error) {
+      deleteProject(targetProjectId, userId);
+      const targetDir = projectRootDir(targetProjectId);
+      if (fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true });
+      throw error;
+    }
 
     return {
       status: 'success',
@@ -3848,12 +4022,18 @@ ${inner}
         return res.status(400).json({ status: 'error', message: 'script is required' });
       }
       script = cleanScript(script);
+      sessionRecordSizeBytes(script, null, '[]');
       const language = inferScriptLanguage(script, req.body.language || req.body.scriptLanguage);
 
       const existingSession = req.body.sessionId ? loadSession(req.body.sessionId, userId) : null;
       const effectiveDataPayload = dataPayload !== undefined
         ? dataPayload
         : existingSession?.dataPayload || null;
+      sessionRecordSizeBytes(
+        script,
+        effectiveDataPayload ? JSON.stringify(effectiveDataPayload) : null,
+        JSON.stringify(editLog || []),
+      );
       let result: any;
       if (language === 'r') {
         const requestedFilePaths = req.body.uploaded_file_paths;
@@ -3886,7 +4066,7 @@ ${inner}
       }
       if (result.status === 'success') {
         const persistStartedAt = performance.now();
-        const sessionId = result.sessionId || `fig_${Date.now()}`;
+        const sessionId = existingSession?.sessionId || `fig_${randomUUID()}`;
         const nextEditLog = editLog || [];
         persistSession({
           sessionId,
@@ -4010,8 +4190,7 @@ ${inner}
             cache: { hit: true, key: cacheKey },
             warnings: revisionWarning ? [revisionWarning] : [],
           }, { cacheLookupMs, persistMs: roundedDuration(persistStartedAt) });
-          processedIds.add(requestId);
-          cache.set(requestId, cachedResponse);
+          rememberIdempotentResponse(resolvedSessionId, requestId, cachedResponse);
           return res.json(cachedResponse);
         }
 
@@ -4053,8 +4232,7 @@ ${inner}
             ...(revisionWarning ? [revisionWarning] : []),
           ],
         }, { cacheLookupMs, persistMs, cacheWriteMs });
-        processedIds.add(requestId);
-        cache.set(requestId, response);
+        rememberIdempotentResponse(resolvedSessionId, requestId, response);
         return res.json(response);
       }
 
@@ -4100,8 +4278,7 @@ ${inner}
           requestId,
           warnings: revisionWarning ? [revisionWarning] : undefined,
         };
-        processedIds.add(requestId);
-        cache.set(requestId, response);
+        rememberIdempotentResponse(resolvedSessionId, requestId, response);
         return res.json(response);
       }
 
@@ -4185,8 +4362,7 @@ ${inner}
         result.script = session.script;
 
         const response = { ...result, applied: newEdits, requestId };
-        processedIds.add(requestId);
-        cache.set(requestId, response);
+        rememberIdempotentResponse(resolvedSessionId, requestId, response);
         return res.json(response);
       }
 
@@ -4217,8 +4393,7 @@ ${inner}
           cache: { hit: true, key: cacheKey },
           warnings: revisionWarning ? [revisionWarning] : [],
         }, { cacheLookupMs, persistMs: roundedDuration(persistStartedAt) });
-        processedIds.add(requestId);
-        cache.set(requestId, cachedResponse);
+        rememberIdempotentResponse(resolvedSessionId, requestId, cachedResponse);
         return res.json(cachedResponse);
       }
 
@@ -4276,8 +4451,7 @@ ${inner}
       if (revisionWarning) {
         response.warnings = [...(response.warnings || []), revisionWarning];
       }
-      processedIds.add(requestId);
-      cache.set(requestId, response);
+      rememberIdempotentResponse(resolvedSessionId, requestId, response);
       res.json(response);
     } catch (err: any) {
       res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
@@ -4293,6 +4467,7 @@ ${inner}
         return res.status(400).json({ status: 'error', message: 'script is required' });
       }
       script = cleanScript(script);
+      sessionRecordSizeBytes(script, null, '[]');
 
       const projectContext = await buildProjectFigureContext({
         sessionId,
@@ -4627,16 +4802,12 @@ ${inner}
       const { name, spec } = req.body;
       if (!name || !spec) return res.status(400).json({ status: 'error', message: 'name and spec required' });
       const id = randomUUID();
-      createProject(id, userId, name, spec);
-      
       const script = spec.custom_script || spec.script || '';
-      if (script) {
-        updateProject(id, userId, name, spec, script);
-      }
+      createProject(id, userId, name, spec, script || undefined);
       
       res.json({ status: 'success', id });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -4644,7 +4815,7 @@ ${inner}
     try {
       res.json(createCompositionCodeProject(req.body, authenticatedUserId(req)));
     } catch (err: any) {
-      res.status(400).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 400)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -4658,7 +4829,7 @@ ${inner}
       }
       res.json(createCompositionCodeProject(req.body, userId, projectId));
     } catch (err: any) {
-      res.status(400).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 400)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -4675,7 +4846,7 @@ ${inner}
         const script = spec.custom_script || spec.script || '';
         updateProject(req.params.id, userId, name, spec, script);
       } else {
-        getDb().prepare('UPDATE projects SET name = ?, updated_at = datetime(\'now\') WHERE id = ? AND user_id = ?').run(name, req.params.id, userId);
+        updateProject(req.params.id, userId, name, JSON.parse(existing.spec), existing.script ?? undefined);
       }
       if (Array.isArray(figures)) {
         const figRows = listProjectFigures(projectId);
@@ -4702,6 +4873,8 @@ ${inner}
           const nextHistory = figure.history
             ? parseStoredHistory(figure.history)
             : parseStoredHistory(row.history);
+          const nextHistoryJson = JSON.stringify(nextHistory);
+          figureHistorySizeBytes(nextHistoryJson);
           saveSession(
             row.session_id,
             userId,
@@ -4714,12 +4887,12 @@ ${inner}
             UPDATE project_figures
             SET revision = ?, edit_log = ?, history = ?
             WHERE session_id = ?
-          `).run(nextRevision, JSON.stringify(nextEditLog), JSON.stringify(nextHistory), row.session_id);
+          `).run(nextRevision, JSON.stringify(nextEditLog), nextHistoryJson, row.session_id);
         });
       }
       res.json({ status: 'success' });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -4774,7 +4947,7 @@ ${inner}
       if (!project) {
         return res.status(404).json({ status: 'error', message: '项目不存在' });
       }
-      const datasets = listProjectFiles(projectId);
+      const datasets = listProjectFiles(projectId).map(publicDatasetEntry);
       res.json({ status: 'success', datasets });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
@@ -4827,7 +5000,7 @@ ${inner}
     }
   });
 
-  app.post('/api/projects/:id/files', requireOwnedProjectBeforeUpload, uploadRateLimit, upload.single('file'), async (req, res) => {
+  app.post('/api/projects/:id/files', requireOwnedProjectBeforeUpload, uploadRateLimit, meterProjectFileUploadBeforeBody, upload.single('file'), async (req, res) => {
     let filePersisted = false;
     try {
       const userId = authenticatedUserId(req);
@@ -4841,7 +5014,6 @@ ${inner}
       if (!file) {
         return res.status(400).json({ status: 'error', message: 'No file uploaded' });
       }
-      assertHourlyByteBudget(req, res, 'upload_bytes', file.size);
       assertProjectOwnedStorageBudgets(projectId, userId, file.size);
       await assertValidUploadedDataFile(file.path, file.originalname);
       const existingSizes = listProjectFiles(projectId).map(dataset => {
@@ -4936,6 +5108,7 @@ ${inner}
         return res.status(400).json({ status: 'error', message: 'script is required' });
       }
       script = cleanScript(script);
+      sessionRecordSizeBytes(script, null, '[]');
       const language = inferScriptLanguage(script, req.body.language || req.body.scriptLanguage);
 
       if (language === 'python') {
@@ -4979,6 +5152,13 @@ ${inner}
       const compressedEditLogs: Record<string, EditEntry[]> = {};
       for (const key of Object.keys(effectiveEditLogs)) {
         compressedEditLogs[key] = compressEditLog(effectiveEditLogs[key]);
+      }
+      const projectDataPayloadJson = projectDataPayload ? JSON.stringify(projectDataPayload) : null;
+      const renderEditLogs = Object.values(compressedEditLogs);
+      if (renderEditLogs.length === 0) {
+        sessionRecordSizeBytes(script, projectDataPayloadJson, '[]');
+      } else {
+        renderEditLogs.forEach(log => sessionRecordSizeBytes(script, projectDataPayloadJson, JSON.stringify(log)));
       }
 
       let result: any;
@@ -5312,7 +5492,7 @@ ${inner}
           sizeBytes = fs.statSync(absPath).size;
         }
         return {
-          ...asset,
+          ...publicExportAsset(asset),
           sizeBytes,
           downloadUrl: `/api/projects/${projectId}/export-assets/${asset.assetId}/file`,
         };
@@ -5332,7 +5512,7 @@ ${inner}
           const absPath = safeResolveUnder(exportsRoot, asset.filePath);
           const fileExists = fs.existsSync(absPath);
           return {
-            ...asset,
+            ...publicExportAsset(asset),
             projectName: project.name,
             fileExists,
             sizeBytes: fileExists ? fs.statSync(absPath).size : 0,
@@ -5578,7 +5758,7 @@ ${inner}
         metadata,
         tags,
       });
-      res.json({ status: 'success', asset });
+      res.json({ status: 'success', asset: publicExportAsset(asset) });
     } catch (err: any) {
       res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
@@ -5641,7 +5821,12 @@ ${inner}
         },
         tags: ['composite'],
       });
-      res.json({ status: 'success', svg, asset, assets: [asset] });
+      res.json({
+        status: 'success',
+        svg,
+        asset: publicExportAsset(asset),
+        assets: [publicExportAsset(asset)],
+      });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     }
@@ -5797,8 +5982,8 @@ ${inner}
             svg: matchedFig.svg,
             binary_b64: matchedFig.binary_b64 || null,
             format: effectiveFigureFormat,
-            asset,
-            subplotAssets,
+            asset: asset ? publicExportAsset(asset) : null,
+            subplotAssets: subplotAssets.map(publicExportAsset),
             subplot_format_notes: subplotFormatNotes,
           });
         }

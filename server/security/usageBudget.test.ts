@@ -6,11 +6,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 let tempRoot = '';
 let databaseModule: typeof import('../../db');
 let userId = '';
+let otherUserId = '';
 
 beforeAll(async () => {
   tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'scifigure-usage-budget-'));
   process.env.SCIFIGURE_DATA_DIR = tempRoot;
   process.env.SCIFIGURE_DB_PATH = path.join(tempRoot, 'usage.db');
+  process.env.SCIFIGURE_FIGURE_HISTORY_MAX_MB = '2';
   databaseModule = await import('../../db');
   const user = await databaseModule.createUserAccount(
     `usage-budget-${Date.now()}@example.test`,
@@ -18,6 +20,12 @@ beforeAll(async () => {
     'Usage Budget Test',
   );
   userId = user.id;
+  const otherUser = await databaseModule.createUserAccount(
+    `usage-budget-other-${Date.now()}@example.test`,
+    'Usage-Budget-Other-Test-2026',
+    'Usage Budget Other Test',
+  );
+  otherUserId = otherUser.id;
 });
 
 afterAll(async () => {
@@ -26,6 +34,42 @@ afterAll(async () => {
 });
 
 describe('persistent hourly usage budget', () => {
+  it('never reassigns a session owner during an ID conflict', () => {
+    const sessionId = 'session-owner-conflict-test';
+    databaseModule.saveSession(sessionId, userId, 'print("owner")', null, [], 1);
+    expect(() => databaseModule.saveSession(sessionId, otherUserId, 'print("attacker")', null, [], 2))
+      .toThrow('Session ownership conflict');
+    expect(databaseModule.getSession(sessionId, userId)?.script).toBe('print("owner")');
+    expect(databaseModule.getSession(sessionId, otherUserId)).toBeNull();
+  });
+
+  it('rejects oversized Figure history before replacing durable project state', () => {
+    const projectId = `history-budget-${Date.now()}`;
+    const sessionId = `history-session-${Date.now()}`;
+    databaseModule.createProject(projectId, userId, 'History Budget', { plot_type: 'custom' }, 'print("original")');
+    databaseModule.replaceProjectFiguresAndSessions(projectId, userId, [{
+      figureIndex: 0,
+      sessionId,
+      editLog: [],
+      revision: 1,
+      history: { past: [{ revision: 1 }], future: [] },
+    }], 'print("original")', null);
+    const before = databaseModule.listProjectFigures(projectId)[0];
+
+    expect(() => databaseModule.replaceProjectFiguresAndSessions(projectId, userId, [{
+      figureIndex: 0,
+      sessionId,
+      editLog: [],
+      revision: 2,
+      history: { past: ['x'.repeat(2 * 1024 * 1024)], future: [] },
+    }], 'print("must-not-persist")', null)).toThrow('历史记录');
+
+    const after = databaseModule.listProjectFigures(projectId)[0];
+    expect(after.history).toBe(before.history);
+    expect(after.revision).toBe(1);
+    expect(databaseModule.getSession(sessionId, userId)?.script).toBe('print("original")');
+  });
+
   it('persists consumption, rejects overflow and resets in the next hour', () => {
     const now = Date.UTC(2026, 6, 15, 8, 10, 0);
     expect(databaseModule.consumeHourlyUsageBudget(userId, 'download_bytes', 60, 100, now)).toMatchObject({

@@ -7,6 +7,7 @@ const STYLE_ELEMENT_PATTERN = /<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi;
 const CSS_URL_PATTERN = /url\s*\(\s*(['"]?)(.*?)\1\s*\)/gi;
 const DANGEROUS_CSS_PATTERN = /(?:@import|expression\s*\(|javascript\s*:|vbscript\s*:|-moz-binding|behavior\s*:|data\s*:\s*(?:text\/html|application\/xhtml\+xml))/i;
 const SAFE_DATA_IMAGE_PATTERN = /^data:image\/(?:png|jpeg|gif|webp);base64,[a-z0-9+/=\s]+$/i;
+const MATPLOTLIB_SVG_11_DOCTYPE_PATTERN = /^(\s*(?:<\?xml[\s\S]*?\?>\s*)?)<!DOCTYPE\s+svg\s+PUBLIC\s+["']-\/\/W3C\/\/DTD SVG 1\.1\/\/EN["']\s+["']https?:\/\/www\.w3\.org\/Graphics\/SVG\/1\.1\/DTD\/svg11\.dtd["']\s*>\s*/i;
 
 export class UnsafeSvgError extends Error {
   statusCode = 400;
@@ -60,28 +61,31 @@ export function assertSafeSvgDocument(svg: string, maxBytes = 12 * 1024 * 1024):
   if (Buffer.byteLength(svg, 'utf8') > maxBytes) {
     throw new UnsafeSvgError('SVG 内容超过允许大小');
   }
-  const withoutXml = svg.replace(/^\s*<\?xml[\s\S]*?\?>/i, '').trimStart();
+  // Matplotlib emits this fixed public declaration. Remove it before parsing so
+  // browsers never resolve the external DTD; all other declarations stay blocked.
+  const normalizedSvg = svg.replace(MATPLOTLIB_SVG_11_DOCTYPE_PATTERN, '$1');
+  const withoutXml = normalizedSvg.replace(/^\s*<\?xml[\s\S]*?\?>/i, '').trimStart();
   if (!/^(?:<!--[\s\S]*?-->\s*)*<svg\b/i.test(withoutXml)) {
     throw new UnsafeSvgError('SVG 根元素无效');
   }
-  if (DECLARATION_PATTERN.test(svg) || BLOCKED_ELEMENT_PATTERN.test(svg) || EVENT_ATTRIBUTE_PATTERN.test(svg)) {
+  if (DECLARATION_PATTERN.test(normalizedSvg) || BLOCKED_ELEMENT_PATTERN.test(normalizedSvg) || EVENT_ATTRIBUTE_PATTERN.test(normalizedSvg)) {
     throw new UnsafeSvgError();
   }
 
   URI_ATTRIBUTE_PATTERN.lastIndex = 0;
-  for (let match = URI_ATTRIBUTE_PATTERN.exec(svg); match; match = URI_ATTRIBUTE_PATTERN.exec(svg)) {
+  for (let match = URI_ATTRIBUTE_PATTERN.exec(normalizedSvg); match; match = URI_ATTRIBUTE_PATTERN.exec(normalizedSvg)) {
     const value = String(match[1] ?? match[2] ?? match[3] ?? '');
     if (!isSafeResourceReference(value)) {
       throw new UnsafeSvgError('SVG 不能引用外部资源');
     }
   }
   URL_BEARING_ATTRIBUTE_PATTERN.lastIndex = 0;
-  for (let match = URL_BEARING_ATTRIBUTE_PATTERN.exec(svg); match; match = URL_BEARING_ATTRIBUTE_PATTERN.exec(svg)) {
+  for (let match = URL_BEARING_ATTRIBUTE_PATTERN.exec(normalizedSvg); match; match = URL_BEARING_ATTRIBUTE_PATTERN.exec(normalizedSvg)) {
     assertSafeCssValue(String(match[1] ?? match[2] ?? match[3] ?? ''));
   }
   STYLE_ELEMENT_PATTERN.lastIndex = 0;
-  for (let match = STYLE_ELEMENT_PATTERN.exec(svg); match; match = STYLE_ELEMENT_PATTERN.exec(svg)) {
+  for (let match = STYLE_ELEMENT_PATTERN.exec(normalizedSvg); match; match = STYLE_ELEMENT_PATTERN.exec(normalizedSvg)) {
     assertSafeCssValue(String(match[1] || ''));
   }
-  return svg;
+  return normalizedSvg;
 }
