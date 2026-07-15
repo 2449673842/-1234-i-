@@ -39,7 +39,7 @@ export function UsersPage() {
         <div className="admin-filters">
           <label className="relative">
             <Search size={14} style={{ position: 'absolute', left: 10, top: 10, color: '#82908b' }} />
-            <input className="admin-input" style={{ paddingLeft: 32 }} value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} placeholder="搜索邮箱或用户 ID" />
+            <input className="admin-input" style={{ paddingLeft: 32 }} value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} placeholder="搜索用户 ID" />
           </label>
           <select className="admin-select" value={role} onChange={event => { setRole(event.target.value); setPage(1); }} aria-label="角色筛选">
             <option value="">全部角色</option><option value="user">普通用户</option><option value="admin">管理员</option>
@@ -55,7 +55,7 @@ export function UsersPage() {
                 <thead><tr><th>用户</th><th>角色</th><th>订阅</th><th>项目 / Figure</th><th>文件 / 导出</th><th>活跃会话</th><th>最近登录</th></tr></thead>
                 <tbody>{items.map(item => (
                   <tr key={item.id} data-clickable="true" onClick={() => setSelected(item)}>
-                    <td><span className="admin-cell-main">{item.displayName || item.email}</span><span className="admin-cell-sub">{item.email} · {item.id}</span></td>
+                    <td><span className="admin-cell-main">{item.accountLabel}</span><span className="admin-cell-sub">{item.id}</span></td>
                     <td><StatusBadge tone={item.role === 'admin' ? 'info' : 'neutral'}>{item.role === 'admin' ? '管理员' : '用户'}</StatusBadge></td>
                     <td><span className="admin-cell-main">{item.subscriptionPlan || 'free'}</span><span className="admin-cell-sub">{item.subscriptionStatus || '未订阅'}</span></td>
                     <td>{item.projectCount} / {item.figureCount}</td><td>{item.fileCount} / {item.exportCount}</td><td>{item.activeSessionCount}</td><td>{formatDateTime(item.lastLoginAt)}</td>
@@ -69,8 +69,8 @@ export function UsersPage() {
       </section>
 
       <AnimatePresence>{selected && (
-        <DetailDrawer title={selected.displayName || '用户详情'} subtitle={selected.id} onClose={() => setSelected(null)}>
-          <DetailField label="邮箱">{selected.email}</DetailField>
+        <DetailDrawer title={selected.accountLabel || '用户详情'} subtitle={selected.id} onClose={() => setSelected(null)}>
+          <DetailField label="账号标识">{selected.accountLabel}</DetailField>
           <DetailField label="角色"><StatusBadge tone={selected.role === 'admin' ? 'info' : 'neutral'}>{selected.role}</StatusBadge></DetailField>
           <DetailField label="注册时间">{formatDateTime(selected.createdAt)}</DetailField>
           <DetailField label="最近登录">{formatDateTime(selected.lastLoginAt)}</DetailField>

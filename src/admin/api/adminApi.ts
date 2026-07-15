@@ -3,6 +3,8 @@ import type {
   AdminAiRepairPackage,
   AdminErrorReport,
   AdminOverview,
+  AdminMfaEnrollment,
+  AdminSecurityState,
   AdminSubscriptionAdjustment,
   AdminSubscriptionRow,
   AdminUserIdentity,
@@ -70,11 +72,47 @@ export const adminApi = {
     return readJson<PaginatedResponse<AdminSubscriptionRow>>(response);
   },
 
-  async reauth(password: string): Promise<{ reauthToken: string; expiresAt: string }> {
-    const response = await fetch('/api/admin/reauth', {
+  async security(): Promise<AdminSecurityState> {
+    const response = await fetch('/api/admin/security');
+    const data = await readJson<{ security: AdminSecurityState }>(response);
+    return data.security;
+  },
+
+  async beginMfaEnrollment(password: string): Promise<AdminMfaEnrollment> {
+    const response = await fetch('/api/admin/security/totp/enroll', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
+    });
+    const data = await readJson<{ enrollment: AdminMfaEnrollment }>(response);
+    return data.enrollment;
+  },
+
+  async confirmMfaEnrollment(enrollmentToken: string, code: string): Promise<string[]> {
+    const response = await fetch('/api/admin/security/totp/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enrollmentToken, code }),
+    });
+    const data = await readJson<{ recoveryCodes: string[] }>(response);
+    return data.recoveryCodes;
+  },
+
+  async regenerateMfaRecoveryCodes(password: string, code: string): Promise<string[]> {
+    const response = await fetch('/api/admin/security/recovery-codes/regenerate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, code }),
+    });
+    const data = await readJson<{ recoveryCodes: string[] }>(response);
+    return data.recoveryCodes;
+  },
+
+  async reauth(password: string, code?: string): Promise<{ reauthToken: string; expiresAt: string }> {
+    const response = await fetch('/api/admin/reauth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, code }),
     });
     return readJson<{ status: 'success'; reauthToken: string; expiresAt: string }>(response);
   },

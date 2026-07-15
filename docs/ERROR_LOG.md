@@ -1,7 +1,46 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-16 00:27:33 +08:00
+> 最后修改时间：2026-07-16 01:55:49 +08:00
+
+---
+
+## 2026-07-16 01:14:35 +08:00 管理员原始身份暴露与 password-only 后台会话
+
+**现象**
+
+- 管理员用户/订阅 API 返回其他用户原始邮箱和自填昵称，与“后台只读取脱敏账号与运行元数据”的边界不一致。
+- 离线角色命令把原始邮箱写入管理审计 metadata。
+- 管理员只需要密码和 Bearer token；密码泄露后没有独立第二因素。
+
+**根因**
+
+- 早期后台把“账号元数据可读”误扩展成“原始身份可读”，测试的敏感字段集合也没有禁止普通 `email` key。
+- `users.role`、密码 recent re-auth 和一次性写令牌只解决授权与重放，不能替代管理员 MFA。
+- 尚无可解密但静态加密的 TOTP seed 存储、MFA 会话标记、登录 challenge 或恢复码生命周期。
+
+**修复**
+
+- 用户/订阅管理 DTO 只返回与邮箱无关的 `accountLabel + userId`，只允许按随机用户 ID 搜索，不再返回或查询其他用户原始邮箱/昵称；离线角色审计删除邮箱字段。
+- 新增管理员 TOTP、设备绑定登录 challenge、MFA 会话有效期、time-step 防重放和一次性恢复码。
+- TOTP seed 使用带 key ID 的 AES-256-GCM envelope；新 key 加密、旧 key 只解密，支持轮换。恢复码只保存 80-bit 随机值的单向摘要。
+- 生产管理员入口默认 `enforce`；缺少 keyring 或试图长期使用 observe 时拒绝启动。
+- 订阅写入仍先签发短时单次 re-auth token，但启用 MFA 后必须同时提交管理员密码和新的 TOTP/恢复码。
+- 增加离线双阶段 MFA bootstrap，避免生产强制模式需要先开放 password-only 网页会话。
+
+**验证**
+
+- `server/auth/adminMfa.test.ts` 覆盖 RFC TOTP、时间窗口、防重放、AES-GCM 账号/因子绑定、key ID 轮换、恢复码摘要和生产 fail-closed。
+- `test:admin-mfa` 使用临时数据库与随机端口验证网页/离线绑定、设备绑定、登录挑战、恢复码轮换、订阅 step-up、角色降级和普通用户登录不受影响。
+- 数据库与审计断言不包含 TOTP seed、动态码、恢复码或原始用户邮箱。
+- 现有 `test:admin-console-readonly` 继续通过；测试未连接本地 3000、Docker 或真实用户数据。
+- `npm test`：42 个测试文件、266 项测试全部通过；设置页管理员 MFA challenge 已通过 TypeScript 和生产构建检查。
+- Conda 环境中的真实 R renderer：29 项通过；Python/R capability matrix 2 项通过。R 不在系统全局 PATH 时必须通过 `RSCRIPT_BIN` 指向环境内 `Rscript.exe`，不得误报为未安装。
+- `test:admin-authorization`、`test:auth-refresh`、`test:email-verification`、`test:deployment-lifecycle`、生产构建、production bundle 和仓库数据边界检查通过。
+
+**遗留风险**
+
+- 本轮代码尚未部署；真实域名/TLS、生产 keyring 权限、验证器时钟偏差、恢复码保管和最后管理员保护仍需上线前演练。
 
 ---
 
@@ -1537,7 +1576,7 @@ build_figure(fl9_data, stats_df, opr_fep_df)
 
 **现象**
 
-- 用户使用真实账号 `2449673842@qq.com` 登录后，项目列表为空。
+- 用户使用目标真实账号（文档已脱敏）登录后，项目列表为空。
 - 数据目录和 SQLite 数据库仍存在，项目文件没有被删除。
 
 **根因**
@@ -1550,7 +1589,7 @@ build_figure(fl9_data, stats_df, opr_fep_df)
 
 - `claimLegacyOwnership()` 不再根据账号创建顺序推断旧数据所有者。
 - 只有显式配置 `SCIFIGURE_LEGACY_OWNER_EMAIL`，并且当前请求者正是该账号时，才允许认领仍无 `user_id` 的旧数据。
-- 将 `Smoke User` 名下 100 个旧项目迁移到 `2449673842@qq.com`，并同步迁移这些项目仍存在的 Figure session 归属。
+- 将 `Smoke User` 名下 100 个旧项目迁移到目标真实账号（文档已脱敏），并同步迁移这些项目仍存在的 Figure session 归属。
 - `capability-regression-smoke@example.test` 名下 3 个测试项目保持不动。
 
 **数据保护与迁移结果**
@@ -1830,7 +1869,7 @@ build_figure(fl9_data, stats_df, opr_fep_df)
 
 **证据与根因**
 
-- 数据库仍有 81 条 `export_assets` 记录，全部关联到账号 `2449673842@qq.com` 拥有的项目。
+- 数据库仍有 81 条 `export_assets` 记录，全部关联到目标真实账号（文档已脱敏）拥有的项目。
 - 原页面只请求当前 `projectId` 的资产；最近项目没有导出记录时，页面显示“当前项目没有资产”，造成全部历史丢失的错觉。
 - 磁盘检查发现 78 个原文件存在，`10聚类` 的 2 个 PNG 和 1 个组合 SVG 缺失，但数据库仍保留完整 SVG 缩略内容。
 

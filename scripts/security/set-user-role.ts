@@ -1,4 +1,6 @@
 import { getUserByEmail, logAdminAudit, setUserRoleByEmail, type UserRole } from '../../db';
+import { maskEmailAddress } from '../../server/auth/emailVerification';
+import { sanitizeAdminOperationalText } from '../../server/admin/privacy';
 
 function readArg(name: string): string | null {
   const index = process.argv.indexOf(`--${name}`);
@@ -13,13 +15,13 @@ function fail(message: string): never {
 
 const email = readArg('email')?.toLowerCase();
 const role = readArg('role') as UserRole | null;
-const reason = readArg('reason') || 'manual_security_provisioning';
+const reason = sanitizeAdminOperationalText(readArg('reason'), 240) || 'manual_security_provisioning';
 
 if (!email) fail('Missing --email');
 if (role !== 'user' && role !== 'admin') fail('Missing or invalid --role; expected user or admin');
 
 const existing = getUserByEmail(email);
-if (!existing) fail(`User not found: ${email}`);
+if (!existing) fail(`User not found: ${maskEmailAddress(email)}`);
 
 const previousRole: UserRole = existing.role === 'admin' ? 'admin' : 'user';
 const user = setUserRoleByEmail(email, role);
@@ -31,7 +33,6 @@ logAdminAudit({
   success: true,
   statusCode: 200,
   metadata: {
-    email: user.email,
     previousRole,
     nextRole: user.role,
     reason,
@@ -43,9 +44,10 @@ console.log(JSON.stringify({
   status: 'success',
   user: {
     id: user.id,
-    email: user.email,
+    maskedEmail: maskEmailAddress(user.email),
     role: user.role,
   },
   previousRole,
   reason,
+  sessionsRevoked: true,
 }, null, 2));

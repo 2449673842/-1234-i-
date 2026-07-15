@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { ArrowLeft, Eye, EyeOff, LogIn, MailCheck, RefreshCw, UserPlus, X } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff, KeyRound, LogIn, MailCheck, RefreshCw, UserPlus, X } from 'lucide-react';
 import { setAccessToken } from '../utils/authenticatedFetch';
 
 export type LandingAuthMode = 'login' | 'register';
@@ -18,6 +18,11 @@ interface EmailVerificationState {
   challengeId: string;
   expiresAt: string;
   maskedEmail: string;
+}
+
+interface AdminMfaChallengeState {
+  challengeToken: string;
+  expiresAt: string;
 }
 
 function getDeviceFingerprint(): string {
@@ -49,6 +54,8 @@ export function LandingAuthDialog({
   const [notice, setNotice] = useState<string | null>(null);
   const [verification, setVerification] = useState<EmailVerificationState | null>(null);
   const [verificationCode, setVerificationCode] = useState('');
+  const [adminMfaChallenge, setAdminMfaChallenge] = useState<AdminMfaChallengeState | null>(null);
+  const [adminMfaCode, setAdminMfaCode] = useState('');
 
   useEffect(() => {
     if (!open) return;
@@ -56,6 +63,8 @@ export function LandingAuthDialog({
     setNotice(null);
     setVerification(null);
     setVerificationCode('');
+    setAdminMfaChallenge(null);
+    setAdminMfaCode('');
     setPassword('');
     setConfirmPassword('');
   }, [mode, open]);
@@ -126,6 +135,12 @@ export function LandingAuthDialog({
         }),
       });
       const data = await response.json().catch(() => null);
+      if (data?.adminMfaRequired && data?.challenge?.challengeToken) {
+        setAdminMfaChallenge(data.challenge as AdminMfaChallengeState);
+        setAdminMfaCode('');
+        setNotice('管理员账号需要完成验证器二步验证。');
+        return;
+      }
       if (data?.verificationRequired && data?.verification?.challengeId) {
         setVerification(data.verification as EmailVerificationState);
         setVerificationCode('');
@@ -145,6 +160,37 @@ export function LandingAuthDialog({
       finishAuthentication(data.token);
     } catch (authError) {
       setError(authError instanceof Error ? authError.message : '认证失败，请稍后重试');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const verifyAdminMfa = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!adminMfaChallenge || adminMfaCode.trim().length < 6) {
+      setError('请输入验证器代码或一次性恢复码');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch('/api/auth/admin-mfa', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Fingerprint': getDeviceFingerprint(),
+          'X-Device-Name': navigator.userAgent.slice(0, 80),
+        },
+        body: JSON.stringify({ challengeToken: adminMfaChallenge.challengeToken, code: adminMfaCode.trim() }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || data?.status !== 'success' || typeof data?.token !== 'string') {
+        throw new Error(data?.message || '管理员二步验证失败');
+      }
+      finishAuthentication(data.token);
+    } catch (mfaError) {
+      setError(mfaError instanceof Error ? mfaError.message : '管理员二步验证失败');
     } finally {
       setBusy(false);
     }
@@ -214,10 +260,12 @@ export function LandingAuthDialog({
           <div>
             <div className="text-xs font-bold uppercase tracking-[0.24em] text-cyan-200/75">SciFigure Studio</div>
             <h2 id="landing-auth-title" className="mt-3 text-2xl font-black text-white">
-              {verification ? '验证邮箱地址' : isRegister ? '创建科研作图工作区' : '登录你的工作区'}
+              {adminMfaChallenge ? '管理员二步验证' : verification ? '验证邮箱地址' : isRegister ? '创建科研作图工作区' : '登录你的工作区'}
             </h2>
             <p className="mt-2 text-sm leading-6 text-slate-400">
-              {verification
+              {adminMfaChallenge
+                ? '输入验证器中的 6 位动态代码，也可以使用一个尚未使用的恢复码。'
+                : verification
                 ? `请输入发送至 ${verification.maskedEmail} 的 6 位验证码。`
                 : isRegister
                   ? '填写账号信息，完成注册后即可进入工作区。'
@@ -236,7 +284,35 @@ export function LandingAuthDialog({
           </button>
         </div>
 
-        {verification ? (
+        {adminMfaChallenge ? (
+          <form className="mt-7 space-y-4" onSubmit={verifyAdminMfa}>
+            <div className="flex items-center gap-3 border border-cyan-200/15 bg-cyan-200/[0.06] px-3 py-3 text-sm text-cyan-50">
+              <KeyRound className="h-5 w-5 shrink-0 text-cyan-200" />
+              <span>管理员会话只有完成二步验证后才能访问后台。验证码和恢复码不会写入日志。</span>
+            </div>
+            <label className="block text-sm font-semibold text-slate-200">
+              验证器代码或恢复码
+              <input
+                value={adminMfaCode}
+                onChange={(event) => setAdminMfaCode(event.target.value.slice(0, 64))}
+                className="mt-2 w-full border border-white/12 bg-white/[0.06] px-3 py-3 text-center text-lg font-black text-white outline-none transition placeholder:text-slate-600 focus:border-cyan-200/70"
+                placeholder="000000"
+                autoComplete="one-time-code"
+                maxLength={64}
+                required
+                autoFocus
+              />
+            </label>
+            {notice && <div role="status" className="border border-cyan-200/15 bg-cyan-200/[0.06] px-3 py-2.5 text-sm text-cyan-50">{notice}</div>}
+            {error && <div role="alert" className="border border-red-300/20 bg-red-500/10 px-3 py-2.5 text-sm text-red-100">{error}</div>}
+            <button type="submit" disabled={busy || adminMfaCode.trim().length < 6} className="flex w-full items-center justify-center gap-2 bg-cyan-200 px-4 py-3 text-sm font-black text-slate-950 transition hover:bg-white disabled:cursor-wait disabled:opacity-60">
+              <KeyRound className="h-4 w-4" />{busy ? '正在验证...' : '验证并进入平台'}
+            </button>
+            <button type="button" className="flex w-full items-center justify-center gap-2 border border-white/10 px-3 py-2.5 text-sm font-bold text-slate-300 transition hover:border-white/25 hover:text-white" disabled={busy} onClick={() => { setAdminMfaChallenge(null); setAdminMfaCode(''); setError(null); setNotice(null); }}>
+              <ArrowLeft className="h-4 w-4" />返回登录
+            </button>
+          </form>
+        ) : verification ? (
           <form className="mt-7 space-y-4" onSubmit={verifyEmail}>
             <div className="flex items-center gap-3 border border-cyan-200/15 bg-cyan-200/[0.06] px-3 py-3 text-sm text-cyan-50">
               <MailCheck className="h-5 w-5 shrink-0 text-cyan-200" />

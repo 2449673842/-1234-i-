@@ -9,13 +9,14 @@ import { UsersPage } from './pages/UsersPage';
 import { ErrorReportsPage } from './pages/ErrorReportsPage';
 import { AuditLogsPage } from './pages/AuditLogsPage';
 import { SubscriptionsPage } from './pages/SubscriptionsPage';
+import { SecurityPage } from './pages/SecurityPage';
 import './admin.css';
 
 type AccessState = 'checking' | 'ready' | 'anonymous' | 'forbidden' | 'disabled' | 'error';
 
 function sectionFromPath(pathname = window.location.pathname): AdminSection {
   const segment = pathname.replace(/^\/admin\/?/, '').split('/')[0];
-  return segment === 'users' || segment === 'subscriptions' || segment === 'errors' || segment === 'audit' ? segment : 'overview';
+  return segment === 'users' || segment === 'subscriptions' || segment === 'errors' || segment === 'audit' || segment === 'security' ? segment : 'overview';
 }
 
 function AccessScreen({ state, message }: { state: Exclude<AccessState, 'ready'>; message?: string }) {
@@ -78,7 +79,7 @@ export default function AdminApp() {
     window.history.pushState({}, '', path);
     setSection(next);
   };
-  const page = section === 'users' ? <UsersPage /> : section === 'subscriptions' ? <SubscriptionsPage /> : section === 'errors' ? <ErrorReportsPage /> : section === 'audit' ? <AuditLogsPage /> : <OverviewPage initialOverview={initialOverview} />;
+  const page = section === 'users' ? <UsersPage /> : section === 'subscriptions' ? <SubscriptionsPage /> : section === 'errors' ? <ErrorReportsPage /> : section === 'audit' ? <AuditLogsPage /> : section === 'security' ? <SecurityPage /> : <OverviewPage initialOverview={initialOverview} />;
 
   return (
     <AdminShell section={section} user={user} onNavigate={navigate}>

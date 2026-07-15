@@ -1,4 +1,4 @@
-export type AdminSection = 'overview' | 'users' | 'subscriptions' | 'errors' | 'audit';
+export type AdminSection = 'overview' | 'users' | 'subscriptions' | 'errors' | 'audit' | 'security';
 
 export interface AdminUserIdentity {
   id: string;
@@ -38,8 +38,7 @@ export interface AdminOverview {
 
 export interface AdminUserRow {
   id: string;
-  email: string;
-  displayName: string | null;
+  accountLabel: string;
   role: 'user' | 'admin';
   createdAt: string;
   lastLoginAt: string | null;
@@ -102,8 +101,7 @@ export interface AdminAiRepairPackage {
 
 export interface AdminSubscriptionRow {
   userId: string;
-  email: string;
-  displayName: string | null;
+  accountLabel: string;
   subscriptionId: string | null;
   plan: 'free' | 'pro';
   status: 'active' | 'paused' | 'expired' | 'none';
@@ -125,6 +123,25 @@ export interface AdminSubscriptionAdjustment {
   adminNote?: string | null;
   requestId: string;
   reauthToken: string;
+}
+
+export interface AdminSecurityState {
+  mode: 'observe' | 'enforce';
+  encryptionConfigured: boolean;
+  enabled: boolean;
+  pending: boolean;
+  recoveryRequired: boolean;
+  confirmedAt: string | null;
+  pendingExpiresAt: string | null;
+  recoveryCodesRemaining: number;
+  sessionVerified: boolean;
+}
+
+export interface AdminMfaEnrollment {
+  enrollmentToken: string;
+  expiresAt: string;
+  manualKey: string;
+  otpAuthUrl: string;
 }
 
 export interface AdminAuditLog {

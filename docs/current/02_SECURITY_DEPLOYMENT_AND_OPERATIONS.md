@@ -1,7 +1,7 @@
 # SciFigure 安全、部署与运维副文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-16 00:27:33 +08:00
+> 更新时间：2026-07-16 01:55:49 +08:00
 > 复核范围：当前本地工作区；尚未等同于已提交发布版本  
 > 适用范围：用户账号、数据保护、代码执行、Docker、备份、管理员能力和生产上线
 
@@ -142,7 +142,7 @@ logout 撤销
 
 邮箱注册接口同时使用进程内快速限流和 SQLite 持久预算。为了避免账号枚举，已注册邮箱也会经过相同的邮件提供器调用，但验证阶段只返回“请直接登录”，绝不修改既有账号密码。持久 outbox 不保存收件地址或验证码正文，只通过 challenge 外键读取既有待注册邮箱，并使用租约避免多进程重复认领；网络结果未知时允许重发同一码。生产邮件服务商仍需设置独立发送额度、退信监控、幂等去重和滥用告警；当前调试服务器尚未配置真实邮件服务，因此本轮邮箱安全分支不得直接部署。
 
-登录账号冷却是爆破防护与可用性的折中：攻击者即使知道邮箱，也不能清除冷却或验证密码；用户在最近 45 天内登记过的设备上提交正确密码可以解除软锁，陌生设备必须等待冷却结束。尚未实现的密码找回、邮箱解锁、CAPTCHA/风险评分和管理员 2FA 仍应作为生产账号体系后续任务。
+登录账号冷却是爆破防护与可用性的折中：攻击者即使知道邮箱，也不能清除冷却或验证密码；用户在最近 45 天内登记过的设备上提交正确密码可以解除软锁，陌生设备必须等待冷却结束。密码找回、邮箱解锁、CAPTCHA/风险评分仍未实现。管理员 TOTP 已在本地安全分支完成，但真实生产密钥、离线引导、TLS 和服务器部署验证仍是上线门槛。
 
 ### 3.2 用户隔离
 
@@ -169,9 +169,15 @@ users.role: user/admin
 管理员操作写入 admin_audit_logs
 兑换码明文不进入数据库审计日志
 订阅原因、管理员备注和审计 metadata 在写入与读取时双重脱敏
+其他用户只返回脱敏账号标识，不向后台页面/API 返回原始邮箱或昵称
+管理员启用 TOTP 后，密码登录只产生短时 MFA challenge，不签发可用会话
+MFA challenge 绑定设备摘要；TOTP time-step 和恢复码均只能消费一次
+管理员订阅写入除 MFA 会话外，还要求密码和新的 TOTP/恢复码 step-up
+TOTP seed 使用带 key ID 的 AES-256-GCM 密文，支持保留旧 key 解密后平滑轮换
+生产管理员入口启用时，缺少 MFA key 或非 enforce 模式会拒绝启动
 ```
 
-当前管理员授权/撤销仍通过服务器命令完成。2026-07-14 已将管理员后台 Phase A、部分 Phase B 和订阅修正切片随 `eea68fb-jd7` 部署到调试服务器。`SCIFIGURE_ADMIN_CONSOLE_ENABLED=1` 已显式启用；账号 `2449673842@qq.com` 的角色引导操作已写入管理审计。功能开关缺失时 `/admin` 和新增管理 API 仍保持关闭。
+当前管理员授权/撤销仍通过服务器命令完成。2026-07-14 已将管理员后台旧切片随 `eea68fb-jd7` 部署到调试服务器；本节新增 MFA 与身份最小化只存在于本地安全分支，尚未发布。功能开关缺失时 `/admin` 和新增管理 API 仍保持关闭。
 
 当前已实现的管理 API 包括：
 
@@ -184,16 +190,20 @@ GET /api/admin/error-reports
 GET /api/admin/error-reports/:id
 GET /api/admin/error-reports/:id/ai-handoff
 GET /api/admin/subscriptions
+GET /api/admin/security
+POST /api/admin/security/totp/enroll
+POST /api/admin/security/totp/confirm
+POST /api/admin/security/recovery-codes/regenerate
 POST /api/admin/reauth
 POST /api/admin/users/:userId/subscription
 POST /api/error-reports（认证用户的脱敏结构化错误上报）
 ```
 
-用户元数据、订阅列表、错误 AI 修复交接包、订阅 recent re-auth 和幂等修正已在独立分支实现。账号暂停、会话撤销、2FA 和最后管理员保护仍属于后续计划，不是当前能力。
+用户元数据、订阅列表、错误 AI 修复交接包、订阅 recent re-auth、幂等修正和管理员 TOTP 已在独立分支实现。账号暂停、通用会话撤销和最后管理员保护仍属于后续计划，不是当前能力。
 
 错误中心与账号管理分离：错误列表、详情和 AI handoff 不返回用户邮箱、用户 ID 或服务端 fingerprint；`projectId/figureId` 必须先验证属于上报者。管理员后台不会联表读取项目脚本、数据文件、SVG、Figure 预览或导出资产内容。
 
-管理员可读取账号状态、订阅状态、资源数量和脱敏后的运行诊断，但不得读取用户脚本、数据集、SVG、Figure、导出文件、真实文件路径、认证令牌或密钥。订阅 `reason/adminNote` 以及历史审计 metadata 会过滤邮箱、绝对路径、Bearer/高熵秘密、结构化粘贴内容和敏感键，避免管理员误粘贴用户内容后形成二次泄露。
+管理员可读取账号 ID、脱敏账号标识、订阅状态、资源数量和脱敏运行诊断，但不得读取其他用户原始邮箱、昵称、脚本、数据集、SVG、Figure、导出文件、真实文件路径、认证令牌或密钥。订阅 `reason/adminNote` 以及历史审计 metadata 会过滤邮箱、绝对路径、Bearer/高熵秘密、结构化粘贴内容和敏感键，避免管理员误粘贴用户内容后形成二次泄露。
 
 ### 3.4 Web 与接口
 
@@ -587,7 +597,7 @@ Content-Security-Policy-Report-Only
 |---|---|
 | 认证 | 注册、登录、存在/不存在账号同类密码工作、跨重启失败冷却、可信设备软解锁、refresh rotation、logout、旧 token 重放 |
 | 用户隔离 | A 用户不能读写 B 用户项目、文件和导出资产；相同脚本不能碰撞或转移 session 所有者 |
-| 管理员 | 普通用户 403、角色撤销即时、审计脱敏 |
+| 管理员 | 普通用户 403、角色撤销即时、原始身份不出后台、MFA 登录/设备绑定/重放拒绝/恢复码轮换、审计脱敏 |
 | 邮箱验证 | 验证前无永久用户/会话/密码存储、账号状态不可枚举、发送失败保留旧码、outbox 崩溃恢复、候选激活门禁、并发收敛、最终租约保护、错误次数、过期、唯一索引与无明文验证码/收件地址 payload |
 | 路径 | `..`、绝对路径、协议路径、符号链接逃逸 |
 | 数据根目录 | 默认 `./data` 兼容、自定义绝对路径、数据库/项目/导出同目录隔离 |
@@ -614,6 +624,7 @@ npm run test:email-outbox-recovery
 npm run test:svg-sanitization
 npm run test:admin-console-readonly
 npm run test:admin-authorization
+npm run test:admin-mfa
 npm run test:deployment-lifecycle
 npm run test:behavior-smoke
 npm run test:production-bundle
@@ -626,7 +637,7 @@ python tests/test_r_renderer.py
 python tests/test_tabular_parser.py
 ```
 
-2026-07-16 00:27 +08:00 已完成的本地结果：`npm test` 为 41/41 文件、256/256 测试；邮箱验证、邮箱 outbox 故障恢复、认证 throttle、refresh、管理员只读/授权、安全基线、用户隔离、缓存、组合代码项目、导出矩阵、R 风险预检、部署生命周期、仓库边界、生产 bundle 和生产构建均通过。故障注入在本地 provider 返回 200 后、数据库激活前强制退出测试服务器；重启后 outbox 重发同一 challenge ID/同一验证码并成功激活，激活前无法创建用户或验证。并发、旧 challenge 保留、旧 schema 迁移、HMAC-only 预算和最终发送租约均有独立断言。前一批 session 所有权、Figure 历史、组合复制、缓存、导出和公开路径边界继续通过。所有 API/浏览器测试使用系统临时目录和随机端口，没有连接本地 3000、真实数据库或真实项目目录；本机 Docker 未启动、停止或修改任何容器。
+2026-07-16 01:55:49 +08:00 已完成的本地结果：`npm test` 为 42/42 文件、266/266 测试；管理员 MFA、后台只读/授权、邮箱验证、refresh、部署生命周期、仓库边界、生产 bundle 和生产构建均通过。管理员验证覆盖设备绑定 challenge、TOTP time-step 防重放、恢复码一次性消费与轮换、角色变更注销会话、订阅 step-up 和后台原始身份最小化。Conda 环境内真实 R renderer 29 项、Python/R capability matrix 2 项通过；本机 R 不在全局 PATH 时通过 `RSCRIPT_BIN=<conda-env>\\Scripts\\Rscript.exe` 选择。前一批邮箱 outbox 故障恢复、session 所有权、Figure 历史、组合复制、缓存、导出和公开路径边界继续由单元/专项回归覆盖。所有 API/浏览器测试使用系统临时目录和随机端口，没有连接本地 3000、真实数据库或真实项目目录；本机 Docker 未启动、停止或修改任何容器。
 
 本轮改动仍位于独立安全分支，尚未提交发布，也未部署到公网调试服务器。上线前必须配置真实邮件域名/提供器并完成送达、退信、额度和防滥用验证。
 
@@ -653,7 +664,7 @@ access token 仍可被同页 XSS 读取；后续可在强制 CSP 稳定后评估
 生产邮件服务商、域名、TLS 和真实邮件送达尚未配置验证
 账号冷却仍会暂时限制未登记的新设备；密码找回、邮箱解锁、CAPTCHA/风险评分尚未实现
 邮件发送仍为同步提供器调用；已消除账号状态分支差异，但生产需监控提供器延迟、配额和邮件轰炸风险
-管理员 2FA 尚未实现
+管理员 MFA 代码已实现但尚未在真实域名/TLS/生产 keyring 下部署验证；最后管理员保护仍未实现
 独立 renderer worker 和持久任务队列尚未实现
 孤儿容器目前依赖唯一名称、强制删除和测试，缺少生产定时巡检
 真实 BIFF .xls 和大型工作簿覆盖有限

@@ -66,6 +66,37 @@ assert.notEqual(throttleRejectedExitCode, 0, 'Production server must reject a mi
 assert.match(throttleRejectedOutput.join(''), /AUTH_THROTTLE_SECRET/);
 fs.rmSync(throttleRejectedRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 
+const mfaRejectedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-production-admin-mfa-gate-'));
+const mfaRejectedOutput = [];
+const {
+  SCIFIGURE_ADMIN_MFA_ENCRYPTION_KEY: _adminMfaKey,
+  SCIFIGURE_ADMIN_MFA_ENCRYPTION_KEYS: _adminMfaKeys,
+  ...productionEnvWithoutAdminMfaKey
+} = process.env;
+const mfaRejected = spawn(process.execPath, [bundle], {
+  cwd: root,
+  env: {
+    ...productionEnvWithoutAdminMfaKey,
+    NODE_ENV: 'production',
+    SCIFIGURE_ALLOW_UNVERIFIED_REGISTRATION_IN_PRODUCTION: '1',
+    SCIFIGURE_AUTH_THROTTLE_SECRET: 'production-bundle-auth-throttle-secret-2026',
+    SCIFIGURE_ADMIN_CONSOLE_ENABLED: '1',
+    SCIFIGURE_ADMIN_MFA_MODE: 'enforce',
+    SCIFIGURE_DATA_DIR: path.join(mfaRejectedRoot, 'data'),
+    SCIFIGURE_DB_PATH: path.join(mfaRejectedRoot, 'data', 'scifigure.db'),
+  },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+mfaRejected.stdout.on('data', chunk => mfaRejectedOutput.push(chunk.toString()));
+mfaRejected.stderr.on('data', chunk => mfaRejectedOutput.push(chunk.toString()));
+const mfaRejectedExitCode = await Promise.race([
+  new Promise(resolve => mfaRejected.once('close', resolve)),
+  new Promise((_, reject) => setTimeout(() => reject(new Error('Production administrator MFA gate did not stop startup')), 10_000)),
+]);
+assert.notEqual(mfaRejectedExitCode, 0, 'Production admin console must reject a missing MFA encryption key');
+assert.match(mfaRejectedOutput.join(''), /管理员二步验证密钥/);
+fs.rmSync(mfaRejectedRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-production-bundle-'));
 const dataRoot = path.join(tempRoot, 'data');
 const port = 37_000 + Math.floor(Math.random() * 1_000);
@@ -77,6 +108,8 @@ const child = spawn(process.execPath, [bundle], {
     NODE_ENV: 'production',
     SCIFIGURE_ALLOW_UNVERIFIED_REGISTRATION_IN_PRODUCTION: '1',
     SCIFIGURE_AUTH_THROTTLE_SECRET: 'production-bundle-auth-throttle-secret-2026',
+    SCIFIGURE_ADMIN_CONSOLE_ENABLED: '0',
+    SCIFIGURE_ADMIN_OPERATIONS_ENABLED: '0',
     PORT: String(port),
     SCIFIGURE_BIND_HOST: '127.0.0.1',
     SCIFIGURE_DATA_DIR: dataRoot,
@@ -113,6 +146,7 @@ try {
       'production CJS bundle starts without eager Vite dependency',
       'production startup fails closed without email verification configuration',
       'production startup fails closed without an authentication throttle secret',
+      'production admin console fails closed without an MFA encryption key',
       'loopback bind setting is honored',
       'public liveness endpoint responds',
     ],

@@ -138,13 +138,21 @@ try {
   });
   const registerData = await jsonResponse(registerResponse);
   assert(registerResponse.ok && registerData?.token, `Registration failed: ${registerResponse.status} ${JSON.stringify(registerData)}`);
-  const token = registerData.token;
+  let token = registerData.token;
 
   const ordinaryState = await request('/api/admin/deployment-state', {
     headers: { Authorization: `Bearer ${token}` },
   });
   assert(ordinaryState.status === 403, `Ordinary user must not read deployment state: ${ordinaryState.status}`);
   setAdminRole();
+
+  const adminLoginResponse = await request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
+  const adminLoginData = await jsonResponse(adminLoginResponse);
+  assert(adminLoginResponse.ok && adminLoginData?.token, `Fresh admin login failed: ${adminLoginResponse.status} ${JSON.stringify(adminLoginData)}`);
+  token = adminLoginData.token;
 
   const initialStateResponse = await request('/api/admin/deployment-state', {
     headers: { Authorization: `Bearer ${token}` },

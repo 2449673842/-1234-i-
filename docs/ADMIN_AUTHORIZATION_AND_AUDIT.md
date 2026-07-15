@@ -1,6 +1,6 @@
 # SciFig 管理员授权与审计说明
 
-> 最后更新：2026-07-13 17:05:09 +08:00
+> 最后更新：2026-07-16 01:55:49 +08:00
 
 ## 1. 安全目标
 
@@ -11,6 +11,7 @@
 → Bearer access token
 → auth_sessions 实时查库
 → users.role 实时确认 admin
+→ 管理员 TOTP/MFA 会话确认
 → 执行管理操作
 → 写入 admin_audit_logs
 ```
@@ -28,6 +29,8 @@ admin：管理员，可访问 /api/admin/*
 
 新注册用户始终为 `user`。平台不提供普通用户可调用的角色提升 API。
 
+管理员角色与 MFA 是两个独立门槛：角色决定“是否属于管理员”，MFA 证明“本次管理员会话是否完成第二因素”。撤销角色永远优先于已验证 MFA 会话。
+
 ## 3. 授予和撤销管理员
 
 ### 3.1 本地管理员完整操作流程
@@ -40,51 +43,22 @@ admin：管理员，可访问 /api/admin/*
 npm run security:set-user-role -- --email "admin@example.com" --role admin --reason initial_owner
 ```
 
-4. 通过 PowerShell 登录并取得短期 access token：
+4. 本地私有迁移阶段配置独立 MFA key，并临时使用观察模式：
 
 ```powershell
-$login = Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:3000/api/auth/login" `
-  -ContentType "application/json" `
-  -Body (@{
-    email = "admin@example.com"
-    password = "你的密码"
-  } | ConvertTo-Json)
-
-$headers = @{
-  Authorization = "Bearer $($login.token)"
-}
+$env:SCIFIGURE_ADMIN_CONSOLE_ENABLED = "1"
+$env:SCIFIGURE_ADMIN_MFA_MODE = "observe"
+$env:SCIFIGURE_ADMIN_MFA_ENCRYPTION_KEY = "<32-byte-base64-key>"
 ```
 
-5. 创建兑换码：
+5. 登录后访问 `/admin/security`，输入管理员密码，按页面显示的手动 key 绑定验证器，再输入新的 6 位动态码确认。恢复码只显示一次，必须离线保存。
+6. 确认绑定完成后改为强制模式，再重新登录：
 
 ```powershell
-$result = Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:3000/api/admin/redeem-codes" `
-  -Headers $headers `
-  -ContentType "application/json" `
-  -Body (@{
-    count = 10
-    durationDays = 31
-    maxUses = 1
-    label = "首批测试用户"
-  } | ConvertTo-Json)
-
-$result.codes
+$env:SCIFIGURE_ADMIN_MFA_MODE = "enforce"
 ```
 
-兑换码只在创建响应中返回明文，数据库和审计日志只保留哈希或脱敏参数，无法再次查询原始兑换码。因此生成后应立即保存到受控位置。
-
-6. 查看最近的管理审计日志：
-
-```powershell
-Invoke-RestMethod `
-  -Method Get `
-  -Uri "http://localhost:3000/api/admin/audit-logs?limit=100" `
-  -Headers $headers
-```
+之后管理员密码登录只会产生短时 MFA challenge；输入验证器代码或未使用的恢复码后才签发 access/refresh 会话。订阅写操作还会再次要求管理员密码与一个新的动态码。
 
 7. 不再需要管理员权限时撤销角色：
 
@@ -94,9 +68,30 @@ npm run security:set-user-role -- --email "admin@example.com" --role user --reas
 
 角色变更实时生效。撤销后，即使原 access token 尚未过期，也不能继续调用管理接口。
 
-当前版本尚未提供网页管理员后台，管理员操作通过服务器控制台和受认证 API 完成。
+网页管理员后台入口为 `/admin`。后台只显示账号 ID、脱敏账号标识、订阅与运行元数据，不显示其他用户原始邮箱、昵称、脚本、数据、Figure 或导出内容。
 
-### 3.2 角色命令参考
+### 3.2 生产离线 MFA 引导
+
+生产默认 `enforce`，不应先开放一个 password-only 管理员网页会话。设置 keyring 和数据库路径后分两步执行：
+
+```bash
+export SCIFIGURE_DB_PATH=/srv/scifigure/data/scifigure.db
+export SCIFIGURE_ADMIN_MFA_ENCRYPTION_KEYS="2026q3:<base64-32-byte-key>"
+npm run security:admin-mfa-bootstrap -- --email admin@example.com
+npm run security:admin-mfa-bootstrap -- --email admin@example.com --confirm
+```
+
+第一步只创建十分钟有效的加密 pending factor；第二步在 TTY 中隐藏读取 token 和动态码，启用 TOTP、撤销该管理员旧会话并一次性显示恢复码。终端输出含敏感的手动 key/token/恢复码，完成后应清屏，不得进入工单、聊天或 Git。
+
+轮换密钥时把新 `kid:key` 放在 keyring 第一位，并暂时保留旧 key：
+
+```bash
+SCIFIGURE_ADMIN_MFA_ENCRYPTION_KEYS="2026q4:<new-key>,2026q3:<old-key>"
+```
+
+新 factor 使用第一把 key，加密旧 factor 仍可由旧 key 解密。在所有旧 factor 重新绑定或完成受控 rewrap 前不得删除旧 key。
+
+### 3.3 角色命令参考
 
 在服务器项目目录执行：
 
@@ -213,6 +208,8 @@ Cookie
 
 ```bash
 npm run test:admin-authorization
+npm run test:admin-console-readonly
+npm run test:admin-mfa
 npm run test:deployment-lifecycle
 ```
 
@@ -225,4 +222,10 @@ npm run test:deployment-lifecycle
 数据库 admin 角色可以执行管理操作
 审计日志不包含兑换码明文
 角色撤销后现有 token 立即失去管理权限
+管理员密码登录在 MFA challenge 前不签发会话
+设置页和首页登录均能完成管理员 MFA challenge
+恢复码一次性消费，TOTP time-step 不可重放
+其他用户原始邮箱和昵称不进入管理员 DTO
 ```
+
+`2026-07-16 01:55:49 +08:00` 本地隔离验证通过：Vitest `42/42` 文件、`266/266` 测试；管理员 MFA、后台只读、管理员授权、认证刷新、邮箱验证、部署生命周期、生产构建与 production bundle 均通过。测试使用临时数据库和随机端口，未连接本地 `3000`、真实数据或 Docker。

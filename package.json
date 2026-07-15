@@ -38,6 +38,7 @@
     "test:legacy-retire-observation": "node tests/api/legacy_retire_observation_smoke.mjs",
     "test:admin-authorization": "node tests/api/admin_authorization_smoke.mjs",
     "test:admin-console-readonly": "node tests/api/admin_console_readonly_smoke.mjs",
+    "test:admin-mfa": "node tests/api/admin_mfa_smoke.mjs",
     "test:deployment-lifecycle": "node tests/api/deployment_lifecycle_smoke.mjs",
     "test:deployment-package": "node tests/deployment/deployment_package_smoke.mjs",
     "test:production-bundle": "node tests/deployment/production_bundle_smoke.mjs",
@@ -67,7 +68,8 @@
     "data:recover-figure-sessions:apply": "node scripts/recover_missing_figure_sessions.mjs --apply",
     "test:data-integrity-tools": "node tests/api/data_integrity_tools_smoke.mjs",
     "security:repo-boundary": "node scripts/security/check-repo-boundary.mjs",
-    "security:set-user-role": "tsx scripts/security/set-user-role.ts"
+    "security:set-user-role": "tsx scripts/security/set-user-role.ts",
+    "security:admin-mfa-bootstrap": "tsx scripts/security/admin-mfa-bootstrap.ts"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

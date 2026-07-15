@@ -159,6 +159,11 @@ describe('persistent hourly usage budget', () => {
       WHERE category = 'email_send' AND scope_hash = ?
     `).get('b'.repeat(64)) as { amount: number };
     expect(globalRow.amount).toBe(2);
+    expect(databaseModule.clearAuthRequestBudget('email_send', ['a'.repeat(64)])).toBe(1);
+    expect(databaseModule.consumeAuthRequestBudget('email_send', scopes, 15 * 60 * 1000, now + 3_000)).toMatchObject({
+      allowed: true,
+      used: 1,
+    });
   });
 
   it('persists login failures, expires cooldowns and clears successful identifiers', () => {

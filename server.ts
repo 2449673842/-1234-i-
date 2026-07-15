@@ -31,8 +31,20 @@ import {
   type DeploymentMode,
 } from './src/utils/deploymentLifecycle';
 import { installAdminConsoleRoutes } from './server/admin/console';
-import { adminOperationsEnabled } from './server/admin/featureFlags';
+import { adminConsoleEnabled, adminOperationsEnabled } from './server/admin/featureFlags';
 import { sanitizeAdminAuditMetadata } from './server/admin/privacy';
+import {
+  adminMfaMode,
+  assertAdminMfaProductionConfig,
+} from './server/auth/adminMfa';
+import {
+  consumeAdminMfaLoginChallenge,
+  createAdminMfaLoginChallenge,
+  getAdminMfaLoginChallengeSubject,
+  getAdminMfaState,
+  isAdminMfaVerifiedSession,
+  type AdminMfaMethod,
+} from './server/auth/adminMfaStore';
 import {
   assertEmailVerificationProductionConfig,
   deriveEmailVerificationCode,
@@ -106,6 +118,7 @@ import {
   revokeAuthToken,
   verifyPasswordForLogin,
   consumeAuthRequestBudget,
+  clearAuthRequestBudget,
   readAuthLoginThrottle,
   recordAuthLoginFailure,
   clearAuthLoginThrottle,
@@ -137,6 +150,7 @@ const PROJECTS_ROOT = path.join(DATA_ROOT, 'projects');
 async function startServer() {
   assertEmailVerificationProductionConfig();
   assertAuthThrottleProductionConfig();
+  assertAdminMfaProductionConfig(adminConsoleEnabled() || adminOperationsEnabled());
   getDb().exec(`
     CREATE TABLE IF NOT EXISTS render_cache (
       cache_key TEXT PRIMARY KEY,
@@ -435,6 +449,40 @@ async function startServer() {
     const error = new Error('登录请求过于频繁，请稍后再试');
     (error as any).statusCode = 429;
     throw error;
+  }
+
+  function assertPersistentAdminMfaAttemptBudget(
+    req: express.Request,
+    res: express.Response,
+    userId: string,
+  ): void {
+    const result = consumeAuthRequestBudget('admin_mfa_attempt', [
+      {
+        scopeHash: hashAuthThrottleScope('admin_mfa_user', userId),
+        limit: boundedNumber(process.env.ADMIN_MFA_USER_ATTEMPT_LIMIT_PER_15_MINUTES, 10, 3, 50),
+        label: 'admin',
+      },
+      {
+        scopeHash: hashAuthThrottleScope('admin_mfa_ip', clientIp(req)),
+        limit: boundedNumber(process.env.ADMIN_MFA_IP_ATTEMPT_LIMIT_PER_15_MINUTES, 50, 10, 500),
+        label: 'ip',
+      },
+      {
+        scopeHash: hashAuthThrottleScope('admin_mfa_global', 'global'),
+        limit: boundedNumber(process.env.ADMIN_MFA_GLOBAL_ATTEMPT_LIMIT_PER_15_MINUTES, 500, 50, 10_000),
+        label: 'global',
+      },
+    ]);
+    if (result.allowed) return;
+    const retryAfterSeconds = Math.max(1, Math.ceil((Date.parse(result.resetAt) - Date.now()) / 1000));
+    res.setHeader('Retry-After', String(retryAfterSeconds));
+    const error = new Error('管理员二步验证尝试过多，请稍后再试');
+    (error as any).statusCode = 429;
+    throw error;
+  }
+
+  function clearPersistentAdminMfaUserBudget(userId: string): void {
+    clearAuthRequestBudget('admin_mfa_attempt', [hashAuthThrottleScope('admin_mfa_user', userId)]);
   }
 
   function rejectThrottledLogin(res: express.Response, retryAfterSeconds: number) {
@@ -1052,11 +1100,25 @@ async function startServer() {
     return auth.user.id;
   }
 
-  function requireAdmin(req: express.Request): { user: UserAccount; token: string; deviceId: string | null } {
+  function requireAdminRole(req: express.Request): { user: UserAccount; token: string; deviceId: string | null } {
     const auth = requireAuth(req);
     if (auth.user.role !== 'admin') {
       const err = new Error('需要管理员权限');
       (err as any).statusCode = 403;
+      (err as any).actorUserId = auth.user.id;
+      throw err;
+    }
+    return auth;
+  }
+
+  function requireAdmin(req: express.Request): { user: UserAccount; token: string; deviceId: string | null } {
+    const auth = requireAdminRole(req);
+    const mfa = getAdminMfaState(auth.user.id);
+    const required = mfa.enabled || ((adminConsoleEnabled() || adminOperationsEnabled()) && adminMfaMode() === 'enforce');
+    if (required && (!mfa.enabled || !isAdminMfaVerifiedSession(auth.token, auth.user.id))) {
+      const err = new Error(mfa.enabled ? '管理员二步验证已过期，请重新登录' : '管理员账号必须先启用二步验证');
+      (err as any).statusCode = 403;
+      (err as any).errorCode = mfa.enabled ? 'ADMIN_MFA_REQUIRED' : 'ADMIN_MFA_ENROLLMENT_REQUIRED';
       (err as any).actorUserId = auth.user.id;
       throw err;
     }
@@ -1133,14 +1195,27 @@ async function startServer() {
     return 'application/octet-stream';
   }
 
-  function issueAuthenticatedSession(req: express.Request, res: express.Response, user: UserAccount) {
+  function issueAuthenticatedSession(
+    req: express.Request,
+    res: express.Response,
+    user: UserAccount,
+    adminMfa?: { verified: boolean; method: AdminMfaMethod },
+  ) {
     const token = issueToken();
     const refreshToken = issueToken();
     const fingerprint = readDeviceFingerprint(req);
     const deviceId = fingerprint
       ? upsertDevice(user.id, fingerprint, String(req.headers['x-device-name'] || '').slice(0, 80) || null)
       : null;
-    createAuthSession(user.id, token, refreshToken, deviceId, accessTokenMinutes(), refreshTokenDays());
+    createAuthSession(
+      user.id,
+      token,
+      refreshToken,
+      deviceId,
+      accessTokenMinutes(),
+      refreshTokenDays(),
+      adminMfa?.verified ? { adminMfaVerified: true, adminMfaMethod: adminMfa.method } : undefined,
+    );
     setRefreshCookie(res, refreshToken);
     touchUserLogin(user.id);
     return {
@@ -2008,6 +2083,8 @@ ${inner}
     errorReportRateLimit,
     writeAdminAudit,
     rendererSnapshot: adminConsoleRendererSnapshot,
+    assertAdminMfaAttemptBudget: assertPersistentAdminMfaAttemptBudget,
+    clearAdminMfaUserBudget: clearPersistentAdminMfaUserBudget,
   });
 
   app.get('/api/health/live', (_req, res) => {
@@ -2187,12 +2264,87 @@ ${inner}
           maskedEmail: maskEmailAddress(user.email),
         });
       }
+      if (user.role === 'admin') {
+        const mfa = getAdminMfaState(user.id);
+        if (mfa.enabled) {
+          const deviceScopeHash = hashAuthThrottleScope(
+            'admin_mfa_device',
+            readDeviceFingerprint(req) || `ip:${clientIp(req)}`,
+          );
+          const challenge = createAdminMfaLoginChallenge({ userId: user.id, deviceScopeHash });
+          clearRefreshCookie(res);
+          res.setHeader('Cache-Control', 'no-store');
+          return res.status(202).json({
+            status: 'mfa_required',
+            adminMfaRequired: true,
+            challenge: {
+              challengeToken: challenge.challengeToken,
+              expiresAt: challenge.expiresAt,
+            },
+          });
+        }
+        if ((adminConsoleEnabled() || adminOperationsEnabled()) && adminMfaMode() === 'enforce') {
+          clearRefreshCookie(res);
+          return res.status(403).json({
+            status: 'error',
+            errorCode: 'ADMIN_MFA_ENROLLMENT_REQUIRED',
+            message: '管理员账号尚未完成二步验证设置，请通过服务器安全引导命令完成配置',
+          });
+        }
+      }
       return res.json({ status: 'success', ...issueAuthenticatedSession(req, res, user) });
     } catch (err: any) {
       const statusCode = Number(err?.statusCode || 500);
       res.status(statusCode).json({
         status: 'error',
         message: statusCode === 429 ? err.message : '登录暂时不可用，请稍后重试',
+      });
+    }
+  });
+
+  app.post('/api/auth/admin-mfa', authRateLimit, (req, res) => {
+    try {
+      assertPersistentLoginAttemptBudget(req, res);
+      const challengeToken = String(req.body?.challengeToken || '').trim();
+      const candidate = String(req.body?.code || req.body?.recoveryCode || '').trim();
+      if (!/^amc_[A-Za-z0-9_-]{32,}$/.test(challengeToken) || candidate.length < 6 || candidate.length > 64) {
+        return res.status(400).json({ status: 'error', message: '管理员验证码格式无效' });
+      }
+      const deviceScopeHash = hashAuthThrottleScope(
+        'admin_mfa_device',
+        readDeviceFingerprint(req) || `ip:${clientIp(req)}`,
+      );
+      const challengeUserId = getAdminMfaLoginChallengeSubject(challengeToken, deviceScopeHash);
+      if (!challengeUserId) {
+        return res.status(401).json({ status: 'error', message: '管理员验证码错误或已失效' });
+      }
+      assertPersistentAdminMfaAttemptBudget(req, res, challengeUserId);
+      const result = consumeAdminMfaLoginChallenge({ challengeToken, deviceScopeHash, candidate });
+      if (result.status !== 'verified') {
+        const statusCode = result.status === 'locked' ? 429 : 401;
+        return res.status(statusCode).json({
+          status: 'error',
+          message: statusCode === 429 ? '管理员验证码尝试次数过多，请重新登录' : '管理员验证码错误或已失效',
+        });
+      }
+      clearPersistentAdminMfaUserBudget(result.user.id);
+      const payload = issueAuthenticatedSession(req, res, result.user, { verified: true, method: result.method });
+      writeAdminAudit(req, {
+        actorUserId: result.user.id,
+        action: 'admin_mfa.login',
+        resourceType: 'admin_session',
+        resourceId: result.user.id,
+        success: true,
+        statusCode: 200,
+        metadata: { method: result.method },
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ status: 'success', ...payload });
+    } catch (err: any) {
+      const statusCode = Number(err?.statusCode || 500);
+      return res.status(statusCode).json({
+        status: 'error',
+        message: statusCode === 429 ? err.message : '管理员二步验证暂时不可用',
       });
     }
   });

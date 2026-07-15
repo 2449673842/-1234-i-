@@ -240,6 +240,44 @@ function initSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_admin_reauth_actor_expiry
       ON admin_reauth_tokens(actor_user_id, expires_at);
+    CREATE TABLE IF NOT EXISTS admin_mfa_factors (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL DEFAULT 'totp' CHECK (type = 'totp'),
+      status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'recovery_required', 'disabled')),
+      secret_envelope TEXT NOT NULL,
+      last_accepted_step INTEGER,
+      enrollment_token_hash TEXT,
+      pending_expires_at TEXT,
+      confirmed_at TEXT,
+      disabled_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_admin_mfa_status
+      ON admin_mfa_factors(status, user_id);
+    CREATE TABLE IF NOT EXISTS admin_mfa_recovery_codes (
+      id TEXT PRIMARY KEY,
+      factor_id TEXT NOT NULL REFERENCES admin_mfa_factors(id) ON DELETE CASCADE,
+      code_hash TEXT NOT NULL UNIQUE,
+      used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_admin_mfa_recovery_factor
+      ON admin_mfa_recovery_codes(factor_id, used_at);
+    CREATE TABLE IF NOT EXISTS admin_mfa_login_challenges (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      device_scope_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5,
+      consumed_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_admin_mfa_login_user_expiry
+      ON admin_mfa_login_challenges(user_id, expires_at);
     CREATE TABLE IF NOT EXISTS admin_idempotency_requests (
       request_id TEXT PRIMARY KEY,
       actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -346,6 +384,8 @@ function initSchema() {
     "ALTER TABLE pending_email_registrations ADD COLUMN deliverable_at TEXT",
     "ALTER TABLE auth_sessions ADD COLUMN refresh_token_hash TEXT",
     "ALTER TABLE auth_sessions ADD COLUMN refresh_expires_at TEXT",
+    "ALTER TABLE auth_sessions ADD COLUMN admin_mfa_verified_at TEXT",
+    "ALTER TABLE auth_sessions ADD COLUMN admin_mfa_method TEXT",
     "ALTER TABLE subscriptions ADD COLUMN actor_user_id TEXT",
     "ALTER TABLE subscriptions ADD COLUMN change_reason TEXT",
     "ALTER TABLE subscriptions ADD COLUMN admin_note TEXT",
@@ -1234,12 +1274,18 @@ export function setUserRoleByEmail(email: string, role: UserRole): UserAccount {
   if (role !== 'user' && role !== 'admin') {
     throw new Error('无效的用户角色');
   }
-  const result = getDb().prepare('UPDATE users SET role = ? WHERE email = ?').run(role, normalizedEmail);
-  if (result.changes !== 1) {
-    throw new Error(`未找到用户: ${normalizedEmail}`);
-  }
-  const row = getDb().prepare('SELECT * FROM users WHERE email = ?').get(normalizedEmail) as AuthUserRow;
-  return mapUser(row);
+  const database = getDb();
+  return database.transaction(() => {
+    const result = database.prepare('UPDATE users SET role = ? WHERE email = ?').run(role, normalizedEmail);
+    if (result.changes !== 1) {
+      throw new Error('未找到目标用户');
+    }
+    const row = database.prepare('SELECT * FROM users WHERE email = ?').get(normalizedEmail) as AuthUserRow;
+    database.prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(row.id);
+    database.prepare('DELETE FROM admin_reauth_tokens WHERE actor_user_id = ?').run(row.id);
+    database.prepare('DELETE FROM admin_mfa_login_challenges WHERE user_id = ?').run(row.id);
+    return mapUser(row);
+  }).immediate();
 }
 
 export interface AdminAuditLogInput {
@@ -1539,12 +1585,14 @@ export function createAuthSession(
   deviceId?: string | null,
   accessTtlMinutes = 15,
   refreshTtlDays = 30,
+  security?: { adminMfaVerified?: boolean; adminMfaMethod?: 'totp' | 'recovery' },
 ): void {
   getDb().prepare(`
     INSERT INTO auth_sessions (
-      id, user_id, token_hash, refresh_token_hash, device_id, expires_at, refresh_expires_at
+      id, user_id, token_hash, refresh_token_hash, device_id, expires_at, refresh_expires_at,
+      admin_mfa_verified_at, admin_mfa_method
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     `ses_${crypto.randomUUID()}`,
     userId,
@@ -1553,6 +1601,8 @@ export function createAuthSession(
     deviceId ?? null,
     new Date(Date.now() + accessTtlMinutes * 60 * 1000).toISOString(),
     addDaysIso(refreshTtlDays),
+    security?.adminMfaVerified ? nowIso() : null,
+    security?.adminMfaVerified ? security.adminMfaMethod ?? 'totp' : null,
   );
 }
 
@@ -1751,6 +1801,19 @@ export function consumeAuthRequestBudget(
       resetAt,
     };
   }).immediate();
+}
+
+export function clearAuthRequestBudget(category: string, scopeHashes: string[]): number {
+  if (!/^[a-z][a-z0-9_]{1,39}$/.test(category)) throw new Error('Invalid authentication budget category');
+  const normalized = [...new Set(scopeHashes.map(value => String(value || '').toLowerCase()))];
+  if (!normalized.length || normalized.some(value => !/^[a-f0-9]{64}$/.test(value))) {
+    throw new Error('Invalid authentication budget scope');
+  }
+  const placeholders = normalized.map(() => '?').join(', ');
+  return getDb().prepare(`
+    DELETE FROM auth_request_budgets
+    WHERE category = ? AND scope_hash IN (${placeholders})
+  `).run(category, ...normalized).changes;
 }
 
 export interface AuthLoginThrottleState {

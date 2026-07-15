@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Blocks, CheckCircle2, Cpu, CreditCard, KeyRound, LogOut, Settings, Shield, User } from 'lucide-react';
+import { Blocks, CheckCircle2, Copy, Cpu, CreditCard, KeyRound, LogOut, Settings, Shield, User } from 'lucide-react';
 import { clearAccessToken, getAccessToken, setAccessToken } from '../utils/authenticatedFetch';
+import { copyTextToClipboard } from '../utils/clipboard';
 const DEVICE_KEY = 'scifigure:device-fingerprint';
 
 interface AuthUser {
@@ -15,6 +16,11 @@ interface AuthUser {
 interface EmailVerificationState {
   challengeId: string;
   maskedEmail: string;
+  expiresAt: string;
+}
+
+interface AdminMfaChallengeState {
+  challengeToken: string;
   expiresAt: string;
 }
 
@@ -65,6 +71,8 @@ export function SettingsPage({ subView }: { subView: string }) {
   const [password, setPassword] = useState('');
   const [verification, setVerification] = useState<EmailVerificationState | null>(null);
   const [verificationCode, setVerificationCode] = useState('');
+  const [adminMfaChallenge, setAdminMfaChallenge] = useState<AdminMfaChallengeState | null>(null);
+  const [adminMfaCode, setAdminMfaCode] = useState('');
   const [redeemCode, setRedeemCode] = useState('');
   const [isBusy, setIsBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -97,6 +105,12 @@ export function SettingsPage({ subView }: { subView: string }) {
         body: JSON.stringify({ email, password, displayName }),
       });
       const data = await res.json();
+      if (data?.adminMfaRequired && data?.challenge?.challengeToken) {
+        setAdminMfaChallenge(data.challenge);
+        setAdminMfaCode('');
+        setMessage('管理员账号需要完成验证器二步验证');
+        return;
+      }
       if (data?.verificationRequired && data?.verification?.challengeId) {
         setVerification(data.verification);
         setVerificationCode('');
@@ -124,6 +138,37 @@ export function SettingsPage({ subView }: { subView: string }) {
       setMessage(mode === 'login' ? '登录成功' : '注册成功，已创建免费版账号');
     } catch (err: any) {
       setMessage(err.message);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const verifyAdminMfa = async () => {
+    if (!adminMfaChallenge || adminMfaCode.trim().length < 6) {
+      setMessage('请输入验证器代码或一次性恢复码');
+      return;
+    }
+    setIsBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch('/api/auth/admin-mfa', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ challengeToken: adminMfaChallenge.challengeToken, code: adminMfaCode.trim() }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || data?.status !== 'success' || typeof data?.token !== 'string') {
+        throw new Error(data?.message || '管理员二步验证失败');
+      }
+      setAccessToken(data.token);
+      window.dispatchEvent(new CustomEvent('scifigure:auth-changed', { detail: { authenticated: true } }));
+      setAuth({ user: data.user, license: data.license, deviceCount: data.deviceCount ?? 1 });
+      setAdminMfaChallenge(null);
+      setAdminMfaCode('');
+      setPassword('');
+      setMessage('管理员登录成功');
+    } catch (err: any) {
+      setMessage(err?.message || '管理员二步验证失败');
     } finally {
       setIsBusy(false);
     }
@@ -247,12 +292,35 @@ export function SettingsPage({ subView }: { subView: string }) {
                     <div className="flex justify-between"><span className="text-slate-500">授权来源</span><span className="font-medium">{auth.license.source}</span></div>
                     <div className="flex justify-between"><span className="text-slate-500">有效期</span><span className="font-medium">{licenseEnd}</span></div>
                     <div className="flex justify-between"><span className="text-slate-500">活跃设备</span><span className="font-medium">{auth.deviceCount ?? 0} / 3 建议上限</span></div>
+                    {auth.user && <div className="flex items-start justify-between gap-3"><span className="shrink-0 text-slate-500">支持编号</span><span className="flex min-w-0 items-center gap-2"><code className="break-all text-right text-xs">{auth.user.id}</code><button type="button" className="shrink-0 text-slate-400 hover:text-blue-600" title="复制支持编号" aria-label="复制支持编号" onClick={async () => setMessage(await copyTextToClipboard(auth.user!.id) ? '支持编号已复制' : '浏览器未允许复制')}><Copy className="h-3.5 w-3.5" /></button></span></div>}
                   </div>
                 </div>
 
                 {!auth.user ? (
                   <div className="rounded-2xl border border-slate-200 bg-white p-6">
-                    {verification ? (
+                    {adminMfaChallenge ? (
+                      <div className="space-y-4">
+                        <div>
+                          <h2 className="font-bold text-slate-900">管理员二步验证</h2>
+                          <p className="mt-1 text-sm text-slate-500">请输入验证器代码；验证器不可用时可使用一条一次性恢复码。</p>
+                        </div>
+                        <input
+                          value={adminMfaCode}
+                          onChange={(event) => setAdminMfaCode(event.target.value.slice(0, 64))}
+                          className="w-full rounded-lg border border-slate-200 px-3 py-3 text-center text-lg font-black"
+                          placeholder="000000"
+                          autoComplete="one-time-code"
+                          maxLength={64}
+                          autoFocus
+                        />
+                        <button onClick={verifyAdminMfa} disabled={isBusy || adminMfaCode.trim().length < 6} className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50">
+                          {isBusy ? '正在验证...' : '验证并登录'}
+                        </button>
+                        <button onClick={() => { setAdminMfaChallenge(null); setAdminMfaCode(''); setMessage(null); }} disabled={isBusy} className="w-full rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-600 hover:bg-slate-50">
+                          返回账号登录
+                        </button>
+                      </div>
+                    ) : verification ? (
                       <div className="space-y-4">
                         <div>
                           <h2 className="font-bold text-slate-900">验证邮箱</h2>

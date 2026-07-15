@@ -32,7 +32,7 @@ function assert(condition, message) {
 }
 
 function forbiddenJsonFields(value) {
-  const forbidden = new Set(['password', 'password_hash', 'password_salt', 'token', 'stored_path', 'file_path', 'script', 'data_payload', 'traceback', 'stacktrace', 'authorization', 'content', 'useremail', 'fingerprint', 'svg', 'image', 'export']);
+  const forbidden = new Set(['email', 'displayname', 'password', 'password_hash', 'password_salt', 'token', 'stored_path', 'file_path', 'script', 'data_payload', 'traceback', 'stacktrace', 'authorization', 'content', 'useremail', 'fingerprint', 'svg', 'image', 'export']);
   const hits = new Set();
   const visit = (node) => {
     if (!node || typeof node !== 'object') return;
@@ -119,6 +119,9 @@ function startServer(port, enabled) {
       SCIFIGURE_DB_PATH: dbPath,
       SCIFIGURE_RENDER_MODE: 'docker',
       SCIFIGURE_ADMIN_CONSOLE_ENABLED: enabled ? '1' : '0',
+      SCIFIGURE_ADMIN_MFA_MODE: 'observe',
+      SCIFIGURE_ALLOW_ADMIN_MFA_OBSERVE_IN_PRODUCTION: '1',
+      SCIFIGURE_ADMIN_MFA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
       SCIFIGURE_ADMIN_REAUTH_TTL_MS: '1000',
       SCIFIGURE_VITE_HMR_PORT: String(port + 1_000),
       NODE_ENV: 'production',
@@ -197,6 +200,16 @@ async function register(baseUrl, email, displayName) {
   return data;
 }
 
+async function login(baseUrl, email) {
+  const response = await request(baseUrl, '/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await jsonResponse(response);
+  assert(response.ok && data?.token, `Login failed: ${response.status} ${JSON.stringify(data)}`);
+  return data;
+}
+
 let disabledServer;
 let enabledServer;
 
@@ -222,7 +235,7 @@ try {
   const adminData = await register(enabled.baseUrl, adminEmail, 'Admin Console Admin');
   const userData = await register(enabled.baseUrl, userEmail, 'Admin Console User');
   const otherUserData = await register(enabled.baseUrl, otherUserEmail, 'Admin Console Other User');
-  const adminToken = adminData.token;
+  let adminToken = adminData.token;
   const userToken = userData.token;
   const otherUserToken = otherUserData.token;
 
@@ -351,6 +364,9 @@ try {
   assert(emptyIngest.status === 400, `Empty error reports must be rejected, got ${emptyIngest.status}`);
 
   setRole(adminEmail, 'admin');
+  const promotedOldToken = await request(enabled.baseUrl, '/api/auth/me', { headers: { Authorization: `Bearer ${adminToken}` } });
+  assert(promotedOldToken.status === 401, `Role promotion must revoke the previous session, got ${promotedOldToken.status}`);
+  adminToken = (await login(enabled.baseUrl, adminEmail)).token;
 
   const overviewResponse = await request(enabled.baseUrl, '/api/admin/overview', {
     headers: { Authorization: `Bearer ${adminToken}` },
@@ -361,12 +377,14 @@ try {
   assert(typeof overviewData.overview.renderer.active === 'number', 'Overview must include renderer snapshot');
   assert(overviewData.overview.counts.errorReports === 1 && overviewData.overview.counts.openErrors === 1, `Overview error counts mismatch: ${JSON.stringify(overviewData.overview.counts)}`);
 
-  const usersResponse = await request(enabled.baseUrl, '/api/admin/users?page=1&pageSize=100&query=admin-console', {
+  const usersResponse = await request(enabled.baseUrl, `/api/admin/users?page=1&pageSize=100&query=${encodeURIComponent(userData.user.id)}`, {
     headers: { Authorization: `Bearer ${adminToken}` },
   });
   const usersData = await jsonResponse(usersResponse);
-  assert(usersResponse.ok && Array.isArray(usersData?.items) && usersData.total >= 2, `Admin users failed: ${usersResponse.status} ${JSON.stringify(usersData)}`);
-  assert(usersData.items.some(item => item.email === userEmail && item.aggregates), 'Users response must include safe aggregates');
+  assert(usersResponse.ok && Array.isArray(usersData?.items) && usersData.total === 1, `Admin user-ID lookup failed: ${usersResponse.status} ${JSON.stringify(usersData)}`);
+  const targetUser = usersData.items.find(item => item.id === userData.user.id);
+  assert(targetUser?.accountLabel && targetUser.aggregates, 'Users response must include a pseudonymous account label and safe aggregates');
+  assert(!JSON.stringify(usersData).includes(userEmail), 'Users response must not include raw user email');
   const userLeaks = forbiddenJsonFields(usersData);
   assert(userLeaks.length === 0, `Users response leaked sensitive fields: ${userLeaks.join(', ')}`);
 
@@ -423,11 +441,12 @@ try {
   assert(anonymousSubscriptions.status === 401, `Anonymous subscription read must return 401, got ${anonymousSubscriptions.status}`);
   const userSubscriptions = await request(enabled.baseUrl, '/api/admin/subscriptions', { headers: { Authorization: `Bearer ${userToken}` } });
   assert(userSubscriptions.status === 403, `Ordinary user subscription read must return 403, got ${userSubscriptions.status}`);
-  const subscriptionsBeforeResponse = await request(enabled.baseUrl, `/api/admin/subscriptions?query=${encodeURIComponent(userEmail)}`, {
+  const subscriptionsBeforeResponse = await request(enabled.baseUrl, `/api/admin/subscriptions?query=${encodeURIComponent(userData.user.id)}`, {
     headers: { Authorization: `Bearer ${adminToken}` },
   });
   const subscriptionsBefore = await jsonResponse(subscriptionsBeforeResponse);
   assert(subscriptionsBeforeResponse.ok && subscriptionsBefore?.items?.[0]?.userId === userData.user.id, 'Admin subscription list must include target user');
+  assert(subscriptionsBefore.items[0].accountLabel && !JSON.stringify(subscriptionsBefore).includes(userEmail), 'Subscription response must expose only a pseudonymous account label');
 
   const wrongReauth = await request(enabled.baseUrl, '/api/admin/reauth', {
     method: 'POST',
@@ -519,19 +538,19 @@ try {
   });
   assert(tokenReuseResponse.status === 409 || tokenReuseResponse.status === 401, `Consumed reauth token must be rejected, got ${tokenReuseResponse.status}`);
 
-  const subscriptionsAfterResponse = await request(enabled.baseUrl, `/api/admin/subscriptions?query=${encodeURIComponent(userEmail)}`, {
+  const subscriptionsAfterResponse = await request(enabled.baseUrl, `/api/admin/subscriptions?query=${encodeURIComponent(userData.user.id)}`, {
     headers: { Authorization: `Bearer ${adminToken}` },
   });
   const subscriptionsAfter = await jsonResponse(subscriptionsAfterResponse);
   assert(subscriptionsAfterResponse.ok && subscriptionsAfter?.items?.[0]?.plan === 'pro' && subscriptionsAfter.items[0].historyCount === 1, 'Subscription list must show one idempotent Pro adjustment');
   const subscriptionsAfterText = JSON.stringify(subscriptionsAfter);
   assert(!subscriptionsAfterText.includes('private.csv') && !subscriptionsAfterText.includes(pastedSecret), 'Subscription list leaked pasted user content');
-  const usersAfterResponse = await request(enabled.baseUrl, `/api/admin/users?pageSize=100&query=${encodeURIComponent(userEmail)}`, {
+  const usersAfterResponse = await request(enabled.baseUrl, `/api/admin/users?pageSize=100&query=${encodeURIComponent(userData.user.id)}`, {
     headers: { Authorization: `Bearer ${adminToken}` },
   });
   const usersAfter = await jsonResponse(usersAfterResponse);
-  const { subscriptions: _beforeSubscriptions, ...beforeAggregates } = usersData.items.find(item => item.email === userEmail).aggregates;
-  const { subscriptions: _afterSubscriptions, ...afterAggregates } = usersAfter.items.find(item => item.email === userEmail).aggregates;
+  const { subscriptions: _beforeSubscriptions, ...beforeAggregates } = usersData.items.find(item => item.id === userData.user.id).aggregates;
+  const { subscriptions: _afterSubscriptions, ...afterAggregates } = usersAfter.items.find(item => item.id === userData.user.id).aggregates;
   assert(JSON.stringify(beforeAggregates) === JSON.stringify(afterAggregates), `Subscription adjustment modified user resources: ${JSON.stringify({ beforeAggregates, afterAggregates })}`);
 
   setRole(adminEmail, 'user');
@@ -539,9 +558,10 @@ try {
   const demotedResponse = await request(enabled.baseUrl, '/api/admin/users', {
     headers: { Authorization: `Bearer ${adminToken}` },
   });
-  assert(demotedResponse.status === 403, `Demoted admin token must lose admin console access immediately, got ${demotedResponse.status}`);
+  assert(demotedResponse.status === 401, `Role change must revoke the admin console session immediately, got ${demotedResponse.status}`);
 
   setRole(adminEmail, 'admin');
+  adminToken = (await login(enabled.baseUrl, adminEmail)).token;
   const auditResponse = await request(enabled.baseUrl, '/api/admin/audit-logs?limit=100', {
     headers: { Authorization: `Bearer ${adminToken}` },
   });
@@ -549,7 +569,7 @@ try {
   assert(auditResponse.ok && Array.isArray(auditData?.logs), `Audit read failed: ${auditResponse.status} ${JSON.stringify(auditData)}`);
   assert(auditData.logs.some(entry => entry.action === 'admin_console.overview.read' && entry.success === true), 'Successful overview read must be audited');
   assert(auditData.logs.some(entry => entry.action === 'admin_console.overview.read' && entry.success === false && entry.statusCode === 401), 'Anonymous admin read failure must be audited');
-  assert(auditData.logs.some(entry => entry.action === 'admin_console.users.read' && entry.success === false && entry.statusCode === 403), 'Demoted admin read failure must be audited');
+  assert(auditData.logs.some(entry => entry.action === 'admin_console.users.read' && entry.success === false && entry.statusCode === 401), 'Revoked admin session failure must be audited');
   assert(auditData.logs.some(entry => entry.action === 'admin_console.reauth' && entry.success === false && entry.statusCode === 401), 'Failed administrator reauth must be audited');
   assert(auditData.logs.some(entry => entry.action === 'admin_console.subscription.adjust' && entry.success === true), 'Successful subscription adjustment must be audited');
   assert(auditData.logs.some(entry => entry.action === 'admin_console.error_reports.ai_handoff' && entry.success === true), 'AI repair handoff generation must be audited');

@@ -1,4 +1,4 @@
-import { Bug, CreditCard, ExternalLink, Gauge, ScrollText, ShieldCheck, Users } from 'lucide-react';
+import { Bug, CreditCard, ExternalLink, Gauge, KeyRound, ScrollText, ShieldCheck, Users } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { AdminSection, AdminUserIdentity } from './types';
 
@@ -8,6 +8,7 @@ const navItems: Array<{ id: AdminSection; label: string; icon: typeof Gauge; gro
   { id: 'users', label: '用户元数据', icon: Users, group: 'Accounts' },
   { id: 'subscriptions', label: '订阅权限', icon: CreditCard, group: 'Accounts' },
   { id: 'audit', label: '管理审计', icon: ScrollText, group: 'Security' },
+  { id: 'security', label: '安全设置', icon: KeyRound, group: 'Security' },
 ];
 
 export function AdminShell({ section, user, onNavigate, children }: { section: AdminSection; user: AdminUserIdentity; onNavigate: (section: AdminSection) => void; children: ReactNode }) {

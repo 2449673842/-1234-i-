@@ -111,12 +111,18 @@ try {
   const meResponse = await request('/api/auth/me', {
     headers: { Authorization: `Bearer ${token}` },
   });
-  const meData = await jsonResponse(meResponse);
-  assert(meResponse.ok && meData?.user?.role === 'admin', `Existing token must observe current DB role: ${JSON.stringify(meData)}`);
+  assert(meResponse.status === 401, `Role promotion must revoke pre-promotion sessions, got ${meResponse.status}`);
+  const adminLoginResponse = await request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
+  const adminLogin = await jsonResponse(adminLoginResponse);
+  assert(adminLoginResponse.ok && adminLogin?.token && adminLogin?.user?.role === 'admin', `Fresh administrator login failed: ${adminLoginResponse.status} ${JSON.stringify(adminLogin)}`);
+  const adminToken = adminLogin.token;
 
   const adminResponse = await request('/api/admin/redeem-codes', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${adminToken}` },
     body: JSON.stringify({
       count: 2,
       durationDays: 31,
@@ -128,7 +134,7 @@ try {
   assert(adminResponse.ok && adminData?.codes?.length === 2, `Admin creation failed: ${adminResponse.status} ${JSON.stringify(adminData)}`);
 
   const auditResponse = await request('/api/admin/audit-logs?limit=100', {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${adminToken}` },
   });
   const auditData = await jsonResponse(auditResponse);
   assert(auditResponse.ok && Array.isArray(auditData?.logs), `Audit read failed: ${auditResponse.status} ${JSON.stringify(auditData)}`);
@@ -143,10 +149,10 @@ try {
 
   const demotedResponse = await request('/api/admin/redeem-codes', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${adminToken}` },
     body: JSON.stringify({ count: 1 }),
   });
-  assert(demotedResponse.status === 403, `Demoted admin token must lose access immediately, got ${demotedResponse.status}`);
+  assert(demotedResponse.status === 401, `Role change must revoke the administrator session immediately, got ${demotedResponse.status}`);
 
   console.log(JSON.stringify({
     status: 'PASS',
@@ -154,7 +160,7 @@ try {
       'new users default to user',
       'legacy x-admin-secret rejected',
       'ordinary user rejected',
-      'database admin role accepted',
+      'role promotion revokes old sessions and requires fresh login',
       'audit logs omit redeem codes',
       'role revocation applies to existing token',
     ],

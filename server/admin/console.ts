@@ -4,6 +4,20 @@ import crypto from 'crypto';
 import os from 'os';
 import { sanitizeAdminOperationalText } from './privacy';
 import {
+  adminMfaEncryptionConfigured,
+  adminMfaMode,
+  buildAdminOtpAuthUri,
+  generateAdminTotpSecret,
+} from '../auth/adminMfa';
+import {
+  beginAdminMfaEnrollment,
+  confirmAdminMfaEnrollment,
+  consumeAdminMfaFactor,
+  getAdminMfaState,
+  isAdminMfaVerifiedSession,
+  regenerateAdminMfaRecoveryCodes,
+} from '../auth/adminMfaStore';
+import {
   getDb,
   getErrorReportById,
   getLicenseState,
@@ -35,6 +49,8 @@ export interface AdminConsoleDeps {
     metadata?: Record<string, unknown>;
   }) => void;
   rendererSnapshot: () => { active: number; queued: number; workers: number; concurrency: number };
+  assertAdminMfaAttemptBudget: (req: express.Request, res: express.Response, userId: string) => void;
+  clearAdminMfaUserBudget: (userId: string) => void;
 }
 
 const ALLOWED_SOURCES = new Set(['client', 'render', 'renderer', 'editor', 'export', 'import']);
@@ -103,6 +119,15 @@ function normalizeSeverity(value: unknown): ErrorReportSeverity {
 function queryText(value: unknown, maxLength = 120): string | null {
   const text = boundedText(value, maxLength);
   return text ? text.replace(/[%_]/g, '') : null;
+}
+
+function exactUserIdQuery(value: unknown): string | null {
+  const text = boundedText(value, 120);
+  return text && /^usr_[A-Za-z0-9-]{8,}$/.test(text) ? text : null;
+}
+
+function hasQueryValue(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function sanitizeRoute(value: unknown): string | null {
@@ -192,6 +217,11 @@ function httpError(statusCode: number, message: string): Error {
 
 function tokenHash(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function adminAccountLabel(userId: string): string {
+  const suffix = crypto.createHash('sha256').update(`scifigure-admin-account:${userId}`).digest('hex').slice(0, 10).toUpperCase();
+  return `账号 ${suffix}`;
 }
 
 function adminReauthTtlMs(): number {
@@ -477,13 +507,14 @@ function aiRepairMarkdown(pkg: ReturnType<typeof aiRepairPackage>): string {
 function listSubscriptions(req: express.Request) {
   const page = clampPage(req.query.page);
   const pageSize = clampPageSize(req.query.pageSize);
-  const query = queryText(req.query.query || req.query.q);
-  const whereSql = query ? 'WHERE u.email LIKE ? OR u.display_name LIKE ? OR u.id LIKE ?' : '';
-  const params = query ? [`%${query}%`, `%${query}%`, `%${query}%`] : [];
+  const queryInput = req.query.query ?? req.query.q;
+  const query = exactUserIdQuery(queryInput);
+  const whereSql = hasQueryValue(queryInput) ? (query ? 'WHERE u.id = ?' : 'WHERE 1 = 0') : '';
+  const params = query ? [query] : [];
   const total = Number((getDb().prepare(`SELECT COUNT(*) AS count FROM users u ${whereSql}`).get(...params) as { count: number }).count || 0);
   const rows = getDb().prepare(`
     SELECT
-      u.id AS user_id, u.email, u.display_name,
+      u.id AS user_id,
       sub.id AS subscription_id, sub.plan, sub.status, sub.starts_at, sub.ends_at,
       sub.source, sub.actor_user_id, sub.change_reason, sub.admin_note, sub.created_at,
       (SELECT COUNT(*) FROM subscriptions history WHERE history.user_id = u.id) AS history_count
@@ -502,8 +533,7 @@ function listSubscriptions(req: express.Request) {
   return {
     items: rows.map(row => ({
       userId: row.user_id,
-      email: row.email,
-      displayName: row.display_name ?? null,
+      accountLabel: adminAccountLabel(row.user_id),
       subscriptionId: row.subscription_id ?? null,
       plan: row.plan ?? 'free',
       status: row.status ?? 'none',
@@ -526,17 +556,17 @@ function listUsers(req: express.Request) {
   const page = clampPage(req.query.page);
   const pageSize = clampPageSize(req.query.pageSize);
   const role = req.query.role === 'admin' || req.query.role === 'user' ? String(req.query.role) : null;
-  const query = queryText(req.query.query || req.query.q);
+  const queryInput = req.query.query ?? req.query.q;
+  const query = exactUserIdQuery(queryInput);
   const where: string[] = [];
   const params: unknown[] = [];
   if (role) {
     where.push('u.role = ?');
     params.push(role);
   }
-  if (query) {
-    where.push('(u.email LIKE ? OR u.display_name LIKE ? OR u.id LIKE ?)');
-    const like = `%${query}%`;
-    params.push(like, like, like);
+  if (hasQueryValue(queryInput)) {
+    where.push(query ? 'u.id = ?' : '1 = 0');
+    if (query) params.push(query);
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total = Number((getDb().prepare(`
@@ -546,7 +576,7 @@ function listUsers(req: express.Request) {
   `).get(...params) as { count: number }).count || 0);
   const rows = getDb().prepare(`
     SELECT
-      u.id, u.email, u.display_name, u.role, u.created_at, u.last_login_at,
+      u.id, u.role, u.created_at, u.last_login_at,
       (SELECT COUNT(*) FROM projects p WHERE p.user_id = u.id) AS projectCount,
       (
         SELECT COUNT(*)
@@ -598,8 +628,7 @@ function listUsers(req: express.Request) {
   return {
     items: rows.map(row => ({
       id: row.id,
-      email: row.email,
-      displayName: row.display_name ?? null,
+      accountLabel: adminAccountLabel(row.id),
       role: row.role === 'admin' ? 'admin' : 'user',
       createdAt: row.created_at,
       lastLoginAt: row.last_login_at ?? null,
@@ -816,6 +845,144 @@ export function installAdminConsoleRoutes(app: express.Express, deps: AdminConso
     (req) => listSubscriptions(req),
   ));
 
+  app.get('/api/admin/security', deps.adminRateLimit, adminReadHandler(
+    deps,
+    'admin_console.security.read',
+    'admin_security',
+    (req) => {
+      const auth = deps.requireAdmin(req);
+      const state = getAdminMfaState(auth.user.id);
+      return {
+        security: {
+          mode: adminMfaMode(),
+          encryptionConfigured: adminMfaEncryptionConfigured(),
+          enabled: state.enabled,
+          pending: state.pending,
+          recoveryRequired: state.recoveryRequired,
+          confirmedAt: state.confirmedAt,
+          pendingExpiresAt: state.pendingExpiresAt,
+          recoveryCodesRemaining: state.recoveryCodesRemaining,
+          sessionVerified: isAdminMfaVerifiedSession(auth.token, auth.user.id),
+        },
+      };
+    },
+  ));
+
+  app.post('/api/admin/security/totp/enroll', deps.adminRateLimit, async (req, res) => {
+    if (!adminConsoleEnabled()) return res.status(404).json({ status: 'error', message: 'Not found' });
+    let actorUserId: string | null = null;
+    try {
+      const auth = deps.requireAdmin(req);
+      actorUserId = auth.user.id;
+      if (!adminMfaEncryptionConfigured()) throw httpError(503, '服务器尚未配置管理员二步验证密钥');
+      const password = typeof req.body?.password === 'string' ? req.body.password : '';
+      if (!password || password.length > 512) throw httpError(400, '管理员密码不能为空');
+      const row = getUserByEmail(auth.user.email);
+      if (!row || !(await verifyPasswordAndMigrate(row, password))) throw httpError(401, '管理员密码验证失败');
+      if (getAdminMfaState(auth.user.id).enabled) throw httpError(409, '管理员二步验证已经启用');
+
+      const secret = generateAdminTotpSecret();
+      const enrollmentToken = `ame_${crypto.randomBytes(32).toString('base64url')}`;
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+      beginAdminMfaEnrollment({ userId: auth.user.id, secret, enrollmentToken, expiresAt });
+      deps.writeAdminAudit(req, {
+        actorUserId,
+        action: 'admin_mfa.enrollment.started',
+        resourceType: 'admin_security',
+        resourceId: auth.user.id,
+        success: true,
+        statusCode: 200,
+        metadata: { expiresInSeconds: 600 },
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({
+        status: 'success',
+        enrollment: {
+          enrollmentToken,
+          expiresAt,
+          manualKey: secret,
+          otpAuthUrl: buildAdminOtpAuthUri(auth.user.id, secret),
+        },
+      });
+    } catch (err: any) {
+      const statusCode = auditFailure(deps, req, err, 'admin_mfa.enrollment.started', 'admin_security', actorUserId, actorUserId);
+      return res.status(statusCode).json({ status: 'error', message: err.message, errorCode: err?.errorCode });
+    }
+  });
+
+  app.post('/api/admin/security/totp/confirm', deps.adminRateLimit, (req, res) => {
+    if (!adminConsoleEnabled()) return res.status(404).json({ status: 'error', message: 'Not found' });
+    let actorUserId: string | null = null;
+    try {
+      const auth = deps.requireAdmin(req);
+      actorUserId = auth.user.id;
+      const enrollmentToken = String(req.body?.enrollmentToken || '').trim();
+      const code = String(req.body?.code || '').trim();
+      if (!/^ame_[A-Za-z0-9_-]{32,}$/.test(enrollmentToken) || !/^\d{6}$/.test(code)) {
+        throw httpError(400, '二步验证确认信息格式无效');
+      }
+      deps.assertAdminMfaAttemptBudget(req, res, auth.user.id);
+      const result = confirmAdminMfaEnrollment({
+        userId: auth.user.id,
+        enrollmentToken,
+        code,
+        accessToken: auth.token,
+      });
+      if (result.status !== 'enabled') {
+        throw httpError(result.status === 'already_enabled' ? 409 : 401, result.status === 'expired' ? '二步验证设置已过期' : '二步验证码错误或设置已失效');
+      }
+      deps.clearAdminMfaUserBudget(auth.user.id);
+      deps.writeAdminAudit(req, {
+        actorUserId,
+        action: 'admin_mfa.enrollment.confirmed',
+        resourceType: 'admin_security',
+        resourceId: auth.user.id,
+        success: true,
+        statusCode: 200,
+        metadata: { recoveryCodeCount: result.recoveryCodes.length },
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ status: 'success', enabled: true, recoveryCodes: result.recoveryCodes });
+    } catch (err: any) {
+      const statusCode = auditFailure(deps, req, err, 'admin_mfa.enrollment.confirmed', 'admin_security', actorUserId, actorUserId);
+      return res.status(statusCode).json({ status: 'error', message: err.message, errorCode: err?.errorCode });
+    }
+  });
+
+  app.post('/api/admin/security/recovery-codes/regenerate', deps.adminRateLimit, async (req, res) => {
+    if (!adminConsoleEnabled()) return res.status(404).json({ status: 'error', message: 'Not found' });
+    let actorUserId: string | null = null;
+    try {
+      const auth = deps.requireAdmin(req);
+      actorUserId = auth.user.id;
+      const password = typeof req.body?.password === 'string' ? req.body.password : '';
+      const candidate = String(req.body?.code || req.body?.recoveryCode || '').trim();
+      if (!password || password.length > 512 || candidate.length < 6 || candidate.length > 64) {
+        throw httpError(400, '管理员密码和二步验证码不能为空');
+      }
+      const row = getUserByEmail(auth.user.email);
+      if (!row || !(await verifyPasswordAndMigrate(row, password))) throw httpError(401, '管理员身份验证失败');
+      deps.assertAdminMfaAttemptBudget(req, res, auth.user.id);
+      const result = regenerateAdminMfaRecoveryCodes(auth.user.id, candidate);
+      if (result.status !== 'regenerated') throw httpError(401, '管理员二步验证码错误或已使用');
+      deps.clearAdminMfaUserBudget(auth.user.id);
+      deps.writeAdminAudit(req, {
+        actorUserId,
+        action: 'admin_mfa.recovery_codes.regenerated',
+        resourceType: 'admin_security',
+        resourceId: auth.user.id,
+        success: true,
+        statusCode: 200,
+        metadata: { recoveryCodeCount: result.recoveryCodes.length },
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      return res.json({ status: 'success', recoveryCodes: result.recoveryCodes });
+    } catch (err: any) {
+      const statusCode = auditFailure(deps, req, err, 'admin_mfa.recovery_codes.regenerated', 'admin_security', actorUserId, actorUserId);
+      return res.status(statusCode).json({ status: 'error', message: err.message, errorCode: err?.errorCode });
+    }
+  });
+
   app.post('/api/admin/reauth', deps.adminRateLimit, async (req, res) => {
     if (!adminConsoleEnabled()) return res.status(404).json({ status: 'error', message: 'Not found' });
     let actorUserId: string | null = null;
@@ -827,6 +994,17 @@ export function installAdminConsoleRoutes(app: express.Express, deps: AdminConso
       const row = getUserByEmail(auth.user.email);
       if (!row || !(await verifyPasswordAndMigrate(row, password))) {
         throw httpError(401, '管理员密码验证失败');
+      }
+      const mfaState = getAdminMfaState(auth.user.id);
+      let mfaMethod: 'totp' | 'recovery' | 'not_enabled' = 'not_enabled';
+      if (mfaState.enabled) {
+        const candidate = String(req.body?.code || req.body?.recoveryCode || '').trim();
+        if (candidate.length < 6 || candidate.length > 64) throw httpError(400, '管理员二步验证码不能为空');
+        deps.assertAdminMfaAttemptBudget(req, res, auth.user.id);
+        const factorResult = consumeAdminMfaFactor(auth.user.id, candidate);
+        if (factorResult.status !== 'verified') throw httpError(401, '管理员二步验证码错误或已使用');
+        deps.clearAdminMfaUserBudget(auth.user.id);
+        mfaMethod = factorResult.method;
       }
       const token = `sfr_${crypto.randomBytes(32).toString('base64url')}`;
       const ttlMs = adminReauthTtlMs();
@@ -846,7 +1024,7 @@ export function installAdminConsoleRoutes(app: express.Express, deps: AdminConso
         resourceId: auth.user.id,
         success: true,
         statusCode: 200,
-        metadata: { purpose: ADMIN_REAUTH_PURPOSE, expiresInSeconds: ttlMs / 1000 },
+        metadata: { purpose: ADMIN_REAUTH_PURPOSE, expiresInSeconds: ttlMs / 1000, mfaMethod },
       });
       res.setHeader('Cache-Control', 'no-store');
       return res.json({ status: 'success', reauthToken: token, expiresAt });

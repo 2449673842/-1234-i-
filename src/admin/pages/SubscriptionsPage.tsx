@@ -76,7 +76,7 @@ export function SubscriptionsPage() {
         <div className="admin-filters">
           <label className="relative">
             <Search size={14} style={{ position: 'absolute', left: 10, top: 10, color: '#82908b' }} />
-            <input className="admin-input" style={{ paddingLeft: 32 }} value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} placeholder="搜索邮箱或用户 ID" />
+            <input className="admin-input" style={{ paddingLeft: 32 }} value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} placeholder="搜索用户 ID" />
           </label>
         </div>
         {loading && <LoadingState label="正在读取订阅元数据" />}
@@ -89,13 +89,13 @@ export function SubscriptionsPage() {
                 <thead><tr><th>用户</th><th>套餐</th><th>状态</th><th>到期时间</th><th>来源</th><th>历史记录</th><th>操作</th></tr></thead>
                 <tbody>{items.map(item => (
                   <tr key={item.userId} data-clickable="true" onClick={() => setSelected(item)}>
-                    <td><span className="admin-cell-main">{item.displayName || item.email}</span><span className="admin-cell-sub">{item.email} · {item.userId}</span></td>
+                    <td><span className="admin-cell-main">{item.accountLabel}</span><span className="admin-cell-sub">{item.userId}</span></td>
                     <td><span className="admin-cell-main">{item.plan}</span></td>
                     <td><StatusBadge tone={statusTone(item.status)}>{item.status === 'none' ? '未配置' : item.status}</StatusBadge></td>
                     <td>{formatDateTime(item.endsAt)}</td>
                     <td>{item.source}</td>
                     <td>{item.historyCount}</td>
-                    <td><button type="button" className="admin-icon-command" title="调整订阅" aria-label={`调整 ${item.email} 的订阅`} onClick={event => { event.stopPropagation(); setEditing(item); }}><Pencil size={14} /></button></td>
+                    <td><button type="button" className="admin-icon-command" title="调整订阅" aria-label={`调整 ${item.accountLabel} 的订阅`} onClick={event => { event.stopPropagation(); setEditing(item); }}><Pencil size={14} /></button></td>
                   </tr>
                 ))}</tbody>
               </table>
@@ -106,9 +106,9 @@ export function SubscriptionsPage() {
       </section>
 
       <AnimatePresence>{selected && !editing && (
-        <DetailDrawer title={selected.displayName || selected.email} subtitle={selected.userId} onClose={() => setSelected(null)}>
+        <DetailDrawer title={selected.accountLabel} subtitle={selected.userId} onClose={() => setSelected(null)}>
           <button type="button" className="admin-button admin-button-primary admin-full-button" onClick={() => setEditing(selected)}><CreditCard size={14} />调整订阅权限</button>
-          <DetailField label="账号">{selected.email}</DetailField>
+          <DetailField label="账号">{selected.accountLabel}</DetailField>
           <DetailField label="套餐 / 状态">{selected.plan} / {selected.status}</DetailField>
           <DetailField label="生效时间">{formatDateTime(selected.startsAt)}</DetailField>
           <DetailField label="到期时间">{formatDateTime(selected.endsAt)}</DetailField>
@@ -142,9 +142,19 @@ function SubscriptionDialog({ user, onClose, onApplied }: { user: AdminSubscript
   const [reason, setReason] = useState('');
   const [adminNote, setAdminNote] = useState('');
   const [password, setPassword] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaEnabled, setMfaEnabled] = useState<boolean | null>(null);
   const [requestId] = useState(createRequestId);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    adminApi.security()
+      .then(security => { if (!cancelled) setMfaEnabled(security.enabled); })
+      .catch(err => { if (!cancelled) setError(err?.message || '无法读取管理员二步验证状态'); });
+    return () => { cancelled = true; };
+  }, []);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -152,7 +162,7 @@ function SubscriptionDialog({ user, onClose, onApplied }: { user: AdminSubscript
     setSubmitting(true);
     setError(null);
     try {
-      const reauth = await adminApi.reauth(password);
+      const reauth = await adminApi.reauth(password, mfaEnabled ? mfaCode.trim() : undefined);
       const result = await adminApi.adjustSubscription(user.userId, {
         plan,
         status,
@@ -163,9 +173,11 @@ function SubscriptionDialog({ user, onClose, onApplied }: { user: AdminSubscript
         reauthToken: reauth.reauthToken,
       });
       setPassword('');
-      onApplied(`${user.email} 的订阅已调整${result.replayed ? '（重复请求已安全复用原结果）' : ''}`);
+      setMfaCode('');
+      onApplied(`${user.accountLabel} 的订阅已调整${result.replayed ? '（重复请求已安全复用原结果）' : ''}`);
     } catch (err: any) {
       setPassword('');
+      setMfaCode('');
       setError(err?.message || '订阅调整失败');
     } finally {
       setSubmitting(false);
@@ -176,7 +188,7 @@ function SubscriptionDialog({ user, onClose, onApplied }: { user: AdminSubscript
     <motion.div className="admin-dialog-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <motion.div className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="subscription-dialog-title" initial={{ y: 14, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 10, opacity: 0 }}>
         <header className="admin-dialog-header">
-          <div><div className="admin-eyebrow">Controlled write</div><h2 id="subscription-dialog-title">调整订阅权限</h2><p>{user.email}</p></div>
+          <div><div className="admin-eyebrow">Controlled write</div><h2 id="subscription-dialog-title">调整订阅权限</h2><p>{user.accountLabel}</p></div>
           <button type="button" aria-label="关闭订阅调整" onClick={onClose} disabled={submitting}><X size={18} /></button>
         </header>
         <form onSubmit={event => void submit(event)}>
@@ -189,12 +201,13 @@ function SubscriptionDialog({ user, onClose, onApplied }: { user: AdminSubscript
             <label className="admin-form-field"><span>调整原因 *</span><textarea className="admin-textarea" required minLength={3} maxLength={500} value={reason} onChange={event => setReason(event.target.value)} placeholder="例如：人工开通测试期、暂停异常订阅" /></label>
             <label className="admin-form-field"><span>管理员备注</span><textarea className="admin-textarea" maxLength={500} value={adminNote} onChange={event => setAdminNote(event.target.value)} placeholder="可选，不填写用户内容或敏感信息" /></label>
             <label className="admin-form-field"><span>管理员密码 *</span><input className="admin-input" type="password" required autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></label>
+            {mfaEnabled && <label className="admin-form-field"><span>验证器代码或恢复码</span><input className="admin-input" required autoComplete="one-time-code" value={mfaCode} onChange={event => setMfaCode(event.target.value.slice(0, 64))} placeholder="6 位代码或一次性恢复码" /></label>}
             {error && <div className="admin-form-error" role="alert">{error}</div>}
-            <p className="admin-safety-note"><ShieldCheck size={14} />密码仅用于本次二次验证；短时令牌使用一次后立即失效。用户项目和资产不受影响。</p>
+            <p className="admin-safety-note"><ShieldCheck size={14} />管理员密码{mfaEnabled ? '与二步验证码' : ''}仅用于本次验证；短时令牌使用一次后立即失效。用户项目和资产不受影响。</p>
           </div>
           <footer className="admin-dialog-footer">
             <button type="button" className="admin-button" onClick={onClose} disabled={submitting}>取消</button>
-            <button type="submit" className="admin-button admin-button-primary" disabled={submitting}>{submitting ? <Loader2 className="admin-spin" size={14} /> : <ShieldCheck size={14} />}验证并应用</button>
+            <button type="submit" className="admin-button admin-button-primary" disabled={submitting || mfaEnabled === null}>{submitting ? <Loader2 className="admin-spin" size={14} /> : <ShieldCheck size={14} />}验证并应用</button>
           </footer>
         </form>
       </motion.div>

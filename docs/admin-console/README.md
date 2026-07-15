@@ -1,7 +1,7 @@
 # SciFigure 管理员后台
 
-> 更新时间：2026-07-15 16:40:00 +08:00
-> 当前状态：Phase A、部分 Phase B 和 Phase C4 订阅修正已部署到调试服务器
+> 更新时间：2026-07-16 01:55:49 +08:00
+> 当前状态：旧版后台已部署；MFA、原始身份最小化和安全设置页仅在本地安全分支完成，尚未发布
 
 本目录用于管理员后台的独立规划、验收和后续变更记录。
 
@@ -39,6 +39,11 @@ Python/R 渲染失败与编辑器崩溃自动记录摘要
 订阅权限列表和受控调整
 管理员密码 recent re-auth、一次性短时令牌
 订阅写操作 reason、幂等 requestId 和成功/失败审计
+其他用户原始邮箱和昵称不进入管理员 API，只返回脱敏账号标识
+管理员 TOTP 登录挑战、设备绑定、MFA 会话和防重放
+一次性恢复码、恢复码轮换和离线生产引导
+TOTP seed AES-256-GCM 加密与 key ID 轮换
+管理员安全设置页
 ```
 
 尚未实现：
@@ -48,16 +53,30 @@ Python/R 渲染失败与编辑器崩溃自动记录摘要
 备份状态与更完整的渲染指标
 错误分流/解决写操作
 账号暂停和会话撤销
-唯一管理员保护与管理员 2FA
+唯一管理员保护
 ```
 
-管理员后台已合入统一编辑发布分支，并随 `eea68fb-jd7` 部署到 `117.72.208.91`。线上功能开关已启用，账号 `2449673842@qq.com` 已通过受审计的服务器引导操作授予 `admin` 角色。
+管理员后台旧版已随 `eea68fb-jd7` 部署到调试服务器。本轮 MFA 和身份最小化仍只在本地安全分支，不能把下面的配置说明误认为线上已启用。
 
 本地使用时，先通过 `security:set-user-role` 授予自己的账号 `admin` 角色，再设置：
 
 ```text
 SCIFIGURE_ADMIN_CONSOLE_ENABLED=1
+SCIFIGURE_ADMIN_MFA_MODE=observe
+SCIFIGURE_ADMIN_MFA_ENCRYPTION_KEY=<32-byte-base64-key>
 ```
 
 登录后直接访问 `/admin`。功能开关关闭时，新增管理 API 返回 404，普通用户平台不受影响。
+
+生产环境应使用可轮换 keyring，并在开放后台前通过离线命令完成首个管理员绑定：
+
+```bash
+export SCIFIGURE_ADMIN_MFA_ENCRYPTION_KEYS="2026q3:<base64-32-byte-key>"
+npm run security:admin-mfa-bootstrap -- --email admin@example.com
+npm run security:admin-mfa-bootstrap -- --email admin@example.com --confirm
+```
+
+第二条命令只显示一次恢复码并撤销该管理员旧会话。完成后设置 `SCIFIGURE_ADMIN_MFA_MODE=enforce`，再启动公网服务。不得把密钥、手动绑定 key、确认 token 或恢复码写入文档、工单、聊天记录或 Git。
+
+`2026-07-16 01:55:49 +08:00` 本地隔离验证已通过管理员 MFA、后台只读、管理员授权、部署生命周期和 production bundle；公网调试服务器仍是旧版，不得据此宣称线上已经启用 MFA。
 
