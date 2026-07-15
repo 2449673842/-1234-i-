@@ -12,6 +12,9 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   try {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    await context.addInitScript(() => {
+      window.sessionStorage.setItem('scifigure:auth-token', 'asset-smoke-token');
+    });
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
     const errors = [];
@@ -26,17 +29,23 @@ async function main() {
       contentType: 'application/json',
       body: JSON.stringify({ status: 'success', user: { id: 'asset-smoke-user', email: 'asset@example.test' } }),
     }));
-    await page.route('**/api/export-assets', route => route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        status: 'success',
-        assets: [
-          { assetId: 'exp_a', projectId: 'project_a', projectName: '项目甲', figureId: 'fig_1', name: '项目甲 Figure 1', format: 'png', dpi: 300, filePath: 'a.png', thumbnailSvg: thumbnail('#176b5b'), metadata: {}, tags: [], createdAt: '2026-07-10 10:00:00', sizeBytes: 20480, fileExists: true },
-          { assetId: 'exp_b', projectId: 'project_b', projectName: '项目乙', figureId: 'fig_2', name: '项目乙 Figure 2', format: 'svg', dpi: null, filePath: 'b.svg', thumbnailSvg: thumbnail('#c9a227'), metadata: {}, tags: [], createdAt: '2026-07-09 10:00:00', sizeBytes: 10240, fileExists: true },
-        ],
-      }),
-    }));
+    await page.route('**/api/export-assets', async route => {
+      assert(
+        (await route.request().headerValue('authorization')) === 'Bearer asset-smoke-token',
+        'Export asset library request did not include the access token',
+      );
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          status: 'success',
+          assets: [
+            { assetId: 'exp_a', projectId: 'project_a', projectName: '项目甲', figureId: 'fig_1', name: '项目甲 Figure 1', format: 'png', dpi: 300, filePath: 'a.png', thumbnailSvg: thumbnail('#176b5b'), metadata: {}, tags: [], createdAt: '2026-07-10 10:00:00', sizeBytes: 20480, fileExists: true },
+            { assetId: 'exp_b', projectId: 'project_b', projectName: '项目乙', figureId: 'fig_2', name: '项目乙 Figure 2', format: 'svg', dpi: null, filePath: 'b.svg', thumbnailSvg: thumbnail('#c9a227'), metadata: {}, tags: [], createdAt: '2026-07-09 10:00:00', sizeBytes: 10240, fileExists: true },
+          ],
+        }),
+      });
+    });
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: '历史导出资产' }).click();
     await page.getByRole('heading', { name: '导出资产库' }).waitFor();
