@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Binding, Manifest, ManifestObject } from '../schemas/manifest';
-import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolvePaletteTargets } from './paletteTargetResolver';
+import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolvePaletteColorFallbackTargets, resolvePaletteTargets } from './paletteTargetResolver';
 
 function object(
   id: string,
@@ -298,5 +298,97 @@ describe('palette target resolver', () => {
     const result = resolvePaletteTargets(figure, 'SERIES', true, [second.id]);
 
     expect(result.targets.map(item => item.objectId)).toEqual([second.id]);
+  });
+
+  it('supports subplot-scoped palette edits without emitting a global code patch', () => {
+    const subplotA = object('line.0.0', 'color', 'shared-color-a', 'backend_patch');
+    subplotA.subplotId = 'subplot.0';
+    subplotA.identity!.relation = { subplotId: 'subplot.0' };
+    const subplotB = object('line.1.0', 'color', 'shared-color-b', 'backend_patch');
+    subplotB.subplotId = 'subplot.1';
+    subplotB.identity!.relation = { subplotId: 'subplot.1' };
+    const figure = manifest([subplotA, subplotB], [binding('BLUE', [
+      target(subplotA.id, 'color', 'shared-color-a'),
+      target(subplotB.id, 'color', 'shared-color-b'),
+    ])]);
+
+    const scoped = resolvePaletteTargets(figure, 'BLUE', true, [subplotB.id]);
+    const scopedPatches = buildPaletteObjectPatches(scoped, '#0F3CF0');
+
+    expect(scoped.targets.map(item => item.objectId)).toEqual([subplotB.id]);
+    expect(scopedPatches).toEqual([{
+      op: 'set',
+      mode: 'backend_patch',
+      gid: subplotB.id,
+      prop: 'color',
+      value: '#0F3CF0',
+    }]);
+    expect(scopedPatches.some((patch: any) => patch.type === 'code_patch')).toBe(false);
+  });
+
+  it('falls back to scoped rendered-color targets for duplicate colors in combined figures', () => {
+    const panelC = object('line.2.0', 'color', 'panel-c-red', 'backend_patch');
+    panelC.subplotId = 'subplot.2';
+    panelC.identity!.relation = { subplotId: 'subplot.2' };
+    panelC.currentProps.color = '#d62728';
+    const panelD = object('line.3.0', 'color', 'panel-d-red', 'backend_patch');
+    panelD.subplotId = 'subplot.3';
+    panelD.identity!.relation = { subplotId: 'subplot.3' };
+    panelD.currentProps.color = '#d62728';
+    const figure = manifest([panelC, panelD], [{
+      paletteId: 'RED',
+      groupId: 'palette_RED',
+      gids: [],
+      props: [],
+      targetMode: 'ambiguous',
+      targets: [],
+      warnings: ['Multiple unbound palettes share this color; color-only matching is disabled.'],
+    }]);
+
+    const strict = resolvePaletteTargets(figure, 'RED', true);
+    expect(strict.targets).toEqual([]);
+    expect(strict.ambiguous).toHaveLength(1);
+
+    const fallback = resolvePaletteColorFallbackTargets(figure, 'RED', '#D62728', [panelC.id]);
+
+    expect(fallback.targets.map(item => item.objectId)).toEqual([panelC.id]);
+    expect(buildPaletteObjectPatches(fallback, '#aa0000')).toEqual([{
+      op: 'set',
+      mode: 'backend_patch',
+      gid: panelC.id,
+      prop: 'color',
+      value: '#aa0000',
+    }]);
+  });
+
+  it('creates a backend color-subset patch for blue entries inside a multi-color collection', () => {
+    const collection = object('collection.1.0', 'facecolor', 'panel-b-scatter', 'local_patch');
+    collection.kind = 'collection';
+    collection.subplotId = 'subplot.1';
+    collection.identity!.relation = { subplotId: 'subplot.1' };
+    collection.currentProps.facecolor = [
+      [0.0588235294, 0.2352941176, 0.9411764706, 1],
+      [0.8392156863, 0.1529411765, 0.1568627451, 1],
+      [0.0588235294, 0.2352941176, 0.9411764706, 0.7],
+    ];
+    const figure = manifest([collection], []);
+
+    const fallback = resolvePaletteColorFallbackTargets(figure, 'BLUE', '#0F3CF0', [collection.id]);
+
+    expect(fallback.targets).toEqual([expect.objectContaining({
+      objectId: collection.id,
+      prop: 'facecolor',
+      matchColor: '#0f3cf0',
+      patchMode: 'backend_patch',
+      replayMode: 'object_patch',
+    })]);
+    expect(buildPaletteObjectPatches(fallback, '#1188ff')).toEqual([{
+      op: 'set',
+      mode: 'backend_patch',
+      gid: collection.id,
+      prop: 'facecolor',
+      value: '#1188ff',
+      matchColor: '#0f3cf0',
+    }]);
   });
 });

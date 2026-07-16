@@ -76,6 +76,7 @@ function normalizeSavedEditLog(editLog: SavedEditEntry[] | undefined): EditEntry
     gid: entry.gid,
     prop: entry.prop,
     value: entry.value,
+    ...(entry.matchColor ? { matchColor: entry.matchColor } : {}),
     mode: entry.mode === 'local_patch' ? 'local_patch' : 'backend_patch',
     timestamp: entry.timestamp ?? 0,
   }));

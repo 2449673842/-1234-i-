@@ -37,6 +37,7 @@ const script = [
   'fig.colorbar(shared_scale, ax=[ax0, ax1], label="Shared scale")',
   'rng = np.random.default_rng(42)',
   'ax2.boxplot([rng.normal(0, 1, 40), rng.normal(1, 1, 40)], patch_artist=True)',
+  'ax2.scatter([0, 1, 2], [0.8, 1.5, 1.1], s=45, color="#dd8844", label="Points")',
   'ax2.set_title("Boxplot")',
   'ax3.violinplot([rng.normal(0, 1, 40), rng.normal(1, 1, 40)], showmeans=True)',
   'ax3.stem([1, 2], [1.4, 1.9], label="Stem signal")',
@@ -368,6 +369,76 @@ async function run() {
       componentControlsV2Ok ? 'PASS' : 'FAIL',
       `expected=${componentControlsV2Expected}, groups=${componentControlsV2Count}, barLinewidth=${barLinewidthCount}, contract=${JSON.stringify(barLinewidthContract)}`,
     );
+    await clickText(page, '布局中心');
+    const layoutSelectAll = page.getByRole('button', { name: '选中全部', exact: true }).first();
+    const layoutSelectAllVisible = await layoutSelectAll.isVisible().catch(() => false);
+    if (layoutSelectAllVisible) {
+      await layoutSelectAll.click();
+      await page.waitForTimeout(250);
+    }
+    await clickText(page, '组件中心');
+    const subplotCard = page.locator('[data-component-group-id="subplots"]');
+    const subplotRows = subplotCard.locator('button[data-component-object-id]');
+    const subplotRowCount = await subplotRows.count();
+    let ctrlDeselectCorrect = false;
+    let selectedBefore = [];
+    let selectedAfter = [];
+    if (layoutSelectAllVisible && subplotRowCount > 1) {
+      selectedBefore = await subplotRows.evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-pressed')));
+      const selectedIndex = selectedBefore.findIndex((value, index) => index > 0 && value === 'true');
+      if (selectedIndex >= 0) {
+        await subplotRows.nth(selectedIndex).click({ modifiers: ['Control'] });
+        await page.waitForTimeout(250);
+        selectedAfter = await subplotRows.evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-pressed')));
+        ctrlDeselectCorrect = selectedBefore.filter(value => value === 'true').length > 1
+          && selectedAfter[selectedIndex] === 'false'
+          && selectedAfter.filter(value => value === 'true').length === selectedBefore.filter(value => value === 'true').length - 1
+          && selectedAfter.every((value, index) => index === selectedIndex || value === selectedBefore[index]);
+      }
+    }
+    record(
+      'C0h-component-ctrl-deselect',
+      ctrlDeselectCorrect ? 'PASS' : 'FAIL',
+      `layoutSelectAll=${layoutSelectAllVisible}, rows=${subplotRowCount}, before=${JSON.stringify(selectedBefore)}, after=${JSON.stringify(selectedAfter)}`,
+    );
+    const cancelSelection = page.getByRole('button', { name: '取消选择', exact: true }).first();
+    if (await cancelSelection.isVisible().catch(() => false)) {
+      await cancelSelection.click();
+      await page.waitForTimeout(200);
+    }
+    await clickText(page, '布局中心');
+    const preservedGapSlider = page.locator('input[data-layout-role="preserve-vertical-gap"]').first();
+    const preservedGapVisible = await preservedGapSlider.isVisible().catch(() => false);
+    let preservedGapPatches = [];
+    let preservedGapTarget = null;
+    if (preservedGapVisible) {
+      const currentGap = Number(await preservedGapSlider.inputValue());
+      const maxGap = Number(await preservedGapSlider.getAttribute('max'));
+      await preservedGapSlider.focus();
+      await preservedGapSlider.press(maxGap - currentGap >= 0.005 ? 'ArrowRight' : 'ArrowLeft');
+      preservedGapTarget = Number(await preservedGapSlider.inputValue());
+      const start = apiRequests.length;
+      const applyPreservedGap = page.locator('button[data-layout-action="apply-preserve-vertical-gap"]').first();
+      if (await applyPreservedGap.isEnabled().catch(() => false)) {
+        await applyPreservedGap.click();
+        await waitForApiSettle(start);
+        await page.waitForTimeout(300);
+        const request = apiRequests.slice(start).find(item => item.url.includes('/api/figure/patch'));
+        const body = request?.postData ? JSON.parse(request.postData) : null;
+        preservedGapPatches = body?.patches || [];
+      }
+    }
+    const preservedGapSubplotPatches = preservedGapPatches.filter(patch => String(patch.gid).startsWith('subplot.'));
+    const preservedGapOnlyMovesBottom = preservedGapVisible
+      && preservedGapSubplotPatches.length > 0
+      && preservedGapPatches.every(patch => patch.prop === 'bottom')
+      && preservedGapPatches.every(patch => String(patch.gid).startsWith('subplot.') || String(patch.gid).startsWith('colorbar.'))
+      && !preservedGapPatches.some(patch => patch.gid === 'global' || ['left', 'width', 'height'].includes(patch.prop));
+    record(
+      'C0i-preserve-vertical-gap',
+      preservedGapOnlyMovesBottom ? 'PASS' : 'FAIL',
+      `visible=${preservedGapVisible}, target=${preservedGapTarget}, patches=${JSON.stringify(preservedGapPatches)}`,
+    );
     const cases = [
       { id: 'C1-bar-container', card: '柱形系列', prop: 'linewidth', value: 1.8, prefix: 'container.bar.' },
       { id: 'C2-errorbar-container', card: '误差棒系列', prop: 'capsize', value: 7, prefix: 'container.errorbar.' },
@@ -376,6 +447,10 @@ async function run() {
       { id: 'C4-violin-container', card: '小提琴图系列', prop: 'linewidth', value: 2.4, prefix: 'container.violinplot.' },
       { id: 'C5-annotation-arrow', card: '标注箭头', prop: 'linewidth', value: 2.2, prefix: 'annotation_arrow.' },
       { id: 'C5b-legend-container', card: '图例容器', prop: 'markerscale', value: 1.8, prefix: 'legend.' },
+      { id: 'C5d-legend-handle-text-gap', card: '图例容器', prop: 'handletextpad', value: 1.1, prefix: 'legend.' },
+      { id: 'C5e-legend-column-gap', card: '图例容器', prop: 'columnspacing', value: 1.6, prefix: 'legend.' },
+      { id: 'C5f-legend-inner-padding', card: '图例容器', prop: 'borderpad', value: 0.8, prefix: 'legend.' },
+      { id: 'C5g-scatter-size-scale', card: '点 / 散点', prop: 'size_scale', value: 1.4, prefix: 'collection.' },
     ];
     for (const item of cases) {
       await clickText(page, '组件中心');

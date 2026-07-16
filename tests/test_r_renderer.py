@@ -390,6 +390,52 @@ p
         self.assertIn("Updated group", result["svg"])
         self.assertIn("Alpha group", result["svg"])
 
+    def test_legend_internal_layout_manifest_and_patch_round_trip(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:6, y=c(1,4,2,6,3,7), group=rep(c("A","B"),3))
+p <- ggplot(df, aes(x,y,color=group)) +
+  geom_point(size=4) +
+  scale_color_manual(values=c(A="#1F78B4", B="#D62728"), name="Group") +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        baseline_legend = _object(baseline, "legend.0")
+        layout_props = ["handletextpad", "labelspacing", "columnspacing", "borderpad"]
+        for prop in layout_props:
+            self.assertIn(prop, baseline_legend["editable"])
+            self.assertIn(prop, baseline_legend["currentProps"])
+            capability = next(
+                item for item in baseline_legend["propertyCapabilities"]
+                if item["prop"] == prop
+            )
+            self.assertEqual(capability["patchMode"], "backend_patch")
+            self.assertEqual(capability["replay"], "stable")
+
+        result = _run_r_renderer(script, [
+            {"gid": "legend.0", "prop": "fontsize", "value": 18, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "ncol", "value": 2, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "markerscale", "value": 2.4, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "handletextpad", "value": 1.6, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "labelspacing", "value": 1.2, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "columnspacing", "value": 2.8, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "borderpad", "value": 0.9, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "loc", "value": "bottom", "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "facecolor", "value": "#F0F0F0", "mode": "backend_patch"},
+        ])
+        legend = _object(result, "legend.0")
+
+        self.assertEqual(legend["currentProps"]["fontsize"], 18)
+        self.assertEqual(legend["currentProps"]["ncol"], 2)
+        self.assertEqual(legend["currentProps"]["markerscale"], 2.4)
+        self.assertEqual(legend["currentProps"]["handletextpad"], 1.6)
+        self.assertEqual(legend["currentProps"]["labelspacing"], 1.2)
+        self.assertEqual(legend["currentProps"]["columnspacing"], 2.8)
+        self.assertEqual(legend["currentProps"]["borderpad"], 0.9)
+        self.assertEqual(legend["currentProps"]["loc"], "bottom")
+        self.assertIn("#f0f0f0", result["svg"].lower())
+
     def test_boxplot_and_violin_layers_are_semantic_containers(self):
         script = """
 library(ggplot2)

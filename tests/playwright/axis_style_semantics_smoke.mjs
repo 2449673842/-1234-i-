@@ -23,6 +23,12 @@ function record(id, status, note) {
   console.log(`${status} ${id}: ${note}`);
 }
 
+function isIgnorableDevServerNoise(message) {
+  return message.includes('[vite] failed to connect to websocket')
+    || /WebSocket connection to 'ws:\/\/(?:localhost|127\.0\.0\.1):24678\//.test(message)
+    || message.includes('WebSocket closed without opened');
+}
+
 function makeObject(id, kind, editable, currentProps, extra = {}) {
   const role = extra.role;
   return {
@@ -55,11 +61,13 @@ function buildFixture() {
     makeObject('subplot.0', 'subplot', ['left', 'bottom', 'width', 'height'], {
       label: 'Panel A', subplotIndex: 0, left: 0.12, bottom: 0.12, width: 0.78, height: 0.78,
     }, { subplotId: undefined }),
-    makeObject('axis.x.0', 'axis_x', ['tick_direction', 'tick_length', 'tick_width', 'tick_color', 'show_minor_ticks'], {
-      tick_direction: 'out', tick_length: 3.5, tick_width: 0.8, tick_color: '#111111', show_minor_ticks: false,
+    makeObject('axis.x.0', 'axis_x', ['tick_direction', 'tick_length', 'tick_width', 'tick_color', 'tick_pad', 'tick_label_dx', 'tick_label_dy', 'show_minor_ticks'], {
+      tick_direction: 'out', tick_length: 3.5, tick_width: 0.8, tick_color: '#111111', tick_pad: 3.5,
+      tick_label_dx: 0, tick_label_dy: 0, show_minor_ticks: false,
     }, { role: 'x_axis', source: { artistClass: 'XAxis', axesIndex: 0 } }),
-    makeObject('axis.y.0', 'axis_y', ['tick_direction', 'tick_length', 'tick_width', 'tick_color', 'show_minor_ticks'], {
-      tick_direction: 'out', tick_length: 3.5, tick_width: 0.8, tick_color: '#111111', show_minor_ticks: false,
+    makeObject('axis.y.0', 'axis_y', ['tick_direction', 'tick_length', 'tick_width', 'tick_color', 'tick_pad', 'tick_label_dx', 'tick_label_dy', 'show_minor_ticks'], {
+      tick_direction: 'out', tick_length: 3.5, tick_width: 0.8, tick_color: '#111111', tick_pad: 3.5,
+      tick_label_dx: 0, tick_label_dy: 0, show_minor_ticks: false,
     }, { role: 'y_axis', source: { artistClass: 'YAxis', axesIndex: 0 } }),
     makeObject('spine_group.0', 'spine_group', ['visible', 'color', 'linewidth'], {
       visible: true, color: '#222222', linewidth: 1,
@@ -74,6 +82,14 @@ function buildFixture() {
     makeObject('grid.0', 'grid', ['visible', 'color', 'linewidth', 'linestyle', 'alpha'], {
       visible: true, color: '#cccccc', linewidth: 0.6, linestyle: '--', alpha: 0.8,
     }, { role: 'grid', source: { artistClass: 'Grid', axesIndex: 0 } }),
+    makeObject('title.0', 'text', ['text', 'fontsize', 'fontfamily', 'fontweight', 'fontstyle', 'color', 'position'], {
+      text: 'Source title', fontsize: 16, fontfamily: 'Times New Roman', fontweight: 'bold', fontstyle: 'italic',
+      color: '#234567', x: 0.5, y: 1.02, coord_system: 'axes',
+    }, { role: 'axes_title', source: { artistClass: 'Text', axesIndex: 0 } }),
+    makeObject('xlabel.0', 'text', ['text', 'fontsize', 'fontfamily', 'fontweight', 'fontstyle', 'color', 'position'], {
+      text: 'Target label', fontsize: 10, fontfamily: 'Arial', fontweight: 'normal', fontstyle: 'normal',
+      color: '#111111', x: 0.5, y: -0.08, coord_system: 'axes',
+    }, { role: 'x_axis_label', source: { artistClass: 'Text', axesIndex: 0 } }),
     makeObject('xtick.0.0', 'text', ['text', 'fontsize', 'color', 'rotation'], {
       text: 'X tick', fontsize: 9, color: '#111111', rotation: 0,
     }, { role: 'x_tick_label', source: { artistClass: 'Text', axesIndex: 0 } }),
@@ -90,7 +106,7 @@ function buildFixture() {
     bindings: [],
     capabilities: { localPatch: true, backendPatch: true, codePatch: true },
   };
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="520" height="360" viewBox="0 0 520 360"><rect id="subplot.0" data-fig-id="subplot.0" x="60" y="35" width="400" height="270" fill="white" stroke="#222"/><g id="spine_group.0" data-fig-id="spine_group.0"><path id="spine.left.0" data-fig-id="spine.left.0" d="M60 35V305" stroke="#222"/><path id="spine.right.0" data-fig-id="spine.right.0" d="M460 35V305" stroke="#222"/><path id="spine.top.0" data-fig-id="spine.top.0" d="M60 35H460" stroke="#222"/><path id="spine.bottom.0" data-fig-id="spine.bottom.0" d="M60 305H460" stroke="#222"/></g><g id="grid.0" data-fig-id="grid.0"><path d="M60 170H460" stroke="#ccc" stroke-dasharray="4 3"/></g><text id="xtick.0.0" data-fig-id="xtick.0.0" x="250" y="330">X tick</text><text id="ytick.0.0" data-fig-id="ytick.0.0" x="20" y="170">Y tick</text></svg>';
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="520" height="360" viewBox="0 0 520 360"><rect id="subplot.0" data-fig-id="subplot.0" x="60" y="35" width="400" height="270" fill="white" stroke="#222"/><g id="spine_group.0" data-fig-id="spine_group.0"><path id="spine.left.0" data-fig-id="spine.left.0" d="M60 35V305" stroke="#222"/><path id="spine.right.0" data-fig-id="spine.right.0" d="M460 35V305" stroke="#222"/><path id="spine.top.0" data-fig-id="spine.top.0" d="M60 35H460" stroke="#222"/><path id="spine.bottom.0" data-fig-id="spine.bottom.0" d="M60 305H460" stroke="#222"/></g><g id="grid.0" data-fig-id="grid.0"><path d="M60 170H460" stroke="#ccc" stroke-dasharray="4 3"/></g><text id="title.0" data-fig-id="title.0" x="250" y="24">Source title</text><text id="xlabel.0" data-fig-id="xlabel.0" x="250" y="350">Target label</text><text id="xtick.0.0" data-fig-id="xtick.0.0" x="250" y="330">X tick</text><text id="ytick.0.0" data-fig-id="ytick.0.0" x="20" y="170">Y tick</text></svg>';
   const spec = {
     plot_type: 'custom', custom_script: '', script: '', script_language: 'python',
     figure: { width: 140, height: 100, unit: 'mm', dpi: 300 },
@@ -241,8 +257,14 @@ async function run() {
 
   const pageErrors = [];
   const consoleErrors = [];
-  page.on('pageerror', error => pageErrors.push(error.message));
-  page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+  page.on('pageerror', error => {
+    if (!isIgnorableDevServerNoise(error.message)) pageErrors.push(error.message);
+  });
+  page.on('console', message => {
+    if (message.type() === 'error' && !isIgnorableDevServerNoise(message.text())) {
+      consoleErrors.push(message.text());
+    }
+  });
 
   try {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
@@ -281,8 +303,76 @@ async function run() {
     const unrelatedTouched = [...framePatches, ...tickPatches, ...gridPatches]
       .some(patch => ['xtick.0.0', 'ytick.0.0'].includes(patch.gid));
     record('AXIS-4-no-text-spill', !unrelatedTouched ? 'PASS' : 'FAIL', `unrelatedTouched=${unrelatedTouched}`);
-    record('AXIS-5-runtime', pageErrors.length === 0 && consoleErrors.length === 0 ? 'PASS' : 'FAIL',
-      `pageErrors=${pageErrors.length}, consoleErrors=${consoleErrors.length}`);
+
+    await clickButton(page, '组件中心');
+    const xAxisRow = page.locator('button[data-component-object-id="axis.x.0"], button[title="axis.x.0"]').first();
+    const xAxisRowVisible = await xAxisRow.isVisible().catch(() => false);
+    if (xAxisRowVisible) await xAxisRow.click();
+    await clickButton(page, '属性编辑');
+    const tickPadInput = page.locator('input[data-param-gid="axis.x.0"][data-param-prop="tick_pad"]').first();
+    const tickPadVisible = await tickPadInput.isVisible().catch(() => false);
+    if (tickPadVisible) await tickPadInput.fill('12.5');
+    const stagedBeforeBlur = await page.getByText(/\u5df2\u6682\u5b58\s*1\s*\u9879\u4fee\u6539/).isVisible().catch(() => false);
+    const padPatches = tickPadVisible ? await applyDraft(page) : [];
+    const padPatch = padPatches.find(patch => patch.gid === 'axis.x.0' && patch.prop === 'tick_pad');
+    const padOk = xAxisRowVisible
+      && tickPadVisible
+      && stagedBeforeBlur
+      && padPatches.length === 1
+      && Number(padPatch?.value) === 12.5;
+    record('AXIS-5-tick-pad-immediate-stage', padOk ? 'PASS' : 'FAIL',
+      `row=${xAxisRowVisible}, input=${tickPadVisible}, staged=${stagedBeforeBlur}, patches=${JSON.stringify(padPatches)}`);
+
+    await clickButton(page, '组件中心');
+    const targetLabelRow = page.locator('button[data-component-object-id="xlabel.0"], button[title="xlabel.0"]').first();
+    const targetLabelVisible = await targetLabelRow.isVisible().catch(() => false);
+    if (targetLabelVisible) await targetLabelRow.click();
+    await clickButton(page, '字体中心');
+    const targetFontSize = page.locator('[data-font-group="xlabels"] input[data-property-control="fontsize"][data-param-prop="fontsize"], input[data-param-gid="font-center-xlabels"][data-param-prop="fontsize"]').first();
+    const targetFontSizeVisible = await targetFontSize.isVisible().catch(() => false);
+    if (targetFontSizeVisible) await targetFontSize.fill('13.5');
+    const fontSizeStagedWithoutEnter = await page.getByText(/\u5df2\u6682\u5b58\s*1\s*\u9879\u4fee\u6539/).isVisible().catch(() => false);
+    const fontSizePatches = targetFontSizeVisible ? await applyDraft(page) : [];
+    const fontSizeAutoOk = targetLabelVisible
+      && targetFontSizeVisible
+      && fontSizeStagedWithoutEnter
+      && fontSizePatches.length === 1
+      && fontSizePatches[0]?.gid === 'xlabel.0'
+      && fontSizePatches[0]?.prop === 'fontsize'
+      && Number(fontSizePatches[0]?.value) === 13.5;
+    record('AXIS-6-number-auto-draft', fontSizeAutoOk ? 'PASS' : 'FAIL',
+      `target=${targetLabelVisible}, input=${targetFontSizeVisible}, staged=${fontSizeStagedWithoutEnter}, patches=${JSON.stringify(fontSizePatches)}`);
+
+    await clickButton(page, '组件中心');
+    const sourceTitleRow = page.locator('button[data-component-object-id="title.0"], button[title="title.0"]').first();
+    const sourceTitleVisible = await sourceTitleRow.isVisible().catch(() => false);
+    if (sourceTitleVisible) await sourceTitleRow.click();
+    await clickButton(page, '字体中心');
+    const captureBrush = page.locator('button[data-font-brush-action="capture"]').first();
+    const captureEnabled = await captureBrush.isEnabled().catch(() => false);
+    if (captureEnabled) await captureBrush.click();
+    await clickButton(page, '组件中心');
+    if (targetLabelVisible) await page.locator('button[data-component-object-id="xlabel.0"], button[title="xlabel.0"]').first().click();
+    await clickButton(page, '字体中心');
+    const applyBrush = page.locator('button[data-font-brush-action="apply"]').first();
+    const applyBrushEnabled = await applyBrush.isEnabled().catch(() => false);
+    if (applyBrushEnabled) await applyBrush.click();
+    const brushDraftVisible = await page.getByText(/\u5df2\u6682\u5b58\s*5\s*\u9879\u4fee\u6539/).isVisible().catch(() => false);
+    const brushPatches = applyBrushEnabled ? await applyDraft(page) : [];
+    const brushProps = brushPatches.map(patch => patch.prop).sort();
+    const fontBrushOk = sourceTitleVisible
+      && captureEnabled
+      && applyBrushEnabled
+      && brushDraftVisible
+      && brushPatches.length === 5
+      && brushPatches.every(patch => patch.gid === 'xlabel.0')
+      && brushProps.join(',') === 'color,fontfamily,fontsize,fontstyle,fontweight'
+      && !brushPatches.some(patch => patch.prop === 'text' || patch.prop === 'position');
+    record('AXIS-7-font-format-brush', fontBrushOk ? 'PASS' : 'FAIL',
+      `source=${sourceTitleVisible}, capture=${captureEnabled}, apply=${applyBrushEnabled}, staged=${brushDraftVisible}, patches=${JSON.stringify(brushPatches)}`);
+
+    record('AXIS-8-runtime', pageErrors.length === 0 && consoleErrors.length === 0 ? 'PASS' : 'FAIL',
+      `pageErrors=${JSON.stringify(pageErrors)}, consoleErrors=${JSON.stringify(consoleErrors)}`);
     await page.screenshot({ path: path.join(OUTPUT_DIR, 'axis-style-semantics.png'), fullPage: true });
   } finally {
     await browser.close();

@@ -8,7 +8,9 @@ import unittest
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(project_root, "renderer"))
 
-from introspector import replay_render
+import matplotlib.colors as mcolors
+
+from introspector import apply_edit_log, replay_render
 from semantic_scanner import scan_source
 from binding_engine import build_bindings
 
@@ -233,6 +235,53 @@ ax.plot([1, 2], [1, 2], color=CLUSTER_COLORS["Weak"], label="Weak")
         self.assertIn("dict_LEGEND_COLORS__Mixed", palette_ids)
         weak_group = next(group for group in semantic["groups"] if group["label"] == "Weak")
         self.assertEqual(weak_group["paletteId"], "dict_CLUSTER_COLORS__Weak")
+
+    def test_collection_color_subset_patch_only_replaces_matching_rows(self):
+        script = """
+import matplotlib.pyplot as plt
+BLUE = "#0F3CF0"
+RED = "#D62728"
+fig, ax = plt.subplots()
+ax.scatter([0, 1, 2], [0, 1, 0], c=[BLUE, RED, BLUE], s=[20, 30, 40])
+"""
+        patched = replay_render(script, edit_log=[{
+            "gid": "collection.0.0",
+            "prop": "facecolor",
+            "value": "#1188ff",
+            "matchColor": "#0f3cf0",
+            "mode": "backend_patch",
+        }])
+        collection = next(
+            obj for obj in patched["figures"][0]["manifest"]["objects"]
+            if obj["id"] == "collection.0.0"
+        )
+        colors = [
+            mcolors.to_hex(row, keep_alpha=False).lower()
+            for row in collection["currentProps"]["facecolor"]
+        ]
+
+        self.assertEqual(colors, ["#1188ff", "#d62728", "#1188ff"])
+
+    def test_collection_size_scale_preserves_relative_marker_sizes(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.scatter([0, 1, 2], [0, 1, 0], s=[20, 40, 80])
+"""
+        patched = replay_render(script, edit_log=[{
+            "gid": "collection.0.0",
+            "prop": "size_scale",
+            "value": 2,
+            "mode": "backend_patch",
+        }])
+        collection = next(
+            obj for obj in patched["figures"][0]["manifest"]["objects"]
+            if obj["id"] == "collection.0.0"
+        )
+
+        self.assertEqual(collection["currentProps"]["sizes"], [40.0, 80.0, 160.0])
+        self.assertEqual(collection["currentProps"]["size"], 40.0)
+        self.assertIn("size_scale", collection["editable"])
 
     
     def test_replay_render_captures_more_than_three_figures(self):
@@ -1286,6 +1335,49 @@ ax.legend()
         )
         self.assertEqual(patched_line["identity"]["relation"]["legendTextId"], "legend_text.0.0")
         self.assertEqual(patched_collection["identity"]["relation"]["legendTextId"], "legend_text.0.1")
+
+    def test_legend_layout_rebuild_keeps_large_marker_aligned_and_inside_frame(self):
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.plot([0, 1, 2], [1, 2, 1], marker="o", markersize=8, label="Line group")
+        ax.plot([0, 1, 2], [2, 1, 3], marker="s", markersize=8, label="Second group")
+        legend = ax.legend(loc="upper right", title="Groups")
+
+        warnings = apply_edit_log(fig, [
+            {"gid": "legend.0", "prop": "fontsize", "value": 20, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "markerscale", "value": 3, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "handletextpad", "value": 1, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "labelspacing", "value": 0.8, "mode": "backend_patch"},
+            {"gid": "legend.0", "prop": "columnspacing", "value": 1.5, "mode": "backend_patch"},
+            {"gid": "legend_title.0", "prop": "fontsize", "value": 16, "mode": "backend_patch"},
+            {"gid": "legend_text.0.0", "prop": "fontweight", "value": "bold", "mode": "backend_patch"},
+        ])
+        self.assertEqual(warnings, [])
+
+        fig.canvas.draw()
+        renderer = fig.canvas.get_renderer()
+        legend_bbox = legend.get_window_extent(renderer)
+        handles = legend.legend_handles
+        texts = legend.get_texts()
+        first_handle_bbox = handles[0].get_window_extent(renderer)
+        first_text_bbox = texts[0].get_window_extent(renderer)
+        second_text_bbox = texts[1].get_window_extent(renderer)
+
+        self.assertEqual(legend._fontsize, 20)
+        self.assertGreater(legend.handleheight, 0.7)
+        self.assertGreater(legend.borderpad, 0.4)
+        self.assertGreaterEqual(first_handle_bbox.x0, legend_bbox.x0 - 0.5)
+        self.assertLessEqual(first_handle_bbox.x1, first_text_bbox.x0)
+        self.assertGreaterEqual(first_handle_bbox.y0, legend_bbox.y0 - 0.5)
+        self.assertLessEqual(first_handle_bbox.y1, legend_bbox.y1 + 0.5)
+        self.assertLess(
+            abs((first_handle_bbox.y0 + first_handle_bbox.y1) / 2 - (first_text_bbox.y0 + first_text_bbox.y1) / 2),
+            first_text_bbox.height * 0.25,
+        )
+        self.assertGreater(first_text_bbox.y0, second_text_bbox.y1)
+        self.assertEqual(legend.get_title().get_fontsize(), 16)
+        self.assertEqual(texts[0].get_fontweight(), "bold")
 
     def test_figure_level_shared_legend_is_introspected_and_patchable(self):
         script = """

@@ -17,6 +17,7 @@ export type PaletteTargetFallbackReason =
 export interface ResolvedPaletteTarget {
   objectId: string;
   prop: string;
+  matchColor?: string;
   instanceKey?: string;
   seriesKey?: string;
   match: BindingTarget['match'] | 'legacy';
@@ -51,6 +52,17 @@ export interface PaletteTargetResolution {
 }
 
 const LOCAL_COLOR_PROPS = new Set(['color', 'facecolor', 'edgecolor', 'alpha', 'visible']);
+const COLOR_FALLBACK_KINDS = new Set([
+  'line',
+  'collection',
+  'patch',
+  'bar_container',
+  'errorbar_container',
+  'stem_container',
+  'boxplot_container',
+  'violinplot_container',
+]);
+const COLOR_FALLBACK_PROPS = ['facecolor', 'color', 'edgecolor'];
 
 function matchingBindings(manifest: Manifest, paletteId: string): Binding[] {
   return (manifest.bindings ?? []).filter(binding => binding.paletteId === paletteId);
@@ -70,6 +82,32 @@ function isMultiColorValue(value: unknown): boolean {
     colors.add(rgb.map(component => Math.round(component * 255)).join(','));
   });
   return colors.size > 1;
+}
+
+function normalizeHexColor(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const match = /^#([0-9a-fA-F]{6})/.exec(value.trim());
+    return match ? `#${match[1].toLowerCase()}` : null;
+  }
+  if (Array.isArray(value) && value.length >= 3 && !Array.isArray(value[0])) {
+    const rgb = value.slice(0, 3).map(component => Number(component));
+    if (rgb.some(component => !Number.isFinite(component))) return null;
+    return `#${rgb.map(component => Math.round(component * 255).toString(16).padStart(2, '0')).join('')}`;
+  }
+  return null;
+}
+
+function colorValueContains(value: unknown, targetHex: string): boolean {
+  const normalized = normalizeHexColor(value);
+  if (normalized === targetHex) return true;
+  if (Array.isArray(value) && value.length > 0 && Array.isArray(value[0])) {
+    return value.some(row => normalizeHexColor(row) === targetHex);
+  }
+  return false;
+}
+
+function shouldUseColorSubsetPatch(value: unknown, targetHex: string): boolean {
+  return isMultiColorValue(value) && colorValueContains(value, targetHex);
 }
 
 function replayModeForTarget(
@@ -356,6 +394,59 @@ export function resolvePaletteTargets(
   };
 }
 
+export function resolvePaletteColorFallbackTargets(
+  manifest: Manifest,
+  paletteId: string,
+  paletteColor: unknown,
+  selectedObjectIds?: string[],
+): PaletteTargetResolution {
+  const targetHex = normalizeHexColor(paletteColor);
+  const selected = selectedObjectIds ? new Set(selectedObjectIds) : null;
+  const targets = new Map<string, ResolvedPaletteTarget>();
+  if (!targetHex) {
+    return {
+      paletteId,
+      strategy: 'strict',
+      targetMode: 'unresolved',
+      targets: [],
+      skipped: [{ reason: 'no_binding', detail: `${paletteId} has no normalizable palette color.` }],
+      ambiguous: [],
+      warnings: ['Palette color fallback could not normalize the palette color.'],
+    };
+  }
+
+  (manifest.objects ?? []).forEach((object) => {
+    if (selected && !selected.has(object.id)) return;
+    if (!COLOR_FALLBACK_KINDS.has(object.kind)) return;
+    COLOR_FALLBACK_PROPS.forEach((prop) => {
+      if (!Object.prototype.hasOwnProperty.call(object.currentProps ?? {}, prop)) return;
+      if (!colorValueContains(object.currentProps?.[prop], targetHex)) return;
+      const useColorSubsetPatch = shouldUseColorSubsetPatch(object.currentProps?.[prop], targetHex);
+      targets.set(`${object.id}:${prop}`, {
+        objectId: object.id,
+        prop,
+        matchColor: useColorSubsetPatch ? targetHex : undefined,
+        instanceKey: object.identity?.instanceKey,
+        seriesKey: object.identity?.seriesKey,
+        match: 'unique_color',
+        confidence: 'conditional',
+        patchMode: useColorSubsetPatch ? 'backend_patch' : resolvePatchMode(manifest, object, prop),
+        replayMode: useColorSubsetPatch ? 'object_patch' : replayModeForTarget(object, prop),
+      });
+    });
+  });
+
+  return {
+    paletteId,
+    strategy: 'strict',
+    targetMode: 'conditional',
+    targets: Array.from(targets.values()),
+    skipped: [],
+    ambiguous: [],
+    warnings: ['Palette binding used scoped rendered-color fallback because the static palette binding was missing or ambiguous.'],
+  };
+}
+
 export function buildPaletteObjectPatches(
   resolution: PaletteTargetResolution,
   value: unknown,
@@ -367,6 +458,7 @@ export function buildPaletteObjectPatches(
     gid: target.objectId,
     prop: target.prop,
     value,
+    ...(target.matchColor ? { matchColor: target.matchColor } : {}),
   }));
 }
 

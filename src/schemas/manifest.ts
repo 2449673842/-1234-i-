@@ -261,6 +261,7 @@ export interface EditEntry {
   gid: string;
   prop: string;
   value: unknown;
+  matchColor?: string;
   mode: EditMode;
   timestamp: number;
 }
@@ -378,6 +379,7 @@ export interface LocalPatchEntry {
   gid: string;
   prop: string;
   value: unknown;
+  matchColor?: string;
   intent?: EditingIntent;
 }
 

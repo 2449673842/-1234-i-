@@ -258,7 +258,11 @@ default_legend <- list(
   linewidth = 0.5,
   alpha = 1.0,
   ncol = 1,
-  markerscale = 1.0
+  markerscale = 1.0,
+  handletextpad = 0.8,
+  labelspacing = 0.5,
+  columnspacing = 2.0,
+  borderpad = 0.4
 )
 default_colorbar <- list(
   left = 0.88,
@@ -1416,6 +1420,14 @@ apply_ggplot_edits <- function(plot_obj) {
   legend_alpha <- latest_numeric("legend.0", "alpha", 1.0)
   legend_ncol <- max(1L, as.integer(latest_numeric("legend.0", "ncol", default_legend$ncol)))
   legend_markerscale <- max(0.1, latest_numeric("legend.0", "markerscale", default_legend$markerscale))
+  legend_handletextpad <- max(0, latest_numeric("legend.0", "handletextpad", default_legend$handletextpad))
+  legend_labelspacing <- max(0, latest_numeric("legend.0", "labelspacing", default_legend$labelspacing))
+  legend_columnspacing <- max(0, latest_numeric("legend.0", "columnspacing", default_legend$columnspacing))
+  legend_borderpad <- max(0, latest_numeric("legend.0", "borderpad", default_legend$borderpad))
+  legend_text_pad_pt <- legend_handletextpad * legend_item_style$fontsize
+  legend_row_pad_pt <- legend_labelspacing * legend_item_style$fontsize / 2
+  legend_column_pad_pt <- if (legend_ncol > 1) legend_columnspacing * legend_item_style$fontsize else 0
+  legend_borderpad_pt <- legend_borderpad * legend_item_style$fontsize
   legend_face_effective <- if (legend_face == "none") "transparent" else alpha_color(legend_face, legend_alpha)
   legend_edge_effective <- if (legend_edge == "none") "transparent" else alpha_color(legend_edge, legend_alpha)
 
@@ -1490,7 +1502,14 @@ apply_ggplot_edits <- function(plot_obj) {
         size = legend_item_style$fontsize,
         family = legend_item_style$fontfamily,
         colour = legend_item_style$color,
-        face = legend_item_style$face
+        face = legend_item_style$face,
+        margin = ggplot2::margin(
+          t = legend_row_pad_pt,
+          r = legend_column_pad_pt,
+          b = legend_row_pad_pt,
+          l = legend_text_pad_pt,
+          unit = "pt"
+        )
       ),
       legend.title = ggplot2::element_text(
         size = legend_title_style$fontsize,
@@ -1509,6 +1528,15 @@ apply_ggplot_edits <- function(plot_obj) {
         )
       },
       legend.key.size = ggplot2::unit(legend_markerscale, "lines"),
+      legend.key.width = ggplot2::unit(max(1, legend_markerscale), "lines"),
+      legend.key.height = ggplot2::unit(max(1, legend_markerscale), "lines"),
+      legend.margin = ggplot2::margin(
+        t = legend_borderpad_pt,
+        r = legend_borderpad_pt,
+        b = legend_borderpad_pt,
+        l = legend_borderpad_pt,
+        unit = "pt"
+      ),
       strip.text = ggplot2::element_text(
         size = strip_style$fontsize,
         family = strip_style$fontfamily,
@@ -1579,10 +1607,13 @@ apply_ggplot_edits <- function(plot_obj) {
     plot_obj <- plot_obj + ggplot2::theme(aspect.ratio = subplot_aspect)
   }
 
-  if (has_edit("legend.0", "ncol") || has_edit("legend.0", "markerscale")) {
+  legend_guide_props <- c("ncol", "markerscale", "handletextpad", "labelspacing", "columnspacing", "borderpad")
+  if (any(vapply(legend_guide_props, function(prop) has_edit("legend.0", prop), logical(1)))) {
     continuous_kinds <- unique(vapply(find_continuous_colour_scales(plot_obj), function(item) item$kind, character(1)))
     guide <- ggplot2::guide_legend(
       ncol = legend_ncol,
+      keywidth = ggplot2::unit(max(1, legend_markerscale), "lines"),
+      keyheight = ggplot2::unit(max(1, legend_markerscale), "lines"),
       override.aes = list(size = 3 * legend_markerscale)
     )
     guide_args <- list()
@@ -2492,7 +2523,7 @@ r_manifest_derived_effects <- function(prop) {
   if (prop %in% c("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "rotation")) return(list("text_bounds"))
   if (prop == "position") return(list("object_bounds"))
   if (prop %in% c("left", "bottom", "width", "height", "aspect")) return(list("child_display_position"))
-  if (prop %in% c("markerscale", "ncol")) return(list("container_layout"))
+  if (prop %in% c("markerscale", "ncol", "handletextpad", "labelspacing", "columnspacing", "borderpad")) return(list("container_layout"))
   list()
 }
 
@@ -2580,6 +2611,10 @@ build_ggplot_manifest <- function(plot_obj) {
   legend_alpha <- latest_numeric("legend.0", "alpha", 1.0)
   legend_ncol <- max(1L, as.integer(latest_numeric("legend.0", "ncol", default_legend$ncol)))
   legend_markerscale <- max(0.1, latest_numeric("legend.0", "markerscale", default_legend$markerscale))
+  legend_handletextpad <- max(0, latest_numeric("legend.0", "handletextpad", default_legend$handletextpad))
+  legend_labelspacing <- max(0, latest_numeric("legend.0", "labelspacing", default_legend$labelspacing))
+  legend_columnspacing <- max(0, latest_numeric("legend.0", "columnspacing", default_legend$columnspacing))
+  legend_borderpad <- max(0, latest_numeric("legend.0", "borderpad", default_legend$borderpad))
 
   grid_visible <- latest_bool("grid.0", "visible", TRUE)
   grid_color <- latest_string("grid.0", "color", "#E5E5E5")
@@ -2597,7 +2632,7 @@ build_ggplot_manifest <- function(plot_obj) {
       id = "legend.0",
       kind = "legend",
       label = "legend",
-      editable = list("title", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "visible", "loc", "ncol", "markerscale", "facecolor", "edgecolor", "linewidth", "alpha"),
+      editable = list("title", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "visible", "loc", "ncol", "markerscale", "handletextpad", "labelspacing", "columnspacing", "borderpad", "facecolor", "edgecolor", "linewidth", "alpha"),
       currentProps = list(
         title = legend_title,
         fontsize = legend_style$fontsize,
@@ -2609,6 +2644,10 @@ build_ggplot_manifest <- function(plot_obj) {
         loc = legend_loc,
         ncol = legend_ncol,
         markerscale = legend_markerscale,
+        handletextpad = legend_handletextpad,
+        labelspacing = legend_labelspacing,
+        columnspacing = legend_columnspacing,
+        borderpad = legend_borderpad,
         facecolor = legend_face,
         edgecolor = legend_edge,
         linewidth = legend_lw,
@@ -2805,7 +2844,7 @@ build_ggplot_manifest <- function(plot_obj) {
     text = list(count = kind_count("text"), editableProps = list("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color")),
     axis_x = list(count = kind_count("axis_x"), editableProps = list("label", "label_fontsize", "label_color", "tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad")),
     axis_y = list(count = kind_count("axis_y"), editableProps = list("label", "label_fontsize", "label_color", "tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad")),
-    legend = list(count = kind_count("legend"), editableProps = list("title", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "visible", "loc", "ncol", "markerscale", "facecolor", "edgecolor", "linewidth", "alpha")),
+    legend = list(count = kind_count("legend"), editableProps = list("title", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "visible", "loc", "ncol", "markerscale", "handletextpad", "labelspacing", "columnspacing", "borderpad", "facecolor", "edgecolor", "linewidth", "alpha")),
     collection = list(count = kind_count("collection"), editableProps = list("color", "facecolor", "size", "alpha")),
     line = list(count = kind_count("line"), editableProps = list("color", "linewidth", "linestyle", "alpha")),
     patch = list(count = kind_count("patch"), editableProps = list("facecolor", "edgecolor", "linewidth", "alpha")),

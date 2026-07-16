@@ -21,6 +21,7 @@ import hashlib
 import traceback
 import ast
 import time
+import copy
 from typing import Any, Optional
 from contextlib import contextmanager
 
@@ -849,9 +850,16 @@ def _read_legend_props(artist) -> dict:
         "marker_yoffset": getattr(artist, "_scifigure_marker_yoffset", 0.0) or 0.0,
         "handletextpad": getattr(artist, "handletextpad", 0.8),
         "labelspacing": getattr(artist, "labelspacing", 0.5),
+        "handlelength": getattr(artist, "handlelength", 2.0),
+        "handleheight": getattr(artist, "handleheight", 0.7),
+        "columnspacing": getattr(artist, "columnspacing", 2.0),
+        "borderpad": getattr(artist, "borderpad", 0.4),
+        "borderaxespad": getattr(artist, "borderaxespad", 0.5),
         "title": artist.get_title().get_text() if artist.get_title() is not None else "",
         "fontfamily": _requested_fontfamily(artist.get_texts()[0]) if artist.get_texts() else "",
         "resolvedFontfamily": _actual_fontfamily(artist.get_texts()[0]) if artist.get_texts() else "",
+        "fontweight": artist.get_texts()[0].get_fontweight() if artist.get_texts() else "normal",
+        "fontstyle": artist.get_texts()[0].get_fontstyle() if artist.get_texts() else "normal",
         "x": position["x"],
         "y": position["y"],
         "coord_system": position["coord_system"],
@@ -884,9 +892,11 @@ def _read_collection_props(artist) -> dict:
     except Exception:
         linewidth = None
     size = None
+    sizes_list = []
     try:
         sizes = artist.get_sizes()
         if len(sizes) > 0:
+            sizes_list = [float(item) for item in sizes]
             size = float(sizes[0])
     except Exception:
         size = None
@@ -896,6 +906,8 @@ def _read_collection_props(artist) -> dict:
         "alpha": artist.get_alpha(),
         "linewidth": linewidth,
         "size": size,
+        "sizes": sizes_list,
+        "size_scale": 1.0,
     }
 
 
@@ -1498,10 +1510,10 @@ _EDITABLE = {
     "subplot": ["left", "bottom", "width", "height", "aspect", "zorder"],
     "spine": ["visible", "color", "linewidth", "zorder"],
     "spine_group": ["visible", "color", "linewidth", "zorder"],
-    "legend": ["visible", "fontsize", "frameon", "facecolor", "edgecolor", "linewidth", "alpha", "loc", "ncol", "markerscale", "marker_yoffset", "handletextpad", "labelspacing", "title", "fontfamily", "position", "zorder"],
+    "legend": ["visible", "fontsize", "frameon", "facecolor", "edgecolor", "linewidth", "alpha", "loc", "ncol", "markerscale", "marker_yoffset", "handletextpad", "labelspacing", "handlelength", "handleheight", "columnspacing", "borderpad", "borderaxespad", "title", "fontfamily", "fontweight", "fontstyle", "position", "zorder"],
     "line": ["color", "linewidth", "linestyle", "alpha", "marker", "markersize", "zorder"],
     "patch": ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
-    "collection": ["facecolor", "edgecolor", "alpha", "linewidth", "size", "zorder"],
+    "collection": ["facecolor", "edgecolor", "alpha", "linewidth", "size", "size_scale", "zorder"],
     "axes": ["xlim", "ylim", "show_minor_ticks", "x_tick_rotation", "tick_direction", "zorder"],
     "grid": ["visible", "color", "linewidth", "linestyle", "alpha", "zorder"],
     "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "tick_label_dx", "tick_label_dy", "sci_notation", "use_math_text", "offset_text_size"],
@@ -1772,7 +1784,11 @@ def _property_derived_effects(prop: str) -> list[str]:
         return ["annotation_arrow_geometry"]
     if prop in {"left", "bottom", "width", "height", "aspect"}:
         return ["child_display_position"]
-    if prop in {"markerscale", "marker_yoffset", "handletextpad", "labelspacing", "ncol"}:
+    if prop in {
+        "markerscale", "marker_yoffset", "handletextpad", "labelspacing",
+        "handlelength", "handleheight", "columnspacing", "borderpad",
+        "borderaxespad", "ncol",
+    }:
         return ["container_layout"]
     return []
 
@@ -2415,53 +2431,141 @@ def _get_legend_handles(legend) -> list:
     return result
 
 
-def _apply_legend_marker_scale(legend, value: Any) -> None:
-    """Scale already-created legend handles.
+def _legend_markerfirst(legend) -> bool:
+    try:
+        from matplotlib.offsetbox import DrawingArea
+        columns = legend._legend_handle_box.get_children()
+        if not columns:
+            return True
+        entries = columns[0].get_children()
+        if not entries:
+            return True
+        children = entries[0].get_children()
+        return bool(children and isinstance(children[0], DrawingArea))
+    except Exception:
+        return True
 
-    Matplotlib applies ``markerscale`` while constructing a legend.  Updating
-    the attribute after construction is not enough to change the visible
-    marker handles, so replay patches must mutate the existing handle artists.
-    """
-    new_scale = float(value)
-    old_scale = float(getattr(legend, "markerscale", 1.0) or 1.0)
-    if old_scale == 0:
-        old_scale = 1.0
-    ratio = new_scale / old_scale
-    legend.markerscale = new_scale
 
-    for handle in _get_legend_handles(legend):
+def _capture_legend_layout(legend) -> dict:
+    return {
+        "handles": list(_get_legend_handles(legend)),
+        "markerfirst": _legend_markerfirst(legend),
+        "original_markerscale": float(getattr(legend, "markerscale", 1.0) or 1.0),
+        "requested_handlelength": float(getattr(legend, "handlelength", 2.0) or 2.0),
+        "requested_handleheight": float(getattr(legend, "handleheight", 0.7) or 0.7),
+        "requested_borderpad": float(getattr(legend, "borderpad", 0.4) or 0.4),
+    }
+
+
+def _normalized_legend_source_handle(handle, original_scale: float):
+    try:
+        source = copy.copy(handle)
+    except Exception:
+        source = handle
+    safe_scale = original_scale if original_scale > 0 else 1.0
+    try:
+        marker = source.get_marker() if hasattr(source, "get_marker") else None
+        if marker not in {None, "", "None", "none", " "} and hasattr(source, "get_markersize") and hasattr(source, "set_markersize"):
+            source.set_markersize(float(source.get_markersize()) / safe_scale)
+    except Exception:
+        pass
+    try:
+        if hasattr(source, "get_sizes") and hasattr(source, "set_sizes"):
+            sizes = source.get_sizes()
+            if sizes is not None and len(sizes) > 0:
+                source.set_sizes([float(size) / (safe_scale * safe_scale) for size in sizes])
+    except Exception:
+        pass
+    return source
+
+
+def _legend_marker_diameter_points(handles: list, marker_scale: float) -> float:
+    diameter = 0.0
+    for handle in handles:
         try:
-            if hasattr(handle, "get_markersize") and hasattr(handle, "set_markersize"):
-                handle.set_markersize(float(handle.get_markersize()) * ratio)
-            if hasattr(handle, "get_sizes") and hasattr(handle, "set_sizes"):
+            marker = handle.get_marker() if hasattr(handle, "get_marker") else None
+            if marker not in {None, "", "None", "none", " "} and hasattr(handle, "get_markersize"):
+                diameter = max(diameter, float(handle.get_markersize()) * marker_scale)
+        except Exception:
+            pass
+        try:
+            if hasattr(handle, "get_sizes"):
                 sizes = handle.get_sizes()
                 if sizes is not None and len(sizes) > 0:
-                    handle.set_sizes([float(size) * ratio * ratio for size in sizes])
+                    diameter = max(diameter, max(float(size) for size in sizes) ** 0.5 * marker_scale)
         except Exception:
-            continue
+            pass
+    return diameter
 
 
-def _apply_legend_marker_yoffset(legend, value: Any) -> None:
-    """Move legend handle markers vertically without moving text labels."""
-    new_offset = float(value)
-    old_offset = float(getattr(legend, "_scifigure_marker_yoffset", 0.0) or 0.0)
-    delta = new_offset - old_offset
-    setattr(legend, "_scifigure_marker_yoffset", new_offset)
-
+def _apply_legend_marker_yoffset_absolute(legend) -> None:
+    offset = float(getattr(legend, "_scifigure_marker_yoffset", 0.0) or 0.0)
+    if offset == 0:
+        return
     for handle in _get_legend_handles(legend):
         try:
             if hasattr(handle, "get_ydata") and hasattr(handle, "set_ydata"):
-                handle.set_ydata([float(y) + delta for y in handle.get_ydata()])
+                handle.set_ydata([float(y) + offset for y in handle.get_ydata()])
             if hasattr(handle, "get_offsets") and hasattr(handle, "set_offsets"):
                 offsets = handle.get_offsets()
                 if offsets is not None and len(offsets) > 0:
                     next_offsets = offsets.copy()
-                    next_offsets[:, 1] = next_offsets[:, 1] + delta
+                    next_offsets[:, 1] = next_offsets[:, 1] + offset
                     handle.set_offsets(next_offsets)
             if hasattr(handle, "get_y") and hasattr(handle, "set_y"):
-                handle.set_y(float(handle.get_y()) + delta)
+                handle.set_y(float(handle.get_y()) + offset)
         except Exception:
             continue
+
+
+def _rebuild_legend_layout(legend, layout_source: dict) -> Optional[str]:
+    try:
+        old_texts = list(legend.get_texts())
+        labels = [text.get_text() for text in old_texts]
+        text_styles = [_snapshot_text_style(text) for text in old_texts]
+        title = legend.get_title()
+        title_text = title.get_text() if title is not None else ""
+        title_style = _snapshot_text_style(title) if title is not None else None
+        original_scale = float(layout_source.get("original_markerscale", 1.0) or 1.0)
+        source_handles = [
+            _normalized_legend_source_handle(handle, original_scale)
+            for handle in layout_source.get("handles", [])
+        ]
+        if len(source_handles) != len(labels):
+            return "legend_layout_source_mismatch"
+        entry_font_sizes = [float(text.get_fontsize()) for text in old_texts if text.get_visible()]
+        layout_font_size = max(entry_font_sizes or [float(getattr(legend, "_fontsize", 10.0) or 10.0)])
+        legend._fontsize = layout_font_size
+        marker_scale = max(0.1, float(getattr(legend, "markerscale", 1.0) or 1.0))
+        marker_diameter = _legend_marker_diameter_points(source_handles, marker_scale)
+        requested_height = float(getattr(legend, "_scifigure_requested_handleheight", layout_source.get("requested_handleheight", getattr(legend, "handleheight", 0.7))))
+        requested_length = float(getattr(legend, "_scifigure_requested_handlelength", layout_source.get("requested_handlelength", getattr(legend, "handlelength", 2.0))))
+        requested_borderpad = float(getattr(legend, "_scifigure_requested_borderpad", layout_source.get("requested_borderpad", getattr(legend, "borderpad", 0.4))))
+        marker_ratio = marker_diameter / max(layout_font_size, 1.0)
+        legend.handleheight = max(requested_height, marker_ratio + 0.15)
+        legend.handlelength = max(requested_length, marker_ratio + 0.25)
+        legend.borderpad = max(requested_borderpad, marker_ratio / 2.0 + 0.15)
+        legend._init_legend_box(source_handles, labels, markerfirst=bool(layout_source.get("markerfirst", True)))
+        legend._set_artist_props(legend._legend_box)
+        legend._set_loc(getattr(legend, "_loc_real", getattr(legend, "_loc", 0)))
+        legend.set_title(title_text)
+        for next_text, style in zip(legend.get_texts(), text_styles):
+            _restore_text_style(next_text, style)
+        if title_style is not None:
+            _restore_text_style(legend.get_title(), title_style)
+        _apply_legend_marker_yoffset_absolute(legend)
+        legend.stale = True
+        return None
+    except Exception as exc:
+        return f"legend_layout_rebuild_error:{exc}"
+
+
+def _apply_legend_marker_scale(legend, value: Any) -> None:
+    legend.markerscale = max(0.1, float(value))
+
+
+def _apply_legend_marker_yoffset(legend, value: Any) -> None:
+    setattr(legend, "_scifigure_marker_yoffset", float(value))
 
 # Map manifest prop names → matplotlib setter method names
 _PROP_TO_SETTER = {
@@ -2518,6 +2622,65 @@ def _apply_color_patch(artist, value):
         return None
 
     return "unsupported_color_patch"
+
+
+def _color_hex(value: Any) -> Optional[str]:
+    try:
+        return mcolors.to_hex(value, keep_alpha=False).lower()
+    except Exception:
+        return None
+
+
+def _replace_matching_color_rows(colors: Any, match_color: Any, value: Any):
+    if colors is None:
+        return None
+    rows = colors.tolist() if hasattr(colors, "tolist") else colors
+    if not isinstance(rows, (list, tuple)) or len(rows) == 0:
+        return None
+    match_hex = _color_hex(match_color)
+    if not match_hex:
+        return None
+    try:
+        new_rgba_base = list(mcolors.to_rgba(value))
+    except Exception:
+        return None
+    changed = False
+    next_rows = []
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 3:
+            next_rows.append(row)
+            continue
+        if _color_hex(row) == match_hex:
+            next_rgba = list(new_rgba_base)
+            if len(row) >= 4:
+                next_rgba[3] = float(row[3])
+            next_rows.append(next_rgba)
+            changed = True
+        else:
+            next_rows.append(row)
+    return next_rows if changed else None
+
+
+def _apply_color_subset_patch(artist, prop: str, value: Any, match_color: Any):
+    from matplotlib.collections import Collection
+    if not isinstance(artist, Collection):
+        return "unsupported_color_subset_artist"
+    if prop in {"facecolor", "color"} and hasattr(artist, "get_facecolors"):
+        next_colors = _replace_matching_color_rows(artist.get_facecolors(), match_color, value)
+        if next_colors is not None:
+            artist.set_facecolors(next_colors)
+            return None
+    if prop in {"edgecolor", "color"} and hasattr(artist, "get_edgecolors"):
+        next_colors = _replace_matching_color_rows(artist.get_edgecolors(), match_color, value)
+        if next_colors is not None:
+            artist.set_edgecolors(next_colors)
+            return None
+    if prop == "color" and hasattr(artist, "get_colors"):
+        next_colors = _replace_matching_color_rows(artist.get_colors(), match_color, value)
+        if next_colors is not None:
+            artist.set_color(next_colors)
+            return None
+    return "no_matching_color_subset"
 
 
 def _apply_single(artist, prop: str, value: Any, gid: str = ""):
@@ -2916,6 +3079,19 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             artist.handletextpad = float(value)
         elif prop == "labelspacing":
             artist.labelspacing = float(value)
+        elif prop == "handlelength":
+            artist.handlelength = max(0.1, float(value))
+            setattr(artist, "_scifigure_requested_handlelength", artist.handlelength)
+        elif prop == "handleheight":
+            artist.handleheight = max(0.1, float(value))
+            setattr(artist, "_scifigure_requested_handleheight", artist.handleheight)
+        elif prop == "columnspacing":
+            artist.columnspacing = max(0.0, float(value))
+        elif prop == "borderpad":
+            artist.borderpad = max(0.0, float(value))
+            setattr(artist, "_scifigure_requested_borderpad", artist.borderpad)
+        elif prop == "borderaxespad":
+            artist.borderaxespad = max(0.0, float(value))
         elif prop == "title":
             artist.set_title(str(value))
         elif prop == "fontfamily":
@@ -3018,6 +3194,16 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         artist.set_sizes([float(value)])
         return
 
+    if prop == "size_scale" and hasattr(artist, "get_sizes") and hasattr(artist, "set_sizes"):
+        scale = float(value)
+        if scale <= 0:
+            return "invalid_size_scale"
+        sizes = artist.get_sizes()
+        if sizes is None or len(sizes) == 0:
+            return "no_sizes_to_scale"
+        artist.set_sizes([float(size) * scale for size in sizes])
+        return
+
     # Fallback to _PROP_TO_SETTER for common props
     setter_name = _PROP_TO_SETTER.get(prop)
     if setter_name is None:
@@ -3095,6 +3281,12 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
     Returns a list of warnings for unsupported or failed patch entries.
     """
     gid_map = _build_gid_map(fig)
+    legend_layout_sources = {
+        gid: _capture_legend_layout(artist)
+        for gid, artist in gid_map.items()
+        if gid.startswith("legend.")
+    }
+    dirty_legend_ids: set[str] = set()
     needs_layout_refresh = False
     has_manual_positioning = False
     warnings: list[dict] = []
@@ -3116,6 +3308,30 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
         if artist is None:
             continue
 
+        legend_id = gid if gid in legend_layout_sources else _legend_container_gid(gid)
+        if legend_id and prop in {
+            "text",
+            "fontsize",
+            "fontfamily",
+            "fontweight",
+            "fontstyle",
+            "rotation",
+            "title",
+            "ncol",
+            "markerscale",
+            "marker_yoffset",
+            "handletextpad",
+            "labelspacing",
+            "handlelength",
+            "handleheight",
+            "columnspacing",
+            "borderpad",
+            "borderaxespad",
+            "markersize",
+            "size",
+        }:
+            dirty_legend_ids.add(legend_id)
+
         if (
             gid.startswith("colorbar.") and prop in {"left", "bottom", "width", "height"}
         ) or (
@@ -3125,7 +3341,11 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
         ):
             has_manual_positioning = True
 
-        result = _apply_single(artist, prop, value, gid)
+        match_color = entry.get("matchColor")
+        if match_color and prop in {"color", "facecolor", "edgecolor"}:
+            result = _apply_color_subset_patch(artist, prop, value, match_color)
+        else:
+            result = _apply_single(artist, prop, value, gid)
         if result is not None:
             warnings.append({
                 "type": result,
@@ -3147,8 +3367,30 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
             "title",
             "ncol",
             "markerscale",
+            "handletextpad",
+            "labelspacing",
+            "handlelength",
+            "handleheight",
+            "columnspacing",
+            "borderpad",
+            "borderaxespad",
         }:
             needs_layout_refresh = True
+
+    for legend_id in sorted(dirty_legend_ids):
+        legend = gid_map.get(legend_id)
+        layout_source = legend_layout_sources.get(legend_id)
+        if legend is None or layout_source is None:
+            continue
+        result = _rebuild_legend_layout(legend, layout_source)
+        if result is not None:
+            warnings.append({
+                "type": result,
+                "mode": "backend_patch",
+                "gid": legend_id,
+                "prop": "layout",
+                "artist": type(legend).__name__,
+            })
 
     if needs_layout_refresh and not has_manual_positioning:
         try:

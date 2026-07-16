@@ -144,7 +144,14 @@ export function PropertyControl({
         placeholder={mixed ? '混合值' : undefined}
         disabled={!interactive}
         value={inputValue}
-        onChange={event => setInputValue(event.target.value)}
+        onChange={event => {
+          const nextInput = event.target.value;
+          setInputValue(nextInput);
+          const numeric = Number(nextInput);
+          if (interactive && nextInput.trim() && Number.isFinite(numeric) && numeric !== value) {
+            onChange(numeric, prop);
+          }
+        }}
         onBlur={commitNumber}
         onKeyDown={event => {
           if (event.key === 'Enter') {

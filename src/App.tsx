@@ -131,6 +131,18 @@ function cloneEditLog(editLog: EditEntry[]): EditEntry[] {
   return JSON.parse(JSON.stringify(editLog || [])) as EditEntry[];
 }
 
+function draftPatchStorageKey(patch: Pick<DraftPatch, 'gid' | 'prop' | 'matchColor'>): string {
+  const matchColor = typeof patch.matchColor === 'string' ? patch.matchColor.trim().toLowerCase() : '';
+  return matchColor
+    ? `${patch.gid}:${patch.prop}:match:${matchColor}`
+    : `${patch.gid}:${patch.prop}`;
+}
+
+function patchEntryStorageKey(patch: PatchEntry): string {
+  if (!('gid' in patch)) return `code:${patch.target_id}`;
+  return draftPatchStorageKey(patch);
+}
+
 function makeHistorySnapshot(
   editLog: EditEntry[],
   label: string,
@@ -552,7 +564,7 @@ export default function App() {
     setProjectDrafts(prev => {
       const figBucket = { ...(prev[figId] || {}) };
       const normalizedPatch = normalizeDraftForFigure(figId, patch);
-      const key = `${normalizedPatch.gid}:${normalizedPatch.prop}`;
+      const key = draftPatchStorageKey(normalizedPatch);
       const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = normalizedPatch;
       figBucket[key] = freshPatch;
       return { ...prev, [figId]: figBucket };
@@ -564,7 +576,7 @@ export default function App() {
       const figBucket = { ...(prev[figId] || {}) };
       patches.forEach(p => {
         const normalizedPatch = normalizeDraftForFigure(figId, p);
-        const key = `${normalizedPatch.gid}:${normalizedPatch.prop}`;
+        const key = draftPatchStorageKey(normalizedPatch);
         const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = normalizedPatch;
         figBucket[key] = freshPatch;
       });
@@ -610,7 +622,7 @@ export default function App() {
       Object.entries(draftsByFigure).forEach(([figId, drafts]) => {
         const bucket = { ...(next[figId] || {}) };
         draftsEligibleForDirectPersistence(drafts.map(draft => normalizeDraftForFigure(figId, draft))).forEach(draft => {
-          delete bucket[`${draft.gid}:${draft.prop}`];
+          delete bucket[draftPatchStorageKey(draft)];
         });
         if (Object.keys(bucket).length > 0) {
           next[figId] = bucket;
@@ -863,6 +875,7 @@ export default function App() {
       gid: patchItem.gid,
       prop: patchItem.prop,
       value: patchItem.value,
+      ...(patchItem.matchColor ? { matchColor: patchItem.matchColor } : {}),
     };
   });
 
@@ -875,6 +888,7 @@ export default function App() {
         gid,
         prop,
         value: 'value' in patch ? patch.value : patch.new_value,
+        matchColor: 'matchColor' in patch ? patch.matchColor : undefined,
         mode: 'mode' in patch ? patch.mode : 'backend_patch',
         type: 'type' in patch ? patch.type : undefined,
         target_id: 'target_id' in patch ? patch.target_id : undefined,
@@ -1186,6 +1200,7 @@ export default function App() {
         gid: normalizedDraft.gid,
         prop: normalizedDraft.prop,
         value: normalizedDraft.value,
+        ...(normalizedDraft.matchColor ? { matchColor: normalizedDraft.matchColor } : {}),
         intent: normalizedDraft.intent,
       };
     };
@@ -1219,9 +1234,7 @@ export default function App() {
       compiled.forEach(({ draftKey, patches: compiledPatches }) => {
         if (compiledPatches.length > 0) consumedDraftKeys.add(draftKey);
         compiledPatches.forEach((item) => {
-          const key = 'gid' in item
-            ? `${item.gid}:${item.prop}`
-            : `code:${item.target_id}`;
+          const key = patchEntryStorageKey(item);
           byTargetProp.set(key, item);
         });
       });
@@ -1361,7 +1374,7 @@ export default function App() {
         const bucket = { ...(prev[figureId] || {}) };
         patches.forEach((patch) => {
           if (!('gid' in patch)) return;
-          const key = `${patch.gid}:${patch.prop}`;
+          const key = patchEntryStorageKey(patch);
           const currentDraft = bucket[key];
           if (!currentDraft) return;
           const normalizedCurrent = normalizeDraftForFigure(figureId, currentDraft);
@@ -1797,7 +1810,7 @@ export default function App() {
     }
   };
 
-  const handleLoadProject = (id: string, name: string, projectData: any) => {
+  const handleLoadProject = (id: string, name: string, projectData: any, preferredFigureId?: string) => {
     const loadedSpec: FigureSpec = typeof projectData.spec === 'string' ? JSON.parse(projectData.spec) : projectData.spec;
     const cleanSpec = { ...loadedSpec };
     cleanSpec.custom_script = projectData.script || loadedSpec.custom_script || '';
@@ -1840,7 +1853,11 @@ export default function App() {
     setProjectHistory(restoredHistory);
 
     if (figList.length > 0) {
-      setActiveFigureId(figList[0].figureId);
+      setActiveFigureId(
+        preferredFigureId && nextFigs[preferredFigureId]
+          ? preferredFigureId
+          : figList[0].figureId,
+      );
     } else {
       setActiveFigureId('fig_1');
     }
@@ -1950,6 +1967,20 @@ export default function App() {
         setRenderProgressText(null);
       }
     }
+  };
+
+  const handleExportSnapshotRestored = async (restoredProjectId: string, targetFigureId: string) => {
+    const response = await fetch(`/api/projects/${restoredProjectId}`);
+    const data = await response.json().catch(() => null);
+    if (!response.ok || data?.status !== 'success' || !data.project) {
+      throw new Error(data?.message || '恢复成功，但重新加载项目失败');
+    }
+    handleLoadProject(
+      restoredProjectId,
+      data.project.name || projectName || '未命名项目',
+      data.project,
+      targetFigureId,
+    );
   };
 
   // V3.2A File Handlers
@@ -2279,6 +2310,11 @@ export default function App() {
     return Boolean(figureId && figureId !== 'composite' && projectFigures[figureId]);
   };
 
+  const pendingProjectDraftCount = Object.keys(projectDrafts).reduce(
+    (total, figureId) => total + Object.keys(projectDrafts[figureId] || {}).length,
+    0,
+  );
+
   if (authStatus === 'checking') {
     return (
       <div className="flex h-screen items-center justify-center bg-[#071018] text-white">
@@ -2517,6 +2553,9 @@ export default function App() {
               projectId={projectId}
               activeFigureId={activeFigureId}
               isRendering={isRendering || projectIsRendering}
+              pendingDraftCount={Object.keys(projectDrafts[activeFigureId] || {}).length}
+              pendingProjectDraftCount={pendingProjectDraftCount}
+              onRestoreSnapshot={handleExportSnapshotRestored}
             />
           </>
         )}
@@ -2538,6 +2577,7 @@ export default function App() {
             projectId={projectId}
             onNavigate={(v) => handleNavigate(v)}
             onBack={handleExportLibraryBack}
+            onRestoreSnapshot={handleExportSnapshotRestored}
           />
         )}
 

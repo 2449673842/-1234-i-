@@ -81,6 +81,17 @@ function initSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_export_assets_project_created
       ON export_assets(project_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS export_asset_snapshots (
+      asset_id TEXT PRIMARY KEY REFERENCES export_assets(id) ON DELETE CASCADE,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      figure_id TEXT NOT NULL,
+      schema_version INTEGER NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      snapshot_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_export_asset_snapshots_project_created
+      ON export_asset_snapshots(project_id, created_at DESC);
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       email TEXT NOT NULL UNIQUE,
@@ -1475,6 +1486,24 @@ export interface ExportAssetInput {
   thumbnailSvg?: string | null;
   metadata?: Record<string, unknown>;
   tags?: string[];
+  editingSnapshot?: ExportAssetSnapshotInput;
+}
+
+export interface ExportAssetSnapshotInput {
+  figureId: string;
+  schemaVersion: number;
+  snapshotJson: string;
+  snapshotHash: string;
+}
+
+export interface ExportAssetSnapshot {
+  assetId: string;
+  projectId: string;
+  figureId: string;
+  schemaVersion: number;
+  snapshotJson: string;
+  snapshotHash: string;
+  createdAt: string;
 }
 
 export interface ExportAsset {
@@ -1490,6 +1519,7 @@ export interface ExportAsset {
   tags: string[];
   createdAt: string;
   sizeBytes?: number;
+  hasEditingSnapshot: boolean;
 }
 
 function countCjkChars(value: string): number {
@@ -1563,46 +1593,85 @@ function mapExportAsset(row: any): ExportAsset {
     metadata: parseJsonField<Record<string, unknown>>(row.metadata, {}),
     tags: parseJsonField<string[]>(row.tags, []),
     createdAt: row.created_at,
+    hasEditingSnapshot: Boolean(row.has_editing_snapshot),
   };
 }
 
 export function addExportAsset(input: ExportAssetInput): ExportAsset {
-  getDb().prepare(`
-    INSERT INTO export_assets (
-      id, project_id, figure_id, name, format, dpi, file_path, thumbnail_svg, metadata, tags
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    input.id,
-    input.projectId,
-    input.figureId,
-    input.name,
-    input.format.toLowerCase(),
-    input.dpi ?? null,
-    input.filePath,
-    input.thumbnailSvg ?? null,
-    JSON.stringify(input.metadata ?? {}),
-    JSON.stringify(input.tags ?? [])
-  );
-  const asset = getExportAsset(input.id);
-  if (!asset) {
-    throw new Error('导出资产写入失败');
-  }
-  return asset;
+  const database = getDb();
+  return database.transaction(() => {
+    database.prepare(`
+      INSERT INTO export_assets (
+        id, project_id, figure_id, name, format, dpi, file_path, thumbnail_svg, metadata, tags
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.id,
+      input.projectId,
+      input.figureId,
+      input.name,
+      input.format.toLowerCase(),
+      input.dpi ?? null,
+      input.filePath,
+      input.thumbnailSvg ?? null,
+      JSON.stringify(input.metadata ?? {}),
+      JSON.stringify(input.tags ?? []),
+    );
+    if (input.editingSnapshot) {
+      database.prepare(`
+        INSERT INTO export_asset_snapshots (
+          asset_id, project_id, figure_id, schema_version, snapshot_json, snapshot_hash
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        input.id,
+        input.projectId,
+        input.editingSnapshot.figureId,
+        input.editingSnapshot.schemaVersion,
+        input.editingSnapshot.snapshotJson,
+        input.editingSnapshot.snapshotHash,
+      );
+    }
+    const asset = getExportAsset(input.id);
+    if (!asset) throw new Error('导出资产写入失败');
+    return asset;
+  })();
 }
 
 export function listExportAssets(projectId: string): ExportAsset[] {
   const rows = getDb().prepare(`
-    SELECT * FROM export_assets
-    WHERE project_id = ?
-    ORDER BY created_at DESC
+    SELECT ea.*, CASE WHEN eas.asset_id IS NULL THEN 0 ELSE 1 END AS has_editing_snapshot
+    FROM export_assets AS ea
+    LEFT JOIN export_asset_snapshots AS eas ON eas.asset_id = ea.id
+    WHERE ea.project_id = ?
+    ORDER BY ea.created_at DESC
   `).all(projectId) as any[];
   return rows.map(mapExportAsset);
 }
 
 export function getExportAsset(assetId: string): ExportAsset | null {
-  const row = getDb().prepare('SELECT * FROM export_assets WHERE id = ?').get(assetId) as any | undefined;
+  const row = getDb().prepare(`
+    SELECT ea.*, CASE WHEN eas.asset_id IS NULL THEN 0 ELSE 1 END AS has_editing_snapshot
+    FROM export_assets AS ea
+    LEFT JOIN export_asset_snapshots AS eas ON eas.asset_id = ea.id
+    WHERE ea.id = ?
+  `).get(assetId) as any | undefined;
   return row ? mapExportAsset(row) : null;
+}
+
+export function getExportAssetSnapshot(assetId: string, projectId: string): ExportAssetSnapshot | null {
+  const row = getDb().prepare(`
+    SELECT * FROM export_asset_snapshots
+    WHERE asset_id = ? AND project_id = ?
+  `).get(assetId, projectId) as any | undefined;
+  if (!row) return null;
+  return {
+    assetId: row.asset_id,
+    projectId: row.project_id,
+    figureId: row.figure_id,
+    schemaVersion: row.schema_version,
+    snapshotJson: row.snapshot_json,
+    snapshotHash: row.snapshot_hash,
+    createdAt: row.created_at,
+  };
 }
 
 export function deleteExportAssets(projectId: string, assetIds: string[]): number {

@@ -6,6 +6,7 @@ export interface DraftPatch {
   gid: string;
   prop: string;
   value: unknown;
+  matchColor?: string;
   mode: DraftPatchMode;
   // Support code patches
   type?: 'code_patch';

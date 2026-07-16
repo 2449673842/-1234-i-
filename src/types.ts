@@ -2,6 +2,7 @@ export interface SavedEditEntry {
   gid: string;
   prop: string;
   value: unknown;
+  matchColor?: string;
   mode?: string;
   timestamp?: number;
 }

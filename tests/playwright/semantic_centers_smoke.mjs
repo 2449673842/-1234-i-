@@ -414,6 +414,17 @@ async function readRuntimePaletteBinding(page, paletteId) {
   }, paletteId);
 }
 
+async function readRuntimeObjectColors(page, gids, prop = 'facecolor') {
+  return page.evaluate(({ targetGids, targetProp }) => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    if (!raw) return [];
+    const state = JSON.parse(raw);
+    const figure = state.projectFigures?.[state.activeFigureId || 'fig_1'];
+    const objects = new Map((figure?.manifest?.objects || []).map((item) => [item.id, item]));
+    return targetGids.map((gid) => ({ gid, color: objects.get(gid)?.currentProps?.[targetProp] || null }));
+  }, { targetGids: gids, targetProp: prop });
+}
+
 async function clickFirstPaletteAffectedObject(page, sectionText) {
   const clicked = await page.evaluate((section) => {
     const normalize = (value) => String(value || '').replace(/\s+/g, '');
@@ -681,8 +692,11 @@ async function run() {
     );
 
     await clickText(page, '配色中心');
-    const vectorPaletteBody = await getBodyText(page);
-    const codeOnlyOverflowHidden = !vectorPaletteBody.includes('点击选中整组查看');
+    const vectorCard = page.locator('[data-palette-id="VECTOR_A"]').first();
+    const vectorGroupSelectionAvailable = await vectorCard
+      .getByRole('button', { name: '选中整组', exact: true })
+      .isEnabled()
+      .catch(() => false);
     const vectorChanged = await setColorByScope(page, 'palette:VECTOR_A', '#33AA77');
     const vectorDraft = (await getBodyText(page)).includes('已暂存');
     const vectorApply = vectorChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
@@ -698,7 +712,7 @@ async function run() {
       && vectorPatches.length === 1
       && vectorPatches[0]?.type === 'code_patch'
       && vectorPatches[0]?.target_id === 'VECTOR_A'
-      && codeOnlyOverflowHidden
+      && vectorGroupSelectionAvailable
       && vectorRuntimeA?.targets?.every((target) => target.replayMode === 'code_only')
       && String(vectorRuntimeA?.color).toLowerCase() === '#33aa77'
       && String(vectorRuntimeB?.color).toLowerCase() === '#e76f51'
@@ -708,6 +722,56 @@ async function run() {
       'H1d-vector-color-group-isolation',
       vectorIsolationOk ? 'PASS' : 'FAIL',
       `patches=${JSON.stringify(vectorPatches)}, A=${JSON.stringify(vectorRuntimeA)}, B=${JSON.stringify(vectorRuntimeB)}`,
+    );
+
+    await clickText(page, '配色中心');
+    await vectorCard.getByRole('button', { name: '选中整组', exact: true }).click();
+    await page.waitForTimeout(300);
+    const vectorSubsetChanged = await setColorByScope(page, 'palette-subset:VECTOR_A', '#7744AA');
+    const vectorSubsetDraft = (await getBodyText(page)).includes('已暂存');
+    const vectorSubsetApply = vectorSubsetChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const vectorSubsetPatches = patchList(vectorSubsetApply.patchBody);
+    const vectorSubsetObjects = await readRuntimeObjectColors(page, fixture.vectorABinding?.gids || []);
+    const vectorSubsetColors = vectorSubsetObjects.flatMap((item) => item.color || []).map((row) => (
+      `#${row.slice(0, 3).map((value) => Math.round(Number(value) * 255).toString(16).padStart(2, '0')).join('')}`
+    ));
+    const vectorSubsetOk = vectorSubsetChanged
+      && vectorSubsetDraft
+      && vectorSubsetApply.successful
+      && vectorSubsetPatches.length === 14
+      && vectorSubsetPatches.every((patch) => (
+        patch.type !== 'code_patch'
+        && /^collection\.\d+\.\d+$/.test(String(patch.gid || ''))
+        && ['facecolor', 'edgecolor'].includes(patch.prop)
+        && String(patch.matchColor).toLowerCase() === '#33aa77'
+        && String(patch.value).toLowerCase() === '#7744aa'
+      ))
+      && vectorSubsetColors.filter((color) => color === '#7744aa').length === 14
+      && vectorSubsetColors.filter((color) => color === '#e76f51').length === 14;
+    record(
+      'H1e-vector-rendered-color-subset',
+      vectorSubsetOk ? 'PASS' : 'FAIL',
+      `changed=${vectorSubsetChanged}, draft=${vectorSubsetDraft}, patches=${JSON.stringify(vectorSubsetPatches)}, objects=${JSON.stringify(vectorSubsetObjects)}`,
+    );
+
+    await clickText(page, '配色中心');
+    const secondSubsetChanged = await setColorByScope(page, 'palette-subset:VECTOR_B', '#CC3366');
+    const secondSubsetApply = secondSubsetChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const secondSubsetPatches = patchList(secondSubsetApply.patchBody);
+    const objectsAfterTwoSubsets = await readRuntimeObjectColors(page, fixture.vectorABinding?.gids || []);
+    const colorsAfterTwoSubsets = objectsAfterTwoSubsets.flatMap((item) => item.color || []).map((row) => (
+      `#${row.slice(0, 3).map((value) => Math.round(Number(value) * 255).toString(16).padStart(2, '0')).join('')}`
+    ));
+    const twoSubsetReplayOk = secondSubsetChanged
+      && secondSubsetApply.successful
+      && secondSubsetPatches.length === 14
+      && secondSubsetPatches.every((patch) => String(patch.matchColor).toLowerCase() === '#e76f51')
+      && colorsAfterTwoSubsets.filter((color) => color === '#7744aa').length === 14
+      && colorsAfterTwoSubsets.filter((color) => color === '#cc3366').length === 14;
+    record(
+      'H1f-vector-multiple-subset-replay',
+      twoSubsetReplayOk ? 'PASS' : 'FAIL',
+      `patches=${JSON.stringify(secondSubsetPatches)}, objects=${JSON.stringify(objectsAfterTwoSubsets)}`,
     );
 
     await clickText(page, '配色中心');

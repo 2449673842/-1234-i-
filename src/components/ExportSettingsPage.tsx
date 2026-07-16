@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { PointerEvent } from 'react';
-import { Download, CheckCircle, AlertTriangle, FileImage, Settings2, FileCode, Check } from 'lucide-react';
+import { Download, CheckCircle, AlertTriangle, FileImage, Settings2, FileCode, Check, History } from 'lucide-react';
 import { ViewState } from '../App';
 import { FigureSpec } from '../types';
 import type { FigureSession } from '../schemas/manifest';
 import { sanitizeSvg } from '../utils/svgEditor';
 import { downloadAuthenticatedFile } from '../utils/authenticatedFetch';
+import { restoreExportSnapshot } from '../utils/exportSnapshotRestore';
 
 const DPI_OPTIONS = [
   { value: 300, label: '300 dpi (标准印花)' },
@@ -30,6 +31,7 @@ interface ExportAsset {
   tags: string[];
   createdAt: string;
   sizeBytes?: number;
+  hasEditingSnapshot?: boolean;
 }
 
 interface ComposerPanel {
@@ -124,6 +126,9 @@ export function ExportSettingsPage({
   projectId,
   activeFigureId,
   isRendering = false,
+  pendingDraftCount = 0,
+  pendingProjectDraftCount = pendingDraftCount,
+  onRestoreSnapshot,
 }: {
   spec: FigureSpec;
   onNavigate: (view: ViewState) => void;
@@ -132,6 +137,9 @@ export function ExportSettingsPage({
   projectId?: string | null;
   activeFigureId?: string;
   isRendering?: boolean;
+  pendingDraftCount?: number;
+  pendingProjectDraftCount?: number;
+  onRestoreSnapshot?: (projectId: string, targetFigureId: string) => void | Promise<void>;
 }) {
   const exportConfig = spec.export ?? { format: 'PDF', dpi: 600, color_mode: 'RGB', embed_fonts: true };
   const figureConfig = spec.figure ?? { width: 100, height: 80, unit: 'mm', dpi: exportConfig.dpi };
@@ -155,6 +163,7 @@ export function ExportSettingsPage({
   const [wordPreviewMode, setWordPreviewMode] = useState<'actual' | 'fitWidth'>('fitWidth');
   const [wordPageZoom, setWordPageZoom] = useState(1);
   const [showWordSampleText, setShowWordSampleText] = useState(true);
+  const [restoringAssetId, setRestoringAssetId] = useState<string | null>(null);
 
   const loadAssets = async () => {
     if (!projectId) return;
@@ -274,6 +283,23 @@ export function ExportSettingsPage({
       `/api/projects/${projectId}/export-assets/${asset.assetId}/file`,
       `${asset.name}.${asset.format}`,
     );
+  };
+
+  const handleRestoreSnapshot = async (asset: ExportAsset) => {
+    if (!projectId || !asset.hasEditingSnapshot || restoringAssetId) return;
+    const confirmed = window.confirm(
+      `恢复“${asset.name}”导出时的编辑状态？\n\n项目代码和全部 Figure 编辑状态将回到该导出时刻；当前状态会先保存为可撤销检查点，数据文件和导出文件不会被修改。`,
+    );
+    if (!confirmed) return;
+    setRestoringAssetId(asset.assetId);
+    try {
+      const restored = await restoreExportSnapshot(projectId, asset.assetId);
+      await onRestoreSnapshot?.(restored.projectId, restored.targetFigureId);
+    } catch (error: any) {
+      alert(error?.message || '恢复导出状态失败');
+    } finally {
+      setRestoringAssetId(null);
+    }
   };
 
   const downloadSelectedAssets = async () => {
@@ -434,6 +460,10 @@ export function ExportSettingsPage({
   };
 
   const handleExport = async (formatOverride?: string) => {
+    if (pendingDraftCount > 0) {
+      alert(`当前 Figure 还有 ${pendingDraftCount} 项未应用修改，请返回编辑器应用后再导出。`);
+      return;
+    }
     if (isRendering) {
       alert('后台引擎正在渲染中，请等待渲染完成后再进行导出。');
       return;
@@ -560,6 +590,10 @@ export function ExportSettingsPage({
   const saveAllFiguresToLibrary = async () => {
     if (!projectId) {
       alert('请先打开一个项目。');
+      return;
+    }
+    if (pendingProjectDraftCount > 0) {
+      alert(`当前项目还有 ${pendingProjectDraftCount} 项未应用修改，请先回到编辑器应用后再保存全部 Figure。`);
       return;
     }
     if (isRendering) {
@@ -930,9 +964,14 @@ export function ExportSettingsPage({
                     <div className="mt-1.5 text-[11px] leading-relaxed text-blue-700">{exportProgress.detail}</div>
                   </div>
                 )}
+                {pendingDraftCount > 0 && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+                    当前 Figure 还有 {pendingDraftCount} 项未应用修改。应用后才能导出，避免预览与文件不一致。
+                  </div>
+                )}
                 <button
                   onClick={() => handleExport()}
-                  disabled={isExporting}
+                  disabled={isExporting || isRendering || pendingDraftCount > 0}
                   className="w-full py-3 bg-blue-600 text-white rounded-lg font-bold shadow-md hover:bg-blue-700 flex items-center justify-center gap-2 transition-all hover:-translate-y-0.5 disabled:cursor-wait disabled:opacity-70 disabled:hover:translate-y-0"
                 >
                   <Download className="w-4 h-4" /> {isExporting ? '导出处理中...' : `导出高质量图形 (${exportConfig.format})`}
@@ -940,7 +979,7 @@ export function ExportSettingsPage({
                 <div className="grid grid-cols-2 gap-3">
                   <button
                     onClick={() => { updateExportFormat('PDF'); void handleExport('PDF'); }}
-                    disabled={isExporting}
+                    disabled={isExporting || isRendering || pendingDraftCount > 0}
                     className="py-2.5 bg-slate-50 border border-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-100 transition-colors flex items-center justify-center gap-1.5 shadow-sm disabled:cursor-wait disabled:opacity-60"
                   >
                     <FileImage className="w-4 h-4 text-red-500" /> PDF 矢量
@@ -969,6 +1008,11 @@ export function ExportSettingsPage({
               <p className="text-sm text-slate-500 mt-1">
                 当前项目导出的图片会自动保存到这里，可按时间、名称和格式管理，也可选择 2/4/6 张自动拼版。
               </p>
+              {pendingProjectDraftCount > 0 && (
+                <p className="mt-1 text-xs font-medium text-amber-700">
+                  项目还有 {pendingProjectDraftCount} 项未应用修改，应用后才能保存全部 Figure。
+                </p>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -980,9 +1024,11 @@ export function ExportSettingsPage({
               </button>
               <button
                 onClick={() => void saveAllFiguresToLibrary()}
-                disabled={!projectId || isRendering || isSavingAllFigures}
+                disabled={!projectId || isRendering || isSavingAllFigures || pendingProjectDraftCount > 0}
                 className="px-3 py-2 text-sm rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
-                title="把当前项目所有已渲染 Figure 以 SVG 保存到历史导出资产，供组合图工作台和资产库使用。"
+                title={pendingProjectDraftCount > 0
+                  ? `还有 ${pendingProjectDraftCount} 项修改未应用`
+                  : '把当前项目所有已渲染 Figure 以 SVG 保存到历史导出资产，供组合图工作台和资产库使用。'}
               >
                 {isSavingAllFigures ? '保存中...' : '保存全部 Figure 到图库'}
               </button>
@@ -1104,6 +1150,17 @@ export function ExportSettingsPage({
                         >
                           下载
                         </button>
+                        {asset.hasEditingSnapshot && (
+                          <button
+                            type="button"
+                            onClick={() => void handleRestoreSnapshot(asset)}
+                            disabled={Boolean(restoringAssetId)}
+                            className="flex-1 inline-flex items-center justify-center gap-1 px-2 py-1.5 text-xs rounded-md bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 disabled:cursor-wait disabled:opacity-60"
+                          >
+                            <History className="h-3.5 w-3.5" />
+                            {restoringAssetId === asset.assetId ? '恢复中' : '恢复'}
+                          </button>
+                        )}
                         <button
                           onClick={() => toggleAssetSelection(asset.assetId)}
                           className="flex-1 px-2 py-1.5 text-xs rounded-md bg-white border border-slate-200 hover:bg-slate-100"

@@ -23,6 +23,14 @@ import * as archiver from 'archiver';
 import { applyColorCodePatch } from './src/utils/codeColorPatch';
 import { isDurableVirtualEditGid, mergePreviewGlobalsIntoEditLog } from './src/utils/exportPreviewState';
 import { sanitizeLegacyRetireObservationBatch } from './src/utils/legacyRetireObservation';
+import { KeyedMutationGate } from './src/utils/keyedMutationGate';
+import {
+  EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
+  parseExportEditingSnapshot,
+  type ExportDatasetSnapshotV1,
+  type ExportEditingSnapshotV1,
+  type ExportFigureSnapshotV1,
+} from './src/schemas/exportEditingSnapshot';
 import {
   AbortableWorkQueue,
   DeploymentLifecycle,
@@ -82,6 +90,7 @@ import {
   addExportAsset,
   listExportAssets,
   getExportAsset,
+  getExportAssetSnapshot,
   deleteExportAssets,
   createUserAccount,
   createEmailVerificationChallenge,
@@ -188,6 +197,8 @@ async function startServer() {
   const deploymentLifecycle = new DeploymentLifecycle();
   const activeRendererAborters = new Set<() => void>();
   const renderWorkQueue = new AbortableWorkQueue(() => renderConcurrencyLimit());
+  const figureMutationGate = new KeyedMutationGate();
+  const projectMutationGate = new KeyedMutationGate();
   app.disable('x-powered-by');
   app.set('trust proxy', process.env.SCIFIGURE_TRUST_PROXY === 'loopback' ? 'loopback' : false);
 
@@ -1063,7 +1074,27 @@ async function startServer() {
             FROM export_assets
             WHERE thumbnail_svg IS NOT NULL
           `).all() as Array<{ sizeBytes: number | null }>;
-    return fileSizes.concat(thumbnailRows.map(row => Math.max(0, Number(row.sizeBytes || 0))));
+    const snapshotRows = scope.projectId
+      ? getDb().prepare(`
+          SELECT length(CAST(snapshot_json AS BLOB)) AS sizeBytes
+          FROM export_asset_snapshots
+          WHERE project_id = ?
+        `).all(scope.projectId) as Array<{ sizeBytes: number | null }>
+      : scope.userId
+        ? getDb().prepare(`
+            SELECT length(CAST(eas.snapshot_json AS BLOB)) AS sizeBytes
+            FROM export_asset_snapshots eas
+            INNER JOIN projects p ON p.id = eas.project_id
+            WHERE p.user_id = ?
+          `).all(scope.userId) as Array<{ sizeBytes: number | null }>
+        : getDb().prepare(`
+            SELECT length(CAST(snapshot_json AS BLOB)) AS sizeBytes
+            FROM export_asset_snapshots
+          `).all() as Array<{ sizeBytes: number | null }>;
+    return fileSizes.concat(
+      thumbnailRows.map(row => Math.max(0, Number(row.sizeBytes || 0))),
+      snapshotRows.map(row => Math.max(0, Number(row.sizeBytes || 0))),
+    );
   }
 
   function assertProjectOwnedStorageBudgets(projectId: string, userId: string, incomingSize: number): void {
@@ -1097,6 +1128,7 @@ async function startServer() {
     thumbnailSvg?: string | null;
     metadata?: Record<string, unknown>;
     tags?: string[];
+    editingSnapshot?: ExportEditingSnapshotV1;
   }): ExportAsset {
     const owner = getDb().prepare('SELECT user_id AS userId FROM projects WHERE id = ?').get(args.projectId) as { userId: string | null } | undefined;
     if (!owner?.userId) {
@@ -1111,8 +1143,13 @@ async function startServer() {
     const fileBuffer = args.binaryB64
       ? Buffer.from(args.binaryB64, 'base64')
       : Buffer.from(args.svg || '', 'utf8');
+    const snapshotJson = args.editingSnapshot ? JSON.stringify(args.editingSnapshot) : null;
+    const snapshotHash = snapshotJson
+      ? crypto.createHash('sha256').update(snapshotJson).digest('hex')
+      : null;
     const thumbnailBytes = Buffer.byteLength(args.thumbnailSvg ?? args.svg ?? '', 'utf8');
-    assertProjectOwnedStorageBudgets(args.projectId, owner.userId, fileBuffer.length + thumbnailBytes);
+    const snapshotBytes = Buffer.byteLength(snapshotJson || '', 'utf8');
+    assertProjectOwnedStorageBudgets(args.projectId, owner.userId, fileBuffer.length + thumbnailBytes + snapshotBytes);
     fs.writeFileSync(absPath, fileBuffer);
     try {
       return addExportAsset({
@@ -1124,8 +1161,26 @@ async function startServer() {
         dpi: args.dpi ?? null,
         filePath: relPath,
         thumbnailSvg: args.thumbnailSvg ?? args.svg ?? null,
-        metadata: args.metadata ?? {},
+        metadata: snapshotHash
+          ? {
+              ...(args.metadata ?? {}),
+              editingSnapshot: {
+                available: true,
+                schemaVersion: EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
+                capturedAt: args.editingSnapshot?.capturedAt,
+                hash: snapshotHash,
+              },
+            }
+          : args.metadata ?? {},
         tags: args.tags ?? [],
+        editingSnapshot: snapshotJson && snapshotHash && args.editingSnapshot
+          ? {
+              figureId: args.editingSnapshot.targetFigureId,
+              schemaVersion: EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
+              snapshotJson,
+              snapshotHash,
+            }
+          : undefined,
       });
     } catch (error) {
       try { fs.unlinkSync(absPath); } catch { /* failed asset was never registered */ }
@@ -2009,6 +2064,7 @@ ${inner}
     gid: string;
     prop: string;
     value: unknown;
+    matchColor?: string;
     mode: 'local_patch' | 'backend_patch';
     timestamp: number;
   }
@@ -2025,7 +2081,7 @@ ${inner}
     updatedAt: number;
   }
 
-  /** Compress editLog: keep only the latest value per (gid, prop).
+  /** Compress editLog: keep only the latest value per (gid, prop, color subset).
    *  Preserves full History Log for undo/redo — only the render/export
    *  payload uses the compressed version. */
   function compressEditLog(log: EditEntry[]): EditEntry[] {
@@ -2033,7 +2089,8 @@ ${inner}
     const result: EditEntry[] = [];
     for (let i = log.length - 1; i >= 0; i--) {
       const entry = log[i];
-      const key = `${entry.gid}\0${entry.prop}`;
+      const matchColor = typeof entry.matchColor === 'string' ? entry.matchColor.trim().toLowerCase() : '';
+      const key = `${entry.gid}\0${entry.prop}\0${matchColor}`;
       if (!seen.has(key)) {
         seen.add(key);
         result.unshift(entry);
@@ -3237,6 +3294,130 @@ ${inner}
     };
   }
 
+  function sha256File(filePath: string): string {
+    const hash = crypto.createHash('sha256');
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    try {
+      let bytesRead = 0;
+      do {
+        bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+        if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+      } while (bytesRead > 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return hash.digest('hex');
+  }
+
+  function captureExportDatasetSnapshots(datasets: DatasetEntry[]): ExportDatasetSnapshotV1[] {
+    return datasets.map(dataset => {
+      const absPath = resolveDatasetAbsolutePath(dataset.filePath);
+      if (!fs.existsSync(absPath) || !fs.statSync(absPath).isFile()) {
+        throw new Error(`无法为导出状态记录数据文件: ${dataset.fileName}`);
+      }
+      const stat = fs.statSync(absPath);
+      return {
+        datasetId: dataset.datasetId,
+        fileName: dataset.fileName,
+        rowCount: dataset.rowCount,
+        columns: [...dataset.columns],
+        sizeBytes: stat.size,
+        sha256: sha256File(absPath),
+      };
+    });
+  }
+
+  function buildExportEditingSnapshot(args: {
+    project: NonNullable<ReturnType<typeof getProject>>;
+    userId: string;
+    targetFigureId: string;
+    targetEditLog: EditEntry[];
+    datasets: ExportDatasetSnapshotV1[];
+    requestedFormat: string;
+    effectiveFormat: string;
+    dpi: number | null;
+  }): ExportEditingSnapshotV1 {
+    const figureRows = listProjectFigures(args.project.id);
+    const targetRow = figureRows.find(row => `fig_${row.figure_index + 1}` === args.targetFigureId);
+    const targetSession = targetRow ? loadSession(targetRow.session_id, args.userId) : null;
+    if (!targetSession) throw new Error(`无法记录 ${args.targetFigureId} 的导出编辑状态`);
+    const scriptLanguage = inferScriptLanguage(targetSession.script);
+    let projectSpec: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(args.project.spec || '{}');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) projectSpec = parsed;
+    } catch {
+      projectSpec = {};
+    }
+    projectSpec = { ...projectSpec, custom_script: targetSession.script, script_language: scriptLanguage };
+
+    const figures = figureRows.map((row): ExportFigureSnapshotV1 => {
+      const figureId = `fig_${row.figure_index + 1}`;
+      const session = loadSession(row.session_id, args.userId);
+      if (!session) throw new Error(`无法记录 ${figureId} 的导出编辑状态`);
+      return {
+        figureId,
+        index: row.figure_index,
+        sessionId: row.session_id,
+        revision: session.revision || row.revision || 1,
+        editLog: compressEditLog(figureId === args.targetFigureId ? args.targetEditLog : session.editLog),
+      };
+    });
+    if (!figures.some(figure => figure.figureId === args.targetFigureId)) {
+      throw new Error(`导出状态中缺少目标 Figure: ${args.targetFigureId}`);
+    }
+
+    return {
+      schemaVersion: EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
+      capturedAt: new Date().toISOString(),
+      projectId: args.project.id,
+      projectName: args.project.name,
+      targetFigureId: args.targetFigureId,
+      projectScript: targetSession.script,
+      scriptLanguage,
+      projectSpec,
+      figures,
+      datasets: args.datasets.map(dataset => ({ ...dataset, columns: [...dataset.columns] })),
+      exportOptions: {
+        requestedFormat: args.requestedFormat,
+        effectiveFormat: args.effectiveFormat,
+        dpi: args.dpi,
+      },
+    };
+  }
+
+  function findExportSnapshotDatasetIssues(
+    expectedDatasets: ExportDatasetSnapshotV1[],
+    currentDatasets: DatasetEntry[],
+  ): string[] {
+    const expectedById = new Map(expectedDatasets.map(dataset => [dataset.datasetId, dataset]));
+    const currentById = new Map(currentDatasets.map(dataset => [dataset.datasetId, dataset]));
+    const issues: string[] = [];
+    currentDatasets.forEach(current => {
+      if (!expectedById.has(current.datasetId)) {
+        issues.push(`${current.fileName}: 导出后新增的数据文件`);
+      }
+    });
+    expectedDatasets.forEach(expected => {
+      const current = currentById.get(expected.datasetId);
+      if (!current) {
+        issues.push(`${expected.fileName}: 文件已删除或替换`);
+        return;
+      }
+      const absPath = resolveDatasetAbsolutePath(current.filePath);
+      if (!fs.existsSync(absPath) || !fs.statSync(absPath).isFile()) {
+        issues.push(`${expected.fileName}: 存储文件不存在`);
+        return;
+      }
+      const stat = fs.statSync(absPath);
+      if (stat.size !== expected.sizeBytes || sha256File(absPath) !== expected.sha256) {
+        issues.push(`${expected.fileName}: 文件内容已变化`);
+      }
+    });
+    return issues;
+  }
+
   interface CompositionProjectSourceInput {
     projectId?: unknown;
     figureId?: unknown;
@@ -3762,6 +3943,8 @@ ${inner}
 
   // POST /api/figure/patch — apply edits and re-render
   app.post('/api/figure/patch', renderRateLimit, deploymentJobHandler('render', async (req, res) => {
+    let releaseFigureMutation: (() => void) | null = null;
+    let releaseProjectMutation: (() => void) | null = null;
     try {
       const userId = authenticatedUserId(req);
       const { sessionId, patches } = req.body;
@@ -3771,6 +3954,16 @@ ${inner}
         figureId: typeof req.body.figureId === 'string' ? req.body.figureId : undefined,
       }, userId);
       const resolvedSessionId = projectContext?.sessionId || sessionId;
+      if (projectContext) {
+        releaseProjectMutation = projectMutationGate.tryBegin(projectContext.projectId);
+        if (!releaseProjectMutation) {
+          return res.status(409).json({
+            status: 'error',
+            code: 'PROJECT_STATE_BUSY',
+            message: '项目正在恢复导出状态，请等待恢复完成后再应用修改。',
+          });
+        }
+      }
       const session = loadSession(resolvedSessionId, userId);
       if (!session) {
         return res.status(404).json({
@@ -3798,6 +3991,7 @@ ${inner}
         const cached = cache.get(requestId);
         if (cached) return res.json(cached);
       }
+      releaseFigureMutation = figureMutationGate.begin(resolvedSessionId);
 
       const revisionWarning = baseRevision !== session.revision
         ? {
@@ -3825,6 +4019,7 @@ ${inner}
           value: p.value,
           mode: 'backend_patch',
           timestamp: patchTimestamp,
+          ...(typeof p.matchColor === 'string' ? { matchColor: p.matchColor } : {}),
         }));
         const mergedEditLog = [...session.editLog, ...newEdits];
         let cwd: string | undefined = projectContext?.cwd;
@@ -3928,6 +4123,7 @@ ${inner}
         value: p.value,
         mode: p.mode || 'backend_patch',
         timestamp: patchTimestamp,
+        ...(typeof p.matchColor === 'string' ? { matchColor: p.matchColor } : {}),
       }));
 
       const backendPatches = newEdits.filter(e => e.mode === 'backend_patch');
@@ -4130,11 +4326,16 @@ ${inner}
       res.json(response);
     } catch (err: any) {
       res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
+    } finally {
+      releaseFigureMutation?.();
+      releaseProjectMutation?.();
     }
   }));
 
   // POST /api/figure/code-patch — update script with AST gate & drift detection
   app.post('/api/figure/code-patch', renderRateLimit, deploymentJobHandler('render', async (req, res) => {
+    let releaseFigureMutation: (() => void) | null = null;
+    let releaseProjectMutation: (() => void) | null = null;
     try {
       const userId = authenticatedUserId(req);
       let { sessionId, script, force } = req.body;
@@ -4149,6 +4350,19 @@ ${inner}
         figureId: typeof req.body.figureId === 'string' ? req.body.figureId : undefined,
       }, userId);
       const resolvedSessionId = projectContext?.sessionId || sessionId;
+      if (projectContext) {
+        releaseProjectMutation = projectMutationGate.tryBegin(projectContext.projectId);
+        if (!releaseProjectMutation) {
+          return res.status(409).json({
+            status: 'error',
+            code: 'PROJECT_STATE_BUSY',
+            message: '项目正在恢复导出状态，请等待恢复完成后再修改代码。',
+          });
+        }
+      }
+      if (resolvedSessionId) {
+        releaseFigureMutation = figureMutationGate.begin(resolvedSessionId);
+      }
       let session = null;
       let editLog: EditEntry[] = [];
       let dataPayload: Record<string, unknown> | null = null;
@@ -4282,6 +4496,9 @@ ${inner}
       res.json(result);
     } catch (err: any) {
       res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
+    } finally {
+      releaseFigureMutation?.();
+      releaseProjectMutation?.();
     }
   }));
 
@@ -4512,6 +4729,7 @@ ${inner}
   });
 
   app.put('/api/projects/:id', (req, res) => {
+    let releaseProjectMutation: (() => void) | null = null;
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
@@ -4520,6 +4738,14 @@ ${inner}
       if (!name) return res.status(400).json({ status: 'error', message: 'name required' });
       const existing = getProject(projectId, userId);
       if (!existing) return res.status(404).json({ status: 'error', message: 'Project not found' });
+      releaseProjectMutation = projectMutationGate.tryBegin(projectId);
+      if (!releaseProjectMutation) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'PROJECT_STATE_BUSY',
+          message: '项目正在恢复导出状态，请等待恢复完成后再保存。',
+        });
+      }
       if (spec) {
         const script = spec.custom_script || spec.script || '';
         updateProject(req.params.id, userId, name, spec, script);
@@ -4569,6 +4795,8 @@ ${inner}
       res.json({ status: 'success' });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
+    } finally {
+      releaseProjectMutation?.();
     }
   });
 
@@ -4579,6 +4807,13 @@ ${inner}
       assertSafeProjectId(projectId);
       if (!getProject(projectId, userId)) {
         return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
+      if (projectMutationGate.isBlocked(projectId)) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'PROJECT_STATE_BUSY',
+          message: '项目正在恢复导出状态，暂时不能删除。',
+        });
       }
       deleteProjectFigures(projectId);
       deleteProject(projectId, userId);
@@ -4678,6 +4913,7 @@ ${inner}
 
   app.post('/api/projects/:id/files', requireOwnedProjectBeforeUpload, uploadRateLimit, upload.single('file'), async (req, res) => {
     let filePersisted = false;
+    let releaseProjectBlock: (() => void) | null = null;
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
@@ -4689,6 +4925,24 @@ ${inner}
       const file = req.file;
       if (!file) {
         return res.status(400).json({ status: 'error', message: 'No file uploaded' });
+      }
+      releaseProjectBlock = projectMutationGate.tryBlock(projectId);
+      if (!releaseProjectBlock) {
+        try { fs.unlinkSync(file.path); } catch { /* rejected upload was not registered */ }
+        return res.status(409).json({
+          status: 'error',
+          code: 'PROJECT_STATE_BUSY',
+          message: '项目正在导出、恢复或变更数据，请等待完成后再上传。',
+        });
+      }
+      const projectIdle = await projectMutationGate.waitForIdle(projectId, 30_000);
+      if (!projectIdle) {
+        try { fs.unlinkSync(file.path); } catch { /* timed-out upload was not registered */ }
+        return res.status(409).json({
+          status: 'error',
+          code: 'PROJECT_STATE_BUSY',
+          message: '项目仍有正在执行的渲染、编辑或导出任务，请等待完成后再上传。',
+        });
       }
       assertHourlyByteBudget(req, res, 'upload_bytes', file.size);
       assertProjectOwnedStorageBudgets(projectId, userId, file.size);
@@ -4748,10 +5002,13 @@ ${inner}
         try { fs.unlinkSync(req.file.path); } catch { /* unregistered upload already absent */ }
       }
       res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
+    } finally {
+      releaseProjectBlock?.();
     }
   });
 
-  app.delete('/api/projects/:id/files/:fileId', (req, res) => {
+  app.delete('/api/projects/:id/files/:fileId', async (req, res) => {
+    let releaseProjectBlock: (() => void) | null = null;
     try {
       const userId = authenticatedUserId(req);
       const { id: projectId, fileId } = req.params;
@@ -4760,9 +5017,28 @@ ${inner}
       if (!project) {
         return res.status(404).json({ status: 'error', message: '项目不存在' });
       }
+      releaseProjectBlock = projectMutationGate.tryBlock(projectId);
+      if (!releaseProjectBlock) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'PROJECT_STATE_BUSY',
+          message: '项目正在导出、恢复或变更数据，暂时不能删除数据文件。',
+        });
+      }
+      const projectIdle = await projectMutationGate.waitForIdle(projectId, 30_000);
+      if (!projectIdle) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'PROJECT_STATE_BUSY',
+          message: '项目仍有正在执行的渲染、编辑或导出任务，请等待完成后再删除数据文件。',
+        });
+      }
       const fileRecord = getProjectFile(fileId);
       if (fileRecord && fileRecord.project_id === projectId) {
-        const absPath = safeResolveUnder(projectFilesDir(projectId), fileRecord.stored_path);
+        const absPath = safeResolveUnder(
+          projectFilesDir(projectId),
+          resolveDatasetAbsolutePath(fileRecord.stored_path),
+        );
         if (fs.existsSync(absPath)) {
           fs.unlinkSync(absPath);
         }
@@ -4771,15 +5047,30 @@ ${inner}
       res.json({ status: 'success' });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
+    } finally {
+      releaseProjectBlock?.();
     }
   });
 
   // --- Project Figures Render API ---
   app.post('/api/projects/:id/figures/render', renderRateLimit, deploymentJobHandler('render', async (req, res) => {
+    let releaseProjectMutation: (() => void) | null = null;
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
       assertSafeProjectId(projectId);
+      const projectRow = getProject(projectId, userId);
+      if (!projectRow) {
+        return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
+      releaseProjectMutation = projectMutationGate.tryBegin(projectId);
+      if (!releaseProjectMutation) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'PROJECT_STATE_BUSY',
+          message: '项目正在恢复导出状态，请等待恢复完成后再同步渲染。',
+        });
+      }
       let { script, editLogs } = req.body;
       if (!script) {
         return res.status(400).json({ status: 'error', message: 'script is required' });
@@ -4796,10 +5087,7 @@ ${inner}
       }
 
       // Update script in projects table
-      const projectRow = getProject(projectId, userId);
-      if (projectRow) {
-        updateProject(projectId, userId, projectRow.name, JSON.parse(projectRow.spec), script);
-      }
+      updateProject(projectId, userId, projectRow.name, JSON.parse(projectRow.spec), script);
 
       const datasets = listProjectFiles(projectId);
       const projectDataPayload = await buildProjectDataPayload(datasets);
@@ -4956,6 +5244,8 @@ ${inner}
       res.json(result);
     } catch (err: any) {
       res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
+    } finally {
+      releaseProjectMutation?.();
     }
   }));
 
@@ -5288,6 +5578,202 @@ ${inner}
     }
   });
 
+  app.post('/api/projects/:id/export-assets/:assetId/restore', renderRateLimit, async (req, res) => {
+    let releaseProjectBlock: (() => void) | null = null;
+    try {
+      const userId = authenticatedUserId(req);
+      const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      const project = getProject(projectId, userId);
+      if (!project) return res.status(404).json({ status: 'error', message: '项目不存在' });
+      const asset = getExportAsset(req.params.assetId);
+      if (!asset || asset.projectId !== projectId) {
+        return res.status(404).json({ status: 'error', message: '导出资产不存在' });
+      }
+      const storedSnapshot = getExportAssetSnapshot(asset.assetId, projectId);
+      if (!storedSnapshot) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'EXPORT_SNAPSHOT_UNAVAILABLE',
+          message: '该资产由旧版本或外部组合流程生成，没有可恢复的编辑状态。',
+        });
+      }
+      const actualHash = crypto.createHash('sha256').update(storedSnapshot.snapshotJson).digest('hex');
+      if (actualHash !== storedSnapshot.snapshotHash) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'EXPORT_SNAPSHOT_INTEGRITY_ERROR',
+          message: '导出状态快照完整性校验失败，已停止恢复。',
+        });
+      }
+      let rawSnapshot: unknown;
+      try { rawSnapshot = JSON.parse(storedSnapshot.snapshotJson); } catch { rawSnapshot = null; }
+      const snapshot = parseExportEditingSnapshot(rawSnapshot);
+      if (!snapshot || snapshot.projectId !== projectId || snapshot.targetFigureId !== storedSnapshot.figureId) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'EXPORT_SNAPSHOT_INVALID',
+          message: '导出状态快照与当前项目不匹配，已停止恢复。',
+        });
+      }
+
+      releaseProjectBlock = projectMutationGate.tryBlock(projectId);
+      if (!releaseProjectBlock) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'EXPORT_SNAPSHOT_RESTORE_BUSY',
+          message: '该项目已有恢复任务正在执行，请等待完成后重试。',
+        });
+      }
+      const projectIdle = await projectMutationGate.waitForIdle(projectId, 30_000);
+      if (!projectIdle) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'EXPORT_SNAPSHOT_PROJECT_BUSY',
+          message: '项目仍有正在执行的渲染、编辑或导出任务，请等待完成后重试恢复。',
+        });
+      }
+
+      const currentRows = listProjectFigures(projectId);
+      const expectedByIndex = new Map(snapshot.figures.map(figure => [figure.index, figure]));
+      const structureMatches = currentRows.length === snapshot.figures.length
+        && currentRows.every(row => expectedByIndex.has(row.figure_index));
+      if (!structureMatches) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'EXPORT_SNAPSHOT_FIGURE_STRUCTURE_CHANGED',
+          message: '项目的 Figure 数量或结构已变化，无法保证无损恢复。现有项目未被修改。',
+        });
+      }
+
+      const datasetIssues = findExportSnapshotDatasetIssues(snapshot.datasets, listProjectFiles(projectId));
+      if (datasetIssues.length > 0) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'EXPORT_SNAPSHOT_DATA_MISMATCH',
+          message: '原始数据文件已变化，无法保证恢复结果与导出时一致。现有项目未被修改。',
+          issues: datasetIssues,
+        });
+      }
+      if (snapshot.scriptLanguage === 'python') {
+        const astCheck = await validateAst(snapshot.projectScript, req);
+        if (!astCheck.ok) {
+          return res.status(400).json({
+            status: 'error',
+            code: 'EXPORT_SNAPSHOT_SCRIPT_REJECTED',
+            message: `快照脚本安全校验失败: ${astCheck.message || ''}`,
+            errors: astCheck.errors,
+          });
+        }
+      } else {
+        const rRisk = validateRScriptRisk(snapshot.projectScript, req);
+        if (!rRisk.ok) {
+          return res.status(400).json({
+            status: 'error',
+            code: 'EXPORT_SNAPSHOT_SCRIPT_REJECTED',
+            message: rRisk.message || 'R 脚本风险预检失败',
+            findings: rRisk.findings,
+          });
+        }
+      }
+
+      const releases: Array<() => void> = [];
+      for (const row of currentRows) {
+        const idle = await figureMutationGate.waitForIdle(row.session_id, 30_000);
+        if (!idle) {
+          releases.reverse().forEach(release => release());
+          return res.status(409).json({
+            status: 'error',
+            code: 'EXPORT_SNAPSHOT_FIGURE_BUSY',
+            message: '项目仍有正在执行的编辑请求，请等待完成后重试恢复。',
+          });
+        }
+        releases.push(figureMutationGate.begin(row.session_id));
+      }
+
+      try {
+        const currentStates = currentRows.map(row => {
+          const session = loadSession(row.session_id, userId);
+          if (!session) throw new Error(`当前 Figure 会话不存在: fig_${row.figure_index + 1}`);
+          return { row, session };
+        });
+        const restoredRevisions: Record<string, number> = {};
+        const checkpointTimestamp = Date.now();
+        const database = getDb();
+        database.transaction(() => {
+          const restoredSpec = {
+            ...snapshot.projectSpec,
+            custom_script: snapshot.projectScript,
+            script_language: snapshot.scriptLanguage,
+          };
+          database.prepare(`
+            UPDATE projects
+            SET spec = ?, script = ?, updated_at = datetime('now')
+            WHERE id = ? AND user_id = ?
+          `).run(JSON.stringify(restoredSpec), snapshot.projectScript, projectId, userId);
+
+          for (const { row, session } of currentStates) {
+            const figureSnapshot = expectedByIndex.get(row.figure_index);
+            if (!figureSnapshot) throw new Error(`快照缺少 Figure: fig_${row.figure_index + 1}`);
+            const nextRevision = Math.max(session.revision || 1, row.revision || 1) + 1;
+            const currentHistory = parseStoredHistory(row.history);
+            const checkpoint = {
+              editLog: session.editLog,
+              script: session.script,
+              label: `恢复导出状态前：${asset.name}`,
+              timestamp: checkpointTimestamp,
+              changeType: 'system',
+            };
+            const nextHistory = {
+              past: [...currentHistory.past, checkpoint].slice(-50),
+              future: [],
+            };
+            database.prepare(`
+              UPDATE sessions
+              SET script = ?, edit_log = ?, revision = ?, updated_at = datetime('now')
+              WHERE id = ? AND user_id = ?
+            `).run(
+              snapshot.projectScript,
+              JSON.stringify(figureSnapshot.editLog),
+              nextRevision,
+              row.session_id,
+              userId,
+            );
+            database.prepare(`
+              UPDATE project_figures
+              SET revision = ?, edit_log = ?, history = ?,
+                  preview_svg = NULL, manifest = NULL, code_slice = NULL,
+                  fingerprint = NULL, preview_updated_at = NULL
+              WHERE project_id = ? AND figure_index = ?
+            `).run(
+              nextRevision,
+              JSON.stringify(figureSnapshot.editLog),
+              JSON.stringify(nextHistory),
+              projectId,
+              row.figure_index,
+            );
+            restoredRevisions[figureSnapshot.figureId] = nextRevision;
+          }
+        })();
+
+        return res.json({
+          status: 'success',
+          projectId,
+          targetFigureId: snapshot.targetFigureId,
+          capturedAt: snapshot.capturedAt,
+          restoredRevisions,
+          message: '已恢复到导出时的编辑状态，并保存恢复前检查点。',
+        });
+      } finally {
+        releases.reverse().forEach(release => release());
+      }
+    } catch (err: any) {
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
+    } finally {
+      releaseProjectBlock?.();
+    }
+  });
+
   app.delete('/api/projects/:id/export-assets', (req, res) => {
     try {
       const userId = authenticatedUserId(req);
@@ -5500,6 +5986,7 @@ ${inner}
   app.post('/api/projects/:id/export', renderRateLimit, downloadRateLimit, deploymentJobHandler('export', async (req, res) => {
     const newlyPersistedAssets: ExportAsset[] = [];
     let cleanupProjectId: string | null = null;
+    let releaseProjectBlock: (() => void) | null = null;
     try {
       const userId = authenticatedUserId(req);
       const projectId = req.params.id;
@@ -5508,6 +5995,22 @@ ${inner}
       const project = getProject(projectId, userId);
       if (!project) {
         return res.status(404).json({ status: 'error', message: '项目不存在' });
+      }
+      releaseProjectBlock = projectMutationGate.tryBlock(projectId);
+      if (!releaseProjectBlock) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'PROJECT_STATE_BUSY',
+          message: '项目正在导出、恢复或变更数据，请等待完成后再导出。',
+        });
+      }
+      const projectIdle = await projectMutationGate.waitForIdle(projectId, 30_000);
+      if (!projectIdle) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'PROJECT_STATE_BUSY',
+          message: '项目仍有正在执行的渲染、编辑或数据任务，请等待完成后再导出。',
+        });
       }
       const { figureId, format, dpi, name, saveToLibrary = true, includeSubplots = false } = req.body;
       const reqFormat = (format || 'svg').toLowerCase();
@@ -5537,6 +6040,9 @@ ${inner}
         }
       }
       const datasets = listProjectFiles(projectId);
+      const exportDatasetSnapshots = saveToLibrary !== false
+        ? captureExportDatasetSnapshots(datasets)
+        : [];
       const projectDataPayload = await buildProjectDataPayload(datasets);
 
       const uploaded_file_paths: Record<string, string> = {};
@@ -5570,6 +6076,19 @@ ${inner}
           const assetName = figureId ? (name || targetFigId) : targetFigId;
           const exportAnchor = buildExportEditLogAnchor(exportEditLog);
           const effectiveFigureFormat = matchedFig.binary_b64 ? reqFormat : 'svg';
+          const effectiveFigureDpi = rasterExportDpi(effectiveFigureFormat, dpi);
+          const editingSnapshot = saveToLibrary !== false
+            ? buildExportEditingSnapshot({
+                project,
+                userId,
+                targetFigureId: targetFigId,
+                targetEditLog: exportEditLog,
+                datasets: exportDatasetSnapshots,
+                requestedFormat: reqFormat,
+                effectiveFormat: effectiveFigureFormat,
+                dpi: effectiveFigureDpi,
+              })
+            : undefined;
           let asset: ExportAsset | null = null;
           if (saveToLibrary !== false) {
             asset = persistProjectExportAsset({
@@ -5577,7 +6096,7 @@ ${inner}
               figureId: targetFigId,
               name: assetName,
               format: effectiveFigureFormat,
-              dpi: rasterExportDpi(effectiveFigureFormat, dpi),
+              dpi: effectiveFigureDpi,
               svg: matchedFig.svg,
               binaryB64: matchedFig.binary_b64 || null,
               thumbnailSvg: matchedFig.svg,
@@ -5588,6 +6107,7 @@ ${inner}
                 ...exportAnchor,
               },
               tags: ['figure'],
+              editingSnapshot,
             });
             newlyPersistedAssets.push(asset);
           }
@@ -5636,6 +6156,7 @@ ${inner}
                   bounds: panel.bounds,
                 },
                 tags: ['subplot', 'axes-bounds'],
+                editingSnapshot,
               });
               subplotAssets.push(subplotAsset);
               newlyPersistedAssets.push(subplotAsset);
@@ -5667,6 +6188,8 @@ ${inner}
     } catch (err: any) {
       if (cleanupProjectId) removeNewExportAssets(cleanupProjectId, newlyPersistedAssets);
       res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
+    } finally {
+      releaseProjectBlock?.();
     }
   }));
 

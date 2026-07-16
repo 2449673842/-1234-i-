@@ -14,10 +14,12 @@ import {
   Layers, 
   CheckSquare, 
   Square,
-  Info
+  Info,
+  History,
 } from 'lucide-react';
 import type { ViewState } from '../App';
 import { sanitizeSvg } from '../utils/svgEditor';
+import { restoreExportSnapshot } from '../utils/exportSnapshotRestore';
 
 interface ExportAsset {
   assetId: string;
@@ -34,12 +36,14 @@ interface ExportAsset {
   projectName?: string;
   fileExists?: boolean;
   sizeBytes?: number;
+  hasEditingSnapshot?: boolean;
 }
 
 interface ExportLibraryPageProps {
   projectId: string | null;
   onNavigate: (view: ViewState, subView?: string) => void;
   onBack?: () => void;
+  onRestoreSnapshot?: (projectId: string, targetFigureId: string) => void | Promise<void>;
 }
 
 type SortField = 'date' | 'name' | 'size' | 'dpi';
@@ -61,7 +65,7 @@ function getAssetSourceLabel(asset: ExportAsset) {
   return asset.figureId || '外部拼接';
 }
 
-export function ExportLibraryPage({ projectId, onNavigate, onBack }: ExportLibraryPageProps) {
+export function ExportLibraryPage({ projectId, onNavigate, onBack, onRestoreSnapshot }: ExportLibraryPageProps) {
   const [assets, setAssets] = useState<ExportAsset[]>([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
@@ -75,6 +79,7 @@ export function ExportLibraryPage({ projectId, onNavigate, onBack }: ExportLibra
   
   // Selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [restoringAssetId, setRestoringAssetId] = useState<string | null>(null);
 
   const loadAssets = async () => {
     setLoading(true);
@@ -103,6 +108,23 @@ export function ExportLibraryPage({ projectId, onNavigate, onBack }: ExportLibra
       `/api/projects/${asset.projectId}/export-assets/${asset.assetId}/file`,
       `${asset.name}.${asset.format}`,
     );
+  };
+
+  const handleRestoreSnapshot = async (asset: ExportAsset) => {
+    if (!asset.hasEditingSnapshot || restoringAssetId) return;
+    const confirmed = window.confirm(
+      `恢复“${asset.name}”导出时的编辑状态？\n\n项目代码和全部 Figure 编辑状态将回到该导出时刻；当前状态会先保存为可撤销检查点，数据文件和导出文件不会被修改。`,
+    );
+    if (!confirmed) return;
+    setRestoringAssetId(asset.assetId);
+    try {
+      const restored = await restoreExportSnapshot(asset.projectId, asset.assetId);
+      await onRestoreSnapshot?.(restored.projectId, restored.targetFigureId);
+    } catch (error: any) {
+      alert(error?.message || '恢复导出状态失败');
+    } finally {
+      setRestoringAssetId(null);
+    }
   };
 
   // Handle batch download
@@ -494,7 +516,7 @@ export function ExportLibraryPage({ projectId, onNavigate, onBack }: ExportLibra
                     </div>
 
                     {/* Actions overlay / footer */}
-                    <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                    <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2">
                       <button 
                         type="button"
                         onClick={() => downloadAsset(asset)}
@@ -502,6 +524,17 @@ export function ExportLibraryPage({ projectId, onNavigate, onBack }: ExportLibra
                       >
                         <Download className="w-3 h-3" /> 下载
                       </button>
+                      {asset.hasEditingSnapshot && (
+                        <button
+                          type="button"
+                          onClick={() => void handleRestoreSnapshot(asset)}
+                          disabled={Boolean(restoringAssetId)}
+                          className="inline-flex items-center justify-center gap-1 rounded-lg border border-emerald-200 py-1.5 text-xs font-semibold text-emerald-700 transition-all hover:bg-emerald-50 disabled:cursor-wait disabled:opacity-60"
+                        >
+                          <History className="h-3 w-3" />
+                          {restoringAssetId === asset.assetId ? '恢复中' : '恢复此状态'}
+                        </button>
+                      )}
                       <button 
                         type="button"
                         onClick={() => void handleBatchDelete([asset.assetId])}
@@ -607,6 +640,17 @@ export function ExportLibraryPage({ projectId, onNavigate, onBack }: ExportLibra
 
                     {/* Actions */}
                     <div className="flex items-center justify-end gap-2.5">
+                      {asset.hasEditingSnapshot && (
+                        <button
+                          type="button"
+                          onClick={() => void handleRestoreSnapshot(asset)}
+                          disabled={Boolean(restoringAssetId)}
+                          className="p-1.5 hover:bg-emerald-50 border border-slate-200 hover:border-emerald-200 rounded text-emerald-700 transition-colors disabled:cursor-wait disabled:opacity-60"
+                          title={restoringAssetId === asset.assetId ? '正在恢复' : '恢复到导出时的编辑状态'}
+                        >
+                          <History className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       <button 
                         type="button"
                         onClick={() => downloadAsset(asset)}

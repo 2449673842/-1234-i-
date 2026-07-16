@@ -402,6 +402,31 @@ async function findDraggableTextBox(page) {
   });
 }
 
+async function readSelectedGidsFromStorage(page) {
+  return page.evaluate(() => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed.selectedGids) ? parsed.selectedGids : [];
+  }).catch(() => []);
+}
+
+async function dragMarqueeAcrossSvg(page, modifiers = []) {
+  const box = await page.locator('[data-svg-bytes] > svg').first().boundingBox().catch(() => null);
+  if (!box || box.width <= 40 || box.height <= 40) return false;
+  const start = { x: box.x + 8, y: box.y + 8 };
+  const end = { x: box.x + box.width - 8, y: box.y + box.height - 8 };
+  for (const key of modifiers) await page.keyboard.down(key);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 12 });
+  await page.waitForTimeout(100);
+  await page.mouse.up();
+  for (const key of modifiers.slice().reverse()) await page.keyboard.up(key);
+  await page.waitForTimeout(600);
+  return true;
+}
+
 async function ensureDragMode(page, enabled) {
   const button = page.getByRole('button', { name: /拖拽微调/ }).first();
   if (!(await button.isVisible({ timeout: 3000 }).catch(() => false))) {
@@ -524,10 +549,31 @@ async function runDragFixtureCheck(page) {
   const dragModeOff = await ensureDragMode(page, false);
   const dragCandidate = await findDraggableTextBox(page);
   if (!dragCandidate) {
+    record('J1', 'BLOCKED', '当前项目未找到可用于框选断言的文本对象');
     record('K1', 'BLOCKED', '当前项目未找到可拖拽文本对象');
     record('K2', 'BLOCKED', '当前项目未找到可拖拽文本对象');
     return;
   }
+
+  const marqueeStarted = await dragMarqueeAcrossSvg(page);
+  const marqueeSelection = await readSelectedGidsFromStorage(page);
+  await page.mouse.click(dragCandidate.x, dragCandidate.y);
+  await page.waitForTimeout(600);
+  const singleSelection = await readSelectedGidsFromStorage(page);
+  await dragMarqueeAcrossSvg(page, ['Control']);
+  const additiveSelection = await readSelectedGidsFromStorage(page);
+  record(
+    'J1',
+    marqueeStarted
+      && marqueeSelection.length > 1
+      && singleSelection.length === 1
+      && singleSelection[0] === dragCandidate.id
+      && additiveSelection.includes(dragCandidate.id)
+      && additiveSelection.length > singleSelection.length
+      ? 'PASS'
+      : 'FAIL',
+    `marqueeStarted=${marqueeStarted}, marqueeCount=${marqueeSelection.length}, single=${JSON.stringify(singleSelection)}, additiveCount=${additiveSelection.length}, candidate=${dragCandidate.id}`,
+  );
 
   await page.mouse.click(dragCandidate.x, dragCandidate.y);
   await page.waitForTimeout(600);

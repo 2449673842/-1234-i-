@@ -22,5 +22,30 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "server.ts",
+    "db.ts",
+    "vite.config.ts",
+    "scripts/**/*.ts",
+    "scripts/**/*.tsx",
+    "scripts/**/*.js",
+    "scripts/**/*.mjs",
+    "tests/**/*.ts",
+    "tests/**/*.tsx",
+    "tests/**/*.js",
+    "tests/**/*.mjs"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tmp",
+    "local-backups",
+    "data",
+    "output",
+    "test-results",
+    "test-results-v3"
+  ]
 }

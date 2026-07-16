@@ -66,7 +66,7 @@ interface ChartPreviewProps {
   onSelectGids?: (gids: string[]) => void;
   renderedSVG?: string | null;
   onPatch?: (patches: PatchEntry[]) => void;
-  onImmediatePatch?: (patches: PatchEntry[]) => void;
+  onImmediatePatch?: (patches: PatchEntry[]) => void | Promise<unknown>;
   figSession?: FigureSession | null;
   dragMode?: boolean;
   onPendingPositionCountChange?: (count: number) => void;
@@ -154,6 +154,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const [overlayFrame, setOverlayFrame] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [dragPreview, setDragPreview] = useState<{ dx: number; dy: number; gids: string[] } | null>(null);
   const [pendingPositionPatches, setPendingPositionPatches] = useState<PatchEntry[]>([]);
+  const [isCommittingPosition, setIsCommittingPosition] = useState(false);
   const [dragHint, setDragHint] = useState<string | null>(null);
   const svgSize = useMemo(() => parseSvgDimensions(safeRenderedSvg), [safeRenderedSvg]);
   const fitScale = useMemo(() => {
@@ -756,6 +757,43 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     return () => window.clearTimeout(timer);
   }, [dragHint]);
 
+  const finalizeMarqueeSelection = useCallback((additive: boolean) => {
+    if (!marqueeStartRef.current) return false;
+    const mr = marqueeRectRef.current;
+    const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
+    let didSelect = false;
+
+    if (mr && svgEl) {
+      const hitGids: string[] = [];
+      validGids.forEach(gid => {
+        const el = getSelectableSvgElement(svgEl, gid);
+        if (!el) return;
+        try {
+          const bbox = getElementSvgBox(el, svgEl);
+          if (bbox && bbox.x < mr.x + mr.w && bbox.x + bbox.w > mr.x &&
+              bbox.y < mr.y + mr.h && bbox.y + bbox.h > mr.y) {
+            hitGids.push(gid);
+          }
+        } catch { /* skip */ }
+      });
+      if (hitGids.length > 0) {
+        didSelect = true;
+        onSelectGids?.(additive ? Array.from(new Set([...selectedGidsRef.current, ...hitGids])) : hitGids);
+      }
+    }
+
+    suppressNextClickRef.current = Boolean(mr);
+    if (mr) {
+      window.setTimeout(() => {
+        suppressNextClickRef.current = false;
+      }, 0);
+    }
+    marqueeStartRef.current = null;
+    marqueeRectRef.current = null;
+    setMarqueeRect(null);
+    return didSelect || Boolean(mr);
+  }, [getElementSvgBox, getSelectableSvgElement, onSelectGids, validGids]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.code === 'Space' && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLTextAreaElement)) {
@@ -779,16 +817,12 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       setIsPanning(false);
       panStartRef.current = null;
       finalizeDragFromPointer(event.clientX, event.clientY);
-      if (marqueeStartRef.current) {
-        marqueeStartRef.current = null;
-        marqueeRectRef.current = null;
-        setMarqueeRect(null);
-      }
+      finalizeMarqueeSelection(event.ctrlKey || event.metaKey);
       setTimeout(() => { didPanRef.current = false; }, 0);
     };
     window.addEventListener('pointerup', handlePointerUp);
     return () => window.removeEventListener('pointerup', handlePointerUp);
-  }, [finalizeDragFromPointer]);
+  }, [finalizeDragFromPointer, finalizeMarqueeSelection]);
 
   const setManualZoom = (nextScale: number) => {
     setZoomMode('manual');
@@ -962,19 +996,16 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     }
 
     const target = event.target as HTMLElement;
-    let current: HTMLElement | null = target;
 
-    // Start marquee on background (not on a valid element)
-    let hitElement = false;
-    current = target;
-    while (current) {
-      if (current.id && (validGids.has(current.id) || current.id === 'Figure')) { hitElement = true; break; }
-      current = current.parentElement;
-    }
-    if (!hitElement && target.closest('svg')) {
+    // Start marquee on SVG background (not on a valid selectable element).
+    if (event.button === 0 && !findElementGid(target) && target.closest('svg')) {
+      event.preventDefault();
       marqueeStartRef.current = { x: event.clientX, y: event.clientY };
+      try {
+        (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+      } catch { /* pointer capture is best-effort */ }
     }
-  }, [dragMode, findDraggableTextGidAtPoint, getSvgPoint, isDraggableTextObject, onSelectGids, onSelectObject, pan.x, pan.y, querySvgElementById, selectedGids, spacePressed, validGids]);
+  }, [dragMode, findDraggableTextGidAtPoint, findElementGid, getSvgPoint, isDraggableTextObject, onSelectGids, onSelectObject, pan.x, pan.y, querySvgElementById, selectedGids, spacePressed, validGids]);
 
   const handleSvgPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (dragStartRef.current) {
@@ -1021,36 +1052,11 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       return;
     }
 
-    // Resolve marquee
-    if (marqueeStartRef.current && marqueeRectRef.current) {
-      const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
-      if (svgEl) {
-        const mr = marqueeRectRef.current;
-        const hitGids: string[] = [];
-        validGids.forEach(gid => {
-          const el = getSelectableSvgElement(svgEl, gid);
-          if (!el) return;
-          try {
-            const bbox = getElementSvgBox(el, svgEl);
-            if (bbox && bbox.x < mr.x + mr.w && bbox.x + bbox.w > mr.x &&
-                bbox.y < mr.y + mr.h && bbox.y + bbox.h > mr.y) {
-              hitGids.push(gid);
-            }
-          } catch { /* skip */ }
-        });
-        if (hitGids.length > 0) {
-          if (event.ctrlKey || event.metaKey) {
-            onSelectGids?.(Array.from(new Set([...selectedGids, ...hitGids])));
-          } else {
-            onSelectGids?.(hitGids);
-          }
-        }
-      }
+    if (finalizeMarqueeSelection(event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      event.stopPropagation();
     }
-    marqueeStartRef.current = null;
-    marqueeRectRef.current = null;
-    setMarqueeRect(null);
-  }, [validGids, selectedGids, onSelectGids, getElementSvgBox, getSelectableSvgElement, finalizeDragFromPointer]);
+  }, [finalizeDragFromPointer, finalizeMarqueeSelection]);
 
   // Hover effect: show pointer cursor generally, grab if selected
   const handleSvgPointerOver = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -1069,8 +1075,9 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     }
   }, [dragMode, isDraggableTextObject, validGids]);
 
-  const confirmPendingDrag = useCallback(() => {
-    if (pendingPositionPatches.length === 0) return;
+  const confirmPendingDrag = useCallback(async () => {
+    if (pendingPositionPatches.length === 0 || isCommittingPosition) return;
+    const patchesToCommit = [...pendingPositionPatches];
     const targetObjects = pendingPositionPatches.flatMap((patch) => {
       if (!('gid' in patch) || patch.prop !== 'position') return [];
       const object = manifestObjectMap.get(patch.gid);
@@ -1105,11 +1112,23 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       missingIdentityCount: targetObjects.filter(object => !object.identity?.instanceKey).length,
       missingCapabilityCount: targetObjects.filter(object => !Array.isArray(object.propertyCapabilities)).length,
     });
-    finalizeDragPreviewKeepingTransform();
-    void (onImmediatePatch || onPatch)?.(pendingPositionPatches);
-    setPendingPositionPatches([]);
+    setIsCommittingPosition(true);
     setDragHint(null);
-  }, [finalizeDragPreviewKeepingTransform, manifestObjectMap, onImmediatePatch, onPatch, pendingPositionPatches]);
+    try {
+      const result = onImmediatePatch
+        ? await onImmediatePatch(patchesToCommit)
+        : (onPatch?.(patchesToCommit), undefined);
+      if (result && typeof result === 'object' && 'status' in result && result.status !== 'success') {
+        throw new Error('位置保存失败，请重试');
+      }
+      finalizeDragPreviewKeepingTransform();
+      setPendingPositionPatches([]);
+    } catch (error) {
+      setDragHint(error instanceof Error ? error.message : '位置保存失败，请重试');
+    } finally {
+      setIsCommittingPosition(false);
+    }
+  }, [finalizeDragPreviewKeepingTransform, isCommittingPosition, manifestObjectMap, onImmediatePatch, onPatch, pendingPositionPatches]);
 
   const cancelPendingDrag = useCallback(() => {
     clearDragPreview();
@@ -1168,14 +1187,16 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
             </span>
             <button
               type="button"
-              onClick={confirmPendingDrag}
+              onClick={() => void confirmPendingDrag()}
+              disabled={isCommittingPosition}
               className="pointer-events-auto rounded-md bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700"
             >
-              确认位置
+              {isCommittingPosition ? '正在保存...' : '确认位置'}
             </button>
             <button
               type="button"
               onClick={cancelPendingDrag}
+              disabled={isCommittingPosition}
               className="pointer-events-auto rounded-md border border-slate-200 px-3 py-1.5 font-semibold text-slate-600 hover:bg-slate-50"
             >
               取消
