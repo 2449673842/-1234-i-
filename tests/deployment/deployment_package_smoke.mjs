@@ -55,6 +55,7 @@ for (const nginxFile of [
   'ops/nginx/scifigure-tls.conf.template',
 ]) {
   const nginx = read(nginxFile);
+  const expectedDenyCount = nginxFile.includes('-tls.') ? 2 : 1;
   assert.match(nginx, /server 127\.0\.0\.1:3101;/);
   assert.match(nginx, /proxy_set_header X-Forwarded-For \$remote_addr;/);
   assert.match(nginx, /client_max_body_size 64m;/);
@@ -63,6 +64,16 @@ for (const nginxFile of [
   assert.match(nginx, /limit_conn_zone \$binary_remote_addr zone=scifigure_connections:10m;/);
   assert.match(nginx, /limit_req zone=scifigure_per_ip burst=60 nodelay;/);
   assert.match(nginx, /limit_conn scifigure_connections 20;/);
+  assert.equal(
+    [...nginx.matchAll(/location = \/server\.cjs \{\s*return 404;\s*\}/g)].length,
+    expectedDenyCount,
+    `${nginxFile} must deny server.cjs in every public server block`,
+  );
+  assert.equal(
+    [...nginx.matchAll(/location = \/server\.cjs\.map \{\s*return 404;\s*\}/g)].length,
+    expectedDenyCount,
+    `${nginxFile} must deny server.cjs.map in every public server block`,
+  );
   assert.doesNotMatch(nginx, /proxy_add_x_forwarded_for/);
   assert.doesNotMatch(nginx, /127\.0\.0\.1:3102/, 'Only one application instance may be routed');
 }
@@ -106,6 +117,7 @@ assert.match(deployScript, /metadata-backup/);
 assert.match(deployScript, /restore_metadata_snapshot\(\)/);
 assert.match(deployScript, /mv -Tf "\$\{previous_unit\}\.next" "\$previous_unit"/);
 assert.doesNotMatch(deployScript, /scifigure@(blue|green)/);
+assert.match(deployScript, /dist\/public\/unified-editing-build\.json/);
 for (const flag of [
   'VITE_SCIFIGURE_PROPERTY_INSPECTOR_V2',
   'VITE_SCIFIGURE_FONT_CONTROLS_V2',

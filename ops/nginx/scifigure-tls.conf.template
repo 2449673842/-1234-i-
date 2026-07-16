@@ -20,6 +20,14 @@ server {
         root /var/www/scifigure-acme;
     }
 
+    location = /server.cjs {
+        return 404;
+    }
+
+    location = /server.cjs.map {
+        return 404;
+    }
+
     location / {
         return 301 https://__SERVER_NAME__$request_uri;
     }
@@ -46,6 +54,14 @@ server {
     ssl_prefer_server_ciphers off;
 
     add_header Strict-Transport-Security "max-age=31536000" always;
+
+    location = /server.cjs {
+        return 404;
+    }
+
+    location = /server.cjs.map {
+        return 404;
+    }
 
     location / {
         limit_req zone=scifigure_per_ip burst=60 nodelay;

@@ -6215,8 +6215,30 @@ ${inner}
   } else {
     const distPath = process.env.SCIFIGURE_DIST_DIR
       ? path.resolve(process.env.SCIFIGURE_DIST_DIR)
-      : path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+      : path.join(process.cwd(), 'dist', 'public');
+    const blockedStaticExtensions = new Set([
+      '.cjs', '.map', '.db', '.sqlite', '.sqlite3', '.env', '.pem', '.key', '.ts', '.tsx',
+    ]);
+    app.use((req, res, next) => {
+      let decodedPath: string;
+      try {
+        decodedPath = decodeURIComponent(req.path).replace(/\\/g, '/');
+      } catch {
+        res.sendStatus(404);
+        return;
+      }
+      const segments = decodedPath.split('/').filter(Boolean);
+      const basename = (segments.at(-1) || '').toLowerCase();
+      if (
+        segments.some(segment => segment.startsWith('.'))
+        || blockedStaticExtensions.has(path.extname(basename).toLowerCase())
+      ) {
+        res.sendStatus(404);
+        return;
+      }
+      next();
+    });
+    app.use(express.static(distPath, { dotfiles: 'deny', fallthrough: true, index: false }));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

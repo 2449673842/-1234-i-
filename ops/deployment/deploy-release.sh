@@ -141,7 +141,7 @@ runuser -u scifigure -- env \
   VITE_SCIFIGURE_LEGACY_RETIRE_OBSERVABILITY=1 \
   VITE_SCIFIGURE_STAGING_BUILD_ID="$build_id" \
   npm --prefix "$release_dir" run build
-cat > "$release_dir/dist/unified-editing-build.json" <<EOF
+cat > "$release_dir/dist/public/unified-editing-build.json" <<EOF
 {
   "kind": "unified-editing-production",
   "buildId": "${build_id}",

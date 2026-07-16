@@ -6,7 +6,17 @@ import { spawn } from 'node:child_process';
 
 const root = process.cwd();
 const bundle = path.join(root, 'dist', 'server.cjs');
+const publicRoot = path.join(root, 'dist', 'public');
 assert.ok(fs.existsSync(bundle), 'Run npm run build before the production bundle smoke');
+assert.ok(fs.existsSync(path.join(publicRoot, 'index.html')), 'Production frontend build is missing');
+assert.ok(
+  !fs.existsSync(path.join(publicRoot, 'server.cjs')),
+  'Backend bundle must remain outside the public static directory',
+);
+assert.ok(
+  !fs.existsSync(`${bundle}.map`),
+  'Production build must not emit a publicly discoverable backend source map',
+);
 
 const bundleSource = fs.readFileSync(bundle, 'utf8');
 assert.doesNotMatch(bundleSource.slice(0, 20_000), /require\(["']vite["']\)/, 'Production bundle must not load Vite eagerly');
@@ -50,12 +60,41 @@ try {
   const health = await waitForHealth();
   assert.equal(health.status, 'live');
   assert.match(output.join(''), new RegExp(`Server running on http://127\\.0\\.0\\.1:${port}`));
+
+  const sensitivePaths = [
+    '/server.cjs',
+    '/server.cjs.map',
+    '/SERVER.CJS',
+    '/%73erver.cjs',
+    '/.env',
+    '/%2eenv',
+    '/data/scifigure.db',
+    '/backup/scifigure.sqlite3',
+    '/assets/application.js.map',
+    '/secrets/deploy.pem',
+  ];
+  for (const sensitivePath of sensitivePaths) {
+    const response = await fetch(`http://127.0.0.1:${port}${sensitivePath}`);
+    assert.equal(
+      response.status,
+      404,
+      `Production static serving must not expose ${sensitivePath}`,
+    );
+  }
+
+  for (const appPath of ['/', '/admin', '/help']) {
+    const appShell = await fetch(`http://127.0.0.1:${port}${appPath}`);
+    assert.equal(appShell.status, 200, `SPA route must remain available: ${appPath}`);
+    assert.match(await appShell.text(), /<div id="root"><\/div>/);
+  }
   console.log(JSON.stringify({
     status: 'PASS',
     checks: [
       'production CJS bundle starts without eager Vite dependency',
       'loopback bind setting is honored',
       'public liveness endpoint responds',
+      'backend artifacts and sensitive file-shaped paths return 404',
+      'frontend application shell remains available',
     ],
   }, null, 2));
 } finally {

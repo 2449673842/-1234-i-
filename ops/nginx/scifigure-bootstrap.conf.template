@@ -27,6 +27,14 @@ server {
         root /var/www/scifigure-acme;
     }
 
+    location = /server.cjs {
+        return 404;
+    }
+
+    location = /server.cjs.map {
+        return 404;
+    }
+
     location / {
         limit_req zone=scifigure_per_ip burst=60 nodelay;
         limit_conn scifigure_connections 20;
