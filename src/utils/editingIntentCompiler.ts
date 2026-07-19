@@ -5,7 +5,12 @@ import type {
   EditingIntentSkippedTarget,
   SemanticTargetRole,
 } from '../schemas/editingIntent';
-import { isContourObject, isContourStructuralProp, resolvePatchMode } from './propertyPatchMode';
+import {
+  isContourObject,
+  isContourStructuralProp,
+  isPythonStructuralSeriesProp,
+  resolvePatchMode,
+} from './propertyPatchMode';
 
 const TICK_PROP_MAP: Record<string, string> = {
   fontsize: 'tick_labelsize',
@@ -33,6 +38,9 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.kind === 'legend') return 'legend_container';
   if (object.role === 'colorbar_label' || object.id.startsWith('colorbar_label.')) return 'colorbar_label';
   if (object.role === 'colorbar_tick_label' || object.id.startsWith('colorbar_tick.')) return 'colorbar_tick_label';
+  if (object.role === 'histogram_series') return 'data_histogram';
+  if (object.role === 'stairs_series') return 'data_stairs';
+  if (object.role === 'step_series') return 'data_step';
   if (object.role === 'bar_series' || object.kind === 'bar_container') return 'data_bar';
   if (object.role === 'errorbar_series' || object.kind === 'errorbar_container') return 'data_errorbar';
   if (object.role === 'stem_series' || object.kind === 'stem_container') return 'data_stem';
@@ -65,6 +73,7 @@ function objectSubplotId(object: ManifestObject): string | undefined {
 
 function supportsProp(object: ManifestObject, prop: string): boolean {
   if (isContourObject(object) && isContourStructuralProp(prop)) return false;
+  if (isPythonStructuralSeriesProp(object, prop)) return false;
   if (unsupportedProps(object).includes(prop)) return false;
   const capability = object.propertyCapabilities?.find(item => item.prop === prop);
   if (capability) return capability.replay !== 'unsupported';

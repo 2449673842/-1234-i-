@@ -1,8 +1,8 @@
 # SciFigure 能力与架构副文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-30 02:46:41 +08:00
-> 证据截止时间：2026-07-30 02:46:41 +08:00
+> 更新时间：2026-07-30 04:35:45 +08:00
+> 证据截止时间：2026-07-30 04:35:45 +08:00
 > 复核范围：隔离集成分支 `deploy/prod-integration-v3` 与生产 release `e35f4a4-jd22`；候选尚未部署
 > 适用范围：产品能力、前后端协议、Python/R 渲染、编辑与导出链路
 
@@ -111,6 +111,10 @@ admin_audit_logs
 
 `project_figures` 是编辑日志、revision 和 history 的持久化事实来源；`sessions` 是运行链路所需副本。当前清理逻辑不得删除被 `project_figures.session_id` 引用的 session，完整性审计会检查两者是否一致。
 
+项目保存使用乐观并发控制。当前客户端提交 Figure 状态时携带 `baseRevision` 和稳定 `baseEditLogHash`；服务端在事务前比较当前恢复态，冲突返回 409 且不写 project、session、history、cache、导出锚点或快照。缺 CAS 的旧请求只有在 editLog/history 语义完全未变时才可保存名称或 spec，并保持 Figure 状态原样。GET/PUT 统一按“非空 session → `project_figures.edit_log` → 单 Figure 旧 `spec.editLog`”恢复，避免旧项目加载与保存使用不同事实来源。
+
+自动保存不在 renderer 工作或 Draft 未结算时启动。同一时刻只允许一个保存请求；排队请求在下一次 React 状态提交后读取最新 Figure/Draft。旧响应只清除值与已持久化快照完全一致的 Draft，用户在请求期间修改的新值继续保留。
+
 ## 4. 两引擎一协议
 
 ### Python
@@ -130,6 +134,8 @@ Collection/scatter
 Legend/title/text/marker
 Colorbar
 Annotation/arrow
+Histogram series / parent-owned bars
+Stairs / step series
 ```
 
 Python 路径在 artist 级对象定位、坐标变换和细粒度属性写回方面更成熟。
@@ -658,20 +664,23 @@ git diff --check                            PASS
 
 这表示显式关系和当前 fixture 已通过，不表示任意第三方 annotation、嵌套 parasite axes 或超大真实项目已经全覆盖。
 
-### 13.3 Python 复杂对象父级语义（2026-07-19 04:59:37 +08:00）
+### 13.3 Python 复杂对象父级语义（2026-07-19 16:22:04 +08:00）
 
-`fill_between` 和 `contour/contourf` 已从通用 collection 提升为可审计的专用语义：
+`fill_between`、`contour/contourf` 和 `hist/stairs/step` 已从通用 collection/patch/line/container 提升为可审计的专用语义：
 
 ```text
 fill_between -> fill_between_series -> data_band
 contour      -> contour_series      -> 专用父对象
 contourf     -> contourf_series     -> 专用父对象 + mappable/colorbar relation
 child collection -> contour_child_collection + parentOwned + readonly
+hist container   -> histogram_series -> child patch parentOwned
+stairs patch     -> stairs_series
+step line        -> step_series
 ```
 
-父对象持有可证明的视觉能力；contour 子 collection 只保留用于渲染关系和旧 editLog 重放，现代组件中心、配色中心和批量属性入口不会新建子层编辑。结构属性 `levels/X/Y/Z/paths/segments` 不开放。跨 Figure 只有在属性能力明确包含 `cross_figure` 时才允许 fanout，否则保守作用于当前对象。
+父对象持有可证明的视觉能力；contour 子 collection 和 histogram 子 patch 只保留用于渲染关系和旧 editLog 重放，现代组件中心、配色中心和批量属性入口不会新建子层编辑。`levels/X/Y/Z/paths/segments`、`bins/counts/edges/values/density/cumulative/orientation/weights/where/x/y/baseline` 等结构属性不开放。跨 Figure 只有在属性能力明确包含 `cross_figure` 时才允许 fanout，否则保守作用于当前对象。
 
-兼容范围不是支持任意历史版本：新 manifest 使用 v2 结构 fingerprint；旧 contour child 只在 stableKey/seriesKey 一致且差异仅为已知 fingerprint 漂移时兼容。项目加载、PUT、history、四格式导出、子图导出和快照恢复均有隔离测试。
+兼容范围不是支持任意历史版本：新 manifest 使用 v2 结构 fingerprint；旧 contour child 只在 stableKey/seriesKey 一致且差异仅为已知 fingerprint 漂移时兼容。普通 bar、手工 `StepPatch` 和 drawstyle line 保持原分类。项目加载、PUT、history、四格式导出、子图导出和快照恢复均有隔离测试。
 
 ## 14. Python/R 对齐表
 
@@ -749,7 +758,7 @@ npm run test:export-snapshot-restore-ui
 
 2026-07-16 20:41:53 +08:00 生产基线证据：41 个 Vitest 文件/250 项、Python 48 项、R 30 项及既有语义、组件、拖拽、导出快照和 production bundle 门禁通过；该能力集随 `7e33044-jd21` 部署，静态资源安全边界修复随后随 `e35f4a4-jd22` 部署并完成公网复测。
 
-2026-07-30 02:46:41 +08:00 集成候选证据：服务端权威与持久化保护批次已通过 TypeScript、271 项 Vitest、66 项 Python renderer 测试及专项原子拒绝门禁；contour 兼容批次正在隔离工作树中集成，尚未完成浏览器、生产 Docker 或部署验收。
+2026-07-30 04:35:45 +08:00 集成候选证据：服务端权威、contour 父对象、V2 组件布尔控件和快照恢复批次已通过 TypeScript、284 项 Vitest、63 项 Python renderer、组件 35/35、跨 Figure 11/11、拖拽和导出矩阵；`hist/stairs/step` 批次正在当前隔离工作树中集成，尚未完成生产 Docker 或部署验收。
 
 ## 17. 详细参考文档
 

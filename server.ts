@@ -2109,6 +2109,11 @@ ${inner}
     return result;
   }
 
+  function mergeProjectRenderEditLog(existing: EditEntry[], incoming: EditEntry[]): EditEntry[] {
+    const preservedLocal = existing.filter(entry => entry?.mode === 'local_patch');
+    return compressEditLog([...preservedLocal, ...incoming]);
+  }
+
   // Only disposable sessions expire. Sessions referenced by saved projects are durable.
   cleanExpiredSessions(120);
 
@@ -2139,6 +2144,26 @@ ${inner}
       }
     }
     return { past: [], future: [] };
+  }
+
+  function resolveProjectFigureEditLog(
+    row: any,
+    session: FigureSession | null,
+    legacySpecEditLog: any[],
+    canUseLegacySpecFallback: boolean,
+  ): { editLog: any[]; recoverySource: 'session' | 'project_figure' | 'legacy_spec' | 'none' } {
+    const sessionEditLog = Array.isArray(session?.editLog) ? session.editLog : [];
+    if (sessionEditLog.length > 0) return { editLog: sessionEditLog, recoverySource: 'session' };
+    const durableEditLog = parseStoredArray(row?.edit_log);
+    if (durableEditLog.length > 0) return { editLog: durableEditLog, recoverySource: 'project_figure' };
+    if (canUseLegacySpecFallback && legacySpecEditLog.length > 0) {
+      return { editLog: legacySpecEditLog, recoverySource: 'legacy_spec' };
+    }
+    return { editLog: [], recoverySource: 'none' };
+  }
+
+  function resolveProjectFigureRevision(row: any, session: FigureSession | null): number {
+    return Math.max(Number(session?.revision || 1), Number(row?.revision || 1));
   }
 
   function loadSession(sessionId: string, userId: string): FigureSession | null {
@@ -3076,6 +3101,9 @@ ${inner}
       if (patch?.gid === 'global' || isDurableVirtualEditGid(String(patch?.gid || ''))) {
         return { ...patch, mode: 'backend_patch' };
       }
+      if (typeof patch?.matchColor === 'string' && patch.matchColor.trim()) {
+        return { ...patch, mode: 'backend_patch' };
+      }
       const object = objectById.get(String(patch?.gid || ''));
       const mode = resolveAuthoritativeProjectPatchMode(
         manifest,
@@ -3159,6 +3187,24 @@ ${inner}
     return left?.gid === right?.gid
       && left?.prop === right?.prop
       && stableStringifyForExport(left?.value) === stableStringifyForExport(right?.value);
+  }
+
+  function sameProjectEditLogSemantics(left: any[], right: any[]): boolean {
+    const canonicalize = (entries: any[]) => entries.map((entry: any) => (
+      entry?.type === 'code_patch'
+        ? stableStringifyForExport({
+          type: 'code_patch',
+          target_id: entry?.target_id,
+          new_value: entry?.new_value,
+          gids: entry?.gids,
+        })
+        : stableStringifyForExport({
+          gid: entry?.gid,
+          prop: entry?.prop,
+          value: entry?.value,
+        })
+    )).sort();
+    return stableStringifyForExport(canonicalize(left)) === stableStringifyForExport(canonicalize(right));
   }
 
   function preflightProjectFigureEditLog(
@@ -3584,22 +3630,29 @@ ${inner}
     return hash.digest('hex');
   }
 
-  function captureExportDatasetSnapshots(datasets: DatasetEntry[]): ExportDatasetSnapshotV1[] {
-    return datasets.map(dataset => {
+  function captureExportDatasetSnapshots(datasets: DatasetEntry[]): {
+    snapshots: ExportDatasetSnapshotV1[];
+    warnings: string[];
+  } {
+    const snapshots: ExportDatasetSnapshotV1[] = [];
+    const warnings: string[] = [];
+    datasets.forEach(dataset => {
       const absPath = resolveDatasetAbsolutePath(dataset.filePath);
       if (!fs.existsSync(absPath) || !fs.statSync(absPath).isFile()) {
-        throw new Error(`无法为导出状态记录数据文件: ${dataset.fileName}`);
+        warnings.push(`未记录缺失的数据文件: ${dataset.fileName}`);
+        return;
       }
       const stat = fs.statSync(absPath);
-      return {
+      snapshots.push({
         datasetId: dataset.datasetId,
         fileName: dataset.fileName,
         rowCount: dataset.rowCount,
         columns: [...dataset.columns],
         sizeBytes: stat.size,
         sha256: sha256File(absPath),
-      };
+      });
     });
+    return { snapshots, warnings };
   }
 
   function buildExportEditingSnapshot(args: {
@@ -3671,7 +3724,12 @@ ${inner}
     const currentById = new Map(currentDatasets.map(dataset => [dataset.datasetId, dataset]));
     const issues: string[] = [];
     currentDatasets.forEach(current => {
-      if (!expectedById.has(current.datasetId)) {
+      const absPath = resolveDatasetAbsolutePath(current.filePath);
+      if (
+        !expectedById.has(current.datasetId)
+        && fs.existsSync(absPath)
+        && fs.statSync(absPath).isFile()
+      ) {
         issues.push(`${current.fileName}: 导出后新增的数据文件`);
       }
     });
@@ -5371,25 +5429,19 @@ ${inner}
       const canUseLegacySpecFallback = figRows.length === 1 && legacySpecEditLog.length > 0;
       const figures = figRows.map(f => {
         const session = loadSession(f.session_id, userId);
-        const durableEditLog = parseStoredArray(f.edit_log);
-        const fallbackEditLog = durableEditLog.length > 0
-          ? durableEditLog
-          : canUseLegacySpecFallback
-            ? legacySpecEditLog
-            : [];
+        const resolvedEditLog = resolveProjectFigureEditLog(
+          f,
+          session,
+          legacySpecEditLog,
+          canUseLegacySpecFallback,
+        );
         return {
           figureId: `fig_${f.figure_index + 1}`,
           index: f.figure_index,
-          editLog: session?.editLog?.length ? session.editLog : fallbackEditLog,
-          revision: session?.revision || f.revision || 1,
+          editLog: resolvedEditLog.editLog,
+          revision: resolveProjectFigureRevision(f, session),
           history: parseStoredHistory(f.history),
-          recoverySource: session?.editLog?.length
-            ? 'session'
-            : durableEditLog.length > 0
-              ? 'project_figure'
-              : canUseLegacySpecFallback
-                ? 'legacy_spec'
-                : 'none',
+          recoverySource: resolvedEditLog.recoverySource,
         };
       });
 
@@ -5476,6 +5528,7 @@ ${inner}
         });
       }
       const figurePlans: Array<{
+        figureId: string;
         row: any;
         session: FigureSession | null;
         nextEditLog: any[];
@@ -5484,8 +5537,25 @@ ${inner}
       }> = [];
       const rejected: any[] = [];
       const warnings: any[] = [];
+      const revisionConflicts: Array<{
+        figureId: string;
+        reason: 'precondition_required' | 'revision_mismatch' | 'edit_log_mismatch';
+        expectedRevision: number;
+        receivedRevision?: number;
+        expectedEditLogHash?: string;
+        receivedEditLogHash?: string;
+        missing?: string[];
+      }> = [];
       if (Array.isArray(figures)) {
         const figRows = listProjectFigures(projectId);
+        let parsedExistingSpec: any = {};
+        try {
+          parsedExistingSpec = typeof existing.spec === 'string' ? JSON.parse(existing.spec) : (existing.spec || {});
+        } catch {
+          parsedExistingSpec = {};
+        }
+        const legacySpecEditLog = parseStoredArray(parsedExistingSpec.editLog);
+        const canUseLegacySpecFallback = figRows.length === 1 && legacySpecEditLog.length > 0;
         const rowsByFigureId = new Map<string, any>();
         figRows.forEach((row: any) => {
           rowsByFigureId.set(`fig_${Number(row.figure_index) + 1}`, row);
@@ -5499,8 +5569,40 @@ ${inner}
           const row = rowsByFigureId.get(figureId);
           if (!row) return;
           const session = loadSession(row.session_id, userId);
-          const durableEditLog = parseStoredArray(row.edit_log);
-          const existingEditLog = session?.editLog || durableEditLog;
+          const existingEditLog = resolveProjectFigureEditLog(
+            row,
+            session,
+            legacySpecEditLog,
+            canUseLegacySpecFallback,
+          ).editLog;
+          const currentRevision = resolveProjectFigureRevision(row, session);
+          const baseRevision = typeof figure?.baseRevision === 'number'
+            ? Number(figure.baseRevision)
+            : null;
+          if (baseRevision !== null && baseRevision !== currentRevision) {
+            revisionConflicts.push({
+              figureId,
+              reason: 'revision_mismatch',
+              expectedRevision: currentRevision,
+              receivedRevision: baseRevision,
+            });
+            return;
+          }
+          const baseEditLogHash = typeof figure?.baseEditLogHash === 'string'
+            ? figure.baseEditLogHash
+            : null;
+          const currentEditLogHash = fnv1a(stableStringifyForExport(existingEditLog));
+          if (baseEditLogHash !== null && baseEditLogHash !== currentEditLogHash) {
+            revisionConflicts.push({
+              figureId,
+              reason: 'edit_log_mismatch',
+              expectedRevision: currentRevision,
+              receivedRevision: baseRevision ?? currentRevision,
+              expectedEditLogHash: currentEditLogHash,
+              receivedEditLogHash: baseEditLogHash,
+            });
+            return;
+          }
           const existingHistory = parseStoredHistory(row.history);
           const incomingEditLog = Array.isArray(figure.editLog) ? figure.editLog : null;
           let normalizedIncoming: any[] = [];
@@ -5515,10 +5617,10 @@ ${inner}
             preflight.warnings.forEach((warning: any) => warnings.push({ ...warning, figureId }));
             preflight.rejected.forEach((patch: any) => rejected.push({ ...patch, figureId }));
           }
-          const nextEditLog = incomingEditLog
+          let nextEditLog = incomingEditLog
             ? compressEditLog(normalizedIncoming)
             : existingEditLog;
-          const nextRevision = typeof figure.revision === 'number'
+          let nextRevision = typeof figure.revision === 'number'
             ? Math.max(figure.revision, session?.revision || row.revision || 1)
             : (session?.revision || row.revision || 1);
           let nextHistory = existingHistory;
@@ -5533,7 +5635,46 @@ ${inner}
             historyPreflight.warnings.forEach((warning: any) => warnings.push({ ...warning, figureId }));
             historyPreflight.rejected.forEach((patch: any) => rejected.push({ ...patch, figureId }));
           }
-          figurePlans.push({ row, session, nextEditLog, nextRevision, nextHistory });
+          const editLogChanged = !sameProjectEditLogSemantics(nextEditLog, existingEditLog);
+          const historyChanged = stableStringifyForExport(nextHistory) !== stableStringifyForExport(existingHistory);
+          if ((editLogChanged || historyChanged) && (baseRevision === null || baseEditLogHash === null)) {
+            revisionConflicts.push({
+              figureId,
+              reason: 'precondition_required',
+              expectedRevision: currentRevision,
+              ...(baseRevision === null ? {} : { receivedRevision: baseRevision }),
+              expectedEditLogHash: currentEditLogHash,
+              ...(baseEditLogHash === null ? {} : { receivedEditLogHash: baseEditLogHash }),
+              missing: [
+                ...(baseRevision === null ? ['baseRevision'] : []),
+                ...(baseEditLogHash === null ? ['baseEditLogHash'] : []),
+              ],
+            });
+            return;
+          }
+          if (baseRevision === null || baseEditLogHash === null) {
+            nextEditLog = existingEditLog;
+            nextHistory = existingHistory;
+            nextRevision = currentRevision;
+          }
+          figurePlans.push({ figureId, row, session, nextEditLog, nextRevision, nextHistory });
+        });
+      }
+
+      if (revisionConflicts.length > 0) {
+        const hasMissingPrecondition = revisionConflicts.some(conflict => conflict.reason === 'precondition_required');
+        const hasEditLogConflict = revisionConflicts.some(conflict => conflict.reason === 'edit_log_mismatch');
+        return res.status(409).json({
+          status: 'conflict',
+          code: hasMissingPrecondition
+            ? 'PROJECT_SAVE_PRECONDITION_REQUIRED'
+            : hasEditLogConflict
+              ? 'PROJECT_SAVE_EDIT_LOG_CONFLICT'
+              : 'PROJECT_SAVE_REVISION_CONFLICT',
+          message: '项目 Figure 已被较新的编辑更新，本次旧状态保存未写入。请等待同步完成后重试。',
+          projectId,
+          conflicts: revisionConflicts,
+          applied: [],
         });
       }
 
@@ -5572,7 +5713,14 @@ ${inner}
           `).run(nextRevision, JSON.stringify(nextEditLog), JSON.stringify(nextHistory), row.session_id);
         });
       })();
-      res.json({ status: 'success' });
+      res.json({
+        status: 'success',
+        figures: figurePlans.map(({ figureId, nextEditLog, nextRevision }) => ({
+          figureId,
+          revision: nextRevision,
+          editLogHash: fnv1a(stableStringifyForExport(nextEditLog)),
+        })),
+      });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
     } finally {
@@ -5892,7 +6040,15 @@ ${inner}
           oldSessionMap[key] = sess;
         }
       }
-      const effectiveEditLogs = { ...oldEditLogMap, ...(editLogs || {}) };
+      const effectiveEditLogs = { ...oldEditLogMap };
+      if (editLogs && typeof editLogs === 'object' && !Array.isArray(editLogs)) {
+        Object.entries(editLogs).forEach(([figureId, incoming]) => {
+          effectiveEditLogs[figureId] = mergeProjectRenderEditLog(
+            oldEditLogMap[figureId] || [],
+            Array.isArray(incoming) ? incoming : [],
+          );
+        });
+      }
       const compressedEditLogs: Record<string, EditEntry[]> = {};
       for (const key of Object.keys(effectiveEditLogs)) {
         compressedEditLogs[key] = compressEditLog(effectiveEditLogs[key]);
@@ -6857,9 +7013,9 @@ ${inner}
         }
       }
       const datasets = listProjectFiles(projectId);
-      const exportDatasetSnapshots = saveToLibrary !== false
+      const exportDatasetCapture = saveToLibrary !== false
         ? captureExportDatasetSnapshots(datasets)
-        : [];
+        : { snapshots: [], warnings: [] };
       const projectDataPayload = await buildProjectDataPayload(datasets);
 
       const uploaded_file_paths: Record<string, string> = {};
@@ -6939,7 +7095,7 @@ ${inner}
                 userId,
                 targetFigureId: targetFigId,
                 targetEditLog: exportEditLog,
-                datasets: exportDatasetSnapshots,
+                datasets: exportDatasetCapture.snapshots,
                 requestedFormat: reqFormat,
                 effectiveFormat: effectiveFigureFormat,
                 dpi: effectiveFigureDpi,
@@ -6960,6 +7116,9 @@ ${inner}
                 exportedFrom: targetFigId,
                 requestedFormat: reqFormat,
                 revision: session?.revision || 1,
+                ...(exportDatasetCapture.warnings.length > 0
+                  ? { snapshotWarnings: exportDatasetCapture.warnings }
+                  : {}),
                 ...exportAnchor,
               },
               tags: ['figure'],

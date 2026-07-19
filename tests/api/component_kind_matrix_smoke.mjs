@@ -7,12 +7,47 @@
  */
 
 import { authenticateCapabilitySmokeUser, bearerHeaders } from '../playwright/smokeAuth.mjs';
+import path from 'node:path';
 
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
 let authToken = '';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function hexToRgba(hex) {
+  const normalized = String(hex).replace('#', '');
+  return [
+    parseInt(normalized.slice(0, 2), 16) / 255,
+    parseInt(normalized.slice(2, 4), 16) / 255,
+    parseInt(normalized.slice(4, 6), 16) / 255,
+    1,
+  ];
+}
+
+function colorMatches(actual, expectedHex) {
+  if (Array.isArray(actual)) {
+    const expected = hexToRgba(expectedHex);
+    return expected.every((value, index) => Math.abs(Number(actual[index]) - value) < 0.01);
+  }
+  return String(actual).toLowerCase() === String(expectedHex).toLowerCase();
+}
+
+function assertIsolatedEnvironment() {
+  assert(process.env.SCIFIGURE_TEST_ISOLATED === '1', 'test must run under scripts/testing/run_with_isolated_server.mjs');
+  const url = new URL(BASE_URL);
+  assert(url.hostname === '127.0.0.1', `test must target isolated 127.0.0.1 server, got ${BASE_URL}`);
+  assert(url.port !== '3000', 'test refuses localhost:3000/default port');
+
+  const dataDir = process.env.SCIFIGURE_DATA_DIR;
+  const dbPath = process.env.SCIFIGURE_DB_PATH;
+  assert(dataDir && dbPath, 'isolated test requires SCIFIGURE_DATA_DIR and SCIFIGURE_DB_PATH');
+  const resolvedDataDir = path.resolve(dataDir);
+  const resolvedDbPath = path.resolve(dbPath);
+  assert(path.basename(path.dirname(resolvedDataDir)).startsWith('scifigure-isolated-smoke-'), `test refuses non-isolated data dir: ${resolvedDataDir}`);
+  assert(resolvedDbPath.startsWith(resolvedDataDir + path.sep), `test refuses DB outside isolated data dir: ${resolvedDbPath}`);
+  assert(resolvedDataDir !== path.resolve(process.cwd(), 'data'), 'test refuses repository data/ directory');
 }
 
 async function requestJson(path, options = {}) {
@@ -45,8 +80,8 @@ async function cleanupSmokeProjects() {
 const script = [
   'import numpy as np',
   'import matplotlib.pyplot as plt',
-  'fig, axes = plt.subplots(3, 3, figsize=(10, 8))',
-  'ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8 = axes.ravel()',
+  'fig, axes = plt.subplots(4, 3, figsize=(10, 10))',
+  'ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9, ax10, ax11 = axes.ravel()',
   'ax0.plot([0, 1, 2], [1, 3, 2], color="#225577", linewidth=1.2, marker="o", label="line")',
   'ax0.scatter([0, 1, 2], [1.2, 2.6, 2.1], c="#cc5500", s=55, label="scatter")',
   'ax0.legend(title="Legend")',
@@ -79,7 +114,16 @@ const script = [
   'ax6.set_title("Contourf")',
   'ax7.contour(X, Y, Z, levels=[-1, 0, 1], cmap="magma", linewidths=1.2)',
   'ax7.set_title("Contour")',
-  'ax8.axis("off")',
+  'ax8.hist([0, 1, 1, 2, 2, 2], bins=[0, 1, 2, 3], color="#4477aa", alpha=0.6, label="hist")',
+  'ax8.legend()',
+  'ax8.set_title("Histogram")',
+  'ax9.stairs([1, 2, 1], [0, 1, 2, 3], color="#cc6677", label="stairs")',
+  'ax9.legend()',
+  'ax9.set_title("Stairs")',
+  'ax10.step([0, 1, 2], [2, 1, 3], where="mid", color="#228833", label="step")',
+  'ax10.legend()',
+  'ax10.set_title("Step")',
+  'ax11.axis("off")',
   'fig.tight_layout()',
 ].join('\n');
 
@@ -101,6 +145,9 @@ const checks = [
   { id: 'legend-position', kind: 'legend', prop: 'position', value: { x: 0.72, y: 0.34, coord_system: 'figure' }, expected: (props) => Math.abs(Number(props.x) - 0.72) < 0.03 && Math.abs(Number(props.y) - 0.34) < 0.03 && props.coord_system === 'figure' },
   { id: 'spine-group', kind: 'spine_group', prop: 'linewidth', value: 1.7, expected: (props) => Number(props.linewidth) === 1.7 },
   { id: 'axis-x', kind: 'axis_x', prop: 'tick_labelsize', value: 13, expected: (props) => Number(props.tick_labelsize) === 13 },
+  { id: 'histogram-series', kind: 'bar_container', role: 'histogram_series', prop: 'alpha', value: 0.35, expected: (props) => Math.abs(Number(props.alpha) - 0.35) < 0.01 },
+  { id: 'stairs-series', kind: 'patch', role: 'stairs_series', prop: 'edgecolor', value: '#114488', expected: (props) => colorMatches(props.edgecolor, '#114488') },
+  { id: 'step-series', kind: 'line', role: 'step_series', prop: 'color', value: '#1166aa', expected: (props) => colorMatches(props.color, '#1166aa') },
 ];
 
 async function createAndRenderProject() {
@@ -135,6 +182,7 @@ function findObject(rendered, check) {
   const objects = rendered.figures?.[0]?.manifest?.objects || [];
   return objects.find((object) => (
     object?.kind === check.kind &&
+    (!check.role || object.role === check.role) &&
     (!check.excludeRole || object.role !== check.excludeRole) &&
     (!check.gidPrefix || String(object.id || '').startsWith(check.gidPrefix)) &&
     Array.isArray(object.editable) &&
@@ -143,7 +191,60 @@ function findObject(rendered, check) {
 }
 
 function findObjectInResponse(response, gid) {
-  return (response.manifest?.objects || []).find((object) => object.id === gid);
+  return (manifestFromResponse(response)?.objects || []).find((object) => object.id === gid);
+}
+
+function manifestFromResponse(response) {
+  return response?.manifest
+    || response?.figures?.find((figure) => figure.figureId === 'fig_1')?.manifest
+    || response?.figures?.[0]?.manifest
+    || null;
+}
+
+function capabilityProps(object) {
+  return Array.isArray(object?.propertyCapabilities)
+    ? object.propertyCapabilities.map((capability) => capability?.prop)
+    : [];
+}
+
+function assertReadonlyStructuralProps(object, props, label) {
+  for (const prop of props) {
+    assert(!object.editable?.includes(prop), `${label} exposes structural ${prop} as editable`);
+    assert(!capabilityProps(object).includes(prop), `${label} exposes structural ${prop} in propertyCapabilities`);
+  }
+}
+
+function assertHistoricalSeriesObjects(objects) {
+  const byRole = new Map(objects.map((object) => [object.role, object]));
+  const expected = [
+    { role: 'histogram_series', kind: 'bar_container', callName: 'Axes.hist', structuralProps: ['bins', 'counts', 'values', 'edges', 'density', 'orientation'] },
+    { role: 'stairs_series', kind: 'patch', callName: 'Axes.stairs', structuralProps: ['values', 'edges', 'baseline'] },
+    { role: 'step_series', kind: 'line', callName: 'Axes.step', structuralProps: ['x', 'y', 'xdata', 'ydata', 'where', 'drawstyle'] },
+  ];
+  for (const item of expected) {
+    const object = byRole.get(item.role);
+    assert(object, `Missing ${item.role}; roles=${JSON.stringify(objects.map(candidate => ({ id: candidate.id, kind: candidate.kind, role: candidate.role })))}`);
+    assert(object.kind === item.kind, `${item.role} should keep historical kind ${item.kind}: ${JSON.stringify(object)}`);
+    assert(object.source?.callName === item.callName, `${item.role} did not preserve trusted call source ${item.callName}: ${JSON.stringify(object.source)}`);
+    assert(object.semanticCoverage?.status === 'dedicated', `${item.role} is not marked dedicated: ${JSON.stringify(object.semanticCoverage)}`);
+    assertReadonlyStructuralProps(object, item.structuralProps, item.role);
+  }
+  return Object.fromEntries(expected.map(item => [item.role, byRole.get(item.role).id]));
+}
+
+async function renderWithEditLog(projectId, editLog) {
+  const replayed = await requestJson(`/api/projects/${projectId}/figures/render`, {
+    method: 'POST',
+    body: JSON.stringify({
+      script,
+      editLogs: { fig_1: editLog },
+      language: 'python',
+      requestId: `component-kind-replay-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    }),
+  });
+  assert(replayed.status === 'success', `Replay render failed: ${replayed.message || JSON.stringify(replayed)}`);
+  assert(Array.isArray(replayed.figures) && replayed.figures.length > 0, 'Replay render returned no figures');
+  return replayed;
 }
 
 async function patchObject(projectId, gid, prop, value, label, baseRevision) {
@@ -170,6 +271,7 @@ async function patchObject(projectId, gid, prop, value, label, baseRevision) {
 }
 
 async function main() {
+  assertIsolatedEnvironment();
   authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'component kind matrix');
   await cleanupSmokeProjects();
   let projectId = null;
@@ -181,6 +283,7 @@ async function main() {
     let revision = 1;
 
     const objects = rendered.figures?.[0]?.manifest?.objects || [];
+    const historicalSeries = assertHistoricalSeriesObjects(objects);
     const kindCounts = objects.reduce((acc, object) => {
       acc[object.kind] = (acc[object.kind] || 0) + 1;
       return acc;
@@ -198,6 +301,10 @@ async function main() {
       container.children.forEach((childId) => {
         const child = objects.find((object) => object.id === childId);
         assert(child?.parentId === container.id, `${childId} is not linked back to ${container.id}`);
+        if (container.id === historicalSeries.histogram_series) {
+          assert(child?.role === 'histogram_child_patch', `${childId} is not marked as a histogram child patch`);
+          assert(child?.currentProps?.parentOwned === true, `${childId} is not parentOwned under ${container.id}`);
+        }
       });
     });
     const contourParents = objects.filter((object) => object.kind === 'contour' || object.kind === 'contourf');
@@ -214,6 +321,7 @@ async function main() {
       });
     });
     const contourChildIds = new Set(contourParents.flatMap((parent) => parent.children || []));
+    const replayEditLog = [];
 
     for (const check of checks) {
       const target = findObject(rendered, check);
@@ -223,16 +331,33 @@ async function main() {
       const patched = await patchObject(projectId, target.id, check.prop, check.value, check.id, revision);
       revision = patched.revision || revision + 1;
       const updated = findObjectInResponse(patched, target.id);
-      assert(updated, `Patched response does not contain ${target.id}; objects=${JSON.stringify((patched.manifest?.objects || []).map((object) => ({ id: object.id, kind: object.kind, role: object.role })))}`);
-      assert(check.expected(updated.currentProps || {}), `${check.id} did not persist ${check.prop}=${check.value}; got ${JSON.stringify(updated.currentProps)}`);
-      rendered = { figures: [{ manifest: patched.manifest }] };
+      const patchedManifest = manifestFromResponse(patched);
+      if (Array.isArray(patchedManifest?.objects) && patchedManifest.objects.length > 0) {
+        assert(updated, `Patched response does not contain ${target.id}; objects=${JSON.stringify((patchedManifest?.objects || []).map((object) => ({ id: object.id, kind: object.kind, role: object.role })))}`);
+        assert(check.expected(updated.currentProps || {}), `${check.id} did not persist ${check.prop}=${check.value}; got ${JSON.stringify(updated.currentProps)}`);
+        rendered = { figures: [{ manifest: patchedManifest }] };
+      }
+      replayEditLog.push({
+        gid: target.id,
+        prop: check.prop,
+        value: check.value,
+        mode: 'backend_patch',
+      });
       summary.push({ id: check.id, gid: target.id, prop: check.prop, value: check.value, revision });
+    }
+
+    const replayed = await renderWithEditLog(projectId, replayEditLog);
+    for (const check of checks) {
+      const replayedTarget = findObject(replayed, check);
+      assert(replayedTarget?.id, `Replay did not expose ${check.id}`);
+      assert(check.expected(replayedTarget.currentProps || {}), `Replay did not preserve ${check.id} ${check.prop}=${check.value}; got ${JSON.stringify(replayedTarget.currentProps)}`);
     }
 
     console.log(JSON.stringify({
       status: 'PASS',
       projectId,
       kindCounts,
+      historicalSeries,
       containerOwnership,
       checks: summary,
     }, null, 2));

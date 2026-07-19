@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
+import { projectFigureSaveBase } from '../helpers/project_save_hash.mjs';
 import path from 'node:path';
 
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
@@ -224,6 +225,24 @@ async function main() {
     assert(hasEdit(loadedFigure?.editLog, legacyEdit), `legacy child alpha edit missing on load: ${JSON.stringify(loadedFigure)}`);
     assert(hasEdit(loadedFigure?.editLog, identityLegacyEdit), `identity-bearing legacy child edit missing on load: ${JSON.stringify(loadedFigure)}`);
 
+    const unchangedLegacySave = await jsonRequest(`/api/projects/${projectId}`, token, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: 'Legacy contour compatibility unchanged',
+        spec: { plot_type: 'custom', custom_script: script, script_language: 'python' },
+        figures: [{
+          figureId: 'fig_1',
+          revision: loadedFigure.revision,
+          editLog: legacyEdits,
+          history: loadedFigure.history,
+        }],
+      }),
+    });
+    assert(
+      unchangedLegacySave.response.ok && unchangedLegacySave.data?.status === 'success',
+      `unchanged legacy PUT was rejected: ${unchangedLegacySave.response.status} ${JSON.stringify(unchangedLegacySave.data)}`,
+    );
+
     const putHistory = {
       past: [{
         label: 'legacy child alpha checkpoint',
@@ -239,6 +258,7 @@ async function main() {
         spec: { plot_type: 'custom', custom_script: script, script_language: 'python' },
         figures: [{
           figureId: 'fig_1',
+          ...projectFigureSaveBase(loadedFigure),
           revision: loadedFigure.revision,
           editLog: legacyEdits,
           history: putHistory,
@@ -282,6 +302,7 @@ async function main() {
         spec: { plot_type: 'custom', custom_script: script, script_language: 'python' },
         figures: [{
           figureId: 'fig_1',
+          ...projectFigureSaveBase(savedFigure),
           revision: Number(savedFigure.revision || 1) + 1,
           editLog: [laterEdit, identityLegacyEdit],
         }],

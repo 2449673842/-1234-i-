@@ -206,6 +206,7 @@ export function PropertyControl({
         <input
           {...sharedProps}
           data-param-role="color"
+          data-color-role="picker"
           type="color"
           aria-label={`${displayLabelText}选择器`}
           disabled={!interactive}
@@ -218,6 +219,7 @@ export function PropertyControl({
           data-param-gid={objectId}
           data-param-prop={prop}
           data-property-scope={controlScope}
+          data-color-role="text"
           type="text"
           aria-label={displayLabelText}
           disabled={!interactive}

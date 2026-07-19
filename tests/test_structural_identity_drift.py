@@ -3,12 +3,13 @@ import sys
 import unittest
 
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "renderer"))
 
-from introspector import replay_render
+from introspector import _generate_stable_key_and_fingerprint, replay_render
 
 
 DRIFT_COLOR = "#cc00cc"
@@ -147,6 +148,30 @@ class TestStructuralIdentityDrift(unittest.TestCase):
             baseline_beta["fingerprint"],
             styled_beta["fingerprint"],
             "object fingerprint should represent structural identity, not editable style",
+        )
+
+    def test_legend_layout_change_does_not_change_marker_fingerprint(self):
+        fig, ax = plt.subplots()
+        ax.plot([0, 1, 2], [1, 2, 3], label="alpha")
+        marker = ax.legend().get_lines()[0]
+        obj = {
+            "id": "legend_line.0.0",
+            "kind": "line",
+            "label": "alpha",
+            "role": "legend_marker",
+        }
+        try:
+            stable_key, baseline_fingerprint = _generate_stable_key_and_fingerprint(obj, marker, 0)
+            marker.set_data([0, 5, 10], [0.5, 0.5, 0.5])
+            relaid_key, relaid_fingerprint = _generate_stable_key_and_fingerprint(obj, marker, 0)
+        finally:
+            plt.close(fig)
+
+        self.assertEqual(stable_key, relaid_key)
+        self.assertEqual(
+            baseline_fingerprint,
+            relaid_fingerprint,
+            "legend proxy coordinates are derived layout, not structural data",
         )
 
     def test_identity_verified_edit_applies_without_drift(self):

@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional
 
 
-ALLOWED_KINDS = {'patch', 'line', 'collection', 'fill_between', 'legend_patch', 'legend_line'}
+ALLOWED_KINDS = {'patch', 'line', 'collection', 'fill_between', 'bar_container', 'legend_patch', 'legend_line'}
 
 def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -61,7 +61,12 @@ def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict
         for artist in artist_manifest:
             if artist.get("kind") not in ALLOWED_KINDS:
                 continue
-            if artist.get("role") == "contour_child_collection":
+            if artist.get("kind") == "bar_container" and artist.get("role") != "histogram_series":
+                continue
+            if (
+                artist.get("role") == "contour_child_collection"
+                or artist.get("currentProps", {}).get("parentOwned")
+            ):
                 continue
             label_match = _normalize_label(artist.get("label")) == _normalize_label(group_label)
             matched_prop = _matching_color_prop(artist, target_color)
@@ -129,7 +134,12 @@ def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict
         for artist in artist_manifest:
             if artist.get("kind") not in ALLOWED_KINDS:
                 continue
-            if artist.get("role") == "contour_child_collection":
+            if artist.get("kind") == "bar_container" and artist.get("role") != "histogram_series":
+                continue
+            if (
+                artist.get("role") == "contour_child_collection"
+                or artist.get("currentProps", {}).get("parentOwned")
+            ):
                 continue
             matched_prop = _matching_color_prop(artist, target_color)
             if matched_prop:

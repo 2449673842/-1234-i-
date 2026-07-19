@@ -17,6 +17,7 @@ import { buildCompositionRisks, planCompositionLayout } from '../utils/compositi
 import { draftsEligibleForDirectPersistence, draftsRequiringEngineApply } from '../utils/draftTransaction';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { isTextContentPatchProp } from '../utils/propertyPatchMode';
+import { enrichPatchEntriesWithIdentity } from '../utils/patchIdentity';
 
 monacoLoader.config({ paths: { vs: '/vendor/monaco/vs' } });
 
@@ -319,6 +320,9 @@ export function MainWorkspace({
   const [compositionSourceNotice, setCompositionSourceNotice] = useState<string | null>(null);
   const [compositionDraggingKey, setCompositionDraggingKey] = useState<string | null>(null);
   const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveInFlightRef = useRef<Promise<void> | null>(null);
+  const pendingSaveTriggerRef = useRef<'manual' | 'auto' | null>(null);
+  const [saveQueueVersion, setSaveQueueVersion] = useState(0);
   const [renderElapsedMs, setRenderElapsedMs] = useState(0);
   const [activeDataFileId, setActiveDataFileId] = useState<string | null>(null);
   const [dataPreview, setDataPreview] = useState<DataPreviewState>({
@@ -1176,8 +1180,9 @@ export function MainWorkspace({
     };
   }, [projectId, showHistoryMenu]);
 
-  const handleSave = async ({ silentIfBlocked = false }: { silentIfBlocked?: boolean } = {}) => {
-    if (silentIfBlocked && Object.values(projectDrafts).some(drafts => Object.keys(drafts || {}).length > 0)) {
+  const performSave = async (trigger: 'manual' | 'auto') => {
+    const hasPendingDrafts = Object.values(projectDrafts).some(drafts => Object.keys(drafts || {}).length > 0);
+    if (trigger === 'auto' && hasPendingDrafts) {
       return;
     }
     const normalizeDraftForFigure = (figId: string, draft: DraftPatch): DraftPatch => {
@@ -1192,7 +1197,7 @@ export function MainWorkspace({
       draftsRequiringEngineApply(Object.values(drafts || {}).map(draft => normalizeDraftForFigure(figId, draft)))
     ));
     if (engineDrafts.length > 0) {
-      if (!silentIfBlocked) {
+      if (trigger === 'manual') {
         alert(`还有 ${engineDrafts.length} 项修改需要先应用并重新渲染；应用完成后才能保存。`);
       }
       return;
@@ -1200,7 +1205,7 @@ export function MainWorkspace({
     setIsSaving(true);
     try {
       const previewSvg = await generateThumbnail(figSession?.svg);
-      const shouldPersistLocalDrafts = !silentIfBlocked;
+      const shouldPersistLocalDrafts = trigger === 'manual';
       const localDraftsByFigure = projectId && shouldPersistLocalDrafts
         ? Object.fromEntries(Object.entries(projectDrafts).map(([figId, drafts]) => [
           figId,
@@ -1210,23 +1215,55 @@ export function MainWorkspace({
       const figuresToPersist = projectId
         ? Object.entries(projectFigures || {}).map(([figId, figure]: [string, any]) => {
           const localDrafts = localDraftsByFigure[figId] || [];
-          const draftEditLog = localDrafts.map(draft => ({
-            gid: draft.gid,
-            prop: draft.prop,
-            value: draft.value,
-            mode: draft.mode,
-            timestamp: Date.now(),
-          }));
+          const timestamp = Date.now();
+          const draftEditLog = enrichPatchEntriesWithIdentity(
+            localDrafts.map(draft => ({
+              op: 'set' as const,
+              gid: draft.gid,
+              prop: draft.prop,
+              value: draft.value,
+              mode: 'local_patch' as const,
+              ...(draft.matchColor ? { matchColor: draft.matchColor } : {}),
+              stableKey: draft.stableKey,
+              fingerprint: draft.fingerprint,
+              fingerprintVersion: draft.fingerprintVersion,
+              identity: draft.identity,
+            })),
+            figure.manifest,
+          ).filter((patch): patch is Extract<PatchEntry, { op: 'set' }> => !('type' in patch))
+            .map(patch => ({
+              gid: patch.gid,
+              prop: patch.prop,
+              value: patch.value,
+              mode: 'local_patch' as const,
+              timestamp,
+              ...(patch.matchColor ? { matchColor: patch.matchColor } : {}),
+              stableKey: patch.stableKey,
+              fingerprint: patch.fingerprint,
+              fingerprintVersion: patch.fingerprintVersion,
+              identity: patch.identity,
+            }));
           return {
             figureId: figId,
             index: typeof figure.index === 'number' ? figure.index : Number(String(figId).replace(/^fig_/, '')) - 1,
             editLog: [...(figure.editLog || []), ...draftEditLog],
+            baseRevision: figure.revision || 1,
+            baseEditLogHash: fnv1a(stableStringify(figure.editLog || [])),
             revision: figure.revision || 1,
             history: projectHistory?.[figId] || { past: [], future: [] },
           };
         })
         : undefined;
       if (projectId) {
+        const manifestUnavailable = (figuresToPersist || []).some(figure => (
+          !projectFigures?.[figure.figureId]?.manifest
+        ));
+        if (manifestUnavailable) {
+          if (trigger === 'manual') {
+            alert('项目 Figure 正在恢复可信图元信息，请等待预览加载完成后再保存。');
+          }
+          return;
+        }
         const saveRes = await fetch(`/api/projects/${projectId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -1268,12 +1305,53 @@ export function MainWorkspace({
         }
       }
       setLastSaved(new Date());
-    } catch {
-      alert('保存失败');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '保存失败';
+      if (trigger === 'manual') {
+        alert(`保存失败：${message}`);
+      } else {
+        onRenderLog([`> [自动保存失败] ${message}`]);
+      }
     } finally {
       setIsSaving(false);
     }
   };
+
+  const handleSave = (trigger: 'manual' | 'auto' = 'manual'): Promise<void> => {
+    if (trigger === 'manual' && autoSaveTimer.current) {
+      clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = null;
+    }
+    const activeSave = saveInFlightRef.current;
+    if (activeSave) {
+      if (trigger === 'manual' || pendingSaveTriggerRef.current === null) {
+        pendingSaveTriggerRef.current = trigger;
+      }
+      return activeSave;
+    }
+    if (trigger === 'manual') pendingSaveTriggerRef.current = null;
+    let trackedSave: Promise<void>;
+    trackedSave = performSave(trigger).finally(() => {
+      if (saveInFlightRef.current !== trackedSave) return;
+      saveInFlightRef.current = null;
+      if (pendingSaveTriggerRef.current) {
+        setSaveQueueVersion(version => version + 1);
+      }
+    });
+    saveInFlightRef.current = trackedSave;
+    return trackedSave;
+  };
+
+  useEffect(() => {
+    const trigger = pendingSaveTriggerRef.current;
+    if (!trigger || isSaving || saveInFlightRef.current) return;
+    const hasPendingDrafts = Object.values(projectDrafts).some(drafts => (
+      Object.keys(drafts || {}).length > 0
+    ));
+    if (trigger === 'auto' && (isRendering || hasPendingDrafts)) return;
+    pendingSaveTriggerRef.current = null;
+    void handleSave(trigger);
+  }, [saveQueueVersion, isSaving, isRendering, projectDrafts, projectFigures, projectHistory, projectName, spec]);
 
   const handleRename = () => {
     setEditingName(false);
@@ -1284,15 +1362,21 @@ export function MainWorkspace({
 
   useEffect(() => {
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    autoSaveTimer.current = null;
+    const hasPendingDrafts = Object.values(projectDrafts).some(drafts => (
+      Object.keys(drafts || {}).length > 0
+    ));
+    if (isRendering || hasPendingDrafts) return;
     autoSaveTimer.current = setTimeout(() => {
+      autoSaveTimer.current = null;
       if (projectId) {
-        void handleSave({ silentIfBlocked: true });
+        void handleSave('auto');
       }
     }, 5000);
     return () => {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     };
-  }, [spec, figSession, projectId]);
+  }, [spec, figSession, projectId, projectDrafts, projectFigures, projectHistory, projectName, isRendering]);
 
   const onRenderRef = useRef(onRender);
   useEffect(() => {
@@ -1469,7 +1553,7 @@ export function MainWorkspace({
           <button
             type="button"
             className="scifig-workspace-primary px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-1.5"
-            onClick={() => void handleSave()}
+            onClick={() => void handleSave('manual')}
             disabled={isSaving}
           >
             {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}

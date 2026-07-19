@@ -96,20 +96,32 @@ const script = [
   'DYNAMIC_COLOR = "#123456"',
   'VECTOR_A = "#2A9D8F"',
   'VECTOR_B = "#E76F51"',
+  'HIST_COLOR = "#884422"',
+  'STAIRS_COLOR = "#7755AA"',
+  'STEP_COLOR = "#116699"',
   'SERIES_COLORS = {"Weak": "#446688", "Mixed": "#446688"}',
   'dynamic_color = "#" + "123456"',
   'vector_colors = [VECTOR_A, VECTOR_B, VECTOR_A, VECTOR_B]',
+  'from matplotlib.patches import Rectangle',
   'fig, ax = plt.subplots(figsize=(5, 3.5))',
   'ax.plot([0, 1, 2, 3], [1, 3, 2, 4], color=LINE_COLOR, linewidth=1.5, marker="o", label="Line A")',
   'ax.scatter([0, 1, 2, 3], [1.2, 2.8, 2.2, 3.7], c=POINT_COLOR, s=55, label="Points")',
   'ax.plot([0, 1, 2, 3], [2.0, 2.4, 2.1, 2.8], color=SERIES_COLORS["Weak"], label="Weak")',
   'ax.plot([0, 1, 2, 3], [2.8, 2.1, 2.6, 2.2], color=SERIES_COLORS["Mixed"], label="Mixed")',
   'ax.plot([0, 1, 2, 3], [3.2, 3.0, 3.4, 3.1], color=dynamic_color, label="Data driven")',
+  'ax.hist([0, 0.4, 1.1, 1.6, 2.2, 2.5, 2.8], bins=[0, 1, 2, 3], color=HIST_COLOR, alpha=0.55, label="Histogram")',
+  'ax.bar([0.35, 1.35, 2.35], [0.25, 0.35, 0.22], width=0.16, color="#884422", alpha=0.7, label="Plain bar")',
+  'ax.plot([0, 1, 2, 3], [0.85, 0.95, 0.75, 0.9], color="#884422", linewidth=1.1, label="Same color line")',
+  'ax.stairs([0.45, 0.65, 0.4], [0, 1, 2, 3], color=STAIRS_COLOR, linewidth=1.1, label="Stairs")',
+  'ax.add_patch(Rectangle((2.55, 0.2), 0.3, 0.35, facecolor=STAIRS_COLOR, edgecolor=STAIRS_COLOR, alpha=0.7, label="Plain patch"))',
+  'ax.step([0, 1, 2, 3], [1.5, 1.7, 1.4, 1.6], where="mid", color=STEP_COLOR, linewidth=1.1, label="Step")',
+  'ax.plot([0, 1, 2, 3], [1.72, 1.55, 1.65, 1.5], drawstyle="steps-mid", color=STEP_COLOR, linewidth=1.1, label="Plain stepdraw line")',
   'for vector_idx in range(7):',
   '    ax.scatter([0.2, 1.2, 2.2, 3.2], [0.25 + vector_idx * 0.06, 0.28 + vector_idx * 0.06, 0.25 + vector_idx * 0.06, 0.28 + vector_idx * 0.06], c=vector_colors, s=35)',
   'ax.set_title("Semantic Centers")',
   'ax.set_xlabel("X Axis")',
   'ax.set_ylabel("Y Axis")',
+  'ax.set_ylim(0, 4.6)',
   'ax.legend(loc="upper left")',
   'plt.tight_layout()',
 ].join('\n');
@@ -152,6 +164,7 @@ async function prepareProject(page) {
         renderStatus: 'success',
       };
     });
+    const manifest = rendered.figures[0]?.manifest || {};
     window.sessionStorage.setItem('scifigure:app-state:v2', JSON.stringify({
       spec,
       history: [spec],
@@ -173,11 +186,22 @@ async function prepareProject(page) {
       objectCount: rendered.figures[0]?.manifest?.objects?.length || 0,
       paletteCount: rendered.figures[0]?.manifest?.palettes?.length || 0,
       bindingCount: rendered.figures[0]?.manifest?.bindings?.length || 0,
-      weakBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'dict_SERIES_COLORS__Weak') || null,
-      mixedBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'dict_SERIES_COLORS__Mixed') || null,
-      dynamicBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'DYNAMIC_COLOR') || null,
-      vectorABinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'VECTOR_A') || null,
-      vectorBBinding: rendered.figures[0]?.manifest?.bindings?.find((binding) => binding.paletteId === 'VECTOR_B') || null,
+      semanticObjects: (manifest.objects || []).map((object) => ({
+        id: object.id,
+        kind: object.kind,
+        role: object.role,
+        label: object.label,
+        parentId: object.parentId,
+        children: object.children || [],
+        currentProps: object.currentProps || {},
+        identity: object.identity || {},
+      })),
+      weakBinding: manifest.bindings?.find((binding) => binding.paletteId === 'dict_SERIES_COLORS__Weak') || null,
+      mixedBinding: manifest.bindings?.find((binding) => binding.paletteId === 'dict_SERIES_COLORS__Mixed') || null,
+      dynamicBinding: manifest.bindings?.find((binding) => binding.paletteId === 'DYNAMIC_COLOR') || null,
+      vectorABinding: manifest.bindings?.find((binding) => binding.paletteId === 'VECTOR_A') || null,
+      vectorBBinding: manifest.bindings?.find((binding) => binding.paletteId === 'VECTOR_B') || null,
+      histBinding: manifest.bindings?.find((binding) => binding.paletteId === 'HIST_COLOR') || null,
     };
   }, { baseUrl: BASE_URL, script });
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -375,6 +399,58 @@ async function setColorByScope(page, scope, value) {
   return true;
 }
 
+async function setColorByScopeInPaletteCard(page, scope, cardText, value) {
+  const handle = await page.evaluateHandle(({ scope, cardText }) => {
+    const normalize = (text) => String(text || '').replace(/\s+/g, '').toLowerCase();
+    const visible = (node) => {
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const rightSide = (node) => node.getBoundingClientRect().left > window.innerWidth * 0.70;
+    const inputs = Array.from(document.querySelectorAll(`input[data-color-role="text"][data-color-scope="${scope}"]`))
+      .filter((node) => visible(node) && rightSide(node));
+    return inputs.find((node) => {
+      let current = node.parentElement;
+      while (current && rightSide(current)) {
+        if (normalize(current.textContent).includes(normalize(cardText))) return true;
+        current = current.parentElement;
+      }
+      return false;
+    }) || null;
+  }, { scope, cardText });
+  const element = handle.asElement();
+  if (!element) return false;
+  await element.scrollIntoViewIfNeeded().catch(() => {});
+  await element.fill(value);
+  await element.press('Enter').catch(() => {});
+  await element.evaluate((node) => node.blur());
+  await page.waitForTimeout(700);
+  return true;
+}
+
+async function setPaletteSubplotScope(page, scope) {
+  const select = page.getByTestId('palette-subplot-scope');
+  if (!(await select.isVisible({ timeout: 3000 }).catch(() => false))) return scope === 'all';
+  await select.selectOption(scope);
+  await page.waitForTimeout(300);
+  return (await select.inputValue()) === scope;
+}
+
+async function setColorInComponentGroup(page, groupId, value, prop = 'color') {
+  const selector = prop === 'color'
+    ? `input[data-color-role="text"][data-param-prop="${prop}"]`
+    : 'input[data-color-role="text"][data-color-scope$=":color"]';
+  const input = page.locator(`[data-component-group-id="${groupId}"] ${selector}`).first();
+  if (!(await input.isVisible({ timeout: 5000 }).catch(() => false))) return false;
+  await input.scrollIntoViewIfNeeded().catch(() => {});
+  await input.fill(value);
+  await input.press('Enter').catch(() => {});
+  await input.evaluate((node) => node.blur());
+  await page.waitForTimeout(700);
+  return true;
+}
+
 async function readRuntimePaletteColors(page, paletteIds) {
   return page.evaluate((ids) => {
     const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
@@ -509,6 +585,32 @@ function patchList(body) {
   return Array.isArray(body?.patches) ? body.patches : [];
 }
 
+function colorToHex(value) {
+  if (typeof value === 'string') return value.startsWith('#') ? value.toLowerCase() : null;
+  const tuple = Array.isArray(value?.[0]) ? value[0] : value;
+  if (!Array.isArray(tuple) || tuple.length < 3) return null;
+  return `#${tuple.slice(0, 3).map((channel) => {
+    const numeric = Number(channel);
+    const scaled = numeric <= 1 ? numeric * 255 : numeric;
+    return Math.round(scaled).toString(16).padStart(2, '0');
+  }).join('')}`;
+}
+
+async function readRuntimeObjectColorMap(page, objectIds) {
+  return page.evaluate((ids) => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    if (!raw) return {};
+    const state = JSON.parse(raw);
+    const figure = state.projectFigures?.[state.activeFigureId || 'fig_1'];
+    const objects = figure?.manifest?.objects || [];
+    return Object.fromEntries(ids.map((id) => {
+      const object = objects.find((item) => item.id === id);
+      const props = object?.currentProps || {};
+      return [id, props.facecolor ?? props.color ?? props.edgecolor ?? null];
+    }));
+  }, objectIds);
+}
+
 async function run() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'semantic centers');
@@ -607,6 +709,62 @@ async function run() {
       ))
       && Number(pointPatches[0]?.value) === 90;
     record('G2-scatter-excludes-legend', pointOk ? 'PASS' : 'FAIL', `changed=${pointSizeChanged}, draft=${pointDraft}, patches=${JSON.stringify(pointPatches)}`);
+
+    const semanticObjects = fixture.semanticObjects || [];
+    const stairsIds = semanticObjects.filter((object) => object.role === 'stairs_series').map((object) => object.id);
+    const stepIds = semanticObjects.filter((object) => object.role === 'step_series').map((object) => object.id);
+    const ordinaryPatchIds = semanticObjects
+      .filter((object) => object.kind === 'patch' && object.role !== 'stairs_series' && object.role !== 'legend_marker')
+      .map((object) => object.id);
+    const ordinaryLineIds = semanticObjects
+      .filter((object) => object.kind === 'line' && object.role !== 'step_series' && object.role !== 'legend_marker')
+      .map((object) => object.id);
+
+    await clickText(page, '组件中心');
+    const stairsChanged = await setColorInComponentGroup(page, 'stairs', '#334455', 'edgecolor');
+    const stairsDraft = (await getBodyText(page)).includes('已暂存');
+    const stairsApply = stairsChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const stairsPatches = patchList(stairsApply.patchBody);
+    const stairsIsolationOk = stairsIds.length > 0
+      && ordinaryPatchIds.length > 0
+      && stairsChanged
+      && stairsDraft
+      && stairsApply.successful
+      && stairsPatches.length === stairsIds.length
+      && stairsPatches.every((patch) => (
+        stairsIds.includes(patch.gid)
+        && patch.prop === 'edgecolor'
+        && String(patch.value).toLowerCase() === '#334455'
+      ))
+      && stairsPatches.every((patch) => !ordinaryPatchIds.includes(patch.gid));
+    record(
+      'G3-stairs-dedicated-role-isolation',
+      stairsIsolationOk ? 'PASS' : 'FAIL',
+      `stairs=${JSON.stringify(stairsIds)}, ordinaryPatches=${JSON.stringify(ordinaryPatchIds)}, changed=${stairsChanged}, draft=${stairsDraft}, patches=${JSON.stringify(stairsPatches)}`,
+    );
+
+    await clickText(page, '组件中心');
+    const stepChanged = await setColorInComponentGroup(page, 'steps', '#2255cc', 'color');
+    const stepDraft = (await getBodyText(page)).includes('已暂存');
+    const stepApply = stepChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const stepPatches = patchList(stepApply.patchBody);
+    const stepIsolationOk = stepIds.length > 0
+      && ordinaryLineIds.length > 0
+      && stepChanged
+      && stepDraft
+      && stepApply.successful
+      && stepPatches.length === stepIds.length
+      && stepPatches.every((patch) => (
+        stepIds.includes(patch.gid)
+        && patch.prop === 'color'
+        && String(patch.value).toLowerCase() === '#2255cc'
+      ))
+      && stepPatches.every((patch) => !ordinaryLineIds.includes(patch.gid));
+    record(
+      'G4-step-dedicated-role-isolation',
+      stepIsolationOk ? 'PASS' : 'FAIL',
+      `steps=${JSON.stringify(stepIds)}, ordinaryLines=${JSON.stringify(ordinaryLineIds)}, changed=${stepChanged}, draft=${stepDraft}, patches=${JSON.stringify(stepPatches)}`,
+    );
 
     await clickText(page, '配色中心');
     const paletteV2Expected = process.env.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 !== '0';
@@ -791,6 +949,82 @@ async function run() {
       'H1f-vector-multiple-subset-replay',
       twoSubsetReplayOk ? 'PASS' : 'FAIL',
       `patches=${JSON.stringify(secondSubsetPatches)}, objects=${JSON.stringify(objectsAfterTwoSubsets)}`,
+    );
+
+    await clickText(page, '配色中心');
+    await setPaletteSubplotScope(page, 'all');
+    const histogramObjects = semanticObjects.filter((object) => object.role === 'histogram_series');
+    const histogramIds = histogramObjects.map((object) => object.id);
+    const histogramChildIds = new Set(histogramObjects.flatMap((object) => object.children || []));
+    const parentOwnedHistogramChildIds = new Set(semanticObjects
+      .filter((object) => histogramChildIds.has(object.id) || object.currentProps?.parentOwned === true)
+      .map((object) => object.id));
+    const relatedHistogramLegendIds = new Set(histogramObjects.flatMap((object) => (
+      object.identity?.relation?.legendMarkerIds || []
+    )));
+    const allowedHistogramPaletteIds = new Set([
+      ...histogramIds,
+      ...relatedHistogramLegendIds,
+    ]);
+    const ordinarySameColorDecoyIds = semanticObjects
+      .filter((object) => (
+        !allowedHistogramPaletteIds.has(object.id)
+        && !parentOwnedHistogramChildIds.has(object.id)
+        && ['Plain bar', 'Same color line'].includes(String(object.label || ''))
+        && object.role !== 'legend_marker'
+      ))
+      .map((object) => object.id);
+    const histChanged =
+      await setColorByScopeInPaletteCard(page, 'palette:HIST_COLOR', 'HIST_COLOR', '#bb6633') ||
+      await setColorByScope(page, 'palette:HIST_COLOR', '#bb6633');
+    const histDraft = (await getBodyText(page)).includes('已暂存');
+    const histApply = histChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const histPatches = patchList(histApply.patchBody);
+    const histCodePatch = histPatches.find((patch) => patch.type === 'code_patch' && patch.target_id === 'HIST_COLOR');
+    const histObjectPatches = histPatches.filter((patch) => patch.type !== 'code_patch');
+    const histCodeGids = Array.isArray(histCodePatch?.gids) ? histCodePatch.gids : [];
+    const histRuntime = await readRuntimePaletteBinding(page, 'HIST_COLOR');
+    const histRuntimeGids = Array.isArray(histRuntime?.gids) ? histRuntime.gids : [];
+    const histRuntimeColors = await readRuntimeObjectColorMap(page, [
+      ...allowedHistogramPaletteIds,
+      ...ordinarySameColorDecoyIds,
+    ]);
+    const allowedRuntimeColorsChanged = [...allowedHistogramPaletteIds]
+      .every((gid) => colorToHex(histRuntimeColors[gid]) === '#bb6633');
+    const ordinaryRuntimeColorsUnchanged = ordinarySameColorDecoyIds
+      .every((gid) => colorToHex(histRuntimeColors[gid]) === '#884422');
+    const forbiddenHistogramPaletteIds = new Set([
+      ...parentOwnedHistogramChildIds,
+      ...ordinarySameColorDecoyIds,
+    ]);
+    const histPaletteIsolationOk = histogramIds.length > 0
+      && relatedHistogramLegendIds.size > 0
+      && parentOwnedHistogramChildIds.size > 0
+      && ordinarySameColorDecoyIds.length > 0
+      && histChanged
+      && histDraft
+      && histApply.successful
+      && String(histCodePatch?.new_value).toLowerCase() === '#bb6633'
+      && (histCodeGids.length === 0 || histCodeGids.every((gid) => allowedHistogramPaletteIds.has(gid)))
+      && String(histRuntime?.color).toLowerCase() === '#bb6633'
+      && allowedRuntimeColorsChanged
+      && ordinaryRuntimeColorsUnchanged
+      && histObjectPatches.every((patch) => (
+        allowedHistogramPaletteIds.has(patch.gid)
+        && !parentOwnedHistogramChildIds.has(patch.gid)
+        && !ordinarySameColorDecoyIds.includes(patch.gid)
+        && ['color', 'facecolor', 'edgecolor'].includes(patch.prop)
+        && String(patch.value).toLowerCase() === '#bb6633'
+      ))
+      && [...forbiddenHistogramPaletteIds].every((gid) => (
+        !histRuntimeGids.includes(gid)
+        && !histCodeGids.includes(gid)
+        && !histObjectPatches.some((patch) => patch.gid === gid)
+      ));
+    record(
+      'H1g-histogram-palette-relation-isolation',
+      histPaletteIsolationOk ? 'PASS' : 'FAIL',
+      `histograms=${JSON.stringify(histogramIds)}, legendMarkers=${JSON.stringify([...relatedHistogramLegendIds])}, parentOwned=${JSON.stringify([...parentOwnedHistogramChildIds])}, decoys=${JSON.stringify(ordinarySameColorDecoyIds)}, changed=${histChanged}, draft=${histDraft}, patches=${JSON.stringify(histPatches)}, runtime=${JSON.stringify(histRuntime)}, runtimeColors=${JSON.stringify(histRuntimeColors)}`,
     );
 
     await clickText(page, '配色中心');

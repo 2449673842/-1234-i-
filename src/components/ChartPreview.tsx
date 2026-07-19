@@ -211,7 +211,10 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     if (direct) return direct;
 
     const object = manifestObjectMap.get(gid);
-    if ((object?.kind === 'contour' || object?.kind === 'contourf') && Array.isArray(object.children)) {
+    const hasParentOwnedChildren = Array.isArray(object?.children) && object.children.some((childId: string) => (
+      isParentOwnedManifestObject(manifestObjectMap.get(childId))
+    ));
+    if (hasParentOwnedChildren) {
       for (const childId of object.children) {
         const child = querySvgElementById(svgEl, childId);
         if (child) return child;
@@ -793,13 +796,18 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
           const bbox = getElementSvgBox(el, svgEl);
           if (bbox && bbox.x < mr.x + mr.w && bbox.x + bbox.w > mr.x &&
               bbox.y < mr.y + mr.h && bbox.y + bbox.h > mr.y) {
-            hitGids.push(gid);
+            hitGids.push(resolveParentOwnedHitGid(gid));
           }
         } catch { /* skip */ }
       });
       if (hitGids.length > 0) {
         didSelect = true;
-        onSelectGids?.(additive ? Array.from(new Set([...selectedGidsRef.current, ...hitGids])) : hitGids);
+        const uniqueHitGids = Array.from(new Set(hitGids));
+        onSelectGids?.(
+          additive
+            ? Array.from(new Set([...selectedGidsRef.current, ...uniqueHitGids]))
+            : uniqueHitGids,
+        );
       }
     }
 
@@ -813,7 +821,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     marqueeRectRef.current = null;
     setMarqueeRect(null);
     return didSelect || Boolean(mr);
-  }, [getElementSvgBox, getSelectableSvgElement, onSelectGids, validGids]);
+  }, [getElementSvgBox, getSelectableSvgElement, onSelectGids, resolveParentOwnedHitGid, validGids]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {

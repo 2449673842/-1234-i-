@@ -62,12 +62,19 @@ const script = [
   'matplotlib.use("Agg")',
   'import matplotlib.pyplot as plt',
   '',
-  'fig, ax = plt.subplots(figsize=(4, 3))',
-  'ax.plot([0, 1, 2], [1, 3, 2], color="#225577", linewidth=1.2, label="series")',
-  'ax.set_title("Patch rejection persistence")',
-  'ax.set_xlabel("Original X")',
-  'ax.set_ylabel("Original Y")',
-  'ax.legend(loc="upper left")',
+  'fig, axes = plt.subplots(2, 2, figsize=(7, 5))',
+  'ax0, ax1, ax2, ax3 = axes.ravel()',
+  'ax0.plot([0, 1, 2], [1, 3, 2], color="#225577", linewidth=1.2, label="series")',
+  'ax0.set_title("Patch rejection persistence")',
+  'ax0.set_xlabel("Original X")',
+  'ax0.set_ylabel("Original Y")',
+  'ax0.legend(loc="upper left")',
+  'ax1.hist([0, 1, 1, 2, 2, 2], bins=[0, 1, 2, 3], color="#4477aa", alpha=0.6, label="hist")',
+  'ax1.legend(loc="upper right")',
+  'ax2.stairs([1, 2, 1], [0, 1, 2, 3], color="#cc6677", label="stairs")',
+  'ax2.legend(loc="upper right")',
+  'ax3.step([0, 1, 2], [2, 1, 3], where="mid", color="#228833", label="step")',
+  'ax3.legend(loc="upper right")',
   'fig.tight_layout()',
 ].join('\n');
 
@@ -140,6 +147,53 @@ function collectJsonDoesNotContainRejected(label, value, rejectedPatches, leaks)
   }
 }
 
+function patchValueEquals(actual, expected) {
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+function collectJsonDoesNotContainRejectedTriplets(label, value, rejectedPatches, leaks) {
+  const leaked = [];
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (rejectedPatches.some(rejected => isRejectedPatch(node, rejected))) {
+      leaked.push(node);
+    }
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    Object.values(node).forEach(visit);
+  };
+  visit(value);
+  if (leaked.length > 0) {
+    leaks.push(`${label} contains rejected patch object(s): ${JSON.stringify(leaked)}`);
+  }
+}
+
+function collectManifestDoesNotApplyStructuralPatches(label, manifest, rejectedPatches, leaks) {
+  assert(Array.isArray(manifest?.objects), `${label} manifest is missing objects`);
+  for (const rejected of rejectedPatches) {
+    const object = manifest.objects.find(item => item.id === rejected.gid);
+    assert(object, `${label} manifest is missing structural rejection target ${rejected.gid}`);
+    if (patchValueEquals(object.currentProps?.[rejected.prop], rejected.value)) {
+      leaks.push(`${label} applied rejected structural value ${rejected.gid}.${rejected.prop}=${JSON.stringify(rejected.value)}`);
+    }
+  }
+}
+
+function capabilityProps(object) {
+  return Array.isArray(object?.propertyCapabilities)
+    ? object.propertyCapabilities.map(capability => capability?.prop)
+    : [];
+}
+
+function assertStructuralTarget(object, role, kind, prop) {
+  assert(object?.id, `initial render has no ${role} target`);
+  assert(object.kind === kind, `${role} should retain historical kind ${kind}: ${JSON.stringify(object)}`);
+  assert(!object.editable?.includes(prop), `${role} exposes structural ${prop} as editable: ${JSON.stringify(object)}`);
+  assert(!capabilityProps(object).includes(prop), `${role} exposes structural ${prop} capability: ${JSON.stringify(object)}`);
+}
+
 async function createProject(token) {
   const created = await jsonRequest('/api/projects', token, {
     method: 'POST',
@@ -167,18 +221,56 @@ async function createProject(token) {
     || figure.manifest.objects.find(object => object.kind === 'text' && Array.isArray(object.editable) && object.editable.length > 0);
   assert(target?.id, 'initial render has no known editable text target for unsupported prop regression');
   const lineTarget = figure.manifest.objects.find(object => (
-    object.kind === 'line' && object.editable?.includes('linewidth')
+    object.kind === 'line' && object.role !== 'step_series' && object.editable?.includes('linewidth')
+  ));
+  const histogramTarget = figure.manifest.objects.find(object => (
+    object.kind === 'bar_container' && object.role === 'histogram_series'
+  ));
+  const stairsTarget = figure.manifest.objects.find(object => (
+    object.kind === 'patch' && object.role === 'stairs_series'
+  ));
+  const stepTarget = figure.manifest.objects.find(object => (
+    object.kind === 'line' && object.role === 'step_series'
   ));
   const localTarget = figure.manifest.objects.find(object => (
     Array.isArray(object.propertyCapabilities)
       && object.propertyCapabilities.some(capability => capability?.prop === 'color' && capability?.patchMode === 'local_patch')
   ));
   assert(lineTarget?.id, 'initial render has no editable line target for mixed batch regression');
+  assertStructuralTarget(histogramTarget, 'histogram_series', 'bar_container', 'bins');
+  assertStructuralTarget(stairsTarget, 'stairs_series', 'patch', 'edges');
+  assertStructuralTarget(stepTarget, 'step_series', 'line', 'where');
   assert(localTarget?.id, 'initial render has no capability-declared local color target for cache invalidation regression');
   return {
     projectId,
     unsupportedPatch: unsupportedPatchFor(target.id),
     rendererOnlyPatch: rendererOnlyRejectedPatchFor(target.id),
+    structuralRejectedPatches: [
+      {
+        op: 'set',
+        mode: 'backend_patch',
+        gid: histogramTarget.id,
+        prop: 'bins',
+        value: [0, 1, 3],
+        ...identityFields(histogramTarget),
+      },
+      {
+        op: 'set',
+        mode: 'backend_patch',
+        gid: stairsTarget.id,
+        prop: 'edges',
+        value: [0, 2, 3, 4],
+        ...identityFields(stairsTarget),
+      },
+      {
+        op: 'set',
+        mode: 'backend_patch',
+        gid: stepTarget.id,
+        prop: 'where',
+        value: 'post',
+        ...identityFields(stepTarget),
+      },
+    ],
     validMixedPatches: [
       {
         op: 'set',
@@ -482,20 +574,22 @@ function readPersistedFigure(projectId, assetId) {
   }
 }
 
-async function collectApiStateLeaks(token, projectId, rejectedPatches, leaks) {
+async function collectApiStateLeaks(token, projectId, editLogRejectedPatches, nonStructuralRejectedPatches, structuralRejectedPatches, leaks) {
   const loaded = await jsonRequest(`/api/projects/${projectId}`, token);
   assert(loaded.response.ok && loaded.data?.status === 'success', `project load failed: ${JSON.stringify(loaded.data)}`);
   const figure = loaded.data.project?.figures?.find(item => item.figureId === 'fig_1');
   assert(figure, 'project load did not return fig_1');
-  collectNoRejectedEntries('project API figure', figure.editLog, rejectedPatches, leaks);
-  collectJsonDoesNotContainRejected('project API history', figure.history, rejectedPatches, leaks);
+  collectNoRejectedEntries('project API figure', figure.editLog, editLogRejectedPatches, leaks);
+  collectJsonDoesNotContainRejected('project API history', figure.history, nonStructuralRejectedPatches, leaks);
+  collectJsonDoesNotContainRejectedTriplets('project API history', figure.history, structuralRejectedPatches, leaks);
 
   const figures = await jsonRequest(`/api/projects/${projectId}/figures`, token);
   assert(figures.response.ok && figures.data?.status === 'success', `project figures load failed: ${JSON.stringify(figures.data)}`);
   const listed = figures.data.figures?.find(item => item.figureId === 'fig_1');
   assert(listed, 'project figures endpoint did not return fig_1');
-  collectNoRejectedEntries('project figures API row', listed.editLog, rejectedPatches, leaks);
-  collectJsonDoesNotContainRejected('project figures API history', listed.history, rejectedPatches, leaks);
+  collectNoRejectedEntries('project figures API row', listed.editLog, editLogRejectedPatches, leaks);
+  collectJsonDoesNotContainRejected('project figures API history', listed.history, nonStructuralRejectedPatches, leaks);
+  collectJsonDoesNotContainRejectedTriplets('project figures API history', listed.history, structuralRejectedPatches, leaks);
 }
 
 async function exportProjectFigure(token, projectId, name) {
@@ -515,7 +609,7 @@ async function exportProjectFigure(token, projectId, name) {
   return asset;
 }
 
-async function collectExportStateLeaks(token, projectId, rejectedPatches, baselineMetadata, leaks) {
+async function collectExportStateLeaks(token, projectId, rejectedPatches, structuralRejectedPatches, baselineMetadata, leaks) {
   const asset = await exportProjectFigure(token, projectId, 'patch-rejection-export-anchor');
   if (asset.metadata?.editCount !== baselineMetadata.editCount) {
     leaks.push(`export asset anchor editCount changed after rejected patches: baseline=${baselineMetadata.editCount}, actual=${asset.metadata?.editCount}`);
@@ -524,22 +618,34 @@ async function collectExportStateLeaks(token, projectId, rejectedPatches, baseli
     leaks.push(`export asset anchor editLogHash changed after rejected patches: baseline=${baselineMetadata.editLogHash}, actual=${asset.metadata?.editLogHash}`);
   }
   collectJsonDoesNotContainRejected('export response asset metadata', asset.metadata, rejectedPatches, leaks);
+  collectJsonDoesNotContainRejectedTriplets('export response asset metadata', asset.metadata, structuralRejectedPatches, leaks);
   return asset;
 }
 
-function collectDbStateLeaks(projectId, rejectedPatches, baselineMetadata, baselineRevision, assetId, leaks) {
+function collectProjectPreviewCacheLeaks(projectId, structuralRejectedPatches, baselineRevision, leaks) {
+  const stored = readProjectFigurePreviewCache(projectId);
+  assert(stored, 'project figure preview cache row is missing after rejected patches');
+  if (Number(stored.revision) !== baselineRevision) {
+    leaks.push(`project preview cache revision changed after rejected patches: baseline=${baselineRevision}, actual=${stored.revision}`);
+  }
+  collectManifestDoesNotApplyStructuralPatches('project preview cache', stored.manifest, structuralRejectedPatches, leaks);
+  collectJsonDoesNotContainRejectedTriplets('project preview cache manifest', stored.manifest, structuralRejectedPatches, leaks);
+}
+
+function collectDbStateLeaks(projectId, editLogRejectedPatches, nonStructuralRejectedPatches, structuralRejectedPatches, baselineMetadata, baselineRevision, assetId, leaks) {
   const persisted = readPersistedFigure(projectId, assetId);
   assert(persisted.session, 'DB session row missing');
   assert(persisted.figure, 'DB project figure row missing');
-  collectNoRejectedEntries('DB session', persisted.session.editLog, rejectedPatches, leaks);
-  collectNoRejectedEntries('DB project_figure', persisted.figure.editLog, rejectedPatches, leaks);
+  collectNoRejectedEntries('DB session', persisted.session.editLog, editLogRejectedPatches, leaks);
+  collectNoRejectedEntries('DB project_figure', persisted.figure.editLog, editLogRejectedPatches, leaks);
   if (Number(persisted.session.revision) !== baselineRevision) {
     leaks.push(`DB session revision changed after rejected patches: baseline=${baselineRevision}, actual=${persisted.session.revision}`);
   }
   if (Number(persisted.figure.revision) !== baselineRevision) {
     leaks.push(`DB project_figure revision changed after rejected patches: baseline=${baselineRevision}, actual=${persisted.figure.revision}`);
   }
-  collectJsonDoesNotContainRejected('DB project_figure history', persisted.figure.history, rejectedPatches, leaks);
+  collectJsonDoesNotContainRejected('DB project_figure history', persisted.figure.history, nonStructuralRejectedPatches, leaks);
+  collectJsonDoesNotContainRejectedTriplets('DB project_figure history', persisted.figure.history, structuralRejectedPatches, leaks);
   assert(persisted.asset, 'DB export asset row missing');
   if (persisted.asset.metadata?.editCount !== baselineMetadata.editCount) {
     leaks.push(`DB export asset editCount changed after rejected patches: baseline=${baselineMetadata.editCount}, actual=${persisted.asset.metadata?.editCount}`);
@@ -547,12 +653,14 @@ function collectDbStateLeaks(projectId, rejectedPatches, baselineMetadata, basel
   if (persisted.asset.metadata?.editLogHash !== baselineMetadata.editLogHash) {
     leaks.push(`DB export asset editLogHash changed after rejected patches: baseline=${baselineMetadata.editLogHash}, actual=${persisted.asset.metadata?.editLogHash}`);
   }
-  collectJsonDoesNotContainRejected('DB export asset metadata', persisted.asset.metadata, rejectedPatches, leaks);
+  collectJsonDoesNotContainRejected('DB export asset metadata', persisted.asset.metadata, nonStructuralRejectedPatches, leaks);
+  collectJsonDoesNotContainRejectedTriplets('DB export asset metadata', persisted.asset.metadata, structuralRejectedPatches, leaks);
   assert(persisted.snapshot, 'DB export editing snapshot missing');
   const snapshotFigure = persisted.snapshot.figures?.find(item => item.figureId === 'fig_1');
   assert(snapshotFigure, 'DB export editing snapshot missing fig_1');
-  collectNoRejectedEntries('DB export editing snapshot fig_1', snapshotFigure.editLog, rejectedPatches, leaks);
-  collectJsonDoesNotContainRejected('DB export editing snapshot', persisted.snapshot, rejectedPatches, leaks);
+  collectNoRejectedEntries('DB export editing snapshot fig_1', snapshotFigure.editLog, editLogRejectedPatches, leaks);
+  collectJsonDoesNotContainRejected('DB export editing snapshot', persisted.snapshot, nonStructuralRejectedPatches, leaks);
+  collectJsonDoesNotContainRejectedTriplets('DB export editing snapshot', persisted.snapshot, structuralRejectedPatches, leaks);
 }
 
 function assertConflictResponse(label, result, rejectedPatch, baselineRevision) {
@@ -575,6 +683,7 @@ async function main() {
     projectId = created.projectId;
     const baselineRevision = created.initialRevision;
     const rejectedPatches = [rejectedMissingGid, created.unsupportedPatch, created.rendererOnlyPatch];
+    const allRejectedPatches = [...rejectedPatches, ...created.structuralRejectedPatches];
     const baselineAsset = await exportProjectFigure(token, projectId, 'patch-rejection-baseline-anchor');
     const baselineMetadata = {
       editCount: baselineAsset.metadata?.editCount,
@@ -597,13 +706,41 @@ async function main() {
       baselineRevision,
     );
     assertConflictResponse('renderer-only rejected patch', rendererOnlyResult, created.rendererOnlyPatch, baselineRevision);
+    const structuralResults = [];
+    for (const structuralPatch of created.structuralRejectedPatches) {
+      const structuralResult = await submitRejectedPatch(
+        token,
+        projectId,
+        structuralPatch,
+        `structural-${structuralPatch.prop}`,
+        baselineRevision,
+      );
+      assertConflictResponse(`structural ${structuralPatch.prop} patch`, structuralResult, structuralPatch, baselineRevision);
+      if (structuralResult.manifest) {
+        const responseManifestLeaks = [];
+        collectManifestDoesNotApplyStructuralPatches(
+          `structural ${structuralPatch.prop} response`,
+          structuralResult.manifest,
+          [structuralPatch],
+          responseManifestLeaks,
+        );
+        assert(responseManifestLeaks.length === 0, responseManifestLeaks.join('\n'));
+      }
+      structuralResults.push(structuralResult);
+    }
     const leaks = [];
 
     collectJsonDoesNotContainRejected('missing gid patch response editLog', missingResult?.editLog || [], rejectedPatches, leaks);
     collectJsonDoesNotContainRejected('unsupported prop patch response editLog', unsupportedResult?.editLog || [], rejectedPatches, leaks);
-    await collectApiStateLeaks(token, projectId, rejectedPatches, leaks);
-    const postPatchAsset = await collectExportStateLeaks(token, projectId, rejectedPatches, baselineMetadata, leaks);
-    collectDbStateLeaks(projectId, rejectedPatches, baselineMetadata, baselineRevision, postPatchAsset.assetId, leaks);
+    collectJsonDoesNotContainRejected('renderer-only patch response editLog', rendererOnlyResult?.editLog || [], rejectedPatches, leaks);
+    for (const structuralResult of structuralResults.filter(result => result?.status)) {
+      collectNoRejectedEntries('structural patch response editLog', structuralResult?.editLog || [], allRejectedPatches, leaks);
+      collectJsonDoesNotContainRejectedTriplets('structural patch response editLog', structuralResult?.editLog || [], created.structuralRejectedPatches, leaks);
+    }
+    await collectApiStateLeaks(token, projectId, allRejectedPatches, rejectedPatches, created.structuralRejectedPatches, leaks);
+    collectProjectPreviewCacheLeaks(projectId, created.structuralRejectedPatches, baselineRevision, leaks);
+    const postPatchAsset = await collectExportStateLeaks(token, projectId, rejectedPatches, created.structuralRejectedPatches, baselineMetadata, leaks);
+    collectDbStateLeaks(projectId, allRejectedPatches, rejectedPatches, created.structuralRejectedPatches, baselineMetadata, baselineRevision, postPatchAsset.assetId, leaks);
     assert(leaks.length === 0, `rejected patch persistence leak(s):\n- ${leaks.join('\n- ')}`);
 
     const mixedResult = await submitPatchBatch(
@@ -639,6 +776,93 @@ async function main() {
     );
     assert(pureLocalResult?.status === 'success', `pure local patch failed: ${JSON.stringify(pureLocalResult)}`);
     assert(Number(pureLocalResult?.revision) === baselineRevision + 2, `pure local patch revision mismatch: ${JSON.stringify(pureLocalResult)}`);
+    const staleProjectSave = await jsonRequest(`/api/projects/${projectId}`, token, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: 'Patch rejection persistence regression',
+        spec: {
+          plot_type: 'custom',
+          custom_script: script,
+          script,
+          script_language: 'python',
+        },
+        figures: [{
+          figureId: 'fig_1',
+          index: 0,
+          baseRevision: baselineRevision + 1,
+          revision: baselineRevision + 1,
+          editLog: mixedResult.editLog,
+        }],
+      }),
+    });
+    assert(
+      staleProjectSave.response.status === 409
+        && staleProjectSave.data?.status === 'conflict'
+        && staleProjectSave.data?.code === 'PROJECT_SAVE_REVISION_CONFLICT',
+      `stale project save did not return a revision conflict: ${JSON.stringify(staleProjectSave.data)}`,
+    );
+    const missingHashProjectSave = await jsonRequest(`/api/projects/${projectId}`, token, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: 'Patch rejection persistence regression',
+        spec: {
+          plot_type: 'custom',
+          custom_script: script,
+          script,
+          script_language: 'python',
+        },
+        figures: [{
+          figureId: 'fig_1',
+          index: 0,
+          baseRevision: baselineRevision + 2,
+          revision: baselineRevision + 2,
+          editLog: mixedResult.editLog,
+        }],
+      }),
+    });
+    assert(
+      missingHashProjectSave.response.status === 409
+        && missingHashProjectSave.data?.status === 'conflict'
+        && missingHashProjectSave.data?.code === 'PROJECT_SAVE_PRECONDITION_REQUIRED',
+      `same-revision stale project save without hash was not rejected: ${JSON.stringify(missingHashProjectSave.data)}`,
+    );
+    const sameRevisionStaleProjectSave = await jsonRequest(`/api/projects/${projectId}`, token, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: 'Patch rejection persistence regression',
+        spec: {
+          plot_type: 'custom',
+          custom_script: script,
+          script,
+          script_language: 'python',
+        },
+        figures: [{
+          figureId: 'fig_1',
+          index: 0,
+          baseRevision: baselineRevision + 2,
+          baseEditLogHash: 'stale-edit-log-hash',
+          revision: baselineRevision + 2,
+          editLog: mixedResult.editLog,
+        }],
+      }),
+    });
+    assert(
+      sameRevisionStaleProjectSave.response.status === 409
+        && sameRevisionStaleProjectSave.data?.status === 'conflict'
+        && sameRevisionStaleProjectSave.data?.code === 'PROJECT_SAVE_EDIT_LOG_CONFLICT',
+      `same-revision stale project save did not return an edit-log conflict: ${JSON.stringify(sameRevisionStaleProjectSave.data)}`,
+    );
+    const afterStaleProjectSave = readPersistedFigure(projectId, null);
+    assert(
+      Number(afterStaleProjectSave.session?.revision) === baselineRevision + 2
+        && Number(afterStaleProjectSave.figure?.revision) === baselineRevision + 2,
+      `stale project save changed revision: ${JSON.stringify(afterStaleProjectSave)}`,
+    );
+    assert(
+      afterStaleProjectSave.session?.editLog?.some(entry => isRejectedPatch(entry, created.pureLocalPatch))
+        && afterStaleProjectSave.figure?.editLog?.some(entry => isRejectedPatch(entry, created.pureLocalPatch)),
+      `stale project save removed the newer local patch: ${JSON.stringify(afterStaleProjectSave)}`,
+    );
     const invalidatedPreview = readProjectFigurePreviewCache(projectId);
     assert(invalidatedPreview, 'pure local patch removed project figure row');
     assert(
@@ -695,11 +919,15 @@ async function main() {
         'missing gid rejected patch was not persisted',
         'unsupported prop rejected patch was not persisted',
         'renderer-rejected patch was not persisted after manifest precheck passed',
+        'histogram bins, stairs edges, and step where structural patches were rejected without persistence',
         'standalone direct session forced lying local patches through backend validation',
         'standalone missing gid conflict did not change revision or editLog',
         'session editLog, project figure edit_log/history, and export anchors stayed clean',
         'valid mixed local/backend batch persisted both edits in one revision',
         'pure local project patch invalidated stale preview and refreshed from latest editLog',
+        'stale project save was rejected without removing a newer server patch',
+        'same-revision editLog mutation without a base hash was rejected without persistence',
+        'same-revision stale editLog hash was rejected without persistence',
         'legacy unversioned fingerprint accepted a stableKey/seriesKey-compatible first edit',
       ],
     }, null, 2));

@@ -1,7 +1,54 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-30 02:46:41 +08:00
+> 最后修改时间：2026-07-30 04:35:45 +08:00
+
+---
+
+## 2026-07-19 16:22:04 +08:00 直方/阶梯对象误归类与过期保存覆盖新编辑
+
+**状态与级别**
+
+- 状态：已修复并通过两套 Matplotlib、浏览器、历史、导出、安全、旧项目兼容和三轮独立复审；尚未提交、推送或部署。
+- 级别：P0 编辑正确性与数据一致性。不会删除源数据，但可能把结构参数当样式开放、把修改写到内部子 patch，或由旧自动保存覆盖用户刚完成的编辑。
+
+**现象**
+
+- `hist`、`stairs`、`step` 与普通 bar、patch、line 共用基础类，组件和配色无法稳定区分系列边界。
+- histogram 内部多个 rectangle 可被单独选中，系列改色可能扩散到同色普通对象。
+- 旧自动保存与 patch/手动保存并发时，可在相同 revision 下用旧 editLog 覆盖新值；保存期间的新 Draft 也可能被旧响应按 `gid/prop` 粗略清除。
+- 旧项目加载会从 `project_figures` 或 `spec.editLog` 恢复，但 PUT 曾只比较 session，导致合法旧项目保存被误判冲突。
+
+**根因**
+
+- 只依赖 Matplotlib artist class，缺少 `Axes.hist/stairs/step` 的可信调用来源和父子关系。
+- 项目 PUT 没有 revision/editLog hash CAS，且本地样式保存不一定增加 revision。
+- 排队保存直接在旧 Promise 的 `finally` 中调用旧 React 闭包；草稿清理只比较 key，不比较已持久化值。
+- GET 与 PUT 使用了不同的 editLog 恢复优先级。
+
+**修复**
+
+- 记录可信绘图调用来源，输出 `histogram_series`、`stairs_series`、`step_series`；histogram 子 patch 标记 `parentOwned` 并重定向到父系列。
+- 只开放颜色、线宽、线型、透明度、marker 和 zorder 等可证明视觉属性；数据、分箱、边界、where 和 baseline 等结构参数保持只读。
+- 项目 PUT 要求 `baseRevision + baseEditLogHash`；缺前置条件、revision 漂移或 hash 漂移均在事务前 409，冲突请求零写入。
+- 排队保存等待下一次 React 提交；草稿只在当前值与服务端确认值完全相同时清除。
+- GET/PUT 统一使用非空 session、`project_figures.edit_log`、单 Figure `spec.editLog` 的恢复顺序；缺 CAS 的语义相同旧 payload 不覆盖 Figure 状态。
+
+**验证**
+
+- Vitest 144 文件/966 项；Matplotlib 3.7.2 与 3.8.4 均为 110/110。
+- 组件浏览器 41/41、语义中心 14/14、跨 Figure 16/16、扩展拖拽 10/10、R 浏览器 5/5。
+- patch 拒绝、项目保存预检、旧 contour 项目、历史、导出快照、并发恢复、文件事务、安全和用户隔离通过。
+- `npm run build`、`git diff --check` 通过；数据审计保持 25 用户、121 项目、263 文件、101 导出资产、0 错误和 23 条既有告警。
+- 最终独立 5.5 high 复审 PASS，无 HIGH/MEDIUM。
+
+**防复发规则**
+
+- 复合图元必须用可信 provenance 或等强证据分类，不能只看通用 artist class。
+- 内部 child 不能作为现代编辑目标；结构参数必须显式只读并有拒绝持久化测试。
+- 不增加 revision 的状态保存必须同时校验稳定 hash；缺 CAS 的请求不得改写 Figure 状态。
+- GET 与 PUT 必须复用同一恢复函数；旧项目兼容测试必须覆盖加载、无状态保存、真实改写、导出和恢复。
+- 保存回调只能清除它实际确认的值；排队异步操作不得复用旧 React 状态闭包。
 
 ---
 
@@ -2605,3 +2652,47 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 - 新旧控件并存期间，自动化必须以语义容器和 canonical control key 定位，不得依赖整个侧栏的祖先文本或控件出现顺序。
 - descriptor 控件替换旧控件前，必须覆盖所有原有布尔属性，并保留稳定的测试与可访问性 DOM 契约。
 - 测试出现 `changed=false` 时先证明目标控件是否被真实操作，不能把定位器失效误判为 resolver 或 renderer 失败。
+
+---
+
+## 2026-07-30 06:48:58 +08:00 生产集成冲突遗漏导致身份、分色与导出恢复回归
+
+**状态与级别**
+
+- 状态：已在生产集成候选中修复，定向 Python 身份、语义、保存预检、拒绝零持久化及导出快照恢复回归通过；尚未部署。
+- 级别：P0 编辑与恢复正确性。错误可能阻断旧项目重放、扩大分色修改范围，或让导出/恢复丢失检查点内容。
+
+**现象**
+
+- 图例代理对象的派生坐标变化会触发 v2 fingerprint 漂移，正常旧项目编辑被拒绝。
+- 带 `matchColor` 的 collection 分色修改可能被判为 local，无法由 renderer 精确修改向量颜色中的匹配子集。
+- 项目中存在已失效的无关数据记录时，导出快照直接报错；放宽后恢复又会把该记录误判为导出后新增文件。
+- 同步渲染只携带 backend 编辑时会覆盖已持久化的 local 编辑，恢复前检查点因而丢失 histogram、stairs 和 step 样式。
+
+**根因**
+
+- cherry-pick 冲突处理遗漏了源提交中部分 `server.ts`、`App.tsx` 与 renderer 合并语义。
+- `legend_marker` 的结构 fingerprint 错误包含图例布局派生坐标，而非只描述代理对象结构。
+- local SVG/manifest 路径不具备按 `matchColor` 修改向量颜色子集的能力，服务端却仍允许客户端 mode 影响分流。
+- 快照成员比较只按数据库记录 ID 判断，没有区分缺失存储文件的历史脏记录和真实新增文件。
+- 项目同步渲染按 Figure 整体替换 editLog，没有保留已持久化但本次后端请求未携带的 local patch。
+
+**修复**
+
+- `legend_marker` v2 fingerprint 排除派生 handle 坐标；真实数据 series 仍保留数据形状与统计结构。
+- 非空 `matchColor` 统一由服务端强制进入 backend renderer，不信任客户端伪报 mode。
+- 导出快照跳过缺失文件并记录 `snapshotWarnings`；恢复仅把具有真实存储文件的未快照记录判为导出后新增。
+- 同步渲染以新请求覆盖同键编辑，同时保留已有 `local_patch`，避免后端重放子集清空本地样式。
+
+**验证**
+
+- `tests/test_structural_identity_drift.py`：8/8。
+- `test:semantic-smoke`：19/19；`test:project-save-preflight` 与 `test:patch-rejection-persistence` 通过。
+- `test:export-snapshot-restore` 全通过，覆盖快照 warning、真实新增数据拒绝、恢复前检查点、并发锁、旧 v1 快照和预览重建。
+
+**防复发规则**
+
+- cherry-pick 共享主链路后必须逐项对照源提交的行为测试，不得以“冲突已解决”替代语义核验。
+- 结构 fingerprint 不得包含图例布局等派生样式坐标；颜色子集编辑不得走无法表达子集语义的 local 路径。
+- 缺失文件只能作为可审计 warning 被排除，真实新增或内容变化仍必须阻断精确恢复。
+- 后端重放子集不得清空 durable local edit；同键覆盖与显式撤销必须通过稳定 editLog 语义处理。

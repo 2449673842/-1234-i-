@@ -117,6 +117,58 @@ class TestComplexArtistCoverage(unittest.TestCase):
         self.assertEqual(summary.get("dedicated"), 0, report)
         self.assertEqual(report.get("complexArtists"), [], report)
 
+    def _capability_props(self, obj):
+        return [item.get("prop") for item in obj.get("propertyCapabilities", [])]
+
+    def _assert_visual_only_capabilities(self, obj, expected_visual_props, readonly_props):
+        self.assertEqual(obj.get("editable"), expected_visual_props, obj)
+        capability_props = self._capability_props(obj)
+        self.assertEqual(capability_props, expected_visual_props, obj)
+        for prop in readonly_props:
+            self.assertNotIn(prop, obj.get("editable", []), obj)
+            self.assertNotIn(prop, capability_props, obj)
+
+    def _assert_fingerprint_stable_after_style_edit(self, script, obj, prop, value):
+        capability = next(
+            item for item in obj.get("propertyCapabilities", [])
+            if item.get("prop") == prop
+        )
+        edit = {
+            "gid": obj["id"],
+            "prop": prop,
+            "value": value,
+            "mode": capability.get("patchMode", "backend_patch"),
+            "stableKey": obj.get("stableKey"),
+            "fingerprint": obj.get("fingerprint"),
+            "fingerprintVersion": 2,
+            "identity": obj.get("identity"),
+        }
+        replayed = replay_render(script, edit_logs={"fig_1": [edit]})
+        self.assertEqual(replayed.get("status"), "success", replayed)
+        self.assertEqual(replayed.get("warnings", []), [], replayed)
+        replayed_obj = next(
+            item for item in replayed["figures"][0]["manifest"]["objects"]
+            if item.get("id") == obj["id"]
+        )
+        self.assertEqual(obj.get("fingerprintVersion"), 2, obj)
+        self.assertEqual(replayed_obj.get("fingerprintVersion"), 2, replayed_obj)
+        self.assertEqual(replayed_obj.get("stableKey"), obj.get("stableKey"))
+        self.assertEqual(replayed_obj.get("fingerprint"), obj.get("fingerprint"))
+        self.assertEqual(
+            replayed_obj.get("identity", {}).get("seriesKey"),
+            obj.get("identity", {}).get("seriesKey"),
+        )
+        actual_value = replayed_obj.get("currentProps", {}).get(prop)
+        if prop == "color" or prop.endswith("color"):
+            from matplotlib import colors as mcolors
+            if isinstance(actual_value, list) and actual_value and isinstance(actual_value[0], list):
+                actual_value = actual_value[0]
+            self.assertEqual(mcolors.to_hex(actual_value), mcolors.to_hex(value), replayed_obj)
+        elif isinstance(value, float):
+            self.assertAlmostEqual(actual_value, value, msg=replayed_obj)
+        else:
+            self.assertEqual(actual_value, value, replayed_obj)
+
     def test_by_kind_reports_capability_union_intersection_and_variants(self):
         manifest = self._render_manifest(
             """
@@ -551,19 +603,327 @@ ax.streamplot(x, y, u, v, color="#4477aa", density=0.6)
             {"LineCollection", "FancyArrowPatch"},
         )
 
-    def test_hist_stairs_step_shadow_coverage_is_conservative(self):
+    def test_hist_bar_container_has_histogram_identity_and_parent_owned_children(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+HIST_COLOR = "#4477aa"
+BAR_COLOR = "#ddaa33"
+ax.hist([0, 1, 1, 2, 2, 2], bins=[0, 1, 2, 3], color=HIST_COLOR, alpha=0.5, label="hist")
+ax.bar([3.4, 4.4], [1.5, 2.5], color=BAR_COLOR, label="plain bar")
+ax.legend()
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success", initial)
+        manifest = initial["figures"][0]["manifest"]
+        objects = self._objects_by_id(manifest)
+        bar_containers = [
+            obj for obj in manifest.get("objects", [])
+            if obj.get("kind") == "bar_container"
+        ]
+
+        histogram = next(
+            (obj for obj in bar_containers if obj.get("role") == "histogram_series"),
+            None,
+        )
+        self.assertIsNotNone(histogram, bar_containers)
+        self.assertTrue(histogram["id"].startswith("container.bar."), histogram)
+        self.assertEqual(
+            histogram.get("identity", {}).get("semanticKey"),
+            "histogram_series:subplot.0",
+            histogram,
+        )
+        self.assertEqual(
+            histogram.get("semanticCoverage", {}).get("status"),
+            "dedicated",
+            histogram,
+        )
+        self.assertEqual(
+            histogram.get("semanticCoverage", {}).get("family"),
+            "hist",
+            histogram,
+        )
+        self.assertTrue(histogram.get("children"), histogram)
+        self.assertEqual(histogram.get("label"), "hist", histogram)
+        self.assertEqual(histogram.get("stableKey"), "ax0.bar_container.idx.0", histogram)
+        for child_gid in histogram["children"]:
+            child = objects[child_gid]
+            self.assertEqual(child.get("parentId"), histogram["id"], child)
+            self.assertEqual(child.get("role"), "histogram_child_patch", child)
+            self.assertTrue(
+                child.get("currentProps", {}).get("parentOwned")
+                or (child.get("editable") == [] and child.get("propertyCapabilities") == []),
+                child,
+            )
+
+        legend_marker_ids = histogram.get("identity", {}).get("relation", {}).get("legendMarkerIds", [])
+        self.assertEqual(len(legend_marker_ids), 1, histogram)
+        legend_marker = objects[legend_marker_ids[0]]
+        self.assertEqual(legend_marker.get("role"), "legend_marker", legend_marker)
+        self.assertEqual(
+            legend_marker.get("identity", {}).get("relation", {}).get("parentId"),
+            histogram["id"],
+            legend_marker,
+        )
+
+        bindings = [
+            binding for binding in manifest.get("bindings", [])
+            if binding.get("paletteId") == "HIST_COLOR"
+        ]
+        self.assertEqual(len(bindings), 1, manifest.get("bindings"))
+        self.assertIn(histogram["id"], bindings[0].get("gids", []), bindings[0])
+        self.assertIn(legend_marker["id"], bindings[0].get("gids", []), bindings[0])
+        self.assertTrue(
+            all(child_gid not in bindings[0].get("gids", []) for child_gid in histogram["children"]),
+            bindings[0],
+        )
+
+        plain_bar = next(
+            obj for obj in bar_containers
+            if obj["id"] != histogram["id"] and obj.get("label") == "plain bar"
+        )
+        self.assertEqual(plain_bar.get("role"), "bar_series", plain_bar)
+        self.assertNotEqual(plain_bar.get("role"), "histogram_series", plain_bar)
+        self.assertNotEqual(
+            plain_bar.get("identity", {}).get("semanticKey"),
+            "histogram_series:subplot.0",
+            plain_bar,
+        )
+        ordinary_bar_bindings = [
+            binding for binding in manifest.get("bindings", [])
+            if binding.get("paletteId") == "BAR_COLOR"
+        ]
+        self.assertEqual(len(ordinary_bar_bindings), 1, manifest.get("bindings"))
+        self.assertNotIn(plain_bar["id"], ordinary_bar_bindings[0].get("gids", []), ordinary_bar_bindings[0])
+        self.assertTrue(
+            any(child_gid in ordinary_bar_bindings[0].get("gids", []) for child_gid in plain_bar.get("children", [])),
+            ordinary_bar_bindings[0],
+        )
+
+        self._assert_visual_only_capabilities(
+            histogram,
+            ["color", "facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
+            ["bins", "counts", "values", "edges", "density", "orientation"],
+        )
+        self._assert_fingerprint_stable_after_style_edit(script, histogram, "alpha", 0.25)
+
+        blocked = replay_render(script, edit_logs={"fig_1": [{
+            "gid": histogram["id"],
+            "prop": "bins",
+            "value": [0, 1, 3],
+            "mode": "backend_patch",
+        }]})
+        self.assertEqual(blocked.get("status"), "success", blocked)
+        self.assertEqual(
+            [warning.get("type") for warning in blocked.get("warnings", [])],
+            ["unsupported_prop"],
+            blocked,
+        )
+
+        legacy_child = objects[histogram["children"][0]]
+        legacy_replayed = replay_render(script, edit_logs={"fig_1": [{
+            "gid": legacy_child["id"],
+            "prop": "facecolor",
+            "value": "#8844aa",
+            "mode": "local_patch",
+            "stableKey": legacy_child["stableKey"],
+            "fingerprint": legacy_child["fingerprint"],
+            "identity": {"seriesKey": legacy_child["identity"]["seriesKey"]},
+        }]})
+        self.assertEqual(legacy_replayed.get("warnings", []), [], legacy_replayed)
+
+    def test_hist_step_variants_keep_patch_identity_with_histogram_role(self):
+        script = """
+import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon
+fig, ax = plt.subplots()
+ax.hist([0, 1, 1, 2], bins=[0, 1, 2, 3], histtype="step", color="#4477aa", label="outline")
+ax.hist([0, 1, 2, 2], bins=[0, 1, 2, 3], histtype="stepfilled", color="#cc6677", label="filled")
+ax.add_patch(Polygon([[3.2, 0], [3.6, 0], [3.4, 1]], closed=True, label="manual polygon"))
+"""
+        manifest = self._render_manifest(script)
+        histogram_patches = [
+            obj for obj in manifest.get("objects", [])
+            if obj.get("kind") == "patch" and obj.get("role") == "histogram_series"
+        ]
+        self.assertEqual([obj.get("label") for obj in histogram_patches], ["outline", "filled"])
+        for obj in histogram_patches:
+            self.assertTrue(obj["id"].startswith("patch."), obj)
+            self.assertEqual(obj["stableKey"], f"ax0.patch.label.{obj['label']}", obj)
+            self.assertEqual(obj.get("source", {}).get("callName"), "Axes.hist", obj)
+            self.assertNotIn("bins", obj.get("editable", []), obj)
+            self.assertNotIn("counts", self._capability_props(obj), obj)
+
+        manual = next(obj for obj in manifest.get("objects", []) if obj.get("label") == "manual polygon")
+        self.assertNotEqual(manual.get("role"), "histogram_series", manual)
+
+    def test_multi_dataset_histogram_keeps_each_series_identity_and_structure(self):
         manifest = self._render_manifest(
             """
 import matplotlib.pyplot as plt
 fig, ax = plt.subplots()
-ax.hist([0, 1, 1, 2, 2, 2], bins=[0, 1, 2, 3], color="#4477aa", alpha=0.5, label="hist")
-ax.stairs([1, 2, 1], [0, 1, 2, 3], color="#cc6677", label="stairs")
-ax.step([0, 1, 2], [2, 1, 3], where="mid", color="#228833", label="step")
+ax.hist(
+    [[0, 0.5, 1, 1], [0.5, 1.5, 2, 2]],
+    bins=[0, 1, 2, 3],
+    color=["#4477aa", "#cc6677"],
+    label=["Group A", "Group B"],
+)
+ax.legend()
 """
         )
+        objects = self._objects_by_id(manifest)
+        histograms = [
+            obj for obj in manifest.get("objects", [])
+            if obj.get("role") == "histogram_series"
+        ]
+        self.assertEqual([obj.get("label") for obj in histograms], ["Group A", "Group B"])
+        self.assertEqual(
+            [obj.get("stableKey") for obj in histograms],
+            ["ax0.bar_container.idx.0", "ax0.bar_container.idx.1"],
+        )
+        self.assertNotEqual(
+            histograms[0].get("currentProps", {}).get("counts"),
+            histograms[1].get("currentProps", {}).get("counts"),
+        )
+        for histogram in histograms:
+            self.assertTrue(histogram.get("children"), histogram)
+            self.assertEqual(
+                len(histogram.get("identity", {}).get("relation", {}).get("legendMarkerIds", [])),
+                1,
+                histogram,
+            )
+            for child_gid in histogram["children"]:
+                self.assertTrue(objects[child_gid].get("currentProps", {}).get("parentOwned"), objects[child_gid])
 
-        self._assert_flattened_editable_reported(manifest, "StepPatch", "stairs")
-        self._assert_classes_not_reported(manifest, {"BarContainer", "Rectangle", "Line2D"})
+    def test_stairs_steppatch_has_dedicated_readonly_structure(self):
+        script = """
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle, StepPatch
+fig, ax = plt.subplots()
+ax.stairs([1, 2, 1], [0, 1, 2, 3], color="#cc6677", label="stairs")
+ax.add_patch(Rectangle((3.2, 0.2), 0.4, 0.5, facecolor="#999999", label="plain patch"))
+ax.add_patch(StepPatch([1, 1.5, 1], [4, 5, 6, 7], label="manual stairs"))
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success", initial)
+        manifest = initial["figures"][0]["manifest"]
+        patch_like = [
+            obj for obj in manifest.get("objects", [])
+            if obj.get("id", "").startswith("patch.")
+        ]
+
+        stairs = next(
+            (obj for obj in patch_like if obj.get("role") == "stairs_series"),
+            None,
+        )
+        self.assertIsNotNone(stairs, patch_like)
+        self.assertTrue(stairs["id"].startswith("patch."), stairs)
+        self.assertEqual(stairs.get("kind"), "patch", stairs)
+        self.assertEqual(
+            stairs.get("identity", {}).get("semanticKey"),
+            "stairs_series:subplot.0",
+            stairs,
+        )
+        self.assertEqual(stairs.get("currentProps", {}).get("values"), [1, 2, 1], stairs)
+        self.assertEqual(stairs.get("currentProps", {}).get("edges"), [0, 1, 2, 3], stairs)
+        self.assertEqual(stairs.get("currentProps", {}).get("baseline"), 0, stairs)
+        self.assertEqual(
+            stairs.get("semanticCoverage", {}).get("status"),
+            "dedicated",
+            stairs,
+        )
+        self.assertEqual(
+            stairs.get("semanticCoverage", {}).get("family"),
+            "stairs",
+            stairs,
+        )
+
+        plain_patch = next(obj for obj in patch_like if obj.get("label") == "plain patch")
+        self.assertNotEqual(plain_patch.get("kind"), "stairs", plain_patch)
+        self.assertNotEqual(plain_patch.get("role"), "stairs_series", plain_patch)
+        manual_stairs = next(obj for obj in patch_like if obj.get("label") == "manual stairs")
+        self.assertNotEqual(manual_stairs.get("role"), "stairs_series", manual_stairs)
+
+        self._assert_visual_only_capabilities(
+            stairs,
+            ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
+            ["values", "edges", "baseline"],
+        )
+        self._assert_fingerprint_stable_after_style_edit(script, stairs, "edgecolor", "#114488")
+
+        blocked = replay_render(script, edit_logs={"fig_1": [{
+            "gid": stairs["id"], "prop": "edges", "value": [0, 2, 3, 4], "mode": "backend_patch",
+        }]})
+        self.assertEqual([item.get("type") for item in blocked.get("warnings", [])], ["unsupported_prop"], blocked)
+
+    def test_step_line_has_dedicated_readonly_structure_without_plot_bleed(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.step([0, 1, 2], [2, 1, 3], where="mid", color="#228833", label="step")
+ax.plot([0, 1, 2], [3, 3.5, 3.2], drawstyle="steps-mid", color="#222222", label="plain line")
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success", initial)
+        manifest = initial["figures"][0]["manifest"]
+        lines = [obj for obj in manifest.get("objects", []) if obj.get("kind") == "line"]
+
+        step_line = next(
+            (obj for obj in lines if obj.get("role") == "step_series"),
+            None,
+        )
+        self.assertIsNotNone(step_line, lines)
+        self.assertTrue(step_line["id"].startswith("line."), step_line)
+        self.assertEqual(
+            step_line.get("identity", {}).get("semanticKey"),
+            "step_series:subplot.0",
+            step_line,
+        )
+        self.assertEqual(step_line.get("currentProps", {}).get("where"), "mid", step_line)
+        self.assertEqual(
+            step_line.get("semanticCoverage", {}).get("status"),
+            "dedicated",
+            step_line,
+        )
+        self.assertEqual(
+            step_line.get("semanticCoverage", {}).get("family"),
+            "step",
+            step_line,
+        )
+
+        plain_line = next(obj for obj in lines if obj.get("label") == "plain line")
+        self.assertEqual(plain_line.get("role"), "line_series", plain_line)
+        self.assertNotEqual(plain_line.get("role"), "step_series", plain_line)
+
+        self._assert_visual_only_capabilities(
+            step_line,
+            ["color", "linewidth", "linestyle", "alpha", "marker", "markersize", "zorder"],
+            ["x", "y", "xdata", "ydata", "where", "drawstyle"],
+        )
+        self._assert_fingerprint_stable_after_style_edit(script, step_line, "color", "#1166aa")
+
+        blocked = replay_render(script, edit_logs={"fig_1": [{
+            "gid": step_line["id"], "prop": "where", "value": "post", "mode": "backend_patch",
+        }]})
+        self.assertEqual([item.get("type") for item in blocked.get("warnings", [])], ["unsupported_prop"], blocked)
+
+    def test_pyplot_hist_stairs_and_step_use_trusted_axes_call_provenance(self):
+        manifest = self._render_manifest(
+            """
+import matplotlib.pyplot as plt
+plt.figure()
+plt.hist([0, 1, 1, 2], bins=[0, 1, 2, 3], label="hist")
+plt.stairs([1, 2, 1], [0, 1, 2, 3], label="stairs")
+plt.step([0, 1, 2], [2, 1, 3], label="step")
+"""
+        )
+        by_role = {obj.get("role"): obj for obj in manifest.get("objects", [])}
+        for role, call_name in {
+            "histogram_series": "Axes.hist",
+            "stairs_series": "Axes.stairs",
+            "step_series": "Axes.step",
+        }.items():
+            self.assertEqual(by_role[role].get("source", {}).get("callName"), call_name, by_role[role])
 
     def test_plain_plot_scatter_bar_do_not_report_complex_coverage(self):
         manifest = self._render_manifest(

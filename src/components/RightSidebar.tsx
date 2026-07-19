@@ -9,9 +9,10 @@ import { recordTargetResolverShadowDiagnostic } from '../utils/targetResolverDia
 import { recordPropertyProjectionShadowDiagnostic } from '../utils/propertyProjectionDiagnostics';
 import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
 import {
+  isPythonStructuralSeriesProp,
   isParentOwnedManifestObject,
   resolveCrossFigurePolicy,
-  resolvePropertyPatchMode,
+  resolvePatchModeById,
 } from '../utils/propertyPatchMode';
 import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolvePaletteColorFallbackTargets, resolvePaletteTargets } from '../utils/paletteTargetResolver';
 import { projectPaletteColorControl } from '../utils/palettePropertyProjection';
@@ -944,6 +945,9 @@ export function RightSidebar({
     if (id.startsWith('spine.bottom.')) return '下边框';
     if (id.startsWith('series.line.')) return '线条系列';
     if (id.startsWith('series.collection.')) return '散点/集合系列';
+    if (obj.role === 'histogram_series') return '直方图系列';
+    if (obj.role === 'stairs_series') return '阶梯填充系列';
+    if (obj.role === 'step_series') return '阶梯线系列';
     if (id.startsWith('patch.')) return '图形块';
     return '';
   };
@@ -956,24 +960,13 @@ export function RightSidebar({
   const handlePatch = (gid: string, prop: string, value: unknown) => {
     const currentObject = manifest.objects.find((item) => item.id === gid);
     const figureId = currentFigureId;
-
-    const mode = resolvePropertyPatchMode({
-      generatedBy: manifest.generatedBy,
-      object: currentObject,
-      prop,
-      legacyLocal: isLocalPatch(currentObject?.kind || '', prop),
-    });
+    if (isPythonStructuralSeriesProp(currentObject, prop)) return;
+    const mode = resolvePatchModeById(manifest, gid, prop);
     onUpdateDraft(figureId, { gid, prop, value, mode });
   };
 
   const buildPatchEntry = (gid: string, prop: string, value: unknown): PatchEntry => {
-    const currentObject = manifest.objects.find((item) => item.id === gid);
-    const mode = resolvePropertyPatchMode({
-      generatedBy: manifest.generatedBy,
-      object: currentObject,
-      prop,
-      legacyLocal: isLocalPatch(currentObject?.kind || '', prop),
-    });
+    const mode = resolvePatchModeById(manifest, gid, prop);
     return { op: 'set', gid, prop, value, mode };
   };
 
@@ -3357,7 +3350,7 @@ export function RightSidebar({
               </select>
             </div>
           )}
-          {remainingLegacyEditable.map((prop) => {
+          {remainingLegacyEditable.filter(prop => !isPythonStructuralSeriesProp(obj, prop)).map((prop) => {
             const val = obj.currentProps[prop];
             return renderField(obj.id, prop, typeof val, val);
           })}
@@ -3749,6 +3742,7 @@ export function RightSidebar({
   const supportsBatchProp = (obj: ManifestObject | undefined, prop: string): boolean => {
     if (!obj) return false;
     if (isParentOwnedManifestObject(obj)) return false;
+    if (isPythonStructuralSeriesProp(obj, prop)) return false;
     const declaredCapability = obj.propertyCapabilities?.find(capability => capability.prop === prop);
     if (declaredCapability) return declaredCapability.replay !== 'unsupported';
     if (obj.editable.includes(prop) && !getUnsupportedProps(obj).includes(prop)) return true;
@@ -3851,7 +3845,10 @@ export function RightSidebar({
       if (componentSubplotScope === 'all') return true;
       return getObjectSubplotId(obj) === componentSubplotScope;
     });
-    const barContainerObjects = scopedObjects.filter(obj => obj.kind === 'bar_container');
+    const histogramObjects = scopedObjects.filter(obj => obj.role === 'histogram_series');
+    const stairsObjects = scopedObjects.filter(obj => obj.role === 'stairs_series');
+    const stepObjects = scopedObjects.filter(obj => obj.role === 'step_series');
+    const barContainerObjects = scopedObjects.filter(obj => obj.kind === 'bar_container' && obj.role !== 'histogram_series');
     const errorbarContainerObjects = scopedObjects.filter(obj => obj.kind === 'errorbar_container');
     const stemContainerObjects = scopedObjects.filter(obj => obj.kind === 'stem_container');
     const boxplotContainerObjects = scopedObjects.filter(obj => obj.kind === 'boxplot_container');
@@ -3864,6 +3861,9 @@ export function RightSidebar({
         ...stemContainerObjects,
         ...boxplotContainerObjects,
         ...violinContainerObjects,
+        ...histogramObjects,
+        ...stairsObjects,
+        ...stepObjects,
         ...contourObjects,
       ].flatMap(container => container.children || []),
     );
@@ -3881,8 +3881,8 @@ export function RightSidebar({
         || claimedContainerIds.has(String(obj.parentId || obj.identity?.relation?.parentId || ''))
       )
     );
-    const lineObjects = scopedObjects.filter(obj => obj.kind === 'line' && !isLegendChild(obj) && !isMarkerLine(obj) && !isClaimedContainerChild(obj));
-    const pointObjects = scopedObjects.filter(obj => !isLegendChild(obj) && !isClaimedContainerChild(obj) && (isMarkerLine(obj) || isScatterCollection(obj)));
+    const lineObjects = scopedObjects.filter(obj => obj.kind === 'line' && obj.role !== 'step_series' && !isLegendChild(obj) && !isMarkerLine(obj) && !isClaimedContainerChild(obj));
+    const pointObjects = scopedObjects.filter(obj => !['step_series', 'stairs_series', 'histogram_series'].includes(String(obj.role || '')) && !isLegendChild(obj) && !isClaimedContainerChild(obj) && (isMarkerLine(obj) || isScatterCollection(obj)));
     const bandObjects = scopedObjects.filter(obj => (
       obj.kind === 'fill_between' || obj.role === 'fill_between_series'
     ) && !isLegendChild(obj) && !isClaimedContainerChild(obj));
@@ -3893,7 +3893,12 @@ export function RightSidebar({
     const annotationArrowObjects = COMPONENT_TARGET_RESOLVER_V2_ENABLED
       ? scopedObjects.filter(obj => obj.role === 'annotation_arrow')
       : [];
-    const patchObjects = scopedObjects.filter(obj => obj.kind === 'patch' && obj.role !== 'annotation_arrow' && !isLegendChild(obj) && !isClaimedContainerChild(obj));
+    const patchObjects = scopedObjects.filter(obj => (
+      obj.kind === 'patch'
+      && !['annotation_arrow', 'histogram_series', 'stairs_series'].includes(String(obj.role || ''))
+      && !isLegendChild(obj)
+      && !isClaimedContainerChild(obj)
+    ));
     const textObjects = scopedObjects.filter(obj => obj.kind === 'text');
     const axisObjects = scopedObjects.filter(obj => ['axes', 'axis_x', 'axis_y'].includes(obj.kind));
     const subplotPanelObjects = scopedObjects.filter(obj => obj.kind === 'subplot');
@@ -3970,6 +3975,31 @@ export function RightSidebar({
         objects: bandObjects,
         colorProp: 'facecolor',
         edgeColorProp: 'edgecolor',
+        sizeProp: null,
+      },
+      {
+        id: 'histograms',
+        label: '直方图系列',
+        description: 'Histogram 容器，只调整填充、边框、透明度等视觉属性，不修改 bins/counts/weights 等结构数据。',
+        objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? histogramObjects : [],
+        colorProp: 'facecolor',
+        edgeColorProp: 'edgecolor',
+        sizeProp: null,
+      },
+      {
+        id: 'stairs',
+        label: '阶梯填充系列',
+        description: 'Stairs 系列，只调整线条、边框、透明度等视觉属性，不修改 values/edges/baseline。',
+        objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? stairsObjects : [],
+        colorProp: 'edgecolor',
+        sizeProp: null,
+      },
+      {
+        id: 'steps',
+        label: '阶梯线系列',
+        description: 'Step 线条，只调整颜色、线宽、线型等视觉属性，不修改 x/y/where/drawstyle 数据语义。',
+        objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? stepObjects : [],
+        colorProp: 'color',
         sizeProp: null,
       },
       {
@@ -4084,6 +4114,9 @@ export function RightSidebar({
 
     const componentRoleForItems = (items: ManifestObject[]): SemanticTargetRole | undefined => {
       if (items.length === 0) return undefined;
+      if (items.every(obj => obj.role === 'histogram_series')) return 'data_histogram';
+      if (items.every(obj => obj.role === 'stairs_series')) return 'data_stairs';
+      if (items.every(obj => obj.role === 'step_series')) return 'data_step';
       if (items.every(obj => obj.kind === 'bar_container' || obj.role === 'bar_series')) return 'data_bar';
       if (items.every(obj => obj.kind === 'errorbar_container' || obj.role === 'errorbar_series')) return 'data_errorbar';
       if (items.every(obj => obj.kind === 'stem_container' || obj.role === 'stem_series')) return 'data_stem';
@@ -4877,7 +4910,7 @@ export function RightSidebar({
         <div className="space-y-3 pt-2 border-t border-indigo-100">
           {parentOwnedObjects.length > 0 && (
             <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800" data-parent-owned-selection-notice="true">
-              已跳过 {parentOwnedObjects.length} 个由等高线父对象托管的子层；以下修改只作用于其余可编辑图元。
+              已跳过 {parentOwnedObjects.length} 个由语义父对象托管的子层；以下修改只作用于其余可编辑图元。
             </p>
           )}
           {fontObjects.length > 0 && (

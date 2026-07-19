@@ -25,8 +25,13 @@ const otherUserId = randomUUID();
 const legacyProjectId = randomUUID();
 const legacySessionId = `legacy_${randomUUID()}`;
 const ownerEmail = `history-${Date.now()}@example.test`;
+const wp6HistoryEditLog = [
+  { gid: 'container.bar.0.0', prop: 'facecolor', value: '#6f42c1', mode: 'local_patch' },
+  { gid: 'patch.0.3', prop: 'edgecolor', value: '#d97706', mode: 'local_patch' },
+  { gid: 'line.0.1', prop: 'color', value: '#0e7490', mode: 'local_patch' },
+];
 const history = {
-  past: [{ editLog: [], label: '初始图', timestamp: 1 }],
+  past: [{ editLog: wp6HistoryEditLog, label: 'WP6 导出状态', timestamp: 1 }],
   future: [],
 };
 
@@ -109,7 +114,10 @@ try {
     [{
       figureIndex: 0,
       sessionId: durableSessionId,
-      editLog: [{ gid: 'title.0', prop: 'fontsize', value: 12, mode: 'backend_patch' }],
+      editLog: [
+        { gid: 'title.0', prop: 'fontsize', value: 12, mode: 'backend_patch' },
+        ...wp6HistoryEditLog,
+      ],
       revision: 4,
       previewSvg: '<svg/>',
       manifest: { objects: [] },
@@ -121,12 +129,27 @@ try {
   const figure = db.prepare('SELECT revision, edit_log, history FROM project_figures WHERE project_id = ? AND figure_index = 0').get(projectId) as any;
   const persistedHistory = JSON.parse(figure.history || '{}');
   const persistedEditLog = JSON.parse(figure.edit_log || '[]');
-  if (figure.revision !== 4 || persistedEditLog.length !== 1 || persistedHistory.past?.length !== 1) {
+  const persistedWp6Checkpoint = persistedHistory.past?.[0]?.editLog;
+  const wp6HistoryPreserved = JSON.stringify(persistedWp6Checkpoint) === JSON.stringify(wp6HistoryEditLog);
+  const wp6CurrentPreserved = wp6HistoryEditLog.every(expected => persistedEditLog.some((entry: any) => (
+    entry.gid === expected.gid
+      && entry.prop === expected.prop
+      && entry.value === expected.value
+      && entry.mode === expected.mode
+  )));
+  if (
+    figure.revision !== 4
+    || persistedEditLog.length !== 4
+    || persistedHistory.past?.length !== 1
+    || !wp6HistoryPreserved
+    || !wp6CurrentPreserved
+  ) {
     throw new Error(`figure replacement persistence failed: ${JSON.stringify({ figure, persistedEditLog, persistedHistory })}`);
   }
 
   console.log('PASS project session cleanup excludes saved Figure sessions');
   console.log('PASS project Figure replacement preserves durable history');
+  console.log('PASS hist, stairs, and step edit logs survive current/history replacement');
   console.log('PASS legacy ownership requires an explicitly configured account');
 } finally {
   delete process.env.SCIFIGURE_LEGACY_OWNER_EMAIL;

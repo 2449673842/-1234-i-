@@ -6,7 +6,11 @@ import type {
   Manifest,
   ManifestObject,
 } from '../schemas/manifest';
-import { propertyCapabilityFor, resolvePatchMode } from './propertyPatchMode';
+import {
+  isParentOwnedManifestObject,
+  propertyCapabilityFor,
+  resolvePatchMode,
+} from './propertyPatchMode';
 
 export type PaletteTargetStrategy = 'legacy' | 'strict';
 
@@ -252,6 +256,42 @@ function mergeTargetMode(bindings: Binding[]): PaletteTargetResolution['targetMo
   return 'exact';
 }
 
+function histogramPaletteScope(manifest: Manifest, binding: Binding) {
+  const histogramObjects = (binding.targets ?? [])
+    .map(target => objectById(manifest, target.gid))
+    .filter((object): object is ManifestObject => object?.role === 'histogram_series');
+  if (histogramObjects.length === 0) return null;
+
+  const histogramIds = new Set(histogramObjects.map(object => object.id));
+  const seriesKeys = new Set(histogramObjects
+    .map(object => object.identity?.seriesKey)
+    .filter((value): value is string => Boolean(value)));
+  (binding.targets ?? []).forEach((target) => {
+    const object = objectById(manifest, target.gid);
+    if (object?.role === 'histogram_series' && target.seriesKey) seriesKeys.add(target.seriesKey);
+  });
+  const legendMarkerIds = new Set(histogramObjects.flatMap(object => (
+    object.identity?.relation?.legendMarkerIds ?? []
+  )));
+
+  return { histogramIds, seriesKeys, legendMarkerIds };
+}
+
+function isHistogramScopedPaletteTarget(
+  object: ManifestObject,
+  target: BindingTarget,
+  scope: NonNullable<ReturnType<typeof histogramPaletteScope>>,
+): boolean {
+  if (object.role === 'histogram_series') {
+    return Boolean(target.seriesKey && scope.seriesKeys.has(target.seriesKey));
+  }
+  if (object.role !== 'legend_marker') return false;
+
+  const parentId = object.parentId ?? object.identity?.relation?.parentId;
+  return Boolean(parentId && scope.histogramIds.has(parentId))
+    || scope.legendMarkerIds.has(object.id);
+}
+
 export function resolvePaletteTargets(
   manifest: Manifest,
   paletteId: string,
@@ -323,6 +363,7 @@ export function resolvePaletteTargets(
   const warnings = Array.from(new Set(bindings.flatMap(binding => binding.warnings ?? [])));
 
   bindings.forEach((binding) => {
+    const histogramScope = histogramPaletteScope(manifest, binding);
     if (binding.targetMode === 'ambiguous' || binding.targetMode === 'unresolved') {
       ambiguous.push({
         reason: 'ambiguous_binding',
@@ -360,6 +401,14 @@ export function resolvePaletteTargets(
           objectId: target.gid,
           reason: 'series_mismatch',
           detail: `${target.gid} series identity changed since binding generation.`,
+        });
+        return;
+      }
+      if (histogramScope && !isHistogramScopedPaletteTarget(object, target, histogramScope)) {
+        skipped.push({
+          objectId: target.gid,
+          reason: 'series_mismatch',
+          detail: `${target.gid} is outside the histogram series binding scope.`,
         });
         return;
       }
@@ -420,6 +469,7 @@ export function resolvePaletteColorFallbackTargets(
   (manifest.objects ?? []).forEach((object) => {
     if (selected && !selected.has(object.id)) return;
     if (!COLOR_FALLBACK_KINDS.has(object.kind)) return;
+    if (isParentOwnedManifestObject(object)) return;
     if (object.kind === 'collection' && isContourChildCollection(manifest, object)) return;
     COLOR_FALLBACK_PROPS.forEach((prop) => {
       if (!Object.prototype.hasOwnProperty.call(object.currentProps ?? {}, prop)) return;

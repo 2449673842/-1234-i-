@@ -170,4 +170,72 @@ describe('Python complex artist target roles', () => {
       { op: 'set', mode: 'backend_patch', gid: contourf.id, prop: 'alpha', value: 0.5 },
     ]);
   });
+
+  it.each([
+    ['data_histogram', 'histogram.0.0', 'bar_container', 'histogram_series', 'facecolor'],
+    ['data_stairs', 'stairs.0.0', 'patch', 'stairs_series', 'edgecolor'],
+    ['data_step', 'step.0.0', 'line', 'step_series', 'color'],
+  ])('routes %s only to its dedicated Python series role', (
+    targetRole,
+    targetId,
+    targetKind,
+    seriesRole,
+    prop,
+  ) => {
+    const dedicatedSeries = complexObject({
+      id: targetId,
+      kind: targetKind,
+      role: seriesRole,
+      prop,
+    });
+    const ordinaryBar = complexObject({
+      id: 'bar_container.0.0',
+      kind: 'bar_container',
+      role: 'bar_series',
+      prop,
+    });
+    const ordinaryPatch = complexObject({
+      id: 'patch.0.0',
+      kind: 'patch',
+      role: 'patch',
+      prop,
+    });
+    const ordinaryLine = complexObject({
+      id: 'line.0.0',
+      kind: 'line',
+      role: 'line_series',
+      prop,
+    });
+    const legendMarker = complexObject({
+      id: 'legend_line.0.0',
+      kind: 'line',
+      role: 'legend_marker',
+      prop,
+    });
+    const manifest = {
+      generatedBy: 'introspection',
+      globals: {},
+      objects: [dedicatedSeries, ordinaryBar, ordinaryPatch, ordinaryLine, legendMarker],
+      colorGroups: [],
+      palettes: [],
+      groups: [],
+      bindings: [],
+      capabilities: { localPatch: true, backendPatch: true, codePatch: true },
+    } as Manifest;
+    const intent = {
+      intent: 'style.component',
+      scope: {
+        selectionMode: 'role_in_figure',
+        targetRole,
+      },
+      operation: { prop, value: '#118833' },
+      commit: { mode: 'draft', applyAsOneHistoryStep: true },
+      fallback: { onUnsupported: 'skip_with_warning' },
+    } as EditingIntent;
+
+    expect(inferEditingTargetRole(dedicatedSeries)).toBe(targetRole);
+    expect(compileEditingIntentStrict(manifest, intent).patches).toEqual([
+      { op: 'set', mode: 'local_patch', gid: targetId, prop, value: '#118833' },
+    ]);
+  });
 });

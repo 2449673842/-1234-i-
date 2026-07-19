@@ -93,6 +93,56 @@ original_violinplot = Axes.violinplot
 original_fill_between = Axes.fill_between
 original_contour = Axes.contour
 original_contourf = Axes.contourf
+original_hist = Axes.hist
+original_stairs = Axes.stairs
+original_step = Axes.step
+
+
+def _plain_value(value):
+    """Convert small structural plotting metadata to JSON-safe values."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        try:
+            return tolist()
+        except Exception:
+            pass
+    if isinstance(value, (list, tuple)):
+        return [_plain_value(item) for item in value]
+    return value
+
+
+def _histogram_series_artists(patches) -> list:
+    if isinstance(patches, matplotlib.container.BarContainer):
+        return [patches]
+    try:
+        from matplotlib.patches import Patch
+        if isinstance(patches, Patch):
+            return [patches]
+    except Exception:
+        pass
+    try:
+        result = []
+        for item in list(patches):
+            result.extend(_histogram_series_artists(item))
+        return result
+    except TypeError:
+        return []
+
+
+def _histogram_label(label_arg, index: int, artist) -> Optional[str]:
+    if isinstance(label_arg, str):
+        return label_arg if index == 0 else None
+    if isinstance(label_arg, (list, tuple)) and index < len(label_arg):
+        label = label_arg[index]
+        return str(label) if label is not None else None
+    candidates = list(getattr(artist, "patches", []) or []) or [artist]
+    for child in candidates:
+        label = _safe_artist_label(child, "")
+        if label and not label.startswith("_"):
+            return label
+    return None
 
 def patched_boxplot(self, *args, **kwargs):
     res = original_boxplot(self, *args, **kwargs)
@@ -143,11 +193,73 @@ def patched_contourf(self, *args, **kwargs):
     artist = original_contourf(self, *args, **kwargs)
     return _register_contour_set(artist, self, "contourf", "Axes.contourf", kwargs)
 
+
+def patched_hist(self, *args, **kwargs):
+    result = original_hist(self, *args, **kwargs)
+    counts, edges, patches = result
+    series_artists = _histogram_series_artists(patches)
+    plain_counts = _plain_value(counts)
+    plain_edges = _plain_value(edges)
+    for index, artist in enumerate(series_artists):
+        series_counts = plain_counts
+        if (
+            len(series_artists) > 1
+            and isinstance(plain_counts, list)
+            and index < len(plain_counts)
+        ):
+            series_counts = plain_counts[index]
+        _intercepted_complex_artists[artist] = {
+            "axes": self,
+            "family": "hist",
+            "callName": "Axes.hist",
+            "counts": series_counts,
+            "bins": plain_edges,
+            "density": bool(kwargs.get("density", False)),
+            "cumulative": _plain_value(kwargs.get("cumulative", False)),
+            "orientation": str(kwargs.get("orientation", "vertical")),
+            "histtype": str(kwargs.get("histtype", "bar")),
+            "weighted": kwargs.get("weights") is not None,
+            "legendLabel": _histogram_label(kwargs.get("label"), index, artist),
+        }
+    return result
+
+
+def patched_stairs(self, *args, **kwargs):
+    artist = original_stairs(self, *args, **kwargs)
+    data = artist.get_data() if callable(getattr(artist, "get_data", None)) else None
+    _intercepted_complex_artists[artist] = {
+        "axes": self,
+        "family": "stairs",
+        "callName": "Axes.stairs",
+        "values": _plain_value(getattr(data, "values", None)),
+        "edges": _plain_value(getattr(data, "edges", None)),
+        "baseline": _plain_value(getattr(data, "baseline", None)),
+    }
+    return artist
+
+
+def patched_step(self, *args, **kwargs):
+    artists = original_step(self, *args, **kwargs)
+    for artist in artists:
+        drawstyle = str(artist.get_drawstyle())
+        where = drawstyle[len("steps-"):] if drawstyle.startswith("steps-") else kwargs.get("where", "pre")
+        _intercepted_complex_artists[artist] = {
+            "axes": self,
+            "family": "step",
+            "callName": "Axes.step",
+            "where": str(where),
+            "drawstyle": drawstyle,
+        }
+    return artists
+
 Axes.boxplot = patched_boxplot
 Axes.violinplot = patched_violinplot
 Axes.fill_between = patched_fill_between
 Axes.contour = patched_contour
 Axes.contourf = patched_contourf
+Axes.hist = patched_hist
+Axes.stairs = patched_stairs
+Axes.step = patched_step
 
 
 def _describe_uploaded_data(data: Optional[dict]) -> dict:
@@ -935,7 +1047,7 @@ def _read_legend_props(artist) -> dict:
 
 
 def _read_line_props(artist) -> dict:
-    return {
+    props = {
         "color": artist.get_color(),
         "linewidth": artist.get_linewidth(),
         "linestyle": artist.get_linestyle(),
@@ -943,6 +1055,11 @@ def _read_line_props(artist) -> dict:
         "marker": artist.get_marker(),
         "markersize": artist.get_markersize(),
     }
+    provenance = _intercepted_complex_artists.get(artist, {})
+    if provenance.get("family") == "step":
+        props["where"] = provenance.get("where", "pre")
+        props["drawstyle"] = provenance.get("drawstyle", artist.get_drawstyle())
+    return props
 
 
 def _read_collection_props(artist) -> dict:
@@ -987,15 +1104,38 @@ def _read_fill_between_props(artist) -> dict:
     }
 
 
+def _read_histogram_structure(provenance: dict) -> dict:
+    return {
+        "bins": provenance.get("bins"),
+        "counts": provenance.get("counts"),
+        "density": provenance.get("density", False),
+        "cumulative": provenance.get("cumulative", False),
+        "orientation": provenance.get("orientation", "vertical"),
+        "histtype": provenance.get("histtype", "bar"),
+        "weighted": provenance.get("weighted", False),
+    }
+
+
 def _read_patch_props(artist) -> dict:
     fc = artist.get_facecolor()
     ec = artist.get_edgecolor()
-    return {
+    props = {
         "facecolor": fc.tolist() if hasattr(fc, "tolist") else list(fc) if isinstance(fc, tuple) else fc,
         "edgecolor": ec.tolist() if hasattr(ec, "tolist") else list(ec) if isinstance(ec, tuple) else ec,
         "alpha": artist.get_alpha(),
         "linewidth": artist.get_linewidth(),
     }
+    provenance = _intercepted_complex_artists.get(artist, {})
+    if provenance.get("family") == "hist":
+        props.update(_read_histogram_structure(provenance))
+    elif provenance.get("family") == "stairs":
+        data = artist.get_data() if callable(getattr(artist, "get_data", None)) else None
+        props.update({
+            "values": _plain_value(getattr(data, "values", provenance.get("values"))),
+            "edges": _plain_value(getattr(data, "edges", provenance.get("edges"))),
+            "baseline": _plain_value(getattr(data, "baseline", provenance.get("baseline"))),
+        })
+    return props
 
 
 def _read_axes_props(artist) -> dict:
@@ -1228,7 +1368,12 @@ def _read_bar_container_props(container) -> dict:
     if not children:
         return {}
     first = children[0]
-    return _read_patch_props(first)
+    props = _read_patch_props(first)
+    props["zorder"] = float(first.get_zorder())
+    provenance = _intercepted_complex_artists.get(container, {})
+    if provenance.get("family") == "hist":
+        props.update(_read_histogram_structure(provenance))
+    return props
 
 
 def _read_errorbar_container_props(container) -> dict:
@@ -1723,7 +1868,19 @@ def _get_editable(kind: str) -> list:
     return _EDITABLE.get(kind, [])
 
 
-def _determine_role(gid: str, parent_kind: Optional[str] = None, kind: Optional[str] = None) -> Optional[str]:
+def _determine_role(
+    gid: str,
+    parent_kind: Optional[str] = None,
+    kind: Optional[str] = None,
+    artist: Any = None,
+) -> Optional[str]:
+    family = _intercepted_complex_artists.get(artist, {}).get("family")
+    if family == "hist":
+        return "histogram_series"
+    if family == "stairs":
+        return "stairs_series"
+    if family == "step":
+        return "step_series"
     if gid.startswith("subplot."):
         return "subplot_panel"
     if gid.startswith("fig_text."):
@@ -1773,6 +1930,8 @@ def _determine_role(gid: str, parent_kind: Optional[str] = None, kind: Optional[
         return "violin_group"
     if parent_kind in {"contour", "contourf"}:
         return "contour_child_collection"
+    if parent_kind == "histogram":
+        return "histogram_child_patch"
 
     if kind == "fill_between":
         return "fill_between_series"
@@ -1805,10 +1964,18 @@ def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) ->
     clean_label = ""
     if label and not label.startswith("_") and not label.startswith("line.") and not label.startswith("patch.") and not label.startswith("collection."):
         clean_label = label
+    if (
+        _intercepted_complex_artists.get(artist, {}).get("family") == "hist"
+        and isinstance(artist, matplotlib.container.BarContainer)
+    ):
+        # Axes.hist historically exposed private BarContainer labels, so old
+        # stable keys used the container index. Keep that identity even though
+        # the manifest now exposes the user-facing legend label.
+        clean_label = ""
         
-    # Dedicated fill_between semantics were introduced after collection GIDs
-    # and stable keys were already persisted in user projects. Keep that
-    # structural identity namespace so existing edit logs remain replayable.
+    # Dedicated semantics were introduced after these historical GIDs and
+    # stable keys were already persisted in user projects. Keep their original
+    # structural identity namespaces so existing edit logs remain replayable.
     identity_kind = "collection" if kind == "fill_between" else kind
     parts = [f"ax{ax_idx}", identity_kind]
     if clean_label:
@@ -1821,7 +1988,8 @@ def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) ->
     stable_key = ".".join(parts)
     
     fp_parts = [stable_key]
-    if hasattr(artist, "get_xydata"):
+    is_legend_proxy = obj.get("role") == "legend_marker" or gid.startswith(("legend_", "legend."))
+    if not is_legend_proxy and hasattr(artist, "get_xydata"):
         try:
             xy = artist.get_xydata()
             if xy is not None and xy.size > 0:
@@ -1866,7 +2034,7 @@ _DEDICATED_COMPLEX_KIND_FAMILIES = {
     "contour": "contour",
     "contourf": "contourf",
     "fill_between": "fill_between",
-    "histogram": "histogram",
+    "histogram": "hist",
     "pie": "pie",
     "quiver": "quiver",
     "streamplot": "streamplot",
@@ -1879,7 +2047,7 @@ _DEDICATED_COMPLEX_ROLE_FAMILIES = {
     "contour_series": "contour",
     "contourf_series": "contourf",
     "fill_between_series": "fill_between",
-    "histogram_series": "histogram",
+    "histogram_series": "hist",
     "pie_slice": "pie",
     "quiver_field": "quiver",
     "streamplot_field": "streamplot",
@@ -2196,6 +2364,15 @@ _PARENT_OBJECT_KINDS = {
 }
 
 
+def _parent_relation_kind(kind: str, artist: Any) -> str:
+    if (
+        kind == "bar_container"
+        and _intercepted_complex_artists.get(artist, {}).get("family") == "hist"
+    ):
+        return "histogram"
+    return kind
+
+
 def _parent_child_gids(kind: str, artist: Any, raw_elements, artist_to_gid) -> list[str]:
     if kind == "bar_container":
         return [artist_to_gid[child] for child in artist if child in artist_to_gid]
@@ -2364,6 +2541,43 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 legend_relationships.setdefault(text_gid, {})["legendMarkerIds"] = [marker_gid]
                 legend_relationships.setdefault(marker_gid, {})["legendTextId"] = text_gid
 
+    histogram_entries = []
+    for histogram_gid, histogram_kind, histogram_artist in raw_elements:
+        provenance = _intercepted_complex_artists.get(histogram_artist, {})
+        label = provenance.get("legendLabel")
+        if histogram_kind not in {"bar_container", "patch"} or provenance.get("family") != "hist" or not label:
+            continue
+        normalized_label = " ".join(str(label).strip().lower().split())
+        if normalized_label:
+            histogram_entries.append((histogram_gid, provenance.get("axes"), normalized_label))
+
+    histogram_label_counts = {}
+    for _, axes, normalized_label in histogram_entries:
+        key = (axes, normalized_label)
+        histogram_label_counts[key] = histogram_label_counts.get(key, 0) + 1
+
+    for histogram_gid, axes, normalized_label in histogram_entries:
+        if histogram_label_counts.get((axes, normalized_label)) != 1:
+            continue
+        matching_marker_gids = []
+        for _, legend_kind, legend in raw_elements:
+            if legend_kind != "legend" or getattr(legend, "axes", None) is not axes:
+                continue
+            handles = _get_legend_handles(legend)
+            for index, text in enumerate(legend.get_texts()):
+                if index >= len(handles):
+                    continue
+                text_label = " ".join(str(text.get_text()).strip().lower().split())
+                marker_gid = artist_to_gid.get(handles[index])
+                if text_label == normalized_label and marker_gid:
+                    matching_marker_gids.append(marker_gid)
+        matching_marker_gids = list(dict.fromkeys(matching_marker_gids))
+        if len(matching_marker_gids) != 1:
+            continue
+        marker_gid = matching_marker_gids[0]
+        legend_relationships.setdefault(histogram_gid, {})["legendMarkerIds"] = [marker_gid]
+        legend_relationships.setdefault(marker_gid, {})["parentId"] = histogram_gid
+
     complex_artist_context = _build_complex_artist_context(raw_elements, annotation_links)
 
     # Build objects manifest list
@@ -2373,6 +2587,9 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             continue
         current_props = _read_props(artist, kind)
         label = _safe_artist_label(artist, gid)
+        provenance = _intercepted_complex_artists.get(artist, {})
+        if provenance.get("family") == "hist" and provenance.get("legendLabel"):
+            label = str(provenance["legendLabel"])
         if kind == "subplot":
             meta = subplot_meta.get(gid, {})
             label = meta.get("label", label)
@@ -2434,6 +2651,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
     for gid, kind, artist in raw_elements:
         if kind in _PARENT_OBJECT_KINDS:
             children_gids = _parent_child_gids(kind, artist, raw_elements, artist_to_gid)
+            relation_kind = _parent_relation_kind(kind, artist)
             
             # Update container object in objects list
             container_obj = next((o for o in objects if o["id"] == gid), None)
@@ -2441,22 +2659,24 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 container_obj["children"] = children_gids
             
             for child_gid in children_gids:
-                child_to_parent[child_gid] = (gid, kind)
+                child_to_parent[child_gid] = (gid, relation_kind)
 
-                if kind in {"contour", "contourf"}:
+                if relation_kind in {"contour", "contourf", "histogram"}:
                     child_obj = next((o for o in objects if o["id"] == child_gid), None)
                     if child_obj:
                         child_obj["editable"] = []
+                        family_label = "Histogram bin patches" if relation_kind == "histogram" else "Contour level collections"
                         child_obj["currentProps"] = {
                             **child_obj.get("currentProps", {}),
                             "parentOwned": True,
-                            "editingUnsupportedReason": "Contour level collections are owned by the contour parent; edit the parent object instead.",
+                            "editingUnsupportedReason": f"{family_label} are owned by the semantic parent; edit the parent object instead.",
                         }
 
     # Populate parentId, role, source, stableKey, and fingerprint for each object
     for obj in objects:
         gid = obj["id"]
         kind = obj["kind"]
+        artist_obj = next(art for g, k, art in raw_elements if g == gid)
         
         # Link parent ID
         parent_info = child_to_parent.get(gid)
@@ -2467,7 +2687,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             obj["parentId"] = parent_id
             
         # Determine semantic role
-        role = _determine_role(gid, parent_kind, kind)
+        role = _determine_role(gid, parent_kind, kind, artist_obj)
         annotation_link = annotation_links.get(gid)
         if annotation_link:
             role = annotation_link["role"]
@@ -2499,7 +2719,6 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 except ValueError:
                     pass
 
-        artist_obj = next(art for g, k, art in raw_elements if g == gid)
         artist_axes = artist_obj if isinstance(artist_obj, Axes) else getattr(artist_obj, "axes", None)
         container_colorbar_gid = colorbar_axes_to_gid.get(artist_axes)
         colorbar_link = colorbar_links.get(gid)
@@ -2602,7 +2821,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
 
     color_groups = {}
     for obj in objects:
-        if obj.get("role") == "contour_child_collection":
+        if obj.get("role") in {"contour_child_collection", "histogram_child_patch"}:
             continue
         hex_color = None
         for prop in ('facecolor', 'color', 'edgecolor'):
@@ -3262,6 +3481,8 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         return
 
     if gid.startswith("container.bar."):
+        if prop not in {"color", "facecolor", "edgecolor", "linewidth", "alpha", "zorder"}:
+            return "unsupported_prop"
         for child in artist:
             if prop == "color" or prop == "facecolor":
                 child.set_facecolor(value)
@@ -3271,6 +3492,8 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
                 child.set_linewidth(float(value))
             elif prop == "alpha":
                 child.set_alpha(float(value))
+            elif prop == "zorder":
+                child.set_zorder(float(value))
         return
 
     if gid.startswith("container.errorbar."):
@@ -3774,9 +3997,10 @@ def _build_gid_index(fig) -> dict:
             continue
 
         children_gids = _parent_child_gids(kind, artist, raw_elements, artist_to_gid)
+        relation_kind = _parent_relation_kind(kind, artist)
 
         for child_gid in children_gids:
-            child_to_parent[child_gid] = (gid, kind)
+            child_to_parent[child_gid] = (gid, relation_kind)
 
     return {
         gid: {
@@ -3818,6 +4042,9 @@ def _entry_identity_metadata(entry: dict) -> dict:
 def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=None, subplot_meta: Optional[dict] = None) -> dict:
     current_props = _read_props(artist, kind)
     label = _safe_artist_label(artist, gid)
+    provenance = _intercepted_complex_artists.get(artist, {})
+    if provenance.get("family") == "hist" and provenance.get("legendLabel"):
+        label = str(provenance["legendLabel"])
     if kind == "subplot":
         meta = subplot_meta or {}
         label = meta.get("label", label)
@@ -3839,7 +4066,7 @@ def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=No
     if parent_info:
         parent_id, parent_kind = parent_info
         obj["parentId"] = parent_id
-    role = _determine_role(gid, parent_kind, kind)
+    role = _determine_role(gid, parent_kind, kind, artist)
     if role:
         obj["role"] = role
 
@@ -4136,6 +4363,8 @@ _PLOTTING_CALL_NAMES = {
     "contourf",
     "errorbar",
     "fill_between",
+    "stairs",
+    "step",
     "text",
     "annotate",
     "legend",

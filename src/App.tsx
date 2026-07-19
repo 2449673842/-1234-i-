@@ -34,7 +34,10 @@ import { summarizeCodeChange } from './utils/codeHistory';
 import { getAccessToken, setAccessToken } from './utils/authenticatedFetch';
 import { reportClientError } from './utils/clientErrorReporter';
 import { figureDpiFromPatches, synchronizeFigureDpiSpec } from './utils/exportPreviewState';
-import { isTextContentPatchProp } from './utils/propertyPatchMode';
+import { enrichDraftPatchWithIdentity, enrichPatchEntriesWithIdentity } from './utils/patchIdentity';
+import { isTextContentPatchProp, resolvePatchModeById } from './utils/propertyPatchMode';
+import { fnv1a, stableStringify } from './utils/stableJson';
+import { removeMatchingPersistedDrafts } from './utils/projectSaveConcurrency';
 import type { FigureSession, EditEntry, PatchEntry, HistorySnapshot, ProjectHistoryState } from './schemas/manifest';
 import type { DraftPatch } from './schemas/draftPatchBatch';
 import type { EditingIntentApplyReport, EditingIntentSkippedTarget } from './schemas/editingIntent';
@@ -85,7 +88,7 @@ const EDITOR_PANEL_WIDTHS_KEY = 'scifigure:editor-panel-widths:v1';
 interface FigurePatchExecutionResult {
   figureId: string;
   success: boolean;
-  status: 'success' | 'error' | 'stale';
+  status: 'success' | 'error' | 'stale' | 'conflict';
   message?: string;
 }
 
@@ -553,11 +556,13 @@ export default function App() {
 
   const normalizeDraftForFigure = (figId: string, draft: DraftPatch): DraftPatch => {
     if (draft.type === 'code_patch') return draft;
-    const object = projectFigures[figId]?.manifest?.objects?.find((item: any) => item.id === draft.gid);
-    if (isTextContentPatchProp(draft.prop, object) && draft.mode !== 'backend_patch') {
-      return { ...draft, mode: 'backend_patch' };
-    }
-    return draft;
+    const manifest = projectFigures[figId]?.manifest
+      || (!projectId && figId === 'fig_1' ? hookSession?.manifest : null);
+    const object = manifest?.objects?.find((item: any) => item.id === draft.gid);
+    const normalized = isTextContentPatchProp(draft.prop, object) && draft.mode !== 'backend_patch'
+      ? { ...draft, mode: 'backend_patch' as const }
+      : draft;
+    return enrichDraftPatchWithIdentity(normalized, manifest);
   };
 
   const handleUpdateDraft = (figId: string, patch: DraftPatch) => {
@@ -601,13 +606,31 @@ export default function App() {
         const persistableDrafts = draftsEligibleForDirectPersistence(drafts.map(draft => normalizeDraftForFigure(figId, draft)));
         if (!figure || persistableDrafts.length === 0) return;
         const runtimePatches = persistableDrafts.map(draft => ({ gid: draft.gid, prop: draft.prop, value: draft.value }));
-        const editEntries = persistableDrafts.map(draft => ({
-          gid: draft.gid,
-          prop: draft.prop,
-          value: draft.value,
-          mode: 'local_patch' as const,
-          timestamp,
-        }));
+        const enrichedPatches = enrichPatchEntriesWithIdentity(
+          persistableDrafts.map(draft => ({
+            op: 'set' as const,
+            gid: draft.gid,
+            prop: draft.prop,
+            value: draft.value,
+            mode: resolvePatchModeById(figure.manifest, draft.gid, draft.prop),
+            ...(draft.matchColor ? { matchColor: draft.matchColor } : {}),
+          })),
+          figure.manifest,
+        );
+        const editEntries = enrichedPatches
+          .filter((patch): patch is Extract<PatchEntry, { op: 'set' }> => !('type' in patch))
+          .map(patch => ({
+            gid: patch.gid,
+            prop: patch.prop,
+            value: patch.value,
+            mode: patch.mode,
+            timestamp,
+            ...(patch.matchColor ? { matchColor: patch.matchColor } : {}),
+            stableKey: patch.stableKey,
+            fingerprint: patch.fingerprint,
+            fingerprintVersion: patch.fingerprintVersion,
+            identity: patch.identity,
+          }));
         next[figId] = {
           ...figure,
           svg: applyRuntimePatchesToSvg(figure.svg || '', runtimePatches),
@@ -617,21 +640,12 @@ export default function App() {
       });
       return next;
     });
-    setProjectDrafts(prev => {
-      const next = { ...prev };
-      Object.entries(draftsByFigure).forEach(([figId, drafts]) => {
-        const bucket = { ...(next[figId] || {}) };
-        draftsEligibleForDirectPersistence(drafts.map(draft => normalizeDraftForFigure(figId, draft))).forEach(draft => {
-          delete bucket[draftPatchStorageKey(draft)];
-        });
-        if (Object.keys(bucket).length > 0) {
-          next[figId] = bucket;
-        } else {
-          delete next[figId];
-        }
-      });
-      return next;
-    });
+    setProjectDrafts(prev => removeMatchingPersistedDrafts(prev, Object.fromEntries(
+      Object.entries(draftsByFigure).map(([figId, drafts]) => [
+        figId,
+        draftsEligibleForDirectPersistence(drafts.map(draft => normalizeDraftForFigure(figId, draft))),
+      ]),
+    ), draftPatchStorageKey));
   };
 
   // Virtual active session wrapper for project mode
@@ -875,7 +889,11 @@ export default function App() {
       gid: patchItem.gid,
       prop: patchItem.prop,
       value: patchItem.value,
-      ...(patchItem.matchColor ? { matchColor: patchItem.matchColor } : {}),
+      matchColor: patchItem.matchColor,
+      stableKey: patchItem.stableKey,
+      fingerprint: patchItem.fingerprint,
+      fingerprintVersion: patchItem.fingerprintVersion,
+      identity: patchItem.identity,
     };
   });
 
@@ -907,17 +925,21 @@ export default function App() {
 
   const executeSingleFigurePatch = async (
     targetFigureId: string,
-    patches: any[],
+    patches: PatchEntry[],
   ): Promise<FigurePatchExecutionResult> => {
     const needsBackendRender = patches.some((patchItem: any) => patchItem.type === 'code_patch' || patchItem.mode !== 'local_patch');
     const patchSummary = patches.length === 1
       ? `${(patches[0] as any).gid || (patches[0] as any).target_id || '对象'} / ${(patches[0] as any).prop || '代码'}`
       : `${patches.length} 个参数`;
+    const targetManifest = projectId
+      ? projectFigures[targetFigureId]?.manifest || null
+      : figSession?.manifest || null;
+    const requestPatches = enrichPatchEntriesWithIdentity(patches, targetManifest);
 
     if (projectId) {
       const prevEditLog = projectFigures[targetFigureId]?.editLog || [];
       const localPatchTimestamp = Date.now();
-      const localPatchEntries = patches
+      const localPatchEntries = requestPatches
         .filter((patchItem: any) => patchItem.mode === 'local_patch' && patchItem.gid && patchItem.prop)
         .map((patchItem: any) => ({
           gid: patchItem.gid,
@@ -925,6 +947,11 @@ export default function App() {
           value: patchItem.value,
           mode: patchItem.mode as any,
           timestamp: localPatchTimestamp,
+          ...(patchItem.matchColor ? { matchColor: patchItem.matchColor } : {}),
+          stableKey: patchItem.stableKey,
+          fingerprint: patchItem.fingerprint,
+          fingerprintVersion: patchItem.fingerprintVersion,
+          identity: patchItem.identity,
         }));
 
       const reqId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -955,7 +982,7 @@ export default function App() {
             sessionId: `${projectId}_${targetFigureId}`,
             projectId,
             figureId: targetFigureId,
-            patches: stripPatchMetadata(patches),
+            patches: stripPatchMetadata(requestPatches),
             requestId: reqId,
             baseRevision: projectFigures[targetFigureId]?.revision || 1,
           })
@@ -972,11 +999,15 @@ export default function App() {
         }
 
         if (data.status === 'success') {
+          const appliedNeedsBackendRender = needsBackendRender || (
+            Array.isArray(data.applied)
+            && data.applied.some((patchItem: any) => patchItem?.type === 'code_patch' || patchItem?.mode === 'backend_patch')
+          );
           const appliedDpi = figureDpiFromPatches(patches);
           if (appliedDpi !== null) {
             setSpec(current => synchronizeFigureDpiSpec(current, appliedDpi));
           }
-          if (needsBackendRender) {
+          if (appliedNeedsBackendRender) {
             setRenderLog(prev => [...prev, `> [完成] ${targetFigureId} 参数已应用，预览已更新`]);
           }
           setProjectFigures(prev => {
@@ -987,10 +1018,10 @@ export default function App() {
                 return prev;
               }
               const runtimePatches = localPatchEntries.map(({ gid, prop, value }) => ({ gid, prop, value }));
-              const nextSvg = !needsBackendRender && runtimePatches.length > 0
+              const nextSvg = !appliedNeedsBackendRender && runtimePatches.length > 0
                 ? applyRuntimePatchesToSvg(active.svg || '', runtimePatches)
                 : data.svg || active.svg;
-              const nextManifest = !needsBackendRender && runtimePatches.length > 0
+              const nextManifest = !appliedNeedsBackendRender && runtimePatches.length > 0
                 ? applyRuntimePatchesToManifest(active.manifest || null, runtimePatches) || active.manifest
                 : data.manifest || active.manifest;
               next[targetFigureId] = {
@@ -1027,6 +1058,27 @@ export default function App() {
             applySpecChange(nextSpec);
           }
           return { figureId: targetFigureId, success: true, status: 'success' };
+        } else if (data.status === 'conflict') {
+          const rejectedCount = Array.isArray(data.rejected) ? data.rejected.length : 0;
+          const message = data.message || `${rejectedCount || '部分'}项修改未通过目标确认，已保留在暂存区。`;
+          setProjectFigures(prev => {
+            const next = { ...prev };
+            if (next[targetFigureId]) {
+              next[targetFigureId] = {
+                ...next[targetFigureId],
+                renderStatus: 'success',
+                error: undefined,
+              };
+            }
+            return next;
+          });
+          setRenderLog(prev => [...prev, `> [未应用] ${targetFigureId} ${message}`]);
+          return {
+            figureId: targetFigureId,
+            success: false,
+            status: 'conflict',
+            message,
+          };
         } else {
           setProjectFigures(prev => {
             const next = { ...prev };
@@ -1076,7 +1128,7 @@ export default function App() {
         setRenderLog(prev => [...prev, `> [应用] 正在重渲染 ${patchSummary}...`]);
       }
       try {
-        const res = await patch(stripPatchMetadata(patches));
+        const res = await patch(stripPatchMetadata(requestPatches));
         if (res.status === 'success') {
           const appliedDpi = figureDpiFromPatches(patches);
           if (appliedDpi !== null) {
@@ -1102,6 +1154,17 @@ export default function App() {
             applySpecChange(nextSpec);
           }
           return { figureId: targetFigureId, success: true, status: 'success' };
+        }
+        if (res.status === 'conflict') {
+          const rejectedCount = Array.isArray(res.rejected) ? res.rejected.length : 0;
+          const message = res.message || `${rejectedCount || '部分'}项修改未通过目标确认，已保留在暂存区。`;
+          setRenderLog(prev => [...prev, `> [未应用] ${message}`]);
+          return {
+            figureId: targetFigureId,
+            success: false,
+            status: 'conflict',
+            message,
+          };
         }
         return {
           figureId: targetFigureId,
@@ -1202,6 +1265,10 @@ export default function App() {
         value: normalizedDraft.value,
         ...(normalizedDraft.matchColor ? { matchColor: normalizedDraft.matchColor } : {}),
         intent: normalizedDraft.intent,
+        stableKey: normalizedDraft.stableKey,
+        fingerprint: normalizedDraft.fingerprint,
+        fingerprintVersion: normalizedDraft.fingerprintVersion,
+        identity: normalizedDraft.identity,
       };
     };
     const compileDraftForTarget = (draft: DraftPatch, targetId: string): { patches: PatchEntry[]; skipped: EditingIntentSkippedTarget[] } => {
@@ -2221,6 +2288,8 @@ export default function App() {
       figureId,
       index: figure.index,
       editLog: figure.editLog || [],
+      baseRevision: figure.revision || 1,
+      baseEditLogHash: fnv1a(stableStringify(figure.editLog || [])),
       revision: figure.revision || 1,
       history: projectHistory[figureId] || { past: [], future: [] },
     }));

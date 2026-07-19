@@ -15,6 +15,39 @@ const baseManifest = (objects: Manifest['objects'], generatedBy: Manifest['gener
   unsupportedNotes: [],
 });
 
+function pythonSeriesObject(input: {
+  id: string;
+  kind: string;
+  role: string;
+  prop: string;
+  patchMode?: 'local_patch' | 'backend_patch';
+}): Manifest['objects'][number] {
+  return {
+    id: input.id,
+    kind: input.kind as any,
+    label: input.id,
+    editable: [input.prop],
+    currentProps: { [input.prop]: '#000000' },
+    role: input.role,
+    subplotId: 'subplot.0',
+    identity: {
+      semanticKey: `${input.role}:subplot.0`,
+      instanceKey: `subplot.0:${input.id}`,
+      seriesKey: `${input.role}:series.0`,
+      scope: 'subplot',
+      coordinateSpace: 'data',
+      relation: { subplotId: 'subplot.0' },
+    },
+    propertyCapabilities: [{
+      prop: input.prop,
+      patchMode: input.patchMode ?? 'local_patch',
+      scopes: ['object', 'figure', 'cross_figure'],
+      preview: input.patchMode === 'backend_patch' ? 'none' : 'exact',
+      replay: 'stable',
+    }],
+  };
+}
+
 describe('editing intent compiler', () => {
   it('keeps an explicit cross-figure deny contract observable to callers', () => {
     expect(isExplicitlyDeniedCrossFigure({
@@ -788,6 +821,86 @@ describe('editing intent compiler', () => {
         role: undefined,
         reason: 'unsupported_prop',
         detail: `contour.0.0 does not support ${prop}.`,
+      },
+    ]);
+  });
+
+  it.each([
+    ['data_histogram', 'histogram.0.0', 'bar_container', 'histogram_series', 'facecolor'],
+    ['data_stairs', 'stairs.0.0', 'patch', 'stairs_series', 'edgecolor'],
+    ['data_step', 'step.0.0', 'line', 'step_series', 'color'],
+  ])('compiles %s only for its dedicated Python series role', (
+    targetRole,
+    targetId,
+    targetKind,
+    seriesRole,
+    prop,
+  ) => {
+    const manifest = baseManifest([
+      pythonSeriesObject({ id: targetId, kind: targetKind, role: seriesRole, prop }),
+      pythonSeriesObject({ id: 'bar_container.0.0', kind: 'bar_container', role: 'bar_series', prop }),
+      pythonSeriesObject({ id: 'patch.0.0', kind: 'patch', role: 'patch', prop }),
+      pythonSeriesObject({ id: 'line.0.0', kind: 'line', role: 'line_series', prop }),
+      pythonSeriesObject({ id: 'legend_line.0.0', kind: 'line', role: 'legend_marker', prop }),
+    ]);
+
+    const result = compileEditingIntent(manifest, {
+      intent: 'style.component',
+      scope: {
+        selectionMode: 'role_in_figure',
+        targetRole: targetRole as any,
+      },
+      operation: { prop, value: '#118833' },
+    });
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toEqual([
+      { op: 'set', mode: 'local_patch', gid: targetId, prop, value: '#118833' },
+    ]);
+  });
+
+  it.each([
+    ['histogram.0.0', 'bar_container', 'histogram_series', 'bins'],
+    ['histogram.0.0', 'bar_container', 'histogram_series', 'counts'],
+    ['histogram.0.0', 'bar_container', 'histogram_series', 'values'],
+    ['histogram.0.0', 'bar_container', 'histogram_series', 'edges'],
+    ['histogram.0.0', 'bar_container', 'histogram_series', 'histtype'],
+    ['stairs.0.0', 'patch', 'stairs_series', 'baseline'],
+    ['stairs.0.0', 'patch', 'stairs_series', 'values'],
+    ['stairs.0.0', 'patch', 'stairs_series', 'edges'],
+    ['step.0.0', 'line', 'step_series', 'x'],
+    ['step.0.0', 'line', 'step_series', 'y'],
+    ['step.0.0', 'line', 'step_series', 'where'],
+  ])('does not compile structural Python series prop %s on %s', (
+    id,
+    kind,
+    role,
+    prop,
+  ) => {
+    const manifest = baseManifest([
+      {
+        ...pythonSeriesObject({ id, kind, role, prop, patchMode: 'backend_patch' }),
+        currentProps: { [prop]: [] },
+      },
+    ]);
+
+    const result = compileEditingIntent(manifest, {
+      intent: 'style.component',
+      scope: {
+        selectionMode: 'explicit_objects',
+        objectIds: [id],
+        targetKinds: [kind as any],
+      },
+      operation: { prop, value: [] },
+    } as EditingIntent);
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([
+      {
+        gid: id,
+        role: undefined,
+        reason: 'unsupported_prop',
+        detail: `${id} does not support ${prop}.`,
       },
     ]);
   });

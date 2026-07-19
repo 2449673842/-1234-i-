@@ -1,7 +1,7 @@
 # Python 图元编辑与分组识别收敛执行计划
 
-> 状态：WP3/WP4 核心边界和 WP8 已完成；WP6 的 `fill_between`、`contour/contourf` 已通过完整门禁，下一家族为 `hist/stairs/step`
-> 最后修改时间：2026-07-19 06:19:06 +08:00
+> 状态：WP3/WP4 核心边界和 WP8 已完成；WP6 的 `fill_between`、`contour/contourf`、`hist/stairs/step` 已通过完整门禁，下一家族为 `pie/wedge`
+> 最后修改时间：2026-07-19 16:22:04 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
 > 当前部署状态：未推送、未部署；本计划不改变线上版本
@@ -29,7 +29,7 @@
 - 常见 Python 二维图元、legend、colorbar、annotation、container、twin/shared axes 已有真实 renderer 和测试基础。
 - 组件中心、字体中心、配色中心、布局中心、Draft、拖拽、历史、导出快照等主链路已经可用。
 - `identity`、`relation`、`propertyCapabilities` 和严格 target resolver 已部分接入。
-- 当前全量单元测试为 143 文件 / 923 项；Matplotlib 3.7.2 与 3.8.4 两套升级验证环境均为完整 Python 105/105；组件浏览器 31/31。
+- 当前全量单元测试为 144 文件 / 966 项；Matplotlib 3.7.2 与 3.8.4 两套升级验证环境均为完整 Python 110/110；组件浏览器 41/41。
 
 ### 2.2 尚未完整证明
 
@@ -46,7 +46,7 @@
 4. [已在 WP8 修复] 导出文件与数据库记录之间只有补偿式流程，没有完整失败回滚证据。
 5. `instanceKey` 仍以 GID 为核心，插入、删除或重排 artist 后可能漂移。
 6. [已在 WP4 修复] `fingerprint` 包含可编辑样式，不适合作为结构身份锚点。
-7. quiver、streamplot、pie 和部分 hist 仍会被压平成普通 collection/patch/container；`fill_between` 与 `contour/contourf` 已完成专用适配。
+7. quiver、streamplot 和 pie 仍会被压平成普通 collection/patch/container；`fill_between`、`contour/contourf` 与 `hist/stairs/step` 已完成专用适配。
 8. [renderer 已修复，用户摘要待 WP5] `coverageReport` 不能区分“真正语义支持”和“被普通基类接住”。
 
 ### 2.4 2026-07-18 首轮执行结果
@@ -65,7 +65,7 @@
 
 第二轮代码审查发现的 standalone mode 权威问题已修复，并由 `test:patch-rejection-persistence` 覆盖无 projectId 伪报 local、missing gid 和 mixed batch。项目 PUT 另由 `test:project-save-preflight` 覆盖保存入口和 history 侧门。
 
-仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 用户可见能力报告、WP6 其余复杂对象家族、WP7 特殊 axes、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP8 已完成；WP6 的 `fill_between`、`contour/contourf` 已完成专用写回和完整用户链路。
+仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 用户可见能力报告、WP6 其余复杂对象家族、WP7 特殊 axes、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP8 已完成；WP6 的 `fill_between`、`contour/contourf`、`hist/stairs/step` 已完成专用写回和完整用户链路。
 
 ### 2.5 2026-07-18 WP8 执行结果
 
@@ -99,6 +99,16 @@
 - 单 Figure 和全项目导出都在保存资产前检查 replay warning；全项目导出先完成全部目标的渲染预检，避免前一个 Figure 已落库、后一个 Figure 才失败。
 - contour child 在拖拽模式下的 modifier 多选使用同步选择引用并抑制同一次 click 二次处理。
 - 新增失败回归后，`test:replay-warning-persistence`、组件 31/31、导出矩阵、拖拽 10/10、完整 Python 用户链路和最终独立复审均通过；没有 HIGH/MEDIUM 未解决问题。
+
+### 2.9 2026-07-19 WP6 `hist/stairs/step` 与保存并发收敛
+
+- renderer 只把可信 `Axes.hist`、`Axes.stairs` 和 `Axes.step` 调用提升为 `histogram_series`、`stairs_series` 和 `step_series`；普通 bar、手工 `StepPatch` 和仅设置 drawstyle 的 line 不会误分类。
+- histogram 父容器拥有系列级视觉属性，内部 patch 标记 `histogram_child_patch + parentOwned` 并重定向到父对象；`bins/counts/edges/values/density/cumulative/orientation/weights/where/x/y/baseline` 等结构参数保持只读。
+- 组件中心、配色中心、Draft、跨 Figure、保存刷新、历史、四格式导出和导出快照恢复均使用专用 role，不按同色普通对象扩散。
+- 修复过期自动保存覆盖新 editLog 的竞态：项目 PUT 以 `baseRevision + baseEditLogHash` 做 CAS；缺前置条件、revision 漂移或 hash 漂移均在事务前 409 且零写入。
+- GET/PUT 统一使用 `session -> project_figures -> 单 Figure legacy spec` 恢复顺序；语义相同的旧 Figure payload可保存名称/spec，但没有 CAS 时不会覆盖 Figure editLog/history/revision。
+- 保存期间的新 Draft 只在值与已确认持久化值完全一致时清除；排队保存等待下一次 React 提交后再读取最新状态。
+- 最终证据：Vitest 144 文件/966 项、两套 Matplotlib 110/110、组件浏览器 41/41、语义中心 14/14、跨 Figure 16/16、R 浏览器 5/5、完整 Python 工作流、历史/导出/安全/隔离门禁和生产构建通过；数据审计保持 0 错误；第三轮独立 5.5 high 复审 PASS。
 
 ## 3. 决策原则
 
@@ -272,12 +282,12 @@
 
 1. `fill_between` / 置信区间带。[已完成首轮专用适配与完整门禁]
 2. `contour/contourf` / 等高线与连续色标。[已完成专用父对象、兼容重放与完整门禁]
-3. `hist/stairs/step` / 直方与阶梯系列。
+3. `hist/stairs/step` / 直方与阶梯系列。[已完成专用语义、结构只读、保存并发与完整门禁]
 4. `pie/wedge` / 扇区、标签和图例。
 5. `quiver/streamplot` / 向量场。
 6. 网络图、路径图和 SEM 的节点/边/箭头/系数文字关系。
 
-下一执行家族为 `hist/stairs/step`。在其 fixture、身份、能力、浏览器、历史和导出链路全部建立前，不修改默认组件分类。
+下一执行家族为 `pie/wedge`。在其 fixture、身份、能力、浏览器、历史和导出链路全部建立前，不修改默认组件分类。
 
 每个家族必须依次完成：
 

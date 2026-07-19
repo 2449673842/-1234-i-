@@ -1,8 +1,8 @@
 # SciFigure Studio 当前主文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-30 02:46:41 +08:00
-> 证据截止时间：2026-07-30 02:46:41 +08:00
+> 更新时间：2026-07-30 04:35:45 +08:00
+> 证据截止时间：2026-07-30 04:35:45 +08:00
 > 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；候选尚未部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
@@ -112,9 +112,9 @@ P3：管理员后台剩余页面/受控操作、更多编辑能力和 AI 接入
 
 组合代码项目选择器 C1-C5 已于 2026-07-12 完成实现和阶段验收。当前支持来源项目搜索、项目类型与最近使用筛选、更新时间、Figure 缩略图和语义摘要、已选队列排序、`auto` 明确布局、物理尺寸预览、panel 位置映射以及重复、嵌套、版面和数据依赖检查。30 Figure fixture 已验证仅清洗可见区附近 SVG；Python/R 组合提示词按目标语言分别生成。详细状态和限制见能力架构文档第 13.1 节。
 
-### 3.4 Python 编辑正确性保护（2026-07-19 06:19:06 +08:00）
+### 3.4 Python 编辑正确性保护（2026-07-19 16:22:04 +08:00）
 
-本轮没有增加默认可见控件，而是补齐对象身份和 patch 持久化边界：
+本轮在保留既有编辑中心交互的前提下，补齐对象身份、三个复杂对象家族和 patch 持久化边界：
 
 ```text
 新 patch 携带 stableKey / identity / v2 structural fingerprint
@@ -125,20 +125,20 @@ missing、unsupported、identity mismatch 返回 conflict
 全项目导出先预检全部目标 Figure，再统一进入资产和快照持久化
 项目 Figure 路径以 propertyCapabilities.patchMode 为服务端权威
 合法 local + backend 混合批次完整重放并只形成一个 revision
-复杂图元仅增加 Shadow coverage，不改变现有 kind、editable 或控件
+已完成家族使用专用 kind/role 和控件分组；未完成家族继续保持 Shadow/readonly
 项目 PUT 保存 editLog/history 先按可信 manifest 预检，再单事务写入
 现代 manifest 的 patch mode 由统一 capability helper 决定，跨 Figure 显式对象默认不 fanout
 ```
 
-新隔离 E2E 已连续证明选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和导出快照恢复。R semantic、跨 Figure、历史、导出、组合、安全、页面导航和数据审计均重新通过。该结论不等于 `hist/stairs/step`、`streamplot`、pie、向量场等已经具备专用细粒度写回。
+新隔离 E2E 已连续证明选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和导出快照恢复。R semantic、跨 Figure、历史、导出、组合、安全、页面导航和数据审计均重新通过。该结论不等于 `streamplot`、pie、quiver 或网络/路径/SEM 等已经具备专用细粒度写回。
 
-独立代码审查发现的 standalone mode 权威、项目 PUT 侧门、跨 Figure replay warning、批量导出部分落库和 contour 拖拽模式多选缺口均已修复。`test:patch-rejection-persistence`、`test:project-save-preflight`、`test:replay-warning-persistence`、跨 Figure 11/11 和组件浏览器 31/31 通过；最终复审没有 HIGH/MEDIUM/LOW 未解决问题。
+独立代码审查发现的 standalone mode 权威、项目 PUT 侧门、跨 Figure replay warning、批量导出部分落库、contour 拖拽模式多选和保存 CAS 绕过均已修复。`test:patch-rejection-persistence`、`test:project-save-preflight`、`test:replay-warning-persistence`、跨 Figure 16/16 和组件浏览器 41/41 通过；最终复审没有 HIGH/MEDIUM 未解决问题。
 
 WP8 已完成首轮收敛：导出快照先经 renderer dry-run，再在数据库事务内复核并发状态；错误恢复不会写入项目、session、history 或快照。导出文件创建和资产删除具备失败补偿，单 Figure v1 保持兼容，信息不足的旧多 Figure 快照安全拒绝。相关 API、数据库、UI、并发、文件事务和完整导出矩阵均已通过隔离回归。
 
-WP6 已完成 `fill_between` 与 `contour/contourf` 两个复杂对象家族。`fill_between` 具有专用 `fill_between/fill_between_series/data_band` 语义并保留旧 `collection.*` GID；`contour/contourf` 使用独立父对象、只读父对象托管子层和显式 colorbar 关系。平台只开放视觉样式，不修改 band 数据上下界或 contour 的 levels/X/Y/Z；旧 contour child editLog 仅用于兼容重放，现代 UI 不再产生新的子层编辑。
+WP6 已完成 `fill_between`、`contour/contourf` 与 `hist/stairs/step` 三个复杂对象家族。`fill_between` 具有专用 `fill_between/fill_between_series/data_band` 语义并保留旧 `collection.*` GID；`contour/contourf` 使用独立父对象、只读父对象托管子层和显式 colorbar 关系；直方图、阶梯填充和阶梯线使用专用 role，普通 bar/patch/line 不会误分类。平台只开放视觉样式，不修改 band 上下界、contour levels/X/Y/Z 或 histogram/stairs/step 的数据结构参数。
 
-contour 的 `cmap/vmin/vmax` 按属性能力留在当前对象/Figure；只有属性在全部目标上明确声明 `cross_figure` 才允许 fanout。原候选分支已形成父对象 Draft、后端重绘、跨 Figure、导出和旧项目兼容证据，当前生产集成仍需重新完成浏览器、导出、旧项目和生产 Docker 门禁。Python 后续 `hist/stairs/step`、pie、向量场、特殊 axes、性能和默认启用能力必须按独立批次继续验证，不能据此宣布计划全部完成。
+contour 的 `cmap/vmin/vmax` 按属性能力留在当前对象/Figure；只有属性在全部目标上明确声明 `cross_figure` 才允许 fanout。当前生产集成候选已纳入 `fill_between`、`contour/contourf` 和 `hist/stairs/step` 专用语义，并须在本分支重新完成浏览器、导出、旧项目和生产 Docker 门禁。Python 后续 pie、向量场、网络/路径/SEM、特殊 axes、性能和默认启用能力仍按独立批次推进，不能据此宣布计划全部完成。
 
 生产部署只运行一套内容固定的 renderer 镜像，并锁定 Python、R、绘图库、字体和系统依赖。两套 Matplotlib 测试只用于当前升级期间证明旧项目、旧 manifest 和旧 editLog 可被新代码安全读取，不表示服务器同时运行多版本，也不形成长期任意版本兼容承诺。
 
@@ -217,14 +217,14 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 | 能力 | 当前状态 | 说明 |
 |---|---|---|
 | 公开宣传页与注册门禁 | 已实现，邮箱生产通道待配置 | 匿名访问先进入宣传页；启用邮箱验证后，新账号必须完成六位验证码验证才会获得会话；现有账号兼容迁移 |
-| Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选已加入 `fill_between`、`contour/contourf` 专用语义，完成门禁和部署前不视为线上能力 |
+| Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选已加入 `fill_between`、`contour/contourf`、`hist/stairs/step` 专用语义，完成全部门禁和部署前不视为线上能力 |
 | R 渲染与语义编辑 | 已实现 MVP | ggplot2 主链路可用，细粒度仍弱于 Python |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |
 | 字体/颜色/线条编辑 | 已实现 | 支持单对象、语义分组、整图和跨 Figure 作用域 |
 | 编辑中心子图跟随 | 已实现并部署 | 选择图元后组件、字体、布局和配色目标自动跟随其所属子图；跨子图多选安全回退到全部子图 |
 | Draft Batch | 已实现 | 数值控件输入有效值后立即暂存，无需按 Enter；多项参数仍一次重绘 |
-| 撤销、重做和保存 | 已实现 | 仍需持续验证刷新后持久化和历史锚点 |
+| 撤销、重做和保存 | 已实现 | 项目 PUT 已加入 revision/editLog hash CAS、旧项目恢复兼容和排队保存保护；仍需持续验证真实项目长会话 |
 | 多目标拖拽 | 已实现并修复多轮 | 复杂 annotation、箭头和图例组合仍是高风险对象 |
 | 布局与子图尺寸 | 已实现基础能力 | 包括重排、间距、画布和绘图区尺寸，复杂布局需实测 |
 | Word/A4 真实尺寸预览 | 已实现 | 用于判断最终插入尺寸和可读字号 |

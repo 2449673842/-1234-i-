@@ -439,4 +439,83 @@ describe('palette target resolver', () => {
     expect(fallback.targets.map(item => item.objectId)).toEqual([scatter.id]);
     expect(fallback.targets.some(item => item.objectId === contourChild.id)).toBe(false);
   });
+
+  it('does not use parent-owned histogram bins for rendered-color fallback', () => {
+    const histogramChild = object('patch.0.0', 'facecolor', 'histogram-bin', 'local_patch');
+    histogramChild.kind = 'patch';
+    histogramChild.role = 'histogram_child_patch';
+    histogramChild.parentId = 'container.bar.0.0';
+    histogramChild.currentProps.facecolor = [0.2666666667, 0.4666666667, 0.6666666667, 1];
+    histogramChild.currentProps.parentOwned = true;
+    histogramChild.identity!.relation = {
+      subplotId: 'subplot.0',
+      parentId: histogramChild.parentId,
+    };
+    const ordinaryPatch = object('patch.0.1', 'facecolor', 'ordinary-patch', 'local_patch');
+    ordinaryPatch.kind = 'patch';
+    ordinaryPatch.currentProps.facecolor = [0.2666666667, 0.4666666667, 0.6666666667, 1];
+    const figure = manifest([histogramChild, ordinaryPatch], []);
+
+    const fallback = resolvePaletteColorFallbackTargets(figure, 'HIST_BLUE', '#4477AA', [
+      histogramChild.id,
+      ordinaryPatch.id,
+    ]);
+
+    expect(fallback.targets.map(item => item.objectId)).toEqual([ordinaryPatch.id]);
+  });
+
+  it('limits Python histogram palette bindings to the same semantic series and explicit legend marker relation', () => {
+    const histogram = object('histogram.0.0', 'facecolor', 'histogram-series', 'local_patch');
+    histogram.kind = 'bar_container' as any;
+    histogram.role = 'histogram_series';
+    histogram.identity!.semanticKey = 'histogram_series:subplot.0';
+    histogram.identity!.relation = {
+      subplotId: 'subplot.0',
+      legendMarkerIds: ['legend_patch.0.0'],
+    };
+    const ordinaryBar = object('bar_container.0.0', 'facecolor', 'ordinary-bar-series', 'local_patch');
+    ordinaryBar.kind = 'bar_container';
+    ordinaryBar.role = 'bar_series';
+    const relatedLegendMarker = object('legend_patch.0.0', 'facecolor', 'histogram-series', 'local_patch');
+    relatedLegendMarker.kind = 'patch';
+    relatedLegendMarker.role = 'legend_marker';
+    relatedLegendMarker.identity!.semanticKey = 'legend_marker:histogram-series';
+    relatedLegendMarker.identity!.coordinateSpace = 'none';
+    relatedLegendMarker.identity!.relation = {
+      subplotId: 'subplot.0',
+      legendId: 'legend.0',
+      parentId: histogram.id,
+    };
+    const unrelatedLegendMarker = object('legend_line.0.1', 'color', 'unrelated-line-series', 'local_patch');
+    unrelatedLegendMarker.kind = 'line';
+    unrelatedLegendMarker.role = 'legend_marker';
+    unrelatedLegendMarker.identity!.semanticKey = 'legend_marker:unrelated-line-series';
+    unrelatedLegendMarker.identity!.coordinateSpace = 'none';
+    unrelatedLegendMarker.identity!.relation = {
+      subplotId: 'subplot.0',
+      legendId: 'legend.0',
+    };
+    const figure = manifest([
+      histogram,
+      ordinaryBar,
+      relatedLegendMarker,
+      unrelatedLegendMarker,
+    ], [binding('HIST', [
+      target(histogram.id, 'facecolor', 'histogram-series'),
+      target(ordinaryBar.id, 'facecolor', 'ordinary-bar-series'),
+      target(relatedLegendMarker.id, 'facecolor', 'histogram-series'),
+      target(unrelatedLegendMarker.id, 'color', 'unrelated-line-series'),
+    ])]);
+
+    const result = resolvePaletteTargets(figure, 'HIST', true);
+
+    expect(result.targets.map(item => item.objectId)).toEqual([
+      histogram.id,
+      relatedLegendMarker.id,
+    ]);
+    expect(buildPaletteObjectPatches(result, '#33aa77')).toEqual([
+      { op: 'set', mode: 'local_patch', gid: histogram.id, prop: 'facecolor', value: '#33aa77' },
+      { op: 'set', mode: 'local_patch', gid: relatedLegendMarker.id, prop: 'facecolor', value: '#33aa77' },
+    ]);
+  });
 });

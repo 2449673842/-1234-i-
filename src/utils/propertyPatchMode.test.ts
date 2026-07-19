@@ -227,6 +227,37 @@ describe('resolveCrossFigurePolicy', () => {
     expect(resolveCrossFigurePolicy([legacyObject()], 'cmap')).toBe('deny');
     expect(resolveCrossFigurePolicy([], 'cmap')).toBe('deny');
   });
+
+  it.each([
+    ['histogram_series', 'bar_container', 'bins'],
+    ['histogram_series', 'bar_container', 'counts'],
+    ['histogram_series', 'bar_container', 'values'],
+    ['histogram_series', 'bar_container', 'edges'],
+    ['histogram_series', 'bar_container', 'histtype'],
+    ['stairs_series', 'patch', 'baseline'],
+    ['stairs_series', 'patch', 'values'],
+    ['stairs_series', 'patch', 'edges'],
+    ['step_series', 'line', 'x'],
+    ['step_series', 'line', 'y'],
+    ['step_series', 'line', 'where'],
+  ])('denies cross-Figure replay for structural Python series prop %s', (role, kind, prop) => {
+    const structural = legacyObject({
+      id: `${role}.0`,
+      kind: kind as any,
+      role,
+      editable: [prop],
+      currentProps: { [prop]: [] },
+      propertyCapabilities: [{
+        prop,
+        patchMode: 'backend_patch',
+        scopes: ['object', 'figure', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+
+    expect(resolveCrossFigurePolicy([structural], prop)).toBe('deny');
+  });
 });
 
 describe('isParentOwnedManifestObject', () => {
@@ -235,5 +266,38 @@ describe('isParentOwnedManifestObject', () => {
     expect(isParentOwnedManifestObject(legacyObject({ currentProps: { parentOwned: true } }))).toBe(true);
     expect(isParentOwnedManifestObject(legacyObject())).toBe(false);
     expect(isParentOwnedManifestObject(undefined)).toBe(false);
+  });
+});
+
+describe('Python structural series patch modes', () => {
+  it.each([
+    ['histogram_series', 'bar_container', 'bins'],
+    ['histogram_series', 'bar_container', 'counts'],
+    ['histogram_series', 'bar_container', 'values'],
+    ['histogram_series', 'bar_container', 'edges'],
+    ['histogram_series', 'bar_container', 'histtype'],
+    ['stairs_series', 'patch', 'baseline'],
+    ['stairs_series', 'patch', 'values'],
+    ['stairs_series', 'patch', 'edges'],
+    ['step_series', 'line', 'x'],
+    ['step_series', 'line', 'y'],
+    ['step_series', 'line', 'where'],
+  ])('does not honor local patch capability for structural prop %s', (role, kind, prop) => {
+    const structural = legacyObject({
+      id: `${role}.0`,
+      kind: kind as any,
+      role,
+      editable: [prop],
+      currentProps: { [prop]: [] },
+      propertyCapabilities: [{
+        prop,
+        patchMode: 'local_patch',
+        scopes: ['object', 'figure', 'cross_figure'],
+        preview: 'exact',
+        replay: 'stable',
+      }],
+    });
+
+    expect(resolvePatchMode(manifest(structural), structural, prop)).toBe('backend_patch');
   });
 });

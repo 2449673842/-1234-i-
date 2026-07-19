@@ -1,9 +1,9 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-19 06:19:06 +08:00
-> 证据截止时间：2026-07-19 06:19:06 +08:00
-> 代码范围：`feature/standard-figure-model-v1`，`HEAD 0d09a95` 加当前工作区尚未提交的 Python 身份/事务保护、导出恢复、`fill_between`、`contour/contourf` 和拖拽保护
+> 最后修改时间：2026-07-19 16:22:04 +08:00
+> 证据截止时间：2026-07-19 16:22:04 +08:00
+> 代码范围：`feature/standard-figure-model-v1`，`HEAD c771bca` 加当前工作区尚未提交的 Python 身份/事务保护、导出恢复、`fill_between`、`contour/contourf`、`hist/stairs/step` 和保存并发保护
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -30,19 +30,20 @@
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
 | TypeScript | 通过 | `npm run lint` |
-| 前端单元测试 | 143 文件 / 923 测试通过 | `npm test` |
-| Python renderer/身份/复杂覆盖 | 两套升级验证环境均 105/105 通过 | Matplotlib 3.7.2 与 3.8.4 运行完整 discovery；生产仅固定一个镜像版本 |
-| 组件中心真实浏览器 | 31/31 通过 | 包含网格、图例、容器、`fill_between`、contour 父对象、子层重定向和拖拽模式多选保护 |
+| 前端单元测试 | 144 文件 / 966 测试通过 | `npm test` |
+| Python renderer/身份/复杂覆盖 | 两套升级验证环境均 110/110 通过 | Matplotlib 3.7.2 与 3.8.4 运行完整 discovery；生产仅固定一个镜像版本 |
+| 组件中心真实浏览器 | 41/41 通过 | 包含网格、图例、容器、三个 WP6 家族、父层重定向、保存刷新和拖拽模式多选保护 |
 | Python 完整用户链路 | 通过 | 选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和快照恢复 |
 | `fill_between` 专用语义 | 通过 | dedicated kind/role、旧 GID/stableKey、配色、组件、历史和导出恢复均通过 |
 | `contour/contourf` 专用语义 | 通过 | 父对象、只读子层、colorbar 关系、属性 scope、跨 Figure、旧项目和导出恢复均通过 |
+| `hist/stairs/step` 专用语义 | 通过 | 专用 role、hist 父子关系、普通对象负例、结构只读、配色、组件、历史和导出恢复均通过 |
 | R 共享协议回归 | 通过 | R renderer 31/31、R 浏览器 5/5、Python/R capability matrix 2/2 |
 | patch 事务保护 | 通过 | standalone 与项目 Figure 均由服务端按可信 manifest/renderer 决定 mode；拒绝批次不改变 revision、session、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |
-| 项目 PUT 保存预检 | 通过 | editLog、past/future history、无 manifest 新编辑均先预检；伪报 local 和 mixed invalid batch 原子拒绝 |
+| 项目 PUT 保存预检 | 通过 | editLog/history 先预检；revision/hash CAS 阻止旧保存覆盖；GET/PUT 统一旧项目恢复源；排队保存与新 Draft 不丢失 |
 | 跨 Figure 目标保护 | 通过 | 无授权显式对象不 fanout；目标 mode 重算；同分语义候选跳过；组件语义组显式授权 fanout 保持 |
-| 跨 Figure 浏览器回归 | 11/11 通过 | 字体、内容限制、组件组 fanout、图例隔离、contour role 分离和部分失败 Draft 保留 |
+| 跨 Figure 浏览器回归 | 16/16 通过 | 字体、内容限制、组件组 fanout、图例隔离、三个 WP6 家族 role 分离和部分失败 Draft 保留 |
 | 扩展拖拽 | 10/10 通过 | 真实 Ctrl 三选、累计确认、取消、只读命中、annotation 和 R native 保护 |
 | Python cache | 通过 | 首次 miss、同语义重复 hit、值变化 miss；只信任本进程已确认 key |
 | 生产构建 | 通过 | 保留既有 bundle 体积和 CJS `import.meta` 警告 |
@@ -50,7 +51,7 @@
 
 本轮还重新运行了编辑、R、跨 Figure、历史、导出、页面、组合、安全和隔离 smoke。所有请求均使用随机 `127.0.0.1` 端口和临时数据库；未访问 3000，未修改 Docker/WSL。
 
-第二轮独立代码审查发现的 standalone mode 权威缺口已修复。当前项目保存接口也已纳入同一服务端预检；新增的 PUT、history 侧门、无 manifest 和跨 Figure 回归均通过。WP8 的恢复/导出事务证据已补齐，`fill_between` 与 `contour/contourf` 已完成专用适配；后续仍需对其余复杂对象、特殊 axes 和性能门禁补齐证据。
+三轮独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包和旧项目 GET/PUT 恢复源不一致均已修复。当前项目保存接口同时执行可信 manifest 预检与 revision/hash CAS；新增 PUT、history、无 manifest、旧 contour 项目和跨 Figure 回归均通过。WP8 的恢复/导出事务证据已补齐，`fill_between`、`contour/contourf` 与 `hist/stairs/step` 已完成专用适配；后续仍需对其余复杂对象、特殊 axes 和性能门禁补齐证据。
 
 第一轮隔离浏览器基线补充结果：
 
@@ -73,6 +74,18 @@ cmap/vmin/vmax 只在属性声明的 scope 内应用，未声明 cross_figure �
 旧 identity-bearing contour child editLog 可加载、保存、导出和快照恢复
 contour child 点击在普通和拖拽模式下都重定向到父对象，modifier 可保留两个父对象
 其他 Figure 的 stale edit 会阻断项目级代码 patch；全项目导出在全部目标通过前零资产写入
+```
+
+2026-07-19 16:22:04 的 `hist/stairs/step` 与保存并发补充证据：
+
+```text
+histogram/stairs/step 使用专用 role；普通 bar、手工 StepPatch 和 drawstyle line 不误分类
+histogram child patch 标记 parentOwned，点击和批量编辑重定向到父系列
+结构参数只读；拒绝请求不增加 revision，不写 session/history/cache/export/snapshot
+项目保存要求 baseRevision + baseEditLogHash，旧请求不能覆盖新 editLog/history
+语义相同的旧项目 payload 可保存名称/spec，但 Figure 状态保持原样
+排队保存等待最新 React 状态；旧响应不清除请求期间产生的新 Draft
+保存刷新、撤销重做、跨 Figure、四格式导出和导出快照恢复一致
 ```
 
 版本边界：开发、预发布和生产应使用同一套固定 renderer 镜像及精确依赖。上一生产/验证环境只在升级窗口内作为旧项目迁移门禁，不是长期支持矩阵；历史 manifest/editLog 兼容必须由数据协议测试证明，不能靠同时运行多套 renderer 规避。
@@ -237,6 +250,8 @@ contour child 点击在普通和拖拽模式下都重定向到父对象，modifi
 ### 4.9 历史、保存、导出和恢复
 
 - 保存、刷新、退出重进后恢复同一 Figure revision、editLog、history 和视觉结果。
+- 过期自动保存、同 revision 缺 hash 和 hash 漂移请求必须 409 且零写入；旧项目无状态保存不得被误伤。
+- 保存请求期间产生的新 Draft 不得被旧响应清除；排队保存必须基于最新提交后的状态。
 - 撤销/重做恢复 SVG、manifest、editLog 和 revision 的一致状态。
 - 导出必须使用最后一次成功预览状态，不得退回初始脚本尺寸或样式。
 - SVG、PNG、PDF、TIFF 和子图导出保持格式、DPI、方向和尺寸一致。
@@ -302,7 +317,7 @@ Multi-Figure / twin/shared axes relationship
 结构变化后的对象身份迁移
 任意第三方 Matplotlib Artist
 3D、地图投影、broken/inset/secondary axes 的完整位置编辑
-contour、fill_between、stackplot、pie、quiver、streamplot 等专用语义容器
+stackplot、pie、quiver、streamplot 等尚未完成的专用语义容器
 超大数据图的交互性能
 全部真实科研项目和全部视觉截图基线
 ```

@@ -42,6 +42,50 @@ export function isContourStructuralProp(prop: string): boolean {
   return ['levels', 'x', 'y', 'z'].includes(prop.toLowerCase());
 }
 
+const PYTHON_STRUCTURAL_SERIES_PROPS: Record<string, Set<string>> = {
+  histogram_series: new Set([
+    'bins',
+    'counts',
+    'values',
+    'edges',
+    'density',
+    'cumulative',
+    'orientation',
+    'weights',
+    'weighted',
+    'histtype',
+    'stacked',
+    'bottom',
+    'range',
+    'align',
+    'rwidth',
+    'log',
+  ]),
+  stairs_series: new Set([
+    'values',
+    'edges',
+    'baseline',
+  ]),
+  step_series: new Set([
+    'x',
+    'y',
+    'xdata',
+    'ydata',
+    'where',
+    'drawstyle',
+    'interpolation',
+  ]),
+};
+
+export function isPythonStructuralSeriesProp(
+  object: ManifestObject | null | undefined,
+  prop: string,
+): boolean {
+  const role = object?.role;
+  if (!role) return false;
+  return PYTHON_STRUCTURAL_SERIES_PROPS[role]?.has(prop.toLowerCase()) === true;
+}
+
 export function isParentOwnedManifestObject(
   object: ManifestObject | null | undefined,
 ): boolean {
@@ -53,6 +97,7 @@ export function propertyCapabilityFor(
   object: ManifestObject | null | undefined,
   prop: string,
 ): ManifestPropertyCapability | undefined {
+  if (isPythonStructuralSeriesProp(object, prop)) return undefined;
   return object?.propertyCapabilities?.find(capability => capability.prop === prop);
 }
 
@@ -62,6 +107,7 @@ export function resolveCrossFigurePolicy(
 ): 'allow' | 'deny' {
   if (objects.length === 0) return 'deny';
   return objects.every((object) => {
+    if (isPythonStructuralSeriesProp(object, prop)) return false;
     const capability = propertyCapabilityFor(object, prop);
     return capability?.replay !== 'unsupported'
       && capability?.scopes.includes('cross_figure') === true;
@@ -94,6 +140,7 @@ export function resolvePatchMode(
   if (isTextContentPatchProp(prop, object)) return 'backend_patch';
   if (object.kind === 'grid' && prop === 'visible') return 'backend_patch';
   if (isContourObject(object)) return 'backend_patch';
+  if (isPythonStructuralSeriesProp(object, prop)) return 'backend_patch';
 
   const capability = propertyCapabilityFor(object, prop);
   if (capability) {

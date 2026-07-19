@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { projectFigureSaveBase } from '../helpers/project_save_hash.mjs';
 
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
 
@@ -141,7 +142,12 @@ async function main() {
     method: 'PUT',
     body: JSON.stringify({
       name: 'Project save preflight',
-      figures: [{ figureId: 'fig_1', revision: renderedFigure.revision, editLog: [lyingLocalPatch] }],
+      figures: [{
+        figureId: 'fig_1',
+        ...projectFigureSaveBase(renderedFigure),
+        revision: renderedFigure.revision,
+        editLog: [lyingLocalPatch],
+      }],
     }),
   });
   assert(saved.response.ok && saved.data?.status === 'success', `valid save failed: ${JSON.stringify(saved.data)}`);
@@ -157,7 +163,7 @@ async function main() {
     method: 'PUT',
     body: JSON.stringify({
       name: 'Project save preflight',
-      figures: [{ figureId: 'fig_1', revision: validFigure.revision, editLog: [] }],
+      figures: [{ figureId: 'fig_1', ...projectFigureSaveBase(validFigure), revision: validFigure.revision, editLog: [] }],
     }),
   });
   assert(cleared.response.ok && cleared.data?.status === 'success', `authoritative empty editLog save failed: ${JSON.stringify(cleared.data)}`);
@@ -188,6 +194,7 @@ async function main() {
       name: 'Project save preflight',
       figures: [{
         figureId: 'fig_1',
+        ...projectFigureSaveBase(clearedFigure),
         revision: baselineRevision,
         editLog: [secondValidPatch, rejectedPatch],
       }],
@@ -217,6 +224,7 @@ async function main() {
       name: 'Project save preflight',
       figures: [{
         figureId: 'fig_1',
+        ...projectFigureSaveBase(clearedFigure),
         revision: baselineRevision,
         editLog: [],
         history: {
@@ -241,7 +249,13 @@ async function main() {
       method: 'PUT',
       body: JSON.stringify({
         name: 'Project save preflight',
-        figures: [{ figureId: 'fig_1', revision: baselineRevision, editLog: [], history: malformedHistory }],
+        figures: [{
+          figureId: 'fig_1',
+          ...projectFigureSaveBase(clearedFigure),
+          revision: baselineRevision,
+          editLog: [],
+          history: malformedHistory,
+        }],
       }),
     });
     assert(malformedAttempt.response.status === 409 && malformedAttempt.data?.status === 'conflict', `malformed history was accepted: ${JSON.stringify(malformedAttempt.data)}`);
@@ -284,7 +298,12 @@ async function main() {
     method: 'PUT',
     body: JSON.stringify({
       name: 'Project save preflight',
-      figures: [{ figureId: 'fig_1', revision: noManifestRevision, editLog: [noManifestPatch] }],
+      figures: [{
+        figureId: 'fig_1',
+        ...projectFigureSaveBase(invalidatedFigure),
+        revision: noManifestRevision,
+        editLog: [noManifestPatch],
+      }],
     }),
   });
   assert(noManifestSave.response.status === 409 && noManifestSave.data?.status === 'conflict', `new edit without manifest was accepted: ${noManifestSave.response.status} ${JSON.stringify(noManifestSave.data)}`);

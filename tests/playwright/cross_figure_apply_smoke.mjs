@@ -149,6 +149,31 @@ const contourScript = [
   '    fig.tight_layout()',
 ].join('\n');
 
+const pythonSeriesRoleScript = [
+  'import matplotlib.pyplot as plt',
+  'from matplotlib.patches import Rectangle',
+  'def draw(ax, idx):',
+  '    offset = idx * 0.05',
+  '    ax.hist([0, 0.4, 1.1, 1.6, 2.2, 2.5, 2.8], bins=[0, 1, 2, 3], color="#884422", alpha=0.55, label=f"Hist {idx}")',
+  '    ax.bar([0.35, 1.35, 2.35], [0.25 + offset, 0.35 + offset, 0.22 + offset], width=0.16, color="#884422", alpha=0.7, label=f"Plain bar {idx}")',
+  '    ax.stairs([0.45 + offset, 0.65 + offset, 0.4 + offset], [0, 1, 2, 3], color="#7755aa", linewidth=1.1, label=f"Stairs {idx}")',
+  '    ax.add_patch(Rectangle((2.55, 0.2 + offset), 0.3, 0.35, facecolor="#7755aa", edgecolor="#7755aa", alpha=0.7, label=f"Plain patch {idx}"))',
+  '    ax.step([0, 1, 2, 3], [1.5 + offset, 1.7 + offset, 1.4 + offset, 1.6 + offset], where="mid", color="#116699", linewidth=1.1, label=f"Step {idx}")',
+  '    ax.plot([0, 1, 2, 3], [1.72 + offset, 1.55 + offset, 1.65 + offset, 1.5 + offset], drawstyle="steps-mid", color="#116699", linewidth=1.1, label=f"Plain stepdraw line {idx}")',
+  '    ax.set_title(f"Series Figure {idx}")',
+  '    ax.set_xlabel("Shared X")',
+  '    ax.set_ylabel("Shared Y")',
+  '    ax.set_ylim(0, 4.0)',
+  '    ax.legend(loc="upper left")',
+  'fig1, ax1 = plt.subplots(figsize=(4, 3))',
+  'fig2, ax2 = plt.subplots(figsize=(4, 3))',
+  'fig3, ax3 = plt.subplots(figsize=(4, 3))',
+  'for idx, ax in enumerate([ax1, ax2, ax3], start=1):',
+  '    draw(ax, idx)',
+  'for fig in [fig1, fig2, fig3]:',
+  '    fig.tight_layout()',
+].join('\n');
+
 async function getBodyText(page) {
   return (await page.textContent('body').catch(() => '')) || '';
 }
@@ -229,8 +254,11 @@ async function prepareProject(page, projectScript = script, projectLabel = 'Cros
           id: object.id,
           kind: object.kind,
           role: object.role,
+          label: object.label,
           parentId: object.parentId,
           children: object.children || [],
+          currentProps: object.currentProps || {},
+          identity: object.identity || {},
         })),
       ])),
       axisIdsByFigure: Object.fromEntries(rendered.figures.map((figure) => [
@@ -368,6 +396,35 @@ async function setRangeInComponentGroup(page, groupId, prop, value) {
   return true;
 }
 
+async function setColorInComponentGroup(page, groupId, value, prop = 'color') {
+  const selector = prop === 'color'
+    ? `input[data-color-role="text"][data-param-prop="${prop}"]`
+    : 'input[data-color-role="text"][data-color-scope$=":color"]';
+  const locator = page.locator(`[data-component-group-id="${groupId}"] ${selector}`).first();
+  if (!(await locator.isVisible({ timeout: 5000 }).catch(() => false))) return false;
+  await locator.scrollIntoViewIfNeeded().catch(() => {});
+  await locator.fill(value);
+  await locator.press('Enter').catch(() => {});
+  await locator.evaluate((node) => node.blur());
+  await page.waitForTimeout(700);
+  return true;
+}
+
+async function setNumberInComponentGroup(page, groupId, prop, value) {
+  const locator = page.locator(`[data-component-group-id="${groupId}"] input[data-param-role="number"][data-param-prop="${prop}"]`).first();
+  if (!(await locator.isVisible({ timeout: 1000 }).catch(() => false))) return false;
+  await locator.scrollIntoViewIfNeeded().catch(() => {});
+  await locator.fill(String(value));
+  await locator.press('Enter').catch(() => {});
+  await locator.evaluate((node) => node.blur());
+  await page.waitForTimeout(700);
+  return true;
+}
+
+async function componentGroupHasPropControl(page, groupId, prop) {
+  return (await page.locator(`[data-component-group-id="${groupId}"] [data-param-prop="${prop}"]`).count().catch(() => 0)) > 0;
+}
+
 async function waitForApiSettle(startIndex, timeoutMs = 90000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -381,6 +438,23 @@ async function waitForApiSettle(startIndex, timeoutMs = 90000) {
 
 function patchList(body) {
   return Array.isArray(body?.patches) ? body.patches : [];
+}
+
+function objectById(objectSummaryByFigure, figureId, gid) {
+  return (objectSummaryByFigure?.[figureId] || []).find((object) => object.id === gid) || null;
+}
+
+function rolePatchSummary(objectSummaryByFigure, patchBodies) {
+  return patchBodies.flatMap((body) => patchList(body).map((patch) => {
+    const object = objectById(objectSummaryByFigure, body?.figureId, patch.gid);
+    return {
+      figureId: body?.figureId,
+      ...patch,
+      kind: object?.kind || null,
+      role: object?.role || null,
+      parentOwned: object?.currentProps?.parentOwned === true,
+    };
+  }));
 }
 
 async function applyAllAndReadPatches(page) {
@@ -743,6 +817,160 @@ async function run() {
       'X5-contour-role-split-parent-retarget',
       contourSplitRetargetOk ? 'PASS' : 'FAIL',
       `changed=${changedContourAlpha}, draft=${contourDraftVisible}, kinds=${JSON.stringify(contourKindsByPatchedFigure)}, childTargets=${JSON.stringify(contourChildTargets)}, skippedVisible=${contourSkippedVisible}, patches=${JSON.stringify(contourAllPatches)}`,
+    );
+
+    if (projectId) {
+      await requestJson(`/api/projects/${projectId}`, { method: 'DELETE' }).catch(() => null);
+      projectId = null;
+    }
+    const seriesFixture = await prepareProject(page, pythonSeriesRoleScript, 'Cross figure apply smoke python series');
+    projectId = seriesFixture.projectId;
+    diagnostics.seriesFixture = seriesFixture;
+    const seriesSummary = seriesFixture.objectSummaryByFigure || {};
+    const roleCountsByFigure = Object.fromEntries(Object.entries(seriesSummary).map(([figureId, objects]) => [
+      figureId,
+      {
+        histogram: objects.filter((object) => object.role === 'histogram_series').length,
+        stairs: objects.filter((object) => object.role === 'stairs_series').length,
+        step: objects.filter((object) => object.role === 'step_series').length,
+        ordinaryBars: objects.filter((object) => object.kind === 'bar_container' && object.role !== 'histogram_series').length,
+        ordinaryPatches: objects.filter((object) => object.kind === 'patch' && object.role !== 'stairs_series' && object.role !== 'legend_marker').length,
+        ordinaryLines: objects.filter((object) => object.kind === 'line' && object.role !== 'step_series' && object.role !== 'legend_marker').length,
+        parentOwned: objects.filter((object) => object.currentProps?.parentOwned === true).length,
+      },
+    ]));
+    const seriesFixtureOk = seriesFixture.figureCount === 3
+      && Object.values(roleCountsByFigure).every((counts) => (
+        counts.histogram === 1
+        && counts.stairs === 1
+        && counts.step === 1
+        && counts.ordinaryBars >= 1
+        && counts.ordinaryPatches >= 1
+        && counts.ordinaryLines >= 1
+        && counts.parentOwned >= 1
+      ));
+    record(
+      'X6-python-series-dedicated-fixture',
+      seriesFixtureOk ? 'PASS' : 'FAIL',
+      JSON.stringify(roleCountsByFigure),
+    );
+
+    await clickText(page, '组件中心');
+    const changedHistogramColor = await setColorInComponentGroup(page, 'histograms', '#229966', 'facecolor');
+    const histogramDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const applyHistogramAll = changedHistogramColor
+      ? await applyAllAndReadPatches(page)
+      : { clicked: false, patchBodies: [], successful: false, start: apiRequests.length };
+    const histogramPatchDetails = rolePatchSummary(seriesSummary, applyHistogramAll.patchBodies);
+    const histogramFigureIds = [...new Set(histogramPatchDetails.map((patch) => patch.figureId).filter(Boolean))].sort();
+    const histogramFullRenderCalls = apiRequests.slice(applyHistogramAll.start || 0).filter((request) => request.url.includes('/figures/render'));
+    const histogramFanoutOk = seriesFixtureOk
+      && changedHistogramColor
+      && histogramDraftVisible
+      && applyHistogramAll.clicked
+      && applyHistogramAll.successful
+      && histogramFigureIds.join(',') === 'fig_1,fig_2,fig_3'
+      && histogramPatchDetails.length === 3
+      && histogramPatchDetails.every((patch) => (
+        patch.role === 'histogram_series'
+        && patch.kind === 'bar_container'
+        && patch.parentOwned === false
+        && patch.prop === 'facecolor'
+        && String(patch.value).toLowerCase() === '#229966'
+      ))
+      && histogramFullRenderCalls.length === 0;
+    record(
+      'X6-histogram-cross-figure-dedicated-only',
+      histogramFanoutOk ? 'PASS' : 'FAIL',
+      `changed=${changedHistogramColor}, draft=${histogramDraftVisible}, figureIds=${JSON.stringify(histogramFigureIds)}, patches=${JSON.stringify(histogramPatchDetails)}, fullRenderCalls=${histogramFullRenderCalls.length}`,
+    );
+
+    await clickText(page, '组件中心');
+    const changedStairsColor = await setColorInComponentGroup(page, 'stairs', '#335577', 'edgecolor');
+    const stairsDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const applyStairsAll = changedStairsColor
+      ? await applyAllAndReadPatches(page)
+      : { clicked: false, patchBodies: [], successful: false, start: apiRequests.length };
+    const stairsPatchDetails = rolePatchSummary(seriesSummary, applyStairsAll.patchBodies);
+    const stairsFigureIds = [...new Set(stairsPatchDetails.map((patch) => patch.figureId).filter(Boolean))].sort();
+    const stairsFullRenderCalls = apiRequests.slice(applyStairsAll.start || 0).filter((request) => request.url.includes('/figures/render'));
+    const stairsFanoutOk = seriesFixtureOk
+      && changedStairsColor
+      && stairsDraftVisible
+      && applyStairsAll.clicked
+      && applyStairsAll.successful
+      && stairsFigureIds.join(',') === 'fig_1,fig_2,fig_3'
+      && stairsPatchDetails.length === 3
+      && stairsPatchDetails.every((patch) => (
+        patch.role === 'stairs_series'
+        && patch.kind === 'patch'
+        && patch.prop === 'edgecolor'
+        && String(patch.value).toLowerCase() === '#335577'
+      ))
+      && stairsFullRenderCalls.length === 0;
+    record(
+      'X6-stairs-cross-figure-dedicated-only',
+      stairsFanoutOk ? 'PASS' : 'FAIL',
+      `changed=${changedStairsColor}, draft=${stairsDraftVisible}, figureIds=${JSON.stringify(stairsFigureIds)}, patches=${JSON.stringify(stairsPatchDetails)}, fullRenderCalls=${stairsFullRenderCalls.length}`,
+    );
+
+    await clickText(page, '组件中心');
+    const changedStepColor = await setColorInComponentGroup(page, 'steps', '#2244aa', 'color');
+    const stepDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const applyStepAll = changedStepColor
+      ? await applyAllAndReadPatches(page)
+      : { clicked: false, patchBodies: [], successful: false, start: apiRequests.length };
+    const stepPatchDetails = rolePatchSummary(seriesSummary, applyStepAll.patchBodies);
+    const stepFigureIds = [...new Set(stepPatchDetails.map((patch) => patch.figureId).filter(Boolean))].sort();
+    const stepFullRenderCalls = apiRequests.slice(applyStepAll.start || 0).filter((request) => request.url.includes('/figures/render'));
+    const stepFanoutOk = seriesFixtureOk
+      && changedStepColor
+      && stepDraftVisible
+      && applyStepAll.clicked
+      && applyStepAll.successful
+      && stepFigureIds.join(',') === 'fig_1,fig_2,fig_3'
+      && stepPatchDetails.length === 3
+      && stepPatchDetails.every((patch) => (
+        patch.role === 'step_series'
+        && patch.kind === 'line'
+        && patch.prop === 'color'
+        && String(patch.value).toLowerCase() === '#2244aa'
+      ))
+      && stepFullRenderCalls.length === 0;
+    record(
+      'X6-step-cross-figure-dedicated-only',
+      stepFanoutOk ? 'PASS' : 'FAIL',
+      `changed=${changedStepColor}, draft=${stepDraftVisible}, figureIds=${JSON.stringify(stepFigureIds)}, patches=${JSON.stringify(stepPatchDetails)}, fullRenderCalls=${stepFullRenderCalls.length}`,
+    );
+
+    await clickText(page, '组件中心');
+    const structuralControlPresence = {
+      bins: await componentGroupHasPropControl(page, 'histograms', 'bins'),
+      edges: await componentGroupHasPropControl(page, 'stairs', 'edges'),
+      where: await componentGroupHasPropControl(page, 'steps', 'where'),
+    };
+    const structuralStart = apiRequests.length;
+    const attemptedStructuralEdits = [
+      await setNumberInComponentGroup(page, 'histograms', 'bins', 99),
+      await setNumberInComponentGroup(page, 'stairs', 'edges', 99),
+      await setNumberInComponentGroup(page, 'steps', 'where', 99),
+    ];
+    await page.waitForTimeout(800);
+    const structuralDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const structuralSideEffects = apiRequests.slice(structuralStart).filter((request) => (
+      request.url.includes('/api/figure/patch')
+      || request.url.includes('/figures/render')
+      || (request.method === 'PUT' && /\/api\/projects\/[^/]+$/.test(new URL(request.url).pathname))
+    ));
+    const structuralDeniedOk = seriesFixtureOk
+      && !Object.values(structuralControlPresence).some(Boolean)
+      && attemptedStructuralEdits.every((attempted) => attempted === false)
+      && !structuralDraftVisible
+      && structuralSideEffects.length === 0;
+    record(
+      'X6-structural-props-denied-no-draft-persistence',
+      structuralDeniedOk ? 'PASS' : 'FAIL',
+      `controls=${JSON.stringify(structuralControlPresence)}, attempts=${JSON.stringify(attemptedStructuralEdits)}, draft=${structuralDraftVisible}, sideEffects=${JSON.stringify(structuralSideEffects)}`,
     );
 
     const activeFig1ForRetry = await selectActiveFigure(page, 1);
