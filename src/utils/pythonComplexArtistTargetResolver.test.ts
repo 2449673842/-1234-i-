@@ -38,6 +38,32 @@ function complexObject(input: {
   } as ManifestObject;
 }
 
+function manifestWith(objects: ManifestObject[]): Manifest {
+  return {
+    generatedBy: 'introspection',
+    globals: {},
+    objects,
+    colorGroups: [],
+    palettes: [],
+    groups: [],
+    bindings: [],
+    capabilities: { localPatch: true, backendPatch: true, codePatch: true },
+  } as Manifest;
+}
+
+function styleIntentFor(targetRole: string, prop: string, value: unknown): EditingIntent {
+  return {
+    intent: 'style.component',
+    scope: {
+      selectionMode: 'role_in_figure',
+      targetRole,
+    },
+    operation: { prop, value },
+    commit: { mode: 'draft', applyAsOneHistoryStep: true },
+    fallback: { onUnsupported: 'skip_with_warning' },
+  } as unknown as EditingIntent;
+}
+
 describe('Python complex artist target roles', () => {
   it('keeps fill_between separate from generic collection targets', () => {
     const band = complexObject({
@@ -236,6 +262,98 @@ describe('Python complex artist target roles', () => {
     expect(inferEditingTargetRole(dedicatedSeries)).toBe(targetRole);
     expect(compileEditingIntentStrict(manifest, intent).patches).toEqual([
       { op: 'set', mode: 'local_patch', gid: targetId, prop, value: '#118833' },
+    ]);
+  });
+
+  it('routes data_quiver only to dedicated quiver fields', () => {
+    const quiver = complexObject({
+      id: 'collection.0.2',
+      kind: 'quiver',
+      role: 'quiver_field',
+      prop: 'color',
+    });
+    quiver.propertyCapabilities![0]!.patchMode = 'backend_patch';
+    quiver.propertyCapabilities![0]!.preview = 'none';
+    const scatter = complexObject({
+      id: 'collection.0.3',
+      kind: 'collection',
+      role: 'scatter_series',
+      prop: 'color',
+    });
+    const genericCollection = complexObject({
+      id: 'collection.0.4',
+      kind: 'collection',
+      role: 'collection',
+      prop: 'color',
+    });
+    const manifest = manifestWith([quiver, scatter, genericCollection]);
+    const intent = styleIntentFor('data_quiver', 'color', '#118833');
+
+    expect(inferEditingTargetRole(quiver)).toBe('data_quiver');
+    expect(inferEditingTargetRole(scatter)).toBe('data_point');
+    expect(inferEditingTargetRole(genericCollection)).toBe('data_point');
+    expect(compileEditingIntentStrict(manifest, intent).patches).toEqual([
+      { op: 'set', mode: 'backend_patch', gid: quiver.id, prop: 'color', value: '#118833' },
+    ]);
+  });
+
+  it('routes data_streamplot only to dedicated streamplot parents', () => {
+    const streamplot = complexObject({
+      id: 'container.streamplot.0.0',
+      kind: 'streamplot',
+      role: 'streamplot_field',
+      prop: 'color',
+    });
+    streamplot.propertyCapabilities![0]!.patchMode = 'backend_patch';
+    streamplot.propertyCapabilities![0]!.preview = 'none';
+    const lineChild = complexObject({
+      id: 'collection.0.2',
+      kind: 'collection',
+      role: 'streamplot_child_line',
+      prop: 'color',
+    });
+    lineChild.parentId = streamplot.id;
+    lineChild.editable = [];
+    lineChild.propertyCapabilities = [];
+    lineChild.identity!.relation = { subplotId: 'subplot.0', parentId: streamplot.id };
+    const arrowChild = complexObject({
+      id: 'patch.0.3',
+      kind: 'patch',
+      role: 'streamplot_child_arrow',
+      prop: 'color',
+    });
+    arrowChild.parentId = streamplot.id;
+    arrowChild.editable = [];
+    arrowChild.propertyCapabilities = [];
+    arrowChild.identity!.relation = { subplotId: 'subplot.0', parentId: streamplot.id };
+    const ordinaryCollection = complexObject({
+      id: 'collection.0.4',
+      kind: 'collection',
+      role: 'collection',
+      prop: 'color',
+    });
+    const ordinaryPatch = complexObject({
+      id: 'patch.0.5',
+      kind: 'patch',
+      role: 'patch',
+      prop: 'color',
+    });
+    const manifest = manifestWith([
+      streamplot,
+      lineChild,
+      arrowChild,
+      ordinaryCollection,
+      ordinaryPatch,
+    ]);
+    const intent = styleIntentFor('data_streamplot', 'color', '#118833');
+
+    expect(inferEditingTargetRole(streamplot)).toBe('data_streamplot');
+    expect(inferEditingTargetRole(lineChild)).toBe('component');
+    expect(inferEditingTargetRole(arrowChild)).toBe('component');
+    expect(inferEditingTargetRole(ordinaryCollection)).toBe('data_point');
+    expect(inferEditingTargetRole(ordinaryPatch)).toBe('data_patch');
+    expect(compileEditingIntentStrict(manifest, intent).patches).toEqual([
+      { op: 'set', mode: 'backend_patch', gid: streamplot.id, prop: 'color', value: '#118833' },
     ]);
   });
 });

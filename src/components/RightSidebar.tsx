@@ -924,6 +924,8 @@ export function RightSidebar({
     if (obj.kind === 'fill_between' || obj.role === 'fill_between_series') return '置信区间带';
     if (obj.kind === 'contour') return '等高线';
     if (obj.kind === 'contourf') return '填充等高线';
+    if (obj.kind === 'quiver' || obj.role === 'quiver_field') return '矢量场';
+    if (obj.kind === 'streamplot' || obj.role === 'streamplot_field') return '流线场';
     if (id.startsWith('title.')) return '主标题';
     if (id.startsWith('suptitle.')) return '总标题';
     if (id.startsWith('xlabel.')) return 'X 轴标签';
@@ -1526,6 +1528,8 @@ export function RightSidebar({
       stem_container: '茎叶图',
       contour: '等高线',
       contourf: '填充等高线',
+      quiver: '矢量场',
+      streamplot: '流线场',
     };
     return labels[kind] || kind;
   };
@@ -3862,6 +3866,8 @@ export function RightSidebar({
     const boxplotContainerObjects = scopedObjects.filter(obj => obj.kind === 'boxplot_container');
     const violinContainerObjects = scopedObjects.filter(obj => obj.kind === 'violinplot_container');
     const contourObjects = scopedObjects.filter(obj => obj.kind === 'contour' || obj.kind === 'contourf');
+    const quiverObjects = scopedObjects.filter(obj => obj.kind === 'quiver' || obj.role === 'quiver_field');
+    const streamplotObjects = scopedObjects.filter(obj => obj.kind === 'streamplot' || obj.role === 'streamplot_field');
     const claimedChildIds = new Set(
       [
         ...barContainerObjects,
@@ -3873,6 +3879,7 @@ export function RightSidebar({
         ...stairsObjects,
         ...stepObjects,
         ...contourObjects,
+        ...streamplotObjects,
       ].flatMap(container => container.children || []),
     );
     const claimedContainerIds = new Set([
@@ -4057,6 +4064,23 @@ export function RightSidebar({
         sizeProp: null,
       },
       {
+        id: 'quivers',
+        label: '矢量场 (Quiver)',
+        description: '统一调整箭头颜色、边框、透明度、线宽、显隐和层级；向量方向、尺度及箭头几何保持只读。',
+        objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? quiverObjects : [],
+        colorProp: 'color',
+        edgeColorProp: 'edgecolor',
+        sizeProp: null,
+      },
+      {
+        id: 'streamplots',
+        label: '流线场 (Streamplot)',
+        description: '由语义父对象同步控制流线和箭头；密度、起点、积分方向及矢量数据保持只读。',
+        objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? streamplotObjects : [],
+        colorProp: 'color',
+        sizeProp: null,
+      },
+      {
         id: 'bars',
         label: '柱形系列',
         description: 'BarContainer 统一控制整组柱形。容器存在时不再重复修改内部 Rectangle 子对象。',
@@ -4167,6 +4191,8 @@ export function RightSidebar({
       if (items.every(obj => obj.role === 'wedge_slice')) return 'data_wedge_slice';
       if (items.every(obj => obj.role === 'pie_label')) return 'pie_label';
       if (items.every(obj => obj.role === 'pie_value_label')) return 'pie_value_label';
+      if (items.every(obj => obj.kind === 'quiver' || obj.role === 'quiver_field')) return 'data_quiver';
+      if (items.every(obj => obj.kind === 'streamplot' || obj.role === 'streamplot_field')) return 'data_streamplot';
       if (items.every(obj => obj.kind === 'bar_container' || obj.role === 'bar_series')) return 'data_bar';
       if (items.every(obj => obj.kind === 'errorbar_container' || obj.role === 'errorbar_series')) return 'data_errorbar';
       if (items.every(obj => obj.kind === 'stem_container' || obj.role === 'stem_series')) return 'data_stem';
@@ -4258,6 +4284,46 @@ export function RightSidebar({
             fallback: { onUnsupported: 'skip_with_warning' },
           }));
         }
+      }
+      if (
+        ['color', 'facecolor', 'edgecolor', 'alpha', 'linewidth'].includes(prop)
+        && supportedItems.some(obj => ['quiver_field', 'streamplot_field'].includes(String(obj.role)))
+      ) {
+        const markerIds = new Set(supportedItems.flatMap(obj => (
+          ['quiver_field', 'streamplot_field'].includes(String(obj.role))
+            ? obj.identity?.relation?.legendMarkerIds ?? []
+            : []
+        )));
+        const relatedMarkers = objects.filter(obj => (
+          markerIds.has(obj.id)
+          && obj.role === 'legend_marker'
+        ));
+        const markerItemsByProp = new Map<string, ManifestObject[]>();
+        relatedMarkers.forEach((marker) => {
+          const markerProps = prop === 'color' && !supportsBatchProp(marker, 'color')
+            ? ['facecolor', 'edgecolor'].filter(markerProp => supportsBatchProp(marker, markerProp))
+            : [prop].filter(markerProp => supportsBatchProp(marker, markerProp));
+          markerProps.forEach((markerProp) => {
+            const markerItems = markerItemsByProp.get(markerProp) ?? [];
+            markerItems.push(marker);
+            markerItemsByProp.set(markerProp, markerItems);
+          });
+        });
+        markerItemsByProp.forEach((markerItems, markerProp) => {
+          patches.push(...compileComponentIntentPatches({
+            intent: 'style.component',
+            scope: {
+              selectionMode: 'explicit_objects',
+              objectIds: markerItems.map(obj => obj.id),
+              targetKinds: Array.from(new Set(markerItems.map(obj => obj.kind))),
+              targetRole: 'legend_marker',
+              crossFigure: resolveCrossFigurePolicy(markerItems, markerProp),
+            },
+            operation: { prop: markerProp, value },
+            commit: { mode: 'draft', applyAsOneHistoryStep: true },
+            fallback: { onUnsupported: 'skip_with_warning' },
+          }));
+        });
       }
       if (prop === 'fontsize') {
         patches.push(...buildLegendMarkerScalePatches(supportedItems, value));

@@ -1,6 +1,6 @@
 # SciFigure Studio 语义能力矩阵
 
-> 最后修改时间：2026-07-19 19:51:21 +08:00
+> 最后修改时间：2026-07-19 21:02:01 +08:00
 
 本矩阵记录了 SciFigure Studio 对于各类科研绘图图元的内省识别、可视化编辑以及渲染一致性的支持级别。
 
@@ -22,6 +22,8 @@
 | **boxplot** (箱线图) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `color`, `linewidth`, `alpha`, `box_color`, `median_color`, `zorder` | 🟢 高一致性 | 🟢 有 | 箱线图内部元素（fliers, whiskers, caps）通过 container 聚合进行批量覆盖。 |
 | **violinplot** (小提琴图) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `color`, `facecolor`, `edgecolor`, `linewidth`, `alpha`, `zorder` | 🟢 高一致性 | 🟢 有 | 小提琴图内部轮廓填充通过 `bodies` 分组进行批量控制。 |
 | **pie / wedge** (饼图 / 楔形) | 🟢 是 | 🟢 通过 | 🟢 已验证 | 扇区：`facecolor`, `edgecolor`, `linewidth`, `alpha`, `visible`, `zorder`；标签：文字与字体样式 | 🟢 已验证 | 🟢 有 | `pieId + sliceIndex` 隔离扇区、标签和图例；数值、角度、圆心、半径、width 和 explode 保持只读。 |
+| **quiver** (箭矢向量场) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `color`, `facecolor`, `edgecolor`, `alpha`, `linewidth`, `visible`, `zorder` | 🟢 已验证 | 🟢 有 | 保留历史 `collection.*` 身份；U/V、scale、angles、pivot、units 和箭头几何只读。 |
+| **streamplot** (流线图) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `color`, `alpha`, `linewidth`, `visible`, `zorder` | 🟢 已验证 | 🟢 有 | 专用父对象拥有内部 line/arrow；density、start points、integration direction、向量数据和路径结构只读。 |
 | **heatmap** (热图) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `cmap`, `vmin`, `vmax`, `alpha` | 🟢 高一致性 | 🟢 有 | `imshow` / `pcolormesh` 底层对象目前已实现全自动只读识别和 patch 安全应用。 |
 | **colorbar** (色条) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `label`, `tick_fontsize`, `left`, `bottom`, `width`, `height` | 🟢 高一致性 | 🟢 有 | 单色条保留 `subplotId`；共享色条使用 `subplotIds` 显式多归属，并按全部 owner 的联合外框对齐，不压缩为 mappable 所在单图。 |
 | **annotation** (标注) | 🟢 Python / 🟡 R | 🟢 通过 | 🟢 已验证 | 文本：`text`, `fontsize`, `fontfamily`, `color`, `position`, `anchor_position`；箭头：`edgecolor`, `facecolor`, `linewidth`, `alpha` | 🟢 标准坐标高一致性 | 🟢 有 | Python 标准 Annotation 已建立 text/arrow/anchor 关系；callable/复合坐标与 R 独立 segment/curve 不猜测配对。 |
@@ -40,11 +42,11 @@
 | 对象家族 | 当前 Shadow 状态 | 当前默认编辑行为 | 限制 |
 |---|---|---|---|
 | `fill_between` | `FillBetweenPolyCollection -> dedicated` | 专用置信区间带组件与配色 | 只开放视觉样式，数据上下界只读 |
-| `quiver` | `Quiver -> flattened` | 保留 collection 既有控件 | 未开放向量方向/尺度专用写回 |
+| `quiver` | `Quiver -> dedicated` | 专用 Quiver 组件与配色，backend replay | 视觉样式可写；向量、尺度和箭头几何只读 |
 | `hist/stairs/step` | 可信调用来源 -> dedicated | 专用系列组件与配色 | 分箱、边界、where、数据值等结构参数只读 |
 | `wedge/pie` | `Axes.pie` provenance / manual `Wedge` -> dedicated | 扇区、类别标签、数值标签和手工 Wedge 分组 | 关系缺失或歧义时 fail-closed，不猜测扇区身份 |
 | `contour/contourf` | `ContourSet -> dedicated parent` | 专用父对象托管只读 child collection | levels/X/Y/Z 和路径结构只读 |
-| `streamplot` | 同 axes 的 `LineCollection + FancyArrowPatch -> ambiguous` | 保留原通用控件 | 只记录候选，不宣称 dedicated |
+| `streamplot` | 可信调用 -> dedicated parent | 专用 Streamplot 组件与配色，children parentOwned/readonly | 视觉样式可写；密度、起点、积分方向和路径结构只读 |
 
 对象结构身份使用 `fingerprintVersion=2`。颜色、线宽、字号等可编辑样式不再改变结构 fingerprint；旧 manifest 无版本时只使用兼容 stableKey/seriesKey，不比较历史 fingerprint。
 
@@ -73,6 +75,8 @@
 | `data_stem` | `stem_container`, `role=stem_series` | 🟢 已接入并浏览器验证 | 统一修改茎线、标记和基线，内部 children 只作为关系对象。 |
 | `data_pie_slice` / `data_wedge_slice` | `pie_slice`, `wedge_slice` | 🟢 已接入并浏览器验证 | 扇区与手工 Wedge 分开；只开放视觉样式。 |
 | `pie_label` / `pie_value_label` | `Axes.pie` 生成的类别文字和 `autopct` 文字 | 🟢 已接入并浏览器验证 | 标签按 `pieId + sliceIndex` 关联，不与普通 text 混组。 |
+| `data_quiver` | `kind=quiver`, `role=quiver_field` | 🟢 已接入并浏览器验证 | 独立于普通 collection/scatter；按 `quiverId` 约束跨 Figure 和图例联动。 |
+| `data_streamplot` | `kind=streamplot`, `role=streamplot_field` | 🟢 已接入并浏览器验证 | 编辑语义父对象，内部 line/arrow 不直接生成现代 patch；按 `streamplotId` 约束映射。 |
 | `heatmap` | `heatmap` | 🟢 已接入 | 热图色阶和透明度。 |
 | `annotation_text` | Python `text.*` Annotation、R `r.text.*` | 🟢 已接入 | 文本内容/字体/位置；位置默认禁止跨 Figure。 |
 | `annotation_arrow` | `annotation_arrow.*` | 🟢 已接入 | 箭头样式独立于普通数据线和普通 patch。 |

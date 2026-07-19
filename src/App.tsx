@@ -1286,14 +1286,25 @@ export default function App() {
       if (draft.intent && targetManifest) {
         const explicitSelection = draft.intent.scope.selectionMode === 'explicit_objects'
           || draft.intent.scope.selectionMode === 'selected_only';
-        const pieRelation = draft.identity?.relation;
-        const identityConstrainedPieSelection = explicitSelection
+        const identityRelation = draft.identity?.relation;
+        const targetRole = String(draft.intent.scope.targetRole);
+        const identityConstrainedSelection = explicitSelection
           && draft.intent.scope.crossFigure === 'allow'
           && draft.intent.scope.objectIds?.length === 1
-          && ['data_pie_slice', 'pie_label', 'pie_value_label', 'pie_legend_marker'].includes(String(draft.intent.scope.targetRole))
-          && Boolean(pieRelation?.pieId)
-          && typeof pieRelation?.sliceIndex === 'number';
-        if (identityConstrainedPieSelection) {
+          && (
+            (
+              ['data_pie_slice', 'pie_label', 'pie_value_label', 'pie_legend_marker'].includes(targetRole)
+              && Boolean(identityRelation?.pieId)
+              && typeof identityRelation?.sliceIndex === 'number'
+            )
+            || (targetRole === 'data_quiver' && Boolean(identityRelation?.quiverId))
+            || (targetRole === 'data_streamplot' && Boolean(identityRelation?.streamplotId))
+            || (
+              targetRole === 'legend_marker'
+              && Boolean(identityRelation?.quiverId || identityRelation?.streamplotId)
+            )
+          );
+        if (identityConstrainedSelection) {
           const mapped = mapPatchesToTargetFigure([plainPatch], sourceManifest, targetManifest);
           return {
             patches: mapped.patches as PatchEntry[],

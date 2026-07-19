@@ -258,6 +258,12 @@ describe('resolveCrossFigurePolicy', () => {
     ['wedge_slice', 'patch', 'theta1'],
     ['wedge_slice', 'patch', 'theta2'],
     ['wedge_slice', 'patch', 'width'],
+    ['quiver_field', 'quiver', 'u'],
+    ['quiver_field', 'quiver', 'scale'],
+    ['quiver_field', 'quiver', 'headwidth'],
+    ['streamplot_field', 'streamplot', 'density'],
+    ['streamplot_field', 'streamplot', 'start_points'],
+    ['streamplot_field', 'streamplot', 'integration_direction'],
   ])('denies cross-Figure replay for structural Python series prop %s', (role, kind, prop) => {
     const structural = legacyObject({
       id: `${role}.0`,
@@ -318,6 +324,12 @@ describe('Python structural series patch modes', () => {
     ['wedge_slice', 'patch', 'theta1'],
     ['wedge_slice', 'patch', 'theta2'],
     ['wedge_slice', 'patch', 'width'],
+    ['quiver_field', 'quiver', 'u'],
+    ['quiver_field', 'quiver', 'scale'],
+    ['quiver_field', 'quiver', 'headwidth'],
+    ['streamplot_field', 'streamplot', 'density'],
+    ['streamplot_field', 'streamplot', 'start_points'],
+    ['streamplot_field', 'streamplot', 'integration_direction'],
   ])('does not honor local patch capability for structural prop %s', (role, kind, prop) => {
     const structural = legacyObject({
       id: `${role}.0`,

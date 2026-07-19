@@ -76,6 +76,26 @@
         { "from": "patch.0.0", "field": "pieId", "equals": "pie.0.0" },
         { "from": "patch.0.0", "field": "sliceIndex", "equals": 0 }
       ]
+    },
+    {
+      "id": "python_quiver_streamplot",
+      "file": "python/quiver_streamplot.py",
+      "expectedFigures": 1,
+      "minKindCounts": { "subplot": 2, "quiver": 1, "streamplot": 1, "collection": 1, "patch": 1 },
+      "requiredIds": ["collection.0.0", "container.streamplot.1.0", "legend_patch.0.0", "legend_line.1.0"],
+      "requiredRoles": ["quiver_field", "streamplot_field", "streamplot_child_line", "streamplot_child_arrow"],
+      "relations": [
+        { "from": "collection.0.0", "field": "quiverId", "equals": "quiver.0.0" },
+        { "from": "collection.0.0", "field": "legendMarkerIds", "equals": ["legend_patch.0.0"] },
+        { "from": "legend_patch.0.0", "field": "parentId", "equals": "collection.0.0" },
+        { "from": "legend_patch.0.0", "field": "quiverId", "equals": "quiver.0.0" },
+        { "from": "container.streamplot.1.0", "field": "streamplotId", "equals": "container.streamplot.1.0" },
+        { "from": "container.streamplot.1.0", "field": "legendMarkerIds", "equals": ["legend_line.1.0"] },
+        { "from": "legend_line.1.0", "field": "parentId", "equals": "container.streamplot.1.0" },
+        { "from": "legend_line.1.0", "field": "streamplotId", "equals": "container.streamplot.1.0" },
+        { "from": "collection.1.0", "field": "parentId", "equals": "container.streamplot.1.0" },
+        { "from": "collection.1.0", "field": "streamplotId", "equals": "container.streamplot.1.0" }
+      ]
     }
   ],
   "r": [

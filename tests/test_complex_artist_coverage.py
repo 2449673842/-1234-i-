@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import sys
 import unittest
@@ -127,6 +128,16 @@ class TestComplexArtistCoverage(unittest.TestCase):
         for prop in readonly_props:
             self.assertNotIn(prop, obj.get("editable", []), obj)
             self.assertNotIn(prop, capability_props, obj)
+
+    def _assert_backend_visual_capabilities(self, obj, expected_visual_props, readonly_props):
+        self._assert_visual_only_capabilities(obj, expected_visual_props, readonly_props)
+        by_prop = {
+            item.get("prop"): item
+            for item in obj.get("propertyCapabilities", [])
+        }
+        for prop in expected_visual_props:
+            self.assertEqual(by_prop[prop].get("patchMode"), "backend_patch", obj)
+            self.assertEqual(by_prop[prop].get("replay"), "stable", obj)
 
     def _assert_fingerprint_stable_after_style_edit(self, script, obj, prop, value):
         capability = next(
@@ -761,24 +772,171 @@ fig.legend(left, ["Unique A", "Shared"])
             shared_slice,
         )
 
-    def test_quiver_is_reported_as_flattened_editable(self):
-        manifest = self._render_manifest(
-            """
+    def test_quiver_has_dedicated_field_semantics_without_structural_editability(self):
+        script = """
 import matplotlib.pyplot as plt
 import numpy as np
 fig, ax = plt.subplots()
 x, y = np.meshgrid([0, 1, 2], [0, 1])
 u = np.ones_like(x)
 v = np.array([[0, 1, 0], [1, 0, -1]])
-ax.quiver(x, y, u, v, color="#4477aa")
+ax.quiver(x, y, u, v, color="#4477aa", alpha=0.7, linewidth=1.2)
+"""
+        manifest = self._render_manifest(script)
+
+        quivers = [obj for obj in manifest.get("objects", []) if obj.get("role") == "quiver_field"]
+        self.assertEqual(len(quivers), 1, manifest.get("coverageReport"))
+        quiver = quivers[0]
+        self.assertTrue(quiver["id"].startswith("collection.0."), quiver)
+        self.assertTrue(quiver["stableKey"].startswith("ax0.collection."), quiver)
+        self.assertEqual(quiver.get("kind"), "quiver", quiver)
+        self.assertEqual(quiver.get("source", {}).get("callName"), "Axes.quiver", quiver)
+        self.assertEqual(quiver.get("semanticCoverage", {}).get("status"), "dedicated", quiver)
+        self.assertEqual(quiver.get("semanticCoverage", {}).get("family"), "quiver", quiver)
+        self._assert_backend_visual_capabilities(
+            quiver,
+            ["color", "facecolor", "edgecolor", "alpha", "linewidth", "visible", "zorder"],
+            [
+                "size", "size_scale", "X", "Y", "U", "V", "C", "scale", "angles",
+                "pivot", "width", "headwidth", "headlength", "headaxislength",
+            ],
+        )
+        self._assert_fingerprint_stable_after_style_edit(script, quiver, "color", "#cc6677")
+        self._assert_fingerprint_stable_after_style_edit(script, quiver, "alpha", 0.35)
+
+    def test_streamplot_has_dedicated_parent_and_parent_owned_legacy_children(self):
+        script = """
+import matplotlib.pyplot as plt
+import numpy as np
+fig, ax = plt.subplots()
+y, x = np.mgrid[-1:1:5j, -1:1:5j]
+u = -y
+v = x
+ax.streamplot(x, y, u, v, color="#4477aa", density=0.6, linewidth=1.4)
+"""
+        manifest = self._render_manifest(script)
+        objects = self._objects_by_id(manifest)
+
+        streams = [obj for obj in manifest.get("objects", []) if obj.get("role") == "streamplot_field"]
+        self.assertEqual(len(streams), 1, manifest.get("coverageReport"))
+        stream = streams[0]
+        self.assertEqual(stream.get("id"), "container.streamplot.0.0", stream)
+        self.assertEqual(stream.get("kind"), "streamplot", stream)
+        self.assertEqual(stream.get("source", {}).get("callName"), "Axes.streamplot", stream)
+        self.assertEqual(stream.get("semanticCoverage", {}).get("status"), "dedicated", stream)
+        self.assertEqual(stream.get("semanticCoverage", {}).get("family"), "streamplot", stream)
+        self._assert_backend_visual_capabilities(
+            stream,
+            ["color", "alpha", "linewidth", "visible", "zorder"],
+            [
+                "density", "start_points", "integration_direction", "maxlength",
+                "minlength", "broken_streamlines", "X", "Y", "U", "V",
+            ],
+        )
+
+        relation = stream.get("identity", {}).get("relation", {})
+        self.assertEqual(relation.get("streamplotId"), stream["id"], stream)
+        self.assertIn(relation.get("lineCollectionId"), stream.get("children", []), stream)
+        self.assertTrue(relation.get("arrowPatchIds"), stream)
+        self.assertTrue(
+            set(relation.get("arrowPatchIds", [])).issubset(set(stream.get("children", []))),
+            stream,
+        )
+
+        line_child = objects[relation["lineCollectionId"]]
+        self.assertTrue(line_child["id"].startswith("collection.0."), line_child)
+        self.assertEqual(line_child.get("parentId"), stream["id"], line_child)
+        self.assertEqual(line_child.get("role"), "streamplot_child_line", line_child)
+        self.assertEqual(line_child.get("editable"), [], line_child)
+        self.assertEqual(line_child.get("propertyCapabilities"), [], line_child)
+        self.assertTrue(line_child.get("currentProps", {}).get("parentOwned"), line_child)
+
+        for arrow_id in relation["arrowPatchIds"]:
+            arrow_child = objects[arrow_id]
+            self.assertTrue(arrow_child["id"].startswith("patch.0."), arrow_child)
+            self.assertEqual(arrow_child.get("parentId"), stream["id"], arrow_child)
+            self.assertEqual(arrow_child.get("role"), "streamplot_child_arrow", arrow_child)
+            self.assertEqual(arrow_child.get("editable"), [], arrow_child)
+            self.assertEqual(arrow_child.get("propertyCapabilities"), [], arrow_child)
+            self.assertTrue(arrow_child.get("currentProps", {}).get("parentOwned"), arrow_child)
+
+        replayed = replay_render(script, edit_logs={"fig_1": [{
+            "gid": stream["id"],
+            "prop": "color",
+            "value": "#cc6677",
+            "mode": "backend_patch",
+            "stableKey": stream.get("stableKey"),
+            "fingerprint": stream.get("fingerprint"),
+            "fingerprintVersion": 2,
+            "identity": stream.get("identity"),
+        }]})
+        self.assertEqual(replayed.get("status"), "success", replayed)
+        self.assertEqual(replayed.get("warnings", []), [], replayed)
+        replayed_objects = self._objects_by_id(replayed["figures"][0]["manifest"])
+        self.assertEqual(replayed_objects[line_child["id"]]["currentProps"].get("color"), "#cc6677")
+        for arrow_id in relation["arrowPatchIds"]:
+            self.assertEqual(replayed_objects[arrow_id]["currentProps"].get("edgecolor"), "#cc6677")
+
+    def test_vector_field_parents_link_only_their_unique_legend_markers(self):
+        manifest = self._render_manifest(
+            """
+import matplotlib.pyplot as plt
+import numpy as np
+fig, axes = plt.subplots(1, 2)
+y, x = np.mgrid[-1:1:5j, -1:1:5j]
+u = -y
+v = x
+quiver = axes[0].quiver(x, y, u, v, color="#4477aa", label="Rotation vectors")
+axes[0].legend(handles=[quiver])
+stream = axes[1].streamplot(x, y, u, v, color="#228833")
+stream.lines.set_label("Flow paths")
+axes[1].legend(handles=[stream.lines])
+"""
+        )
+        objects = self._objects_by_id(manifest)
+        fields = [
+            next(obj for obj in manifest["objects"] if obj.get("role") == "quiver_field"),
+            next(obj for obj in manifest["objects"] if obj.get("role") == "streamplot_field"),
+        ]
+
+        for field in fields:
+            marker_ids = field.get("identity", {}).get("relation", {}).get("legendMarkerIds", [])
+            self.assertEqual(len(marker_ids), 1, field)
+            marker = objects[marker_ids[0]]
+            self.assertEqual(marker.get("role"), "legend_marker", marker)
+            self.assertEqual(
+                marker.get("identity", {}).get("relation", {}).get("parentId"),
+                field["id"],
+                marker,
+            )
+        json.dumps(manifest)
+
+    def test_ordinary_linecollection_and_fancyarrowpatch_remain_generic(self):
+        manifest = self._render_manifest(
+            """
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from matplotlib.patches import FancyArrowPatch
+fig, ax = plt.subplots()
+line_collection = LineCollection([[(0, 0), (1, 1)]], colors=["#4477aa"], label="plain line collection")
+ax.add_collection(line_collection)
+arrow = FancyArrowPatch((0.2, 0.8), (0.8, 0.2), color="#cc6677", label="plain arrow")
+ax.add_patch(arrow)
+ax.autoscale()
 """
         )
 
-        self._assert_flattened_editable_reported(manifest, "Quiver", "quiver")
+        plain_collection = next(obj for obj in manifest.get("objects", []) if obj.get("label") == "plain line collection")
+        plain_arrow = next(obj for obj in manifest.get("objects", []) if obj.get("label") == "plain arrow")
+        self.assertEqual(plain_collection.get("kind"), "collection", plain_collection)
+        self.assertNotEqual(plain_collection.get("role"), "streamplot_child_line", plain_collection)
+        self.assertNotEqual(plain_collection.get("role"), "streamplot_field", plain_collection)
+        self.assertNotEqual(plain_arrow.get("role"), "streamplot_child_arrow", plain_arrow)
+        self.assertNotEqual(plain_arrow.get("role"), "streamplot_field", plain_arrow)
+        self.assertNotEqual(plain_arrow.get("currentProps", {}).get("parentOwned"), True, plain_arrow)
 
-    def test_streamplot_candidates_are_reported_ambiguous_not_dedicated(self):
-        manifest = self._render_manifest(
-            """
+    def test_streamplot_legacy_child_gid_edit_remains_replayable(self):
+        script = """
 import matplotlib.pyplot as plt
 import numpy as np
 fig, ax = plt.subplots()
@@ -787,12 +945,32 @@ u = -y
 v = x
 ax.streamplot(x, y, u, v, color="#4477aa", density=0.6)
 """
+        manifest = self._render_manifest(script)
+        stream = next(
+            (obj for obj in manifest.get("objects", []) if obj.get("role") == "streamplot_field"),
+            None,
         )
+        self.assertIsNotNone(stream, manifest.get("coverageReport"))
+        relation = stream.get("identity", {}).get("relation", {})
+        legacy_child_gid = relation["lineCollectionId"]
+        legacy_child = self._objects_by_id(manifest)[legacy_child_gid]
 
-        self._assert_ambiguous_classes_not_dedicated(
-            manifest,
-            {"LineCollection", "FancyArrowPatch"},
-        )
+        replayed = replay_render(script, edit_logs={"fig_1": [{
+            "gid": legacy_child_gid,
+            "prop": "color",
+            "value": "#228833",
+            "mode": "local_patch",
+            "stableKey": legacy_child.get("stableKey"),
+            "fingerprint": legacy_child.get("fingerprint"),
+            "fingerprintVersion": 2,
+            "identity": legacy_child.get("identity"),
+        }]})
+        self.assertEqual(replayed.get("status"), "success", replayed)
+        self.assertEqual(replayed.get("warnings", []), [], replayed)
+        replayed_child = self._objects_by_id(replayed["figures"][0]["manifest"])[legacy_child_gid]
+        self.assertEqual(replayed_child.get("stableKey"), legacy_child.get("stableKey"))
+        self.assertEqual(replayed_child.get("fingerprint"), legacy_child.get("fingerprint"))
+        self.assertEqual(replayed_child.get("currentProps", {}).get("color"), "#228833")
 
     def test_hist_bar_container_has_histogram_identity_and_parent_owned_children(self):
         script = """

@@ -86,6 +86,34 @@ class ViolinplotContainer:
                 children.append(val)
         return children
 
+
+class StreamplotContainer:
+    """Semantic parent for the line and arrow artists emitted by streamplot."""
+
+    def __init__(self, streamplot_set, axes, line_artist, arrow_artists):
+        self.streamplot_set = streamplot_set
+        self.axes = axes
+        self.figure = axes.figure
+        self.line_artist = line_artist
+        self.arrow_artists = list(arrow_artists)
+
+    def get_children(self):
+        return [
+            child
+            for child in [self.line_artist, *self.arrow_artists]
+            if child is not None
+        ]
+
+    def get_label(self):
+        if self.line_artist is None:
+            return ""
+        return _safe_artist_label(self.line_artist, "")
+
+    def get_zorder(self):
+        if self.line_artist is None:
+            return 0.0
+        return self.line_artist.get_zorder()
+
 # Monkey patch plotting calls whose returned artists do not retain enough
 # class-level provenance for semantic introspection on every Matplotlib version.
 original_boxplot = Axes.boxplot
@@ -97,6 +125,8 @@ original_hist = Axes.hist
 original_stairs = Axes.stairs
 original_step = Axes.step
 original_pie = Axes.pie
+original_quiver = Axes.quiver
+original_streamplot = Axes.streamplot
 
 
 def _plain_value(value):
@@ -112,6 +142,24 @@ def _plain_value(value):
     if isinstance(value, (list, tuple)):
         return [_plain_value(item) for item in value]
     return value
+
+
+def _next_complex_call_index(axes, family: str, field: str) -> int:
+    return 1 + max(
+        [
+            int(provenance.get(field, -1))
+            for provenance in _intercepted_complex_artists.values()
+            if provenance.get("axes") is axes and provenance.get("family") == family
+        ],
+        default=-1,
+    )
+
+
+def _axes_index(axes) -> int:
+    try:
+        return list(axes.figure.axes).index(axes)
+    except (AttributeError, ValueError):
+        return 0
 
 
 def _histogram_series_artists(patches) -> list:
@@ -322,6 +370,90 @@ def patched_pie(self, *args, **kwargs):
             }
     return result
 
+
+def patched_quiver(self, *args, **kwargs):
+    artist = original_quiver(self, *args, **kwargs)
+    call_index = _next_complex_call_index(self, "quiver", "quiverCallIndex")
+    axes_index = _axes_index(self)
+    _intercepted_complex_artists[artist] = {
+        "axes": self,
+        "family": "quiver",
+        "callName": "Axes.quiver",
+        "semanticRole": "quiver_field",
+        "quiverId": f"quiver.{axes_index}.{call_index}",
+        "quiverCallIndex": call_index,
+    }
+    return artist
+
+
+def patched_streamplot(self, *args, **kwargs):
+    before_patches = set(self.patches)
+    streamplot_set = original_streamplot(self, *args, **kwargs)
+    line_artist = getattr(streamplot_set, "lines", None)
+    returned_arrow_artist = getattr(streamplot_set, "arrows", None)
+    try:
+        from matplotlib.patches import FancyArrowPatch
+        arrow_artists = [
+            patch
+            for patch in self.patches
+            if patch not in before_patches and isinstance(patch, FancyArrowPatch)
+        ]
+    except Exception:
+        arrow_artists = [patch for patch in self.patches if patch not in before_patches]
+    if (
+        returned_arrow_artist is not None
+        and returned_arrow_artist is not line_artist
+        and returned_arrow_artist in self.collections
+        and returned_arrow_artist not in arrow_artists
+    ):
+        arrow_artists.append(returned_arrow_artist)
+
+    call_index = _next_complex_call_index(self, "streamplot", "streamplotCallIndex")
+    axes_index = _axes_index(self)
+    streamplot_id = f"container.streamplot.{axes_index}.{call_index}"
+    container = StreamplotContainer(
+        streamplot_set,
+        self,
+        line_artist,
+        arrow_artists,
+    )
+    vector_shape = None
+    if len(args) >= 4:
+        vector_shape = list(getattr(args[2], "shape", []) or getattr(args[3], "shape", []))
+    provenance = {
+        "axes": self,
+        "family": "streamplot",
+        "callName": "Axes.streamplot",
+        "streamplotId": streamplot_id,
+        "streamplotCallIndex": call_index,
+        "lineArtist": line_artist,
+        "arrowArtists": arrow_artists,
+        "density": _plain_value(kwargs.get("density", 1.0)),
+        "startPointsProvided": kwargs.get("start_points") is not None,
+        "integrationDirection": str(kwargs.get("integration_direction", "both")),
+        "maxlength": _plain_value(kwargs.get("maxlength", 4.0)),
+        "minlength": _plain_value(kwargs.get("minlength", 0.1)),
+        "brokenStreamlines": bool(kwargs.get("broken_streamlines", True)),
+        "vectorShape": vector_shape,
+    }
+    _intercepted_complex_artists[container] = {
+        **provenance,
+        "semanticRole": "streamplot_field",
+    }
+    if line_artist is not None:
+        _intercepted_complex_artists[line_artist] = {
+            **provenance,
+            "semanticRole": "streamplot_child_line",
+            "streamplotContainer": container,
+        }
+    for arrow_artist in arrow_artists:
+        _intercepted_complex_artists[arrow_artist] = {
+            **provenance,
+            "semanticRole": "streamplot_child_arrow",
+            "streamplotContainer": container,
+        }
+    return streamplot_set
+
 Axes.boxplot = patched_boxplot
 Axes.violinplot = patched_violinplot
 Axes.fill_between = patched_fill_between
@@ -331,6 +463,8 @@ Axes.hist = patched_hist
 Axes.stairs = patched_stairs
 Axes.step = patched_step
 Axes.pie = patched_pie
+Axes.quiver = patched_quiver
+Axes.streamplot = patched_streamplot
 
 
 def _describe_uploaded_data(data: Optional[dict]) -> dict:
@@ -611,6 +745,21 @@ def iter_artists(fig):
             contour_counts[family] += 1
             yield f"container.{family}.{ax_idx}.{contour_idx}", family, contour_set
 
+        streamplot_idx = 0
+        for streamplot_container, provenance in _intercepted_complex_artists.items():
+            if (
+                provenance.get("axes") is not ax
+                or provenance.get("family") != "streamplot"
+                or provenance.get("semanticRole") != "streamplot_field"
+            ):
+                continue
+            yield (
+                f"container.streamplot.{ax_idx}.{streamplot_idx}",
+                "streamplot",
+                streamplot_container,
+            )
+            streamplot_idx += 1
+
         for i, coll in enumerate(ax.collections):
             import matplotlib.collections as mcoll
             if isinstance(coll, mcoll.QuadMesh):
@@ -619,6 +768,10 @@ def iter_artists(fig):
                 # Preserve the historical collection GID while exposing a
                 # dedicated semantic kind for controls and target resolution.
                 yield f"collection.{ax_idx}.{i}", "fill_between", coll
+            elif _intercepted_complex_artists.get(coll, {}).get("family") == "quiver":
+                # Preserve legacy collection GIDs while preventing vector
+                # fields from inheriting scatter size controls.
+                yield f"collection.{ax_idx}.{i}", "quiver", coll
             else:
                 yield f"collection.{ax_idx}.{i}", "collection", coll
 
@@ -1118,8 +1271,11 @@ def _read_legend_props(artist) -> dict:
 
 
 def _read_line_props(artist) -> dict:
+    color = artist.get_color()
+    if not isinstance(color, str):
+        color = _first_color_hex(color) or _plain_value(color)
     props = {
-        "color": artist.get_color(),
+        "color": color,
         "linewidth": artist.get_linewidth(),
         "linestyle": artist.get_linestyle(),
         "alpha": artist.get_alpha(),
@@ -1156,7 +1312,7 @@ def _read_collection_props(artist) -> dict:
             size = float(sizes[0])
     except Exception:
         size = None
-    return {
+    props = {
         "facecolor": fc.tolist() if hasattr(fc, "tolist") else fc,
         "edgecolor": ec.tolist() if hasattr(ec, "tolist") else ec,
         "alpha": artist.get_alpha(),
@@ -1164,6 +1320,91 @@ def _read_collection_props(artist) -> dict:
         "size": size,
         "sizes": sizes_list,
         "size_scale": 1.0,
+    }
+    if _intercepted_complex_artists.get(artist, {}).get("semanticRole") == "streamplot_child_line":
+        colors = getattr(artist, "get_colors", lambda: [])()
+        try:
+            if len(colors) > 0:
+                props["color"] = mcolors.to_hex(colors[0], keep_alpha=False)
+        except Exception:
+            pass
+    return props
+
+
+def _first_color_hex(value: Any) -> Optional[str]:
+    try:
+        rows = value.tolist() if hasattr(value, "tolist") else value
+        if isinstance(rows, (list, tuple)) and rows and isinstance(rows[0], (list, tuple)):
+            rows = rows[0]
+        return mcolors.to_hex(rows, keep_alpha=False)
+    except Exception:
+        return None
+
+
+def _read_quiver_props(artist) -> dict:
+    props = _read_collection_props(artist)
+    color = _first_color_hex(artist.get_facecolor()) or _first_color_hex(artist.get_edgecolor())
+    props.update({
+        "color": color,
+        "visible": bool(artist.get_visible()),
+        "vectorCount": int(getattr(artist, "N", 0) or 0),
+        "scale": _plain_value(getattr(artist, "scale", None)),
+        "scale_units": _plain_value(getattr(artist, "scale_units", None)),
+        "angles": _plain_value(getattr(artist, "angles", None)),
+        "pivot": _plain_value(getattr(artist, "pivot", None)),
+        "units": _plain_value(getattr(artist, "units", None)),
+        "width": _plain_value(getattr(artist, "width", None)),
+        "headwidth": _plain_value(getattr(artist, "headwidth", None)),
+        "headlength": _plain_value(getattr(artist, "headlength", None)),
+        "headaxislength": _plain_value(getattr(artist, "headaxislength", None)),
+        "minshaft": _plain_value(getattr(artist, "minshaft", None)),
+        "minlength": _plain_value(getattr(artist, "minlength", None)),
+    })
+    props.pop("size", None)
+    props.pop("sizes", None)
+    props.pop("size_scale", None)
+    return props
+
+
+def _read_streamplot_props(container) -> dict:
+    provenance = _intercepted_complex_artists.get(container, {})
+    line = container.line_artist
+    arrows = container.arrow_artists
+    color = None
+    linewidth = None
+    alpha = None
+    visible = True
+    zorder = None
+    if line is not None:
+        colors = getattr(line, "get_colors", lambda: [])()
+        try:
+            if len(colors) > 0:
+                color = mcolors.to_hex(colors[0], keep_alpha=False)
+        except Exception:
+            pass
+        widths = getattr(line, "get_linewidths", lambda: [])()
+        try:
+            if len(widths) > 0:
+                linewidth = float(widths[0])
+        except Exception:
+            pass
+        alpha = line.get_alpha()
+        visible = bool(line.get_visible()) and all(bool(arrow.get_visible()) for arrow in arrows)
+        zorder = float(line.get_zorder())
+    return {
+        "color": color,
+        "alpha": alpha,
+        "linewidth": linewidth,
+        "visible": visible,
+        "zorder": zorder,
+        "density": provenance.get("density"),
+        "start_points": provenance.get("startPointsProvided", False),
+        "integration_direction": provenance.get("integrationDirection"),
+        "maxlength": provenance.get("maxlength"),
+        "minlength": provenance.get("minlength"),
+        "broken_streamlines": provenance.get("brokenStreamlines"),
+        "vectorShape": provenance.get("vectorShape"),
+        "arrowCount": len(arrows),
     }
 
 
@@ -1197,6 +1438,9 @@ def _read_patch_props(artist) -> dict:
         "linewidth": artist.get_linewidth(),
     }
     provenance = _intercepted_complex_artists.get(artist, {})
+    if provenance.get("semanticRole") == "streamplot_child_arrow":
+        props["facecolor"] = _first_color_hex(fc)
+        props["edgecolor"] = _first_color_hex(ec)
     if provenance.get("family") == "hist":
         props.update(_read_histogram_structure(provenance))
     elif provenance.get("family") == "stairs":
@@ -1876,7 +2120,9 @@ _READERS = {
     "legend": _read_legend_props,
     "line": _read_line_props,
     "collection": _read_collection_props,
+    "quiver": _read_quiver_props,
     "fill_between": _read_fill_between_props,
+    "streamplot": _read_streamplot_props,
     "contour": _read_contour_props,
     "contourf": _read_contour_props,
     "patch": _read_patch_props,
@@ -1943,9 +2189,11 @@ _EDITABLE = {
     "line": ["color", "linewidth", "linestyle", "alpha", "marker", "markersize", "zorder"],
     "patch": ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
     "collection": ["facecolor", "edgecolor", "alpha", "linewidth", "size", "size_scale", "zorder"],
+    "quiver": ["color", "facecolor", "edgecolor", "alpha", "linewidth", "visible", "zorder"],
     "fill_between": ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
     "contour": ["cmap", "vmin", "vmax", "alpha", "linewidth", "linestyle", "visible", "zorder"],
     "contourf": ["cmap", "vmin", "vmax", "alpha", "visible", "zorder"],
+    "streamplot": ["color", "alpha", "linewidth", "visible", "zorder"],
     "axes": ["xlim", "ylim", "show_minor_ticks", "x_tick_rotation", "tick_direction", "zorder"],
     "grid": ["visible", "color", "linewidth", "linestyle", "alpha", "zorder"],
     "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "tick_label_dx", "tick_label_dy", "sci_notation", "use_math_text", "offset_text_size"],
@@ -1981,6 +2229,10 @@ def _determine_role(
         return "stairs_series"
     if family == "step":
         return "step_series"
+    if family == "quiver":
+        return "quiver_field"
+    if family == "streamplot" and kind == "streamplot":
+        return "streamplot_field"
     if gid.startswith("subplot."):
         return "subplot_panel"
     if gid.startswith("fig_text."):
@@ -2083,7 +2335,7 @@ def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) ->
     # Dedicated semantics were introduced after these historical GIDs and
     # stable keys were already persisted in user projects. Keep their original
     # structural identity namespaces so existing edit logs remain replayable.
-    identity_kind = "collection" if kind == "fill_between" else kind
+    identity_kind = "collection" if kind in {"fill_between", "quiver"} else kind
     parts = [f"ax{ax_idx}", identity_kind]
     if clean_label:
         parts.append(f"label.{clean_label}")
@@ -2123,8 +2375,8 @@ _CROSS_FIGURE_UNSAFE_PROPS = {
 }
 
 _SERIES_KINDS = {
-    "line", "collection", "fill_between", "contour", "contourf", "patch", "bar_container", "errorbar_container",
-    "stem_container", "boxplot_container", "violinplot_container", "heatmap"
+    "line", "collection", "quiver", "streamplot", "fill_between", "contour", "contourf", "patch",
+    "bar_container", "errorbar_container", "stem_container", "boxplot_container", "violinplot_container", "heatmap"
 }
 
 _AXIS_TICK_TYPOGRAPHY_GROUP_PROPS = {
@@ -2179,24 +2431,9 @@ def _contour_family(artist: Any) -> str:
 
 
 def _build_complex_artist_context(raw_elements: list[tuple[str, str, Any]], annotation_links: dict) -> dict:
-    by_axes = {}
-    for gid, kind, artist in raw_elements:
-        axes = getattr(artist, "axes", None)
-        if axes is None:
-            continue
-        cls_name = type(artist).__name__
-        entry = by_axes.setdefault(axes, {"line_collections": [], "fancy_arrows": []})
-        if cls_name == "LineCollection" and kind == "collection":
-            entry["line_collections"].append(gid)
-        elif cls_name == "FancyArrowPatch" and kind == "patch" and gid not in annotation_links:
-            entry["fancy_arrows"].append(gid)
-
-    streamplot_candidate_gids = set()
-    for entry in by_axes.values():
-        if entry["line_collections"] and entry["fancy_arrows"]:
-            streamplot_candidate_gids.update(entry["line_collections"])
-            streamplot_candidate_gids.update(entry["fancy_arrows"])
-    return {"streamplotCandidateGids": streamplot_candidate_gids}
+    # Dedicated provenance is authoritative. Class co-occurrence alone cannot
+    # distinguish streamplot output from unrelated line collections/arrows.
+    return {}
 
 
 def _semantic_coverage_entry(obj: dict, artist: Any, context: Optional[dict] = None) -> Optional[dict]:
@@ -2209,7 +2446,13 @@ def _semantic_coverage_entry(obj: dict, artist: Any, context: Optional[dict] = N
 
     # Exclude support/decorative contexts that happen to reuse data artist
     # classes; these are already represented by their owning semantic object.
-    if role in {"legend_marker", "annotation_arrow", "contour_child_collection"}:
+    if role in {
+        "legend_marker",
+        "annotation_arrow",
+        "contour_child_collection",
+        "streamplot_child_line",
+        "streamplot_child_arrow",
+    }:
         return None
     if gid.startswith((
         "legend_line.", "legend_patch.", "legend_collection.",
@@ -2254,11 +2497,6 @@ def _semantic_coverage_entry(obj: dict, artist: Any, context: Optional[dict] = N
         status = "flattened"
         family = _contour_family(artist)
         reason = "contour output is exposed without a dedicated contour manifest object."
-    elif cls_name in {"LineCollection", "FancyArrowPatch"}:
-        if gid not in context.get("streamplotCandidateGids", set()):
-            return None
-        family = "streamplot_candidate"
-        reason = "LineCollection and FancyArrowPatch co-occur on the same axes, which is consistent with streamplot output."
     else:
         return None
 
@@ -2302,7 +2540,7 @@ def _identity_coordinate_space(obj: dict) -> str:
         return "container"
     if kind in {"subplot", "colorbar"}:
         return "figure"
-    if kind in {"line", "collection", "fill_between", "contour", "contourf", "patch", "heatmap"}:
+    if kind in {"line", "collection", "quiver", "streamplot", "fill_between", "contour", "contourf", "patch", "heatmap"}:
         return "data"
     if obj.get("subplotId"):
         return "axes"
@@ -2367,6 +2605,11 @@ def _build_object_identity(obj: dict) -> dict:
             relation[relation_name] = obj[relation_name]
     if obj.get("sliceIndex") is not None:
         relation["sliceIndex"] = int(obj["sliceIndex"])
+    for relation_name in ("quiverId", "streamplotId", "lineCollectionId"):
+        if obj.get(relation_name) is not None:
+            relation[relation_name] = obj[relation_name]
+    if obj.get("arrowPatchIds"):
+        relation["arrowPatchIds"] = list(obj["arrowPatchIds"])
 
     shared_subplots = relation.get("subplotIds", [])
     scope = (
@@ -2417,7 +2660,7 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
     capabilities = []
     for prop in obj.get("editable", []):
         requires_backend_patch = (
-            obj.get("kind") in {"stem_container", "contour", "contourf"}
+            obj.get("kind") in {"stem_container", "contour", "contourf", "quiver", "streamplot"}
             or (obj.get("kind") == "grid" and prop == "visible")
         )
         scopes = ["object"]
@@ -2473,6 +2716,7 @@ _PARENT_OBJECT_KINDS = {
     "container",
     "contour",
     "contourf",
+    "streamplot",
 }
 
 
@@ -2500,6 +2744,12 @@ def _parent_child_gids(kind: str, artist: Any, raw_elements, artist_to_gid) -> l
             child_gid
             for child_gid, child_kind, child in raw_elements
             if child_kind == "collection" and child in owned
+        ]
+    if kind == "streamplot":
+        return [
+            artist_to_gid[child]
+            for child in artist.get_children()
+            if child in artist_to_gid
         ]
     return []
 
@@ -2754,6 +3004,53 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         legend_relationships.setdefault(histogram_gid, {})["legendMarkerIds"] = [marker_gid]
         legend_relationships.setdefault(marker_gid, {})["parentId"] = histogram_gid
 
+    vector_field_entries = []
+    for field_gid, field_kind, field_artist in raw_elements:
+        if field_kind not in {"quiver", "streamplot"}:
+            continue
+        provenance = _intercepted_complex_artists.get(field_artist, {})
+        label = _safe_artist_label(field_artist, "")
+        normalized_label = " ".join(str(label).strip().lower().split())
+        if not normalized_label or normalized_label.startswith("_"):
+            continue
+        relation_name = "quiverId" if field_kind == "quiver" else "streamplotId"
+        vector_field_entries.append((
+            field_gid,
+            provenance.get("axes"),
+            normalized_label,
+            relation_name,
+            provenance.get(relation_name),
+        ))
+
+    vector_label_counts = {}
+    for _, axes, normalized_label, _, _ in vector_field_entries:
+        key = (axes, normalized_label)
+        vector_label_counts[key] = vector_label_counts.get(key, 0) + 1
+
+    for field_gid, axes, normalized_label, relation_name, relation_value in vector_field_entries:
+        if vector_label_counts.get((axes, normalized_label)) != 1:
+            continue
+        matching_marker_gids = []
+        for _, legend_kind, legend in raw_elements:
+            if legend_kind != "legend" or getattr(legend, "axes", None) is not axes:
+                continue
+            handles = _get_legend_handles(legend)
+            for index, text in enumerate(legend.get_texts()):
+                if index >= len(handles):
+                    continue
+                text_label = " ".join(str(text.get_text()).strip().lower().split())
+                marker_gid = artist_to_gid.get(handles[index])
+                if text_label == normalized_label and marker_gid:
+                    matching_marker_gids.append(marker_gid)
+        matching_marker_gids = list(dict.fromkeys(matching_marker_gids))
+        if len(matching_marker_gids) != 1:
+            continue
+        marker_gid = matching_marker_gids[0]
+        legend_relationships.setdefault(field_gid, {})["legendMarkerIds"] = [marker_gid]
+        legend_relationships.setdefault(marker_gid, {})["parentId"] = field_gid
+        if relation_value:
+            legend_relationships.setdefault(marker_gid, {})[relation_name] = relation_value
+
     complex_artist_context = _build_complex_artist_context(raw_elements, annotation_links)
 
     # Build objects manifest list
@@ -2839,11 +3136,15 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             for child_gid in children_gids:
                 child_to_parent[child_gid] = (gid, relation_kind)
 
-                if relation_kind in {"contour", "contourf", "histogram"}:
+                if relation_kind in {"contour", "contourf", "histogram", "streamplot"}:
                     child_obj = next((o for o in objects if o["id"] == child_gid), None)
                     if child_obj:
                         child_obj["editable"] = []
-                        family_label = "Histogram bin patches" if relation_kind == "histogram" else "Contour level collections"
+                        family_label = (
+                            "Histogram bin patches" if relation_kind == "histogram"
+                            else "Streamplot line and arrow children" if relation_kind == "streamplot"
+                            else "Contour level collections"
+                        )
                         child_obj["currentProps"] = {
                             **child_obj.get("currentProps", {}),
                             "parentOwned": True,
@@ -2876,6 +3177,23 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 obj["textId"] = annotation_link["textId"]
         if role:
             obj["role"] = role
+
+        complex_provenance = _intercepted_complex_artists.get(artist_obj, {})
+        if complex_provenance.get("family") == "quiver" and complex_provenance.get("quiverId"):
+            obj["quiverId"] = complex_provenance["quiverId"]
+        if complex_provenance.get("family") == "streamplot" and complex_provenance.get("streamplotId"):
+            obj["streamplotId"] = complex_provenance["streamplotId"]
+            if kind == "streamplot":
+                line_collection_id = artist_to_gid.get(complex_provenance.get("lineArtist"))
+                arrow_patch_ids = [
+                    artist_to_gid[arrow]
+                    for arrow in complex_provenance.get("arrowArtists", [])
+                    if arrow in artist_to_gid
+                ]
+                if line_collection_id:
+                    obj["lineCollectionId"] = line_collection_id
+                if arrow_patch_ids:
+                    obj["arrowPatchIds"] = arrow_patch_ids
 
         for relation_name, relation_value in legend_relationships.get(gid, {}).items():
             if relation_value:
@@ -2987,6 +3305,10 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         obj.pop("pieLabelId", None)
         obj.pop("pieValueLabelId", None)
         obj.pop("sliceIndex", None)
+        obj.pop("quiverId", None)
+        obj.pop("streamplotId", None)
+        obj.pop("lineCollectionId", None)
+        obj.pop("arrowPatchIds", None)
         obj["propertyCapabilities"] = _build_property_capabilities(obj)
 
     # 2. Build color groups (same-colored artists → batch editing)
@@ -3007,7 +3329,12 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
 
     color_groups = {}
     for obj in objects:
-        if obj.get("role") in {"contour_child_collection", "histogram_child_patch"}:
+        if obj.get("role") in {
+            "contour_child_collection",
+            "histogram_child_patch",
+            "streamplot_child_line",
+            "streamplot_child_arrow",
+        }:
             continue
         hex_color = None
         for prop in ('facecolor', 'color', 'edgecolor'):
@@ -3596,6 +3923,55 @@ def _apply_contour_patch(artist, prop: str, value: Any):
     return None
 
 
+def _apply_quiver_patch(artist, prop: str, value: Any):
+    if prop == "color":
+        artist.set_color(value)
+    elif prop == "facecolor":
+        artist.set_facecolor(value)
+    elif prop == "edgecolor":
+        artist.set_edgecolor(value)
+    elif prop == "alpha":
+        artist.set_alpha(float(value))
+    elif prop == "linewidth":
+        artist.set_linewidth(float(value))
+    elif prop == "visible":
+        artist.set_visible(bool(value))
+    elif prop == "zorder":
+        artist.set_zorder(float(value))
+    else:
+        return "unsupported_prop"
+    return None
+
+
+def _apply_streamplot_patch(container, prop: str, value: Any):
+    children = container.get_children()
+    if not children:
+        return "missing_streamplot_children"
+    if prop not in {"color", "alpha", "linewidth", "visible", "zorder"}:
+        return "unsupported_prop"
+
+    for child in children:
+        if prop == "color":
+            setter = getattr(child, "set_color", None)
+            if not callable(setter):
+                return "no_setter"
+            setter(value)
+        elif prop == "alpha":
+            child.set_alpha(float(value))
+        elif prop == "linewidth":
+            setter = getattr(child, "set_linewidth", None)
+            if not callable(setter):
+                setter = getattr(child, "set_linewidths", None)
+            if not callable(setter):
+                return "no_setter"
+            setter(float(value))
+        elif prop == "visible":
+            child.set_visible(bool(value))
+        elif prop == "zorder":
+            child.set_zorder(float(value))
+    return None
+
+
 def _apply_single(artist, prop: str, value: Any, gid: str = ""):
     if gid.startswith(("xtick.", "ytick.")) and prop == "text":
         _set_tick_label_text_override(artist, gid, value)
@@ -3634,6 +4010,12 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
 
     if gid.startswith(("container.contour.", "container.contourf.")):
         return _apply_contour_patch(artist, prop, value)
+
+    if _intercepted_complex_artists.get(artist, {}).get("family") == "quiver":
+        return _apply_quiver_patch(artist, prop, value)
+
+    if gid.startswith("container.streamplot."):
+        return _apply_streamplot_patch(artist, prop, value)
 
     if gid.startswith("colorbar."):
         # artist is the Colorbar wrapper object
@@ -4549,6 +4931,8 @@ _PLOTTING_CALL_NAMES = {
     "contourf",
     "errorbar",
     "fill_between",
+    "quiver",
+    "streamplot",
     "stairs",
     "step",
     "text",

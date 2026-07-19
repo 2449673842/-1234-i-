@@ -46,6 +46,8 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.role === 'wedge_slice') return 'data_wedge_slice';
   if (object.role === 'pie_label') return 'pie_label';
   if (object.role === 'pie_value_label') return 'pie_value_label';
+  if (object.role === 'quiver_field' || object.kind === 'quiver') return 'data_quiver';
+  if (object.role === 'streamplot_field' || object.kind === 'streamplot') return 'data_streamplot';
   if (object.role === 'bar_series' || object.kind === 'bar_container') return 'data_bar';
   if (object.role === 'errorbar_series' || object.kind === 'errorbar_container') return 'data_errorbar';
   if (object.role === 'stem_series' || object.kind === 'stem_container') return 'data_stem';
@@ -62,7 +64,11 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.kind === 'grid') return 'grid';
   if (object.kind === 'line') return 'data_line';
   if (object.kind === 'fill_between' || object.role === 'fill_between_series') return 'data_band';
-  if (object.role === 'contour_child_collection') return 'component';
+  if (
+    object.role === 'contour_child_collection'
+    || object.role === 'streamplot_child_line'
+    || object.role === 'streamplot_child_arrow'
+  ) return 'component';
   if (object.kind === 'collection') return 'data_point';
   if (object.kind === 'patch' || object.kind.endsWith('_container')) return 'data_patch';
   if (object.kind === 'heatmap') return 'heatmap';

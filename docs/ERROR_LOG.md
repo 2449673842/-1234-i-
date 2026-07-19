@@ -5,6 +5,55 @@
 
 ---
 
+## 2026-07-19 21:02:01 +08:00 向量场被压平、跨 Figure 关系绕过与结构参数误编辑风险
+
+**状态与级别**
+
+- 状态：已修复并完成单元、renderer、API、真实浏览器、跨 Figure、历史、导出、兼容门禁和独立审查；尚未提交、推送或部署。
+- 级别：P0/P1 编辑正确性。不会删除源数据，但可能把向量场误当普通 collection/patch、把一个 Figure 的修改扩散到关系不匹配的 Figure，或把科学结构参数当成视觉样式持久化。
+
+**根因**
+
+- quiver 和 streamplot 过去只有通用 Matplotlib children，缺少可信调用来源、语义父对象和稳定关系字段。
+- streamplot 的 line collection 与 arrow patch 可被普通组件入口直接命中，无法证明它们属于同一流线对象。
+- 第一版真实跨 Figure 测试通过直接写 `sessionStorage` 注入 Draft，绕过了实际组件控件；改为真实控件后暴露 `App.tsx` 中显式 `crossFigure: allow` 只对 pie 使用身份约束、对向量场退回 role-wide fanout 的问题。
+- 非字符串 Matplotlib line color 可表现为 ndarray，旧 JSON 输出路径会触发 500。
+
+**修复**
+
+- quiver 提升为 `kind=quiver`、`role=quiver_field`，保留历史 `collection.*` GID/stableKey；streamplot 新增 `container.streamplot.*` 父对象，内部 line/arrow 标记 `parentOwned` 且只读。
+- 组件中心新增 Quiver/Streamplot 独立分组；唯一标签和图例 marker 按 `quiverId`/`streamplotId` 关联。
+- 跨 Figure 对向量场及其图例 marker 强制使用可信关系的一对一映射；关系缺失、冲突、重复或不匹配全部 fail-closed。
+- 只开放颜色、透明度、线宽、显隐和层级等视觉属性；向量、尺度、angles/pivot/units、箭头几何、密度、起点、积分方向和路径结构显式只读。
+- Matplotlib 非字符串颜色在 manifest JSON 输出前统一规范化。
+
+**验证与防复发**
+
+- Vitest 144 文件、1035/1035；Python complex artist coverage 22/22。
+- 向量场 API 持久化、真实浏览器完整工作流、真实组件控件跨 Figure、Python 完整语义工作流、patch 拒绝零持久化、组件 41/41、跨 Figure 18/18 和 R 5/5 通过。
+- Matplotlib 3.8.4 临时兼容门禁 5/5；lint、build、`git diff --check` 通过。
+- quiver `scale` 与 streamplot `density` 拒绝后，revision、session、history、cache、export anchor 和 snapshot 均不改变。
+- 独立 gpt-5.5 high 审查 APPROVE，0 HIGH/MEDIUM/LOW。
+- 后续复杂对象浏览器回归必须通过真实 UI 控件产生 Draft；不得把直接写 storage 的测试作为真实交互证据。
+
+---
+
+## 2026-07-19 21:01:16 +08:00 Python 运行时与 Matplotlib 包版本口径混淆
+
+**状态与影响**
+
+- 状态：文档已纠正；本轮未修改依赖、运行服务、Dockerfile 或部署版本。
+- 影响：此前主文档把本地 Matplotlib 3.7.2、兼容门禁 Matplotlib 3.8.4 和“网页 3.11.0”并列，容易把 Python 3.11.0 误读成 Matplotlib 版本，导致错误的兼容结论。
+
+**事实与防复发**
+
+- 当前本机 renderer fallback 是 Python 3.8.19 / Matplotlib 3.7.2；`Dockerfile.renderer` 当前声明 `python:3.12-slim`；`requirements.txt` 当前声明 `matplotlib>=3.8`。
+- Matplotlib 3.8.4 仅是 Python 3.12 临时容器中的定向兼容门禁，不是当前本机运行版本，也不是依赖 pin。
+- 网页 Python runtime 版本只有在运行时命令或不可变镜像元数据证明后记录；不得再把 `3.11.0` 写成 Matplotlib 版本。
+- 后续版本台账固定分列记录 OS、Python、Matplotlib、R、关键包、字体和镜像 digest；测试基线、兼容门禁与生产运行版本分别标注。
+
+---
+
 ## 2026-07-19 19:51:21 +08:00 饼图扇区跨 Figure 扩散、关系歧义与结构参数误开放风险
 
 **状态与级别**

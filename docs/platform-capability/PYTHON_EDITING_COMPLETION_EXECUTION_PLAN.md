@@ -1,7 +1,7 @@
 # Python 图元编辑与分组识别收敛执行计划
 
-> 状态：WP3/WP4 核心边界和 WP8 已完成；WP6 的 `fill_between`、`contour/contourf`、`hist/stairs/step`、`pie/wedge` 已通过工作包门禁，下一家族为 `quiver/streamplot`
-> 最后修改时间：2026-07-19 19:51:21 +08:00
+> 状态：WP3/WP4 核心边界和 WP8 已完成；WP6 的前五个复杂对象家族已通过工作包门禁，下一家族为网络图、路径图和 SEM
+> 最后修改时间：2026-07-19 21:02:01 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
 > 当前部署状态：未推送、未部署；本计划不改变线上版本
@@ -29,7 +29,7 @@
 - 常见 Python 二维图元、legend、colorbar、annotation、container、twin/shared axes 已有真实 renderer 和测试基础。
 - 组件中心、字体中心、配色中心、布局中心、Draft、拖拽、历史、导出快照等主链路已经可用。
 - `identity`、`relation`、`propertyCapabilities` 和严格 target resolver 已部分接入。
-- 最近全量 Vitest 为 1006/1006；其后 `pie/wedge` 最终映射改动由 26 项定向单测、Python 完整语义工作流和跨 Figure 18/18 直接覆盖。Matplotlib 3.8.4 定向兼容门禁 4/4，生产构建通过。
+- 最新全量 Vitest 为 144 文件、1035/1035；Python complex artist coverage 22/22。`quiver/streamplot` 的 API 持久化、真实浏览器、真实控件跨 Figure、Python 完整语义工作流、组件 41/41、跨 Figure 18/18、R 5/5 和 Matplotlib 3.8.4 定向兼容门禁 5/5 均通过，生产构建通过。
 
 ### 2.2 尚未完整证明
 
@@ -46,7 +46,7 @@
 4. [已在 WP8 修复] 导出文件与数据库记录之间只有补偿式流程，没有完整失败回滚证据。
 5. `instanceKey` 仍以 GID 为核心，插入、删除或重排 artist 后可能漂移。
 6. [已在 WP4 修复] `fingerprint` 包含可编辑样式，不适合作为结构身份锚点。
-7. quiver 和 streamplot 仍会被压平成普通 collection/patch/container；`fill_between`、`contour/contourf`、`hist/stairs/step` 与 `pie/wedge` 已完成专用适配。
+7. [已在 WP6 修复] quiver 和 streamplot 曾被压平成普通 collection/patch/container，缺少稳定父对象、结构只读边界和跨 Figure 关系约束。
 8. [renderer 已修复，用户摘要待 WP5] `coverageReport` 不能区分“真正语义支持”和“被普通基类接住”。
 
 ### 2.4 2026-07-18 首轮执行结果
@@ -57,7 +57,7 @@
 - 项目 Figure 的 Python patch 以 manifest `propertyCapabilities.patchMode` 为权威；客户端不能把 backend 属性伪装成 local。
 - 预检或 renderer 拒绝任一新 patch 时，整批返回 `conflict`，revision、session、项目 Figure、history、cache、导出锚点和快照均不改变。
 - 合法 local/backend 混合批次完整重放并只增加一次 revision；前端 conflict 保留 Draft，不把现有 Figure 标成渲染失败。
-- 复杂对象先通过 `semanticCoverage` Shadow 报告记录证据；已完成的 fill_between、contour、hist/stairs/step 和 pie/wedge 已按家族提升为 dedicated，quiver/streamplot 仍保持 flattened/ambiguous，不改变其默认控件。
+- 复杂对象先通过 `semanticCoverage` Shadow 报告记录证据；已完成的 fill_between、contour、hist/stairs/step、pie/wedge 和 quiver/streamplot 已按家族提升为 dedicated，未完成家族继续保持 flattened/conditional/readonly。
 - Python patch cache 只命中本进程已通过 renderer 确认的 key；旧磁盘 cache 在重启后先重新验证。
 - 项目 PUT 保存接口现在复用可信 manifest/propertyCapabilities 预检；editLog、history 和无 manifest 新编辑均不会绕过验证。
 - 统一 `resolvePatchMode` 已接入前端编译器、配色、属性/组件/字体/图层入口；现代 manifest 缺失属性声明时不再使用 legacy 猜测。
@@ -65,7 +65,7 @@
 
 第二轮代码审查发现的 standalone mode 权威问题已修复，并由 `test:patch-rejection-persistence` 覆盖无 projectId 伪报 local、missing gid 和 mixed batch。项目 PUT 另由 `test:project-save-preflight` 覆盖保存入口和 history 侧门。
 
-仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 用户可见能力报告、WP6 其余复杂对象家族、WP7 特殊 axes、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP8 已完成；WP6 的 `fill_between`、`contour/contourf`、`hist/stairs/step`、`pie/wedge` 已完成专用写回和适用用户链路。
+仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 用户可见能力报告、WP6 网络/路径/SEM 等其余复杂对象家族、WP7 特殊 axes、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP8 已完成；WP6 的 `fill_between`、`contour/contourf`、`hist/stairs/step`、`pie/wedge`、`quiver/streamplot` 已完成专用写回和适用用户链路。
 
 ### 2.5 2026-07-18 WP8 执行结果
 
@@ -118,6 +118,16 @@
 - 只开放颜色、边框、线宽、透明度、显隐、层级和标签样式；数值、角度、圆心、半径、width、explode 等结构参数保持只读。
 - Python 完整语义工作流、跨 Figure 18/18、最终映射 26 项定向单测、Matplotlib 3.8.4 定向门禁和生产构建通过。
 - 独立 5.5 high 审查 APPROVE，0 HIGH、0 MEDIUM；唯一 LOW 的缺失关系 fail-closed 已修复并回归。
+
+### 2.11 2026-07-19 WP6 `quiver/streamplot` 收敛
+
+- renderer 只把可信 quiver/streamplot 调用提升为专用对象。quiver 使用 `kind=quiver`、`role=quiver_field` 并保留历史 `collection.*` GID/stableKey；streamplot 使用 `container.streamplot.*` 语义父对象，内部 line collection 和 arrow patch 标记 `parentOwned` 且只读。
+- quiver 开放颜色、face/edge color、透明度、线宽、显隐和层级；streamplot 开放颜色、透明度、线宽、显隐和层级，均通过 backend renderer 重放。向量数据、scale/angles/pivot/units/箭头几何、density/start_points/integration_direction 和路径结构保持只读。
+- 组件中心新增 Quiver 与 Streamplot 独立分组；唯一向量场标签可绑定图例 marker。quiver 颜色联动图例 patch face/edge，streamplot 颜色和线宽联动图例 line。
+- 跨 Figure 必须匹配可信 `quiverId` 或 `streamplotId`，包括关联图例 marker；关系缺失、冲突或重复候选均 fail-closed。修复显式 `crossFigure: allow` 曾绕过身份映射、对关系不匹配 Figure 做 role-wide fanout 的问题。
+- 结构参数拒绝测试证明 revision、session、history、cache、export anchor 和 snapshot 均不改变；普通 `LineCollection`、`FancyArrowPatch`、scatter 和 patch 保持通用分类。
+- 最新证据：Vitest 144 文件、1035/1035；complex artist coverage 22/22；向量场 API 持久化、真实浏览器、真实控件跨 Figure、Python 完整语义工作流、patch 拒绝、组件 41/41、跨 Figure 18/18、R 5/5、Matplotlib 3.8.4 兼容 5/5、lint/build/diff-check 均通过。
+- 独立 gpt-5.5 high 审查 APPROVE，0 HIGH/MEDIUM/LOW；未提交、推送或部署。
 
 ## 3. 决策原则
 
@@ -293,10 +303,10 @@
 2. `contour/contourf` / 等高线与连续色标。[已完成专用父对象、兼容重放与完整门禁]
 3. `hist/stairs/step` / 直方与阶梯系列。[已完成专用语义、结构只读、保存并发与完整门禁]
 4. `pie/wedge` / 扇区、标签和图例。[已完成专用语义、结构只读、身份隔离和工作包门禁]
-5. `quiver/streamplot` / 向量场。[下一执行家族]
-6. 网络图、路径图和 SEM 的节点/边/箭头/系数文字关系。
+5. `quiver/streamplot` / 向量场。[已完成专用父对象、结构只读、身份隔离和工作包门禁]
+6. 网络图、路径图和 SEM 的节点/边/箭头/系数文字关系。[下一执行家族]
 
-下一执行家族为 `quiver/streamplot`。在其 fixture、身份、能力、浏览器、历史和导出链路全部建立前，不修改默认组件分类；向量方向、场数据、积分路径和密度等科学结构参数默认只读。
+下一执行家族为网络图、路径图和 SEM。必须先建立 node/edge/arrow/coefficient/label 的可信来源和关系模型；图形样式与科学结构分离，任何路径系数、p 值、拟合指标、显著性、方向或模型拓扑在没有专项证据前保持只读。
 
 每个家族必须依次完成：
 

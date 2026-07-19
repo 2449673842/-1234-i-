@@ -51,6 +51,8 @@ export type ManifestObjectKind =
   | "legend"
   | "line"
   | "collection"
+  | "quiver"
+  | "streamplot"
   | "contour"
   | "contourf"
   | "fill_between"
@@ -119,6 +121,10 @@ export interface ManifestObjectRelation {
   pieLabelId?: string;
   pieValueLabelId?: string;
   sliceIndex?: number;
+  quiverId?: string;
+  streamplotId?: string;
+  lineCollectionId?: string;
+  arrowPatchIds?: string[];
 }
 
 /**

@@ -44,6 +44,8 @@ export type SemanticTargetRole =
   | 'grid'
   | 'data_line'
   | 'data_point'
+  | 'data_quiver'
+  | 'data_streamplot'
   | 'data_contour'
   | 'data_contourf'
   | 'data_band'

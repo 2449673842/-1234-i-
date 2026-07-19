@@ -59,6 +59,8 @@ export interface PaletteTargetResolution {
 const COLOR_FALLBACK_KINDS = new Set([
   'line',
   'collection',
+  'quiver',
+  'streamplot',
   'fill_between',
   'patch',
   'bar_container',

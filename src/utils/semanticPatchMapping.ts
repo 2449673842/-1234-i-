@@ -43,6 +43,36 @@ const PIE_RELATION_ROLES = new Set([
   'legend_marker',
 ]);
 
+const VECTOR_FIELD_RELATION_BY_ROLE: Record<string, 'quiverId' | 'streamplotId'> = {
+  quiver_field: 'quiverId',
+  streamplot_field: 'streamplotId',
+};
+
+function vectorFieldRelation(object: ManifestObject): {
+  field: 'quiverId' | 'streamplotId';
+  value: string;
+} | null {
+  const roleField = VECTOR_FIELD_RELATION_BY_ROLE[String(object.role)];
+  const relation = object.identity?.relation;
+  const field = roleField
+    || (typeof relation?.quiverId === 'string' ? 'quiverId' : undefined)
+    || (typeof relation?.streamplotId === 'string' ? 'streamplotId' : undefined);
+  const value = field ? relation?.[field] : undefined;
+  return field && typeof value === 'string' ? { field, value } : null;
+}
+
+function isVectorFieldRelationCompatible(source: ManifestObject, target: ManifestObject): boolean {
+  const sourceRelation = vectorFieldRelation(source);
+  const targetRelation = vectorFieldRelation(target);
+  if (!sourceRelation && !targetRelation) return true;
+  return Boolean(
+    sourceRelation
+    && targetRelation
+    && sourceRelation.field === targetRelation.field
+    && sourceRelation.value === targetRelation.value,
+  );
+}
+
 function isPieRelationCompatible(source: ManifestObject, target: ManifestObject): boolean {
   if (!PIE_RELATION_ROLES.has(String(source.role)) || !PIE_RELATION_ROLES.has(String(target.role))) {
     return true;
@@ -69,13 +99,15 @@ function isExactTargetCompatible(source: ManifestObject, target: ManifestObject)
   if (source.role && target.role && source.role !== target.role) return false;
   if (source.subplotId && target.subplotId && source.subplotId !== target.subplotId) return false;
   if (source.kind !== target.kind && (!source.role || source.role !== target.role)) return false;
-  return isPieRelationCompatible(source, target);
+  return isPieRelationCompatible(source, target)
+    && isVectorFieldRelationCompatible(source, target);
 }
 
 function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop: string | undefined): number {
   if (!supportsProp(target, prop)) return -1;
   if (source.role && target.role && source.role !== target.role) return -1;
   if (!isPieRelationCompatible(source, target)) return -1;
+  if (!isVectorFieldRelationCompatible(source, target)) return -1;
 
   let score = 0;
   if (source.identity?.instanceKey && source.identity.instanceKey === target.identity?.instanceKey) score += 140;
@@ -96,6 +128,17 @@ function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop
       typeof sourceRelation?.sliceIndex === 'number'
       && sourceRelation.sliceIndex === targetRelation?.sliceIndex
     ) score += 100;
+  }
+
+  const sourceVectorRelation = vectorFieldRelation(source);
+  const targetVectorRelation = vectorFieldRelation(target);
+  if (
+    sourceVectorRelation
+    && targetVectorRelation
+    && sourceVectorRelation.field === targetVectorRelation.field
+    && sourceVectorRelation.value === targetVectorRelation.value
+  ) {
+    score += 120;
   }
 
   return score;

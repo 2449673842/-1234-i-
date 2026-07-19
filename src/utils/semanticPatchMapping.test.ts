@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Manifest } from '../schemas/manifest';
+import type { Manifest, ManifestObject } from '../schemas/manifest';
 import { mapPatchesToTargetFigure } from './semanticPatchMapping';
 
 const baseManifest = (objects: Manifest['objects']): Manifest => ({
@@ -497,5 +497,227 @@ describe('semantic patch mapping', () => {
 
     expect(result.patches).toHaveLength(0);
     expect(result.skipped).toHaveLength(1);
+  });
+
+  it.each([
+    ['quiver', 'quiver_field', 'quiverId', 'quiver.0.0'],
+    ['streamplot', 'streamplot_field', 'streamplotId', 'container.streamplot.0.0'],
+  ] as const)('maps %s fields only through their trusted family relation', (
+    kind,
+    role,
+    relationField,
+    relationId,
+  ) => {
+    const source = baseManifest([{
+      id: `${kind}.source`,
+      kind,
+      label: `${kind} source`,
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      role,
+      stableKey: `source-${kind}`,
+      identity: {
+        instanceKey: `subplot:${kind}.source`,
+        seriesKey: `source-${kind}`,
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation: { subplotId: 'subplot.0', [relationField]: relationId },
+      },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    }]);
+    const target = baseManifest([{
+      id: `${kind}.target`,
+      kind,
+      label: `${kind} target`,
+      editable: ['color'],
+      currentProps: { color: '#654321' },
+      role,
+      stableKey: `target-${kind}`,
+      fingerprint: `target-${kind}-fingerprint`,
+      fingerprintVersion: 2,
+      identity: {
+        instanceKey: `subplot:${kind}.target`,
+        seriesKey: `target-${kind}`,
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation: { subplotId: 'subplot.0', [relationField]: relationId },
+      },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    }]);
+
+    const result = mapPatchesToTargetFigure(
+      [{ gid: `${kind}.source`, prop: 'color', value: '#abcdef', mode: 'local_patch' }],
+      source,
+      target,
+    );
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toEqual([{
+      gid: `${kind}.target`,
+      prop: 'color',
+      value: '#abcdef',
+      mode: 'backend_patch',
+      stableKey: `target-${kind}`,
+      fingerprint: `target-${kind}-fingerprint`,
+      fingerprintVersion: 2,
+      identity: target.objects[0].identity,
+    }]);
+  });
+
+  it.each([
+    ['quiver', 'quiver_field', 'quiverId', 'quiver.0.0', 'quiver.0.1'],
+    ['streamplot', 'streamplot_field', 'streamplotId', 'container.streamplot.0.0', undefined],
+  ] as const)('fails closed for incompatible or missing %s relation metadata', (
+    kind,
+    role,
+    relationField,
+    sourceRelationId,
+    targetRelationId,
+  ) => {
+    const object = (id: string, relationId: string | undefined): ManifestObject => ({
+      id,
+      kind,
+      label: kind,
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      role,
+      identity: {
+        instanceKey: `subplot:${id}`,
+        scope: 'subplot' as const,
+        coordinateSpace: 'data' as const,
+        relation: {
+          subplotId: 'subplot.0',
+          ...(relationId ? { [relationField]: relationId } : {}),
+        },
+      },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+    const source = baseManifest([object(`${kind}.source`, sourceRelationId)]);
+    const target = baseManifest([object(`${kind}.target`, targetRelationId)]);
+    const input = { gid: `${kind}.source`, prop: 'color', value: '#abcdef', mode: 'backend_patch' };
+
+    const result = mapPatchesToTargetFigure([input], source, target);
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([input]);
+  });
+
+  it.each([
+    ['patch', 'facecolor', 'local_patch', 'quiverId', 'quiver.0.0'],
+    ['line', 'color', 'local_patch', 'streamplotId', 'container.streamplot.0.0'],
+  ] as const)('maps a %s vector-field legend marker only when its trusted relation matches', (
+    kind,
+    prop,
+    patchMode,
+    relationField,
+    relationId,
+  ) => {
+    const marker = (fingerprint: string): ManifestObject => ({
+      id: kind === 'patch' ? 'legend_patch.0.0' : 'legend_line.0.0',
+      kind,
+      label: 'vector legend marker',
+      editable: [prop],
+      currentProps: { [prop]: '#123456' },
+      role: 'legend_marker',
+      fingerprint,
+      fingerprintVersion: 2,
+      identity: {
+        instanceKey: `container:${kind}:vector-marker`,
+        seriesKey: `${kind}:vector-marker`,
+        scope: 'container',
+        coordinateSpace: 'container',
+        relation: {
+          subplotId: 'subplot.0',
+          parentId: kind === 'patch' ? 'collection.0.0' : 'container.streamplot.0.0',
+          [relationField]: relationId,
+        },
+      },
+      propertyCapabilities: [{
+        prop,
+        patchMode,
+        scopes: ['object', 'cross_figure'],
+        preview: 'exact',
+        replay: 'stable',
+      }],
+    });
+    const source = baseManifest([marker('source-fingerprint')]);
+    const target = baseManifest([marker('target-fingerprint')]);
+    const input = { gid: source.objects[0].id, prop, value: '#abcdef', mode: 'backend_patch' };
+
+    const result = mapPatchesToTargetFigure([input], source, target);
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toEqual([{
+      gid: target.objects[0].id,
+      prop,
+      value: '#abcdef',
+      mode: patchMode,
+      fingerprint: 'target-fingerprint',
+      fingerprintVersion: 2,
+      identity: target.objects[0].identity,
+    }]);
+  });
+
+  it.each([
+    ['patch', 'facecolor', 'quiverId', 'quiver.0.0', 'quiver.0.1'],
+    ['line', 'color', 'streamplotId', 'container.streamplot.0.0', undefined],
+  ] as const)('fails closed when a %s vector-field legend marker relation differs or is missing', (
+    kind,
+    prop,
+    relationField,
+    sourceRelationId,
+    targetRelationId,
+  ) => {
+    const marker = (relationId: string | undefined): ManifestObject => ({
+      id: kind === 'patch' ? 'legend_patch.0.0' : 'legend_line.0.0',
+      kind,
+      label: 'vector legend marker',
+      editable: [prop],
+      currentProps: { [prop]: '#123456' },
+      role: 'legend_marker',
+      identity: {
+        instanceKey: `container:${kind}:vector-marker`,
+        scope: 'container',
+        coordinateSpace: 'container',
+        relation: {
+          subplotId: 'subplot.0',
+          parentId: kind === 'patch' ? 'collection.0.0' : 'container.streamplot.0.0',
+          ...(relationId ? { [relationField]: relationId } : {}),
+        },
+      },
+      propertyCapabilities: [{
+        prop,
+        patchMode: 'local_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'exact',
+        replay: 'stable',
+      }],
+    });
+    const source = baseManifest([marker(sourceRelationId)]);
+    const target = baseManifest([marker(targetRelationId)]);
+    const input = { gid: source.objects[0].id, prop, value: '#abcdef', mode: 'local_patch' };
+
+    const result = mapPatchesToTargetFigure([input], source, target);
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([input]);
   });
 });

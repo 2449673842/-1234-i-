@@ -382,6 +382,42 @@ describe('palette target resolver', () => {
     expect(fallback.targets.some(target => target.objectId === points.id)).toBe(false);
   });
 
+  it.each([
+    ['quiver', 'quiver_field', 'collection.0.2'],
+    ['streamplot', 'streamplot_field', 'container.streamplot.0.0'],
+  ])('uses the dedicated %s parent for rendered-color fallback', (kind, role, id) => {
+    const parent = object(id, 'color', `${kind}-series`, 'backend_patch');
+    parent.kind = kind as ManifestObject['kind'];
+    parent.role = role;
+    parent.currentProps.color = '#4477aa';
+    const child = object('collection.0.9', 'color', `${kind}-child`, 'local_patch');
+    child.kind = 'collection';
+    child.role = kind === 'streamplot' ? 'streamplot_child_line' : 'scatter_series';
+    child.currentProps.color = '#4477aa';
+    if (kind === 'streamplot') {
+      child.parentId = parent.id;
+      child.currentProps.parentOwned = true;
+      child.identity!.relation = { subplotId: 'subplot.0', parentId: parent.id };
+    }
+    const figure = manifest([parent, child], []);
+
+    const fallback = resolvePaletteColorFallbackTargets(
+      figure,
+      `${kind}-blue`,
+      '#4477AA',
+      [parent.id],
+    );
+
+    expect(fallback.targets.map(item => item.objectId)).toEqual([parent.id]);
+    expect(buildPaletteObjectPatches(fallback, '#1188ff')).toEqual([{
+      op: 'set',
+      mode: 'backend_patch',
+      gid: parent.id,
+      prop: 'color',
+      value: '#1188ff',
+    }]);
+  });
+
   it('creates a backend color-subset patch for blue entries inside a multi-color collection', () => {
     const collection = object('collection.1.0', 'facecolor', 'panel-b-scatter', 'local_patch');
     collection.kind = 'collection';
