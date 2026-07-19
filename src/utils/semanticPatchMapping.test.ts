@@ -248,8 +248,217 @@ describe('semantic patch mapping', () => {
 
     expect(result.skipped).toHaveLength(0);
     expect(result.patches).toEqual([
-      { gid: 'line.7', prop: 'color', value: '#abcdef', mode: 'backend_patch' },
+      { gid: 'line.7', prop: 'color', value: '#abcdef', mode: 'backend_patch', stableKey: 'series:one' },
     ]);
+  });
+
+  it('maps a selected pie slice by pie identity instead of a conflicting raw gid', () => {
+    const source = baseManifest([{
+      id: 'patch.0.8',
+      kind: 'patch',
+      label: 'Pie A source',
+      editable: ['facecolor'],
+      currentProps: { facecolor: '#123456' },
+      role: 'pie_slice',
+      subplotId: 'subplot.0',
+      stableKey: 'source-pie-slice',
+      fingerprint: 'source-fingerprint',
+      fingerprintVersion: 2,
+      identity: {
+        instanceKey: 'subplot:patch.0.8',
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation: { subplotId: 'subplot.0', pieId: 'pie.0.0', sliceIndex: 0 },
+      },
+    }]);
+    const target = baseManifest([
+      {
+        id: 'patch.0.8',
+        kind: 'patch',
+        label: 'Unrelated bar',
+        editable: ['facecolor'],
+        currentProps: { facecolor: '#999999' },
+        role: 'bar_series',
+        subplotId: 'subplot.0',
+      },
+      {
+        id: 'patch.0.12',
+        kind: 'patch',
+        label: 'Pie A target',
+        editable: ['facecolor'],
+        currentProps: { facecolor: '#654321' },
+        role: 'pie_slice',
+        subplotId: 'subplot.0',
+        stableKey: 'target-pie-slice',
+        fingerprint: 'target-fingerprint',
+        fingerprintVersion: 2,
+        identity: {
+          instanceKey: 'subplot:patch.0.12',
+          scope: 'subplot',
+          coordinateSpace: 'data',
+          relation: { subplotId: 'subplot.0', pieId: 'pie.0.0', sliceIndex: 0 },
+        },
+      },
+      {
+        id: 'patch.0.13',
+        kind: 'patch',
+        label: 'Pie B target',
+        editable: ['facecolor'],
+        currentProps: { facecolor: '#abcdef' },
+        role: 'pie_slice',
+        subplotId: 'subplot.0',
+        identity: {
+          instanceKey: 'subplot:patch.0.13',
+          scope: 'subplot',
+          coordinateSpace: 'data',
+          relation: { subplotId: 'subplot.0', pieId: 'pie.0.0', sliceIndex: 1 },
+        },
+      },
+    ]);
+
+    const result = mapPatchesToTargetFigure(
+      [{
+        gid: 'patch.0.8',
+        prop: 'facecolor',
+        value: '#aa3377',
+        mode: 'local_patch',
+        stableKey: 'source-pie-slice',
+        fingerprint: 'source-fingerprint',
+        fingerprintVersion: 2,
+        identity: source.objects[0].identity,
+      }],
+      source,
+      target,
+    );
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toEqual([
+      {
+        gid: 'patch.0.12',
+        prop: 'facecolor',
+        value: '#aa3377',
+        mode: 'local_patch',
+        stableKey: 'target-pie-slice',
+        fingerprint: 'target-fingerprint',
+        fingerprintVersion: 2,
+        identity: target.objects[1].identity,
+      },
+    ]);
+  });
+
+  it('does not map the same slice index across different pie identities', () => {
+    const source = baseManifest([{
+      id: 'patch.source',
+      kind: 'patch',
+      label: 'Shared slice',
+      editable: ['facecolor'],
+      currentProps: { facecolor: '#123456' },
+      role: 'pie_slice',
+      identity: {
+        instanceKey: 'subplot:patch.source',
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation: { subplotId: 'subplot.0', pieId: 'pie.0.0', sliceIndex: 0 },
+      },
+    }]);
+    const target = baseManifest([{
+      id: 'patch.target',
+      kind: 'patch',
+      label: 'Shared slice',
+      editable: ['facecolor'],
+      currentProps: { facecolor: '#654321' },
+      role: 'pie_slice',
+      identity: {
+        instanceKey: 'subplot:patch.target',
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation: { subplotId: 'subplot.0', pieId: 'pie.0.1', sliceIndex: 0 },
+      },
+    }]);
+
+    const patch = { gid: 'patch.source', prop: 'facecolor', value: '#abcdef', mode: 'local_patch' };
+    const result = mapPatchesToTargetFigure([patch], source, target);
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([patch]);
+  });
+
+  it('fails closed when a pie target is missing relation metadata', () => {
+    const source = baseManifest([{
+      id: 'patch.source',
+      kind: 'patch',
+      label: 'Shared slice',
+      editable: ['facecolor'],
+      currentProps: { facecolor: '#123456' },
+      role: 'pie_slice',
+      identity: {
+        instanceKey: 'subplot:patch.source',
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation: { subplotId: 'subplot.0', pieId: 'pie.0.0', sliceIndex: 0 },
+      },
+    }]);
+    const target = baseManifest([{
+      id: 'patch.target',
+      kind: 'patch',
+      label: 'Shared slice',
+      editable: ['facecolor'],
+      currentProps: { facecolor: '#654321' },
+      role: 'pie_slice',
+      identity: {
+        instanceKey: 'subplot:patch.target',
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation: { subplotId: 'subplot.0' },
+      },
+    }]);
+
+    const patch = { gid: 'patch.source', prop: 'facecolor', value: '#abcdef', mode: 'local_patch' };
+    const result = mapPatchesToTargetFigure([patch], source, target);
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([patch]);
+  });
+
+  it('skips duplicate matches within the same pie identity', () => {
+    const source = baseManifest([{
+      id: 'patch.source',
+      kind: 'patch',
+      label: 'Shared slice',
+      editable: ['facecolor'],
+      currentProps: { facecolor: '#123456' },
+      role: 'pie_slice',
+      identity: {
+        instanceKey: 'subplot:patch.source',
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation: { subplotId: 'subplot.0', pieId: 'pie.0.0', sliceIndex: 0 },
+      },
+    }]);
+    const duplicateTarget = (id: string) => ({
+      id,
+      kind: 'patch' as const,
+      label: 'Shared slice',
+      editable: ['facecolor'],
+      currentProps: { facecolor: '#654321' },
+      role: 'pie_slice',
+      identity: {
+        instanceKey: `subplot:${id}`,
+        scope: 'subplot' as const,
+        coordinateSpace: 'data' as const,
+        relation: { subplotId: 'subplot.0', pieId: 'pie.0.0', sliceIndex: 0 },
+      },
+    });
+    const target = baseManifest([
+      duplicateTarget('patch.target.a'),
+      duplicateTarget('patch.target.b'),
+    ]);
+
+    const patch = { gid: 'patch.source', prop: 'facecolor', value: '#abcdef', mode: 'local_patch' };
+    const result = mapPatchesToTargetFigure([patch], source, target);
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([patch]);
   });
 
   it('skips equal-scoring semantic candidates instead of choosing by array order', () => {

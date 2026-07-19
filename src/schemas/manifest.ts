@@ -114,6 +114,11 @@ export interface ManifestObjectRelation {
   twinSubplotIds?: string[];
   sharedXSubplotIds?: string[];
   sharedYSubplotIds?: string[];
+  pieId?: string;
+  pieSliceId?: string;
+  pieLabelId?: string;
+  pieValueLabelId?: string;
+  sliceIndex?: number;
 }
 
 /**

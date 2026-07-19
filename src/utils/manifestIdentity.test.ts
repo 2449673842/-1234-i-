@@ -225,4 +225,53 @@ describe('manifest identity shadow validation', () => {
     expect(report.issues).toEqual([]);
     expect(report.shadowReady).toBe(true);
   });
+
+  it('validates pie slice, label, and value-label object references', () => {
+    const subplot: ManifestObject = {
+      id: 'subplot.0',
+      kind: 'subplot',
+      label: 'Panel',
+      editable: [],
+      currentProps: {},
+      identity: {
+        instanceKey: 'subplot:subplot.0',
+        scope: 'subplot',
+        coordinateSpace: 'figure',
+        relation: { subplotId: 'subplot.0' },
+      },
+      propertyCapabilities: [],
+    };
+    const pieSlice = identifiedText('patch.0.0');
+    pieSlice.identity!.relation = {
+      subplotId: 'subplot.0',
+      pieId: 'pie.0.0',
+      pieLabelId: 'text.0.0',
+      pieValueLabelId: 'text.0.1',
+      sliceIndex: 0,
+    };
+    const pieLabel = identifiedText('text.0.0');
+    pieLabel.identity!.relation = {
+      subplotId: 'subplot.0',
+      pieId: 'pie.0.0',
+      pieSliceId: 'patch.0.0',
+      sliceIndex: 0,
+    };
+    const pieValueLabel = identifiedText('text.0.1');
+    pieValueLabel.identity!.relation = {
+      subplotId: 'subplot.0',
+      pieId: 'pie.0.0',
+      pieSliceId: 'patch.0.0',
+      sliceIndex: 0,
+    };
+
+    const valid = validateManifestIdentity(manifest([subplot, pieSlice, pieLabel, pieValueLabel]));
+    expect(valid.issues.filter(issue => issue.code === 'unknown_relation_target')).toEqual([]);
+
+    pieSlice.identity!.relation!.pieLabelId = 'text.missing';
+    const invalid = validateManifestIdentity(manifest([subplot, pieSlice, pieLabel, pieValueLabel]));
+    expect(invalid.issues).toContainEqual(expect.objectContaining({
+      code: 'unknown_relation_target',
+      objectId: 'patch.0.0',
+    }));
+  });
 });

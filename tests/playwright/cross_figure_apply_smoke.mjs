@@ -151,13 +151,15 @@ const contourScript = [
 
 const pythonSeriesRoleScript = [
   'import matplotlib.pyplot as plt',
-  'from matplotlib.patches import Rectangle',
+  'from matplotlib.patches import Rectangle, Wedge',
   'def draw(ax, idx):',
   '    offset = idx * 0.05',
   '    ax.hist([0, 0.4, 1.1, 1.6, 2.2, 2.5, 2.8], bins=[0, 1, 2, 3], color="#884422", alpha=0.55, label=f"Hist {idx}")',
   '    ax.bar([0.35, 1.35, 2.35], [0.25 + offset, 0.35 + offset, 0.22 + offset], width=0.16, color="#884422", alpha=0.7, label=f"Plain bar {idx}")',
   '    ax.stairs([0.45 + offset, 0.65 + offset, 0.4 + offset], [0, 1, 2, 3], color="#7755aa", linewidth=1.1, label=f"Stairs {idx}")',
   '    ax.add_patch(Rectangle((2.55, 0.2 + offset), 0.3, 0.35, facecolor="#7755aa", edgecolor="#7755aa", alpha=0.7, label=f"Plain patch {idx}"))',
+  '    ax.pie([2 + idx, 3, 1], colors=["#4477aa", "#66aa55", "#dd9944"], labels=[f"Pie A {idx}", f"Pie B {idx}", f"Pie C {idx}"], radius=0.32, center=(1.35, 2.75 + offset), frame=True, wedgeprops={"linewidth": 0.8, "edgecolor": "#ffffff"})',
+  '    ax.add_patch(Wedge((2.55, 3.0 + offset), 0.32, 20, 130, facecolor="#dd9944", edgecolor="#663300", alpha=0.7, label=f"Manual wedge {idx}"))',
   '    ax.step([0, 1, 2, 3], [1.5 + offset, 1.7 + offset, 1.4 + offset, 1.6 + offset], where="mid", color="#116699", linewidth=1.1, label=f"Step {idx}")',
   '    ax.plot([0, 1, 2, 3], [1.72 + offset, 1.55 + offset, 1.65 + offset, 1.5 + offset], drawstyle="steps-mid", color="#116699", linewidth=1.1, label=f"Plain stepdraw line {idx}")',
   '    ax.set_title(f"Series Figure {idx}")',
@@ -423,6 +425,29 @@ async function setNumberInComponentGroup(page, groupId, prop, value) {
 
 async function componentGroupHasPropControl(page, groupId, prop) {
   return (await page.locator(`[data-component-group-id="${groupId}"] [data-param-prop="${prop}"]`).count().catch(() => 0)) > 0;
+}
+
+async function componentGroupState(page, groupIds) {
+  return page.locator('.scifig-editor-panel-right [data-component-group-id]').evaluateAll((nodes, ids) => {
+    const wanted = new Set(ids);
+    return nodes
+      .filter((node) => wanted.has(node.getAttribute('data-component-group-id')))
+      .map((node) => ({
+        id: node.getAttribute('data-component-group-id'),
+        label: node.getAttribute('data-component-group-label'),
+        objectIds: Array.from(node.querySelectorAll('[data-component-object-id]')).map((child) => child.getAttribute('data-component-object-id')),
+        props: Array.from(node.querySelectorAll('[data-param-prop], select[data-param-prop]')).map((child) => child.getAttribute('data-param-prop')),
+      }));
+  }, groupIds);
+}
+
+async function selectFirstComponentObject(page, groupId) {
+  const locator = page.locator(`[data-component-group-id="${groupId}"] [data-component-object-id]`).first();
+  if (!(await locator.isVisible({ timeout: 5000 }).catch(() => false))) return null;
+  const objectId = await locator.getAttribute('data-component-object-id');
+  await locator.click();
+  await page.waitForTimeout(500);
+  return objectId;
 }
 
 async function waitForApiSettle(startIndex, timeoutMs = 90000) {
@@ -833,8 +858,10 @@ async function run() {
         histogram: objects.filter((object) => object.role === 'histogram_series').length,
         stairs: objects.filter((object) => object.role === 'stairs_series').length,
         step: objects.filter((object) => object.role === 'step_series').length,
+        pie: objects.filter((object) => object.role === 'pie_slice').length,
+        wedge: objects.filter((object) => object.role === 'wedge_slice').length,
         ordinaryBars: objects.filter((object) => object.kind === 'bar_container' && object.role !== 'histogram_series').length,
-        ordinaryPatches: objects.filter((object) => object.kind === 'patch' && object.role !== 'stairs_series' && object.role !== 'legend_marker').length,
+        ordinaryPatches: objects.filter((object) => object.kind === 'patch' && !['stairs_series', 'pie_slice', 'wedge_slice', 'legend_marker'].includes(String(object.role || ''))).length,
         ordinaryLines: objects.filter((object) => object.kind === 'line' && object.role !== 'step_series' && object.role !== 'legend_marker').length,
         parentOwned: objects.filter((object) => object.currentProps?.parentOwned === true).length,
       },
@@ -844,6 +871,8 @@ async function run() {
         counts.histogram === 1
         && counts.stairs === 1
         && counts.step === 1
+        && counts.pie === 3
+        && counts.wedge === 1
         && counts.ordinaryBars >= 1
         && counts.ordinaryPatches >= 1
         && counts.ordinaryLines >= 1
@@ -944,16 +973,145 @@ async function run() {
     );
 
     await clickText(page, '组件中心');
+    const pieWedgeGroupState = await componentGroupState(page, ['pieSlices', 'wedgeSlices', 'patches']);
+    const pieGroup = pieWedgeGroupState.find((group) => group.id === 'pieSlices');
+    const wedgeGroup = pieWedgeGroupState.find((group) => group.id === 'wedgeSlices');
+    const ordinaryPatchGroup = pieWedgeGroupState.find((group) => group.id === 'patches');
+    const pieWedgeGroupsVisibleOk = seriesFixtureOk
+      && pieGroup?.label === '饼图扇区'
+      && wedgeGroup?.label === '楔形图元'
+      && (pieGroup?.objectIds || []).length >= 3
+      && (wedgeGroup?.objectIds || []).length >= 1
+      && (ordinaryPatchGroup?.objectIds || []).length >= 1
+      && !(ordinaryPatchGroup?.objectIds || []).some((id) => {
+        const object = objectById(seriesSummary, 'fig_1', id);
+        return ['pie_slice', 'wedge_slice'].includes(String(object?.role || ''));
+      });
+    record(
+      'X6d-pie-wedge-component-groups-visible',
+      pieWedgeGroupsVisibleOk ? 'PASS' : 'FAIL',
+      `groups=${JSON.stringify(pieWedgeGroupState)}`,
+    );
+
+    const selectedPieSliceId = await selectFirstComponentObject(page, 'pieSlices');
+    const changedPieColor = selectedPieSliceId
+      ? await setColorInComponentGroup(page, 'pieSlices', '#aa3377', 'facecolor')
+      : false;
+    const pieDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const applyPieAll = changedPieColor
+      ? await applyAllAndReadPatches(page)
+      : { clicked: false, patchBodies: [], successful: false, start: apiRequests.length };
+    const piePatchDetails = rolePatchSummary(seriesSummary, applyPieAll.patchBodies);
+    const pieFigureIds = [...new Set(piePatchDetails.map((patch) => patch.figureId).filter(Boolean))].sort();
+    const piePatchCountByFigure = piePatchDetails.reduce((acc, patch) => {
+      acc[patch.figureId] = (acc[patch.figureId] || 0) + 1;
+      return acc;
+    }, {});
+    const pieSliceObjectsByFigure = Object.fromEntries(Object.entries(seriesSummary).map(([figureId, objects]) => [
+      figureId,
+      objects.filter((object) => object.role === 'pie_slice'),
+    ]));
+    const selectedPieSlice = selectedPieSliceId
+      ? objectById(seriesSummary, 'fig_1', selectedPieSliceId)
+      : null;
+    const selectedPieId = selectedPieSlice?.identity?.relation?.pieId;
+    const selectedSliceIndex = selectedPieSlice?.identity?.relation?.sliceIndex;
+    const expectedPieSliceIdsByFigure = Object.fromEntries(Object.entries(pieSliceObjectsByFigure).map(([figureId, pieObjects]) => [
+      figureId,
+      pieObjects.filter((object) => (
+        object.identity?.relation?.pieId === selectedPieId
+        && object.identity?.relation?.sliceIndex === selectedSliceIndex
+      )).map((object) => object.id),
+    ]));
+    const expectedLegendMarkerIdsByFigure = Object.fromEntries(Object.entries(expectedPieSliceIdsByFigure).map(([figureId, sliceIds]) => [
+      figureId,
+      sliceIds.flatMap((sliceId) => objectById(seriesSummary, figureId, sliceId)?.identity?.relation?.legendMarkerIds || []),
+    ]));
+    const piePatchBodiesByFigure = Object.fromEntries(applyPieAll.patchBodies.map((body) => [
+      body?.figureId,
+      patchList(body),
+    ]));
+    const pieSlicePatchDetails = piePatchDetails.filter((patch) => patch.role === 'pie_slice');
+    const legendMarkerPatchDetails = piePatchDetails.filter((patch) => patch.role === 'legend_marker');
+    const patchedPieSliceIdsByFigure = Object.fromEntries(Object.keys(expectedPieSliceIdsByFigure).map((figureId) => [
+      figureId,
+      pieSlicePatchDetails.filter((patch) => patch.figureId === figureId).map((patch) => patch.gid).sort(),
+    ]));
+    const patchedLegendMarkerIdsByFigure = Object.fromEntries(Object.keys(expectedLegendMarkerIdsByFigure).map((figureId) => [
+      figureId,
+      legendMarkerPatchDetails.filter((patch) => patch.figureId === figureId).map((patch) => patch.gid).sort(),
+    ]));
+    const unrelatedLegendMarkerPatches = legendMarkerPatchDetails.filter((patch) => (
+      !(expectedLegendMarkerIdsByFigure[patch.figureId] || []).includes(patch.gid)
+    ));
+    const nonPieNonLegendPatchTargets = piePatchDetails.filter((patch) => (
+      patch.kind === 'patch'
+      && !['pie_slice', 'legend_marker'].includes(String(patch.role || ''))
+    ));
+    const pieLegendDraftBundled = Object.entries(expectedPieSliceIdsByFigure).every(([figureId, sliceIds]) => {
+      const gids = new Set((piePatchBodiesByFigure[figureId] || []).map((patch) => patch.gid));
+      const legendIds = expectedLegendMarkerIdsByFigure[figureId] || [];
+      return [...sliceIds, ...legendIds].every((gid) => gids.has(gid));
+    });
+    const pieFullRenderCalls = apiRequests.slice(applyPieAll.start || 0).filter((request) => request.url.includes('/figures/render'));
+    const pieFanoutOk = pieWedgeGroupsVisibleOk
+      && Boolean(selectedPieSliceId)
+      && changedPieColor
+      && pieDraftVisible
+      && applyPieAll.clicked
+      && applyPieAll.successful
+      && pieFigureIds.join(',') === 'fig_1,fig_2,fig_3'
+      && piePatchCountByFigure.fig_1 === 2
+      && piePatchCountByFigure.fig_2 === 2
+      && piePatchCountByFigure.fig_3 === 2
+      && Object.values(expectedPieSliceIdsByFigure).every((ids) => ids.length === 1)
+      && Object.values(expectedLegendMarkerIdsByFigure).every((ids) => ids.length === 1)
+      && JSON.stringify(patchedPieSliceIdsByFigure) === JSON.stringify(Object.fromEntries(Object.entries(expectedPieSliceIdsByFigure).map(([figureId, ids]) => [figureId, [...ids].sort()])))
+      && JSON.stringify(patchedLegendMarkerIdsByFigure) === JSON.stringify(Object.fromEntries(Object.entries(expectedLegendMarkerIdsByFigure).map(([figureId, ids]) => [figureId, [...ids].sort()])))
+      && pieLegendDraftBundled
+      && pieSlicePatchDetails.every((patch) => (
+        patch.kind === 'patch'
+        && patch.prop === 'facecolor'
+        && String(patch.value).toLowerCase() === '#aa3377'
+      ))
+      && legendMarkerPatchDetails.every((patch) => (
+        patch.kind === 'patch'
+        && patch.prop === 'facecolor'
+        && String(patch.value).toLowerCase() === '#aa3377'
+      ))
+      && unrelatedLegendMarkerPatches.length === 0
+      && nonPieNonLegendPatchTargets.length === 0
+      && pieFullRenderCalls.length === 0;
+    record(
+      'X6e-selected-pie-slice-cross-figure-facecolor-only',
+      pieFanoutOk ? 'PASS' : 'FAIL',
+      `selected=${selectedPieSliceId}, changed=${changedPieColor}, draft=${pieDraftVisible}, figureIds=${JSON.stringify(pieFigureIds)}, counts=${JSON.stringify(piePatchCountByFigure)}, pieSlices=${JSON.stringify(patchedPieSliceIdsByFigure)}, legendMarkers=${JSON.stringify(patchedLegendMarkerIdsByFigure)}, expectedLegendMarkers=${JSON.stringify(expectedLegendMarkerIdsByFigure)}, unrelatedLegendMarkers=${JSON.stringify(unrelatedLegendMarkerPatches)}, nonPiePatchTargets=${JSON.stringify(nonPieNonLegendPatchTargets)}, bundled=${pieLegendDraftBundled}, patches=${JSON.stringify(piePatchDetails)}, fullRenderCalls=${pieFullRenderCalls.length}`,
+    );
+
+    await clickText(page, '组件中心');
     const structuralControlPresence = {
       bins: await componentGroupHasPropControl(page, 'histograms', 'bins'),
       edges: await componentGroupHasPropControl(page, 'stairs', 'edges'),
       where: await componentGroupHasPropControl(page, 'steps', 'where'),
+      pieValues: await componentGroupHasPropControl(page, 'pieSlices', 'values'),
+      pieCenter: await componentGroupHasPropControl(page, 'pieSlices', 'center'),
+      pieRadius: await componentGroupHasPropControl(page, 'pieSlices', 'radius'),
+      pieTheta1: await componentGroupHasPropControl(page, 'pieSlices', 'theta1'),
+      pieExplode: await componentGroupHasPropControl(page, 'pieSlices', 'explode'),
+      wedgeCenter: await componentGroupHasPropControl(page, 'wedgeSlices', 'center'),
+      wedgeRadius: await componentGroupHasPropControl(page, 'wedgeSlices', 'radius'),
+      wedgeTheta1: await componentGroupHasPropControl(page, 'wedgeSlices', 'theta1'),
     };
     const structuralStart = apiRequests.length;
     const attemptedStructuralEdits = [
       await setNumberInComponentGroup(page, 'histograms', 'bins', 99),
       await setNumberInComponentGroup(page, 'stairs', 'edges', 99),
       await setNumberInComponentGroup(page, 'steps', 'where', 99),
+      await setNumberInComponentGroup(page, 'pieSlices', 'values', 99),
+      await setNumberInComponentGroup(page, 'pieSlices', 'radius', 99),
+      await setNumberInComponentGroup(page, 'pieSlices', 'theta1', 99),
+      await setNumberInComponentGroup(page, 'wedgeSlices', 'radius', 99),
+      await setNumberInComponentGroup(page, 'wedgeSlices', 'theta1', 99),
     ];
     await page.waitForTimeout(800);
     const structuralDraftVisible = (await getBodyText(page)).includes('已暂存');
@@ -968,7 +1126,7 @@ async function run() {
       && !structuralDraftVisible
       && structuralSideEffects.length === 0;
     record(
-      'X6-structural-props-denied-no-draft-persistence',
+      'X6f-structural-props-denied-no-draft-persistence',
       structuralDeniedOk ? 'PASS' : 'FAIL',
       `controls=${JSON.stringify(structuralControlPresence)}, attempts=${JSON.stringify(attemptedStructuralEdits)}, draft=${structuralDraftVisible}, sideEffects=${JSON.stringify(structuralSideEffects)}`,
     );
@@ -1062,3 +1220,4 @@ try {
 const report = generateReport();
 console.log(`\nReport: ${report.file}`);
 console.log(`Conclusion: ${report.conclusion}, PASS=${report.passCount}, FAIL=${report.failCount}, BLOCKED=${report.blockedCount}`);
+if (report.conclusion !== 'PASS') process.exitCode = 1;

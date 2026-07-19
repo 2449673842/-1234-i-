@@ -292,6 +292,36 @@ function isHistogramScopedPaletteTarget(
     || scope.legendMarkerIds.has(object.id);
 }
 
+function piePaletteScope(manifest: Manifest, binding: Binding) {
+  const pieSlices = (binding.targets ?? [])
+    .map(target => objectById(manifest, target.gid))
+    .filter((object): object is ManifestObject => object?.role === 'pie_slice');
+  if (pieSlices.length === 0) return null;
+
+  const pieSliceIds = new Set(pieSlices.map(object => object.id));
+  const seriesKeys = new Set(pieSlices
+    .map(object => object.identity?.seriesKey)
+    .filter((value): value is string => Boolean(value)));
+  const legendMarkerIds = new Set(pieSlices.flatMap(object => (
+    object.identity?.relation?.legendMarkerIds ?? []
+  )));
+  return { pieSliceIds, seriesKeys, legendMarkerIds };
+}
+
+function isPieScopedPaletteTarget(
+  object: ManifestObject,
+  target: BindingTarget,
+  scope: NonNullable<ReturnType<typeof piePaletteScope>>,
+): boolean {
+  if (object.role === 'pie_slice') {
+    return Boolean(target.seriesKey && scope.seriesKeys.has(target.seriesKey));
+  }
+  if (object.role !== 'legend_marker') return false;
+  const parentId = object.parentId ?? object.identity?.relation?.parentId;
+  return Boolean(parentId && scope.pieSliceIds.has(parentId))
+    || scope.legendMarkerIds.has(object.id);
+}
+
 export function resolvePaletteTargets(
   manifest: Manifest,
   paletteId: string,
@@ -364,6 +394,7 @@ export function resolvePaletteTargets(
 
   bindings.forEach((binding) => {
     const histogramScope = histogramPaletteScope(manifest, binding);
+    const pieScope = piePaletteScope(manifest, binding);
     if (binding.targetMode === 'ambiguous' || binding.targetMode === 'unresolved') {
       ambiguous.push({
         reason: 'ambiguous_binding',
@@ -409,6 +440,14 @@ export function resolvePaletteTargets(
           objectId: target.gid,
           reason: 'series_mismatch',
           detail: `${target.gid} is outside the histogram series binding scope.`,
+        });
+        return;
+      }
+      if (pieScope && !isPieScopedPaletteTarget(object, target, pieScope)) {
+        skipped.push({
+          objectId: target.gid,
+          reason: 'series_mismatch',
+          detail: `${target.gid} is outside the pie slice binding scope.`,
         });
         return;
       }
@@ -466,11 +505,36 @@ export function resolvePaletteColorFallbackTargets(
     };
   }
 
+  const selectedObjects = (manifest.objects ?? []).filter(object => (
+    (!selected || selected.has(object.id))
+    && COLOR_FALLBACK_KINDS.has(object.kind)
+    && !isParentOwnedManifestObject(object)
+  ));
+  const matchingPieSlices = selectedObjects.filter(object => (
+    object.role === 'pie_slice'
+    && COLOR_FALLBACK_PROPS.some(prop => (
+      Object.prototype.hasOwnProperty.call(object.currentProps ?? {}, prop)
+      && colorValueContains(object.currentProps?.[prop], targetHex)
+    ))
+  ));
+  const pieSliceIds = new Set(matchingPieSlices.map(object => object.id));
+  const pieLegendMarkerIds = new Set(matchingPieSlices.flatMap(object => (
+    object.identity?.relation?.legendMarkerIds ?? []
+  )));
+  const hasPieBoundary = pieSliceIds.size > 0;
+
   (manifest.objects ?? []).forEach((object) => {
     if (selected && !selected.has(object.id)) return;
     if (!COLOR_FALLBACK_KINDS.has(object.kind)) return;
     if (isParentOwnedManifestObject(object)) return;
     if (object.kind === 'collection' && isContourChildCollection(manifest, object)) return;
+    if (hasPieBoundary) {
+      const parentId = object.parentId ?? object.identity?.relation?.parentId;
+      const insidePieBoundary = pieSliceIds.has(object.id)
+        || pieLegendMarkerIds.has(object.id)
+        || Boolean(parentId && pieSliceIds.has(parentId));
+      if (!insidePieBoundary) return;
+    }
     COLOR_FALLBACK_PROPS.forEach((prop) => {
       if (!Object.prototype.hasOwnProperty.call(object.currentProps ?? {}, prop)) return;
       if (!colorValueContains(object.currentProps?.[prop], targetHex)) return;

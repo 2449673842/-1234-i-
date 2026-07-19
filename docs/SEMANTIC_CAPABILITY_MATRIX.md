@@ -1,6 +1,6 @@
 # SciFigure Studio 语义能力矩阵
 
-> 最后修改时间：2026-07-18 19:06:26 +08:00
+> 最后修改时间：2026-07-19 19:51:21 +08:00
 
 本矩阵记录了 SciFigure Studio 对于各类科研绘图图元的内省识别、可视化编辑以及渲染一致性的支持级别。
 
@@ -21,6 +21,7 @@
 | **stem** (茎叶图) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `stem_color`, `stem_linewidth`, `marker`, `marker_color`, `markersize`, `baseline_color`, `baseline_linewidth`, `baseline_visible`, `alpha` | 🟢 高一致性 | 🟢 有 | `StemContainer` 统一拥有 markerline、stemlines 和 baseline；组件中心不会重复修改其内部 line/collection children。 |
 | **boxplot** (箱线图) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `color`, `linewidth`, `alpha`, `box_color`, `median_color`, `zorder` | 🟢 高一致性 | 🟢 有 | 箱线图内部元素（fliers, whiskers, caps）通过 container 聚合进行批量覆盖。 |
 | **violinplot** (小提琴图) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `color`, `facecolor`, `edgecolor`, `linewidth`, `alpha`, `zorder` | 🟢 高一致性 | 🟢 有 | 小提琴图内部轮廓填充通过 `bodies` 分组进行批量控制。 |
+| **pie / wedge** (饼图 / 楔形) | 🟢 是 | 🟢 通过 | 🟢 已验证 | 扇区：`facecolor`, `edgecolor`, `linewidth`, `alpha`, `visible`, `zorder`；标签：文字与字体样式 | 🟢 已验证 | 🟢 有 | `pieId + sliceIndex` 隔离扇区、标签和图例；数值、角度、圆心、半径、width 和 explode 保持只读。 |
 | **heatmap** (热图) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `cmap`, `vmin`, `vmax`, `alpha` | 🟢 高一致性 | 🟢 有 | `imshow` / `pcolormesh` 底层对象目前已实现全自动只读识别和 patch 安全应用。 |
 | **colorbar** (色条) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `label`, `tick_fontsize`, `left`, `bottom`, `width`, `height` | 🟢 高一致性 | 🟢 有 | 单色条保留 `subplotId`；共享色条使用 `subplotIds` 显式多归属，并按全部 owner 的联合外框对齐，不压缩为 mappable 所在单图。 |
 | **annotation** (标注) | 🟢 Python / 🟡 R | 🟢 通过 | 🟢 已验证 | 文本：`text`, `fontsize`, `fontfamily`, `color`, `position`, `anchor_position`；箭头：`edgecolor`, `facecolor`, `linewidth`, `alpha` | 🟢 标准坐标高一致性 | 🟢 有 | Python 标准 Annotation 已建立 text/arrow/anchor 关系；callable/复合坐标与 R 独立 segment/curve 不猜测配对。 |
@@ -38,13 +39,12 @@
 
 | 对象家族 | 当前 Shadow 状态 | 当前默认编辑行为 | 限制 |
 |---|---|---|---|
-| `fill_between` | `FillBetweenPolyCollection -> flattened` | 保留 collection 既有控件 | 还没有置信带专用上下边界语义 |
+| `fill_between` | `FillBetweenPolyCollection -> dedicated` | 专用置信区间带组件与配色 | 只开放视觉样式，数据上下界只读 |
 | `quiver` | `Quiver -> flattened` | 保留 collection 既有控件 | 未开放向量方向/尺度专用写回 |
-| `stairs` | `StepPatch -> flattened` | 保留 patch 既有控件 | `ax.step` 的 `Line2D` 暂不猜测来源 |
-| `wedge/pie` | `Wedge -> flattened` | 保留 patch 既有控件 | 只证明 wedge，不把任意 wedge 宣称为完整 pie 语义 |
-| `contour/contourf` | yielded `ContourSet -> flattened` | 保留通用控件 | Matplotlib 版本若只暴露普通 collection，则不伪造专用来源 |
+| `hist/stairs/step` | 可信调用来源 -> dedicated | 专用系列组件与配色 | 分箱、边界、where、数据值等结构参数只读 |
+| `wedge/pie` | `Axes.pie` provenance / manual `Wedge` -> dedicated | 扇区、类别标签、数值标签和手工 Wedge 分组 | 关系缺失或歧义时 fail-closed，不猜测扇区身份 |
+| `contour/contourf` | `ContourSet -> dedicated parent` | 专用父对象托管只读 child collection | levels/X/Y/Z 和路径结构只读 |
 | `streamplot` | 同 axes 的 `LineCollection + FancyArrowPatch -> ambiguous` | 保留原通用控件 | 只记录候选，不宣称 dedicated |
-| `hist/step` 通用 `BarContainer/Rectangle/Line2D` | 未按类名强行标记 | 继续按已验证 bar/line 基线工作 | 需要后续调用来源 provenance 才能区分 |
 
 对象结构身份使用 `fingerprintVersion=2`。颜色、线宽、字号等可编辑样式不再改变结构 fingerprint；旧 manifest 无版本时只使用兼容 stableKey/seriesKey，不比较历史 fingerprint。
 
@@ -71,6 +71,8 @@
 | `grid` | `grid` | 🟢 已接入 | 网格线样式。 |
 | `data_line` / `data_point` / `data_patch` | `line`, `collection`, `patch`/container | 🟢 已接入 | 数据图元样式。 |
 | `data_stem` | `stem_container`, `role=stem_series` | 🟢 已接入并浏览器验证 | 统一修改茎线、标记和基线，内部 children 只作为关系对象。 |
+| `data_pie_slice` / `data_wedge_slice` | `pie_slice`, `wedge_slice` | 🟢 已接入并浏览器验证 | 扇区与手工 Wedge 分开；只开放视觉样式。 |
+| `pie_label` / `pie_value_label` | `Axes.pie` 生成的类别文字和 `autopct` 文字 | 🟢 已接入并浏览器验证 | 标签按 `pieId + sliceIndex` 关联，不与普通 text 混组。 |
 | `heatmap` | `heatmap` | 🟢 已接入 | 热图色阶和透明度。 |
 | `annotation_text` | Python `text.*` Annotation、R `r.text.*` | 🟢 已接入 | 文本内容/字体/位置；位置默认禁止跨 Figure。 |
 | `annotation_arrow` | `annotation_arrow.*` | 🟢 已接入 | 箭头样式独立于普通数据线和普通 patch。 |

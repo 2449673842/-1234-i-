@@ -75,6 +75,29 @@ const PYTHON_STRUCTURAL_SERIES_PROPS: Record<string, Set<string>> = {
     'drawstyle',
     'interpolation',
   ]),
+  pie_slice: new Set([
+    'values',
+    'value',
+    'fraction',
+    'center',
+    'radius',
+    'theta1',
+    'theta2',
+    'width',
+    'explode',
+    'startangle',
+    'counterclock',
+    'normalize',
+    'labeldistance',
+    'pctdistance',
+  ]),
+  wedge_slice: new Set([
+    'center',
+    'radius',
+    'theta1',
+    'theta2',
+    'width',
+  ]),
 };
 
 export function isPythonStructuralSeriesProp(

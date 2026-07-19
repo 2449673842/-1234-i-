@@ -33,6 +33,7 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.id.startsWith('xtick.') || object.kind === 'axis_x') return 'x_tick_label';
   if (object.id.startsWith('ytick.') || object.kind === 'axis_y') return 'y_tick_label';
   if (object.role === 'legend_title' || object.id.startsWith('legend_title.')) return 'legend_title';
+  if (object.role === 'legend_marker' && object.identity?.relation?.pieSliceId) return 'pie_legend_marker';
   if (object.role === 'legend_marker' || /^legend_(?:line|patch|collection|marker)\./.test(object.id)) return 'legend_marker';
   if (object.id.startsWith('legend_text.')) return 'legend_text';
   if (object.kind === 'legend') return 'legend_container';
@@ -41,6 +42,10 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.role === 'histogram_series') return 'data_histogram';
   if (object.role === 'stairs_series') return 'data_stairs';
   if (object.role === 'step_series') return 'data_step';
+  if (object.role === 'pie_slice') return 'data_pie_slice';
+  if (object.role === 'wedge_slice') return 'data_wedge_slice';
+  if (object.role === 'pie_label') return 'pie_label';
+  if (object.role === 'pie_value_label') return 'pie_value_label';
   if (object.role === 'bar_series' || object.kind === 'bar_container') return 'data_bar';
   if (object.role === 'errorbar_series' || object.kind === 'errorbar_container') return 'data_errorbar';
   if (object.role === 'stem_series' || object.kind === 'stem_container') return 'data_stem';

@@ -155,11 +155,50 @@ def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict
                 ["Palette has no semantic group; binding used unique rendered color."],
             ))
 
-    return bindings
+    return _scope_pie_bindings(bindings, artist_manifest)
 
 
 def _normalize_label(value: Any) -> str:
     return " ".join(str(value or "").strip().lower().split())
+
+
+def _scope_pie_bindings(
+    bindings: List[Dict[str, Any]],
+    artist_manifest: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    artist_by_id = {artist.get("id"): artist for artist in artist_manifest}
+    for binding in bindings:
+        targets = binding.get("targets") or []
+        pie_slices = [
+            artist_by_id.get(target.get("gid"))
+            for target in targets
+            if artist_by_id.get(target.get("gid"), {}).get("role") == "pie_slice"
+        ]
+        pie_slices = [artist for artist in pie_slices if artist]
+        if not pie_slices:
+            continue
+        pie_slice_ids = {artist["id"] for artist in pie_slices}
+        legend_marker_ids = {
+            marker_id
+            for artist in pie_slices
+            for marker_id in (artist.get("identity", {}).get("relation", {}).get("legendMarkerIds") or [])
+        }
+        scoped_targets = []
+        for target in targets:
+            artist = artist_by_id.get(target.get("gid"), {})
+            parent_id = artist.get("parentId") or artist.get("identity", {}).get("relation", {}).get("parentId")
+            if artist.get("role") == "pie_slice" or (
+                artist.get("role") == "legend_marker"
+                and (artist.get("id") in legend_marker_ids or parent_id in pie_slice_ids)
+            ):
+                scoped_targets.append(target)
+        binding["targets"] = _dedupe_targets(scoped_targets)
+        binding["gids"] = list(dict.fromkeys(target["gid"] for target in binding["targets"]))
+        binding["props"] = [
+            prop for prop in ["facecolor", "color", "edgecolor"]
+            if any(target.get("prop") == prop for target in binding["targets"])
+        ]
+    return bindings
 
 
 def _default_color_prop(artist: Dict[str, Any]) -> str:

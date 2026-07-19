@@ -6,6 +6,10 @@ type PatchLike = DraftPatch | {
   gid?: string;
   prop?: string;
   mode?: string;
+  stableKey?: string;
+  fingerprint?: string;
+  fingerprintVersion?: number;
+  identity?: ManifestObject['identity'];
   type?: string;
   target_id?: string;
   new_value?: unknown;
@@ -32,8 +36,46 @@ function findSourceObject(sourceManifest: Manifest | null | undefined, gid: stri
   return objectList(sourceManifest).find(object => object.id === gid) || null;
 }
 
+const PIE_RELATION_ROLES = new Set([
+  'pie_slice',
+  'pie_label',
+  'pie_value_label',
+  'legend_marker',
+]);
+
+function isPieRelationCompatible(source: ManifestObject, target: ManifestObject): boolean {
+  if (!PIE_RELATION_ROLES.has(String(source.role)) || !PIE_RELATION_ROLES.has(String(target.role))) {
+    return true;
+  }
+
+  const sourceRelation = source.identity?.relation;
+  const targetRelation = target.identity?.relation;
+  const sourceIsPieSpecific = source.role !== 'legend_marker'
+    || Boolean(sourceRelation?.pieId)
+    || typeof sourceRelation?.sliceIndex === 'number';
+  const targetIsPieSpecific = target.role !== 'legend_marker'
+    || Boolean(targetRelation?.pieId)
+    || typeof targetRelation?.sliceIndex === 'number';
+  if (!sourceIsPieSpecific && !targetIsPieSpecific) return true;
+  if (!sourceRelation?.pieId || !targetRelation?.pieId) return false;
+  if (typeof sourceRelation.sliceIndex !== 'number' || typeof targetRelation.sliceIndex !== 'number') {
+    return false;
+  }
+  return sourceRelation.pieId === targetRelation.pieId
+    && sourceRelation.sliceIndex === targetRelation.sliceIndex;
+}
+
+function isExactTargetCompatible(source: ManifestObject, target: ManifestObject): boolean {
+  if (source.role && target.role && source.role !== target.role) return false;
+  if (source.subplotId && target.subplotId && source.subplotId !== target.subplotId) return false;
+  if (source.kind !== target.kind && (!source.role || source.role !== target.role)) return false;
+  return isPieRelationCompatible(source, target);
+}
+
 function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop: string | undefined): number {
   if (!supportsProp(target, prop)) return -1;
+  if (source.role && target.role && source.role !== target.role) return -1;
+  if (!isPieRelationCompatible(source, target)) return -1;
 
   let score = 0;
   if (source.identity?.instanceKey && source.identity.instanceKey === target.identity?.instanceKey) score += 140;
@@ -46,6 +88,16 @@ function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop
   if (source.parentId && target.parentId && source.parentId === target.parentId) score += 5;
   if (source.label && target.label && source.label === target.label) score += 3;
 
+  if (PIE_RELATION_ROLES.has(String(source.role)) && PIE_RELATION_ROLES.has(String(target.role))) {
+    const sourceRelation = source.identity?.relation;
+    const targetRelation = target.identity?.relation;
+    if (sourceRelation?.pieId && sourceRelation.pieId === targetRelation?.pieId) score += 120;
+    if (
+      typeof sourceRelation?.sliceIndex === 'number'
+      && sourceRelation.sliceIndex === targetRelation?.sliceIndex
+    ) score += 100;
+  }
+
   return score;
 }
 
@@ -54,10 +106,21 @@ function mapPatchToObject(
   targetManifest: Manifest | null | undefined,
   target: ManifestObject,
 ): PatchLike {
+  const {
+    stableKey: _sourceStableKey,
+    fingerprint: _sourceFingerprint,
+    fingerprintVersion: _sourceFingerprintVersion,
+    identity: _sourceIdentity,
+    ...patchWithoutSourceIdentity
+  } = patch;
   return {
-    ...patch,
+    ...patchWithoutSourceIdentity,
     gid: target.id,
     mode: resolvePatchMode(targetManifest, target, patch.prop || ''),
+    ...(target.stableKey ? { stableKey: target.stableKey } : {}),
+    ...(target.fingerprint ? { fingerprint: target.fingerprint } : {}),
+    ...(typeof target.fingerprintVersion === 'number' ? { fingerprintVersion: target.fingerprintVersion } : {}),
+    ...(target.identity ? { identity: target.identity } : {}),
   };
 }
 
@@ -74,7 +137,11 @@ export function mapPatchToTargetFigure(
   if (!sourceObject) return null;
 
   const targetObjects = objectList(targetManifest);
-  const exactTarget = targetObjects.find(object => object.id === patch.gid && supportsProp(object, patch.prop));
+  const exactTarget = targetObjects.find(object => (
+    object.id === patch.gid
+    && supportsProp(object, patch.prop)
+    && isExactTargetCompatible(sourceObject, object)
+  ));
   if (exactTarget) {
     return mapPatchToObject(patch, targetManifest, exactTarget);
   }

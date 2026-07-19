@@ -554,21 +554,212 @@ plt.contourf(X, Y, X + Y, levels=4, cmap="viridis")
         self.assertEqual(contour.get("role"), "contourf_series", contour)
         self.assertEqual(contour.get("source", {}).get("callName"), "Axes.contourf", contour)
 
-    def test_pie_wedges_are_reported_as_flattened_editable(self):
+    def test_pie_and_manual_wedge_have_distinct_semantics_and_relations(self):
+        script = """
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle, Wedge
+
+PIE_A = "#4477aa"
+PIE_B = "#cc6677"
+PIE_C = "#228833"
+
+fig, ax = plt.subplots()
+wedges, labels, values = ax.pie(
+    [2, 3, 5],
+    labels=["A", "B", "C"],
+    colors=[PIE_A, PIE_B, PIE_C],
+    autopct="%1.0f%%",
+    explode=[0.0, 0.08, 0.0],
+    startangle=25,
+    counterclock=False,
+    normalize=True,
+    labeldistance=1.15,
+    pctdistance=0.7,
+    wedgeprops={"width": 0.4},
+)
+ax.legend(wedges, ["A", "B", "C"])
+ax.add_patch(Rectangle((1.5, -0.4), 0.4, 0.8, facecolor=PIE_A, label="ordinary patch"))
+ax.add_patch(Wedge((2.5, 0.0), 0.5, 10, 130, width=0.2, facecolor=PIE_A, label="manual wedge"))
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success", initial)
+        manifest = initial["figures"][0]["manifest"]
+        objects = self._objects_by_id(manifest)
+
+        slices = [obj for obj in manifest["objects"] if obj.get("role") == "pie_slice"]
+        self.assertEqual(len(slices), 3, slices)
+        self.assertEqual([obj["id"] for obj in slices], ["patch.0.0", "patch.0.1", "patch.0.2"])
+        self.assertEqual([obj.get("kind") for obj in slices], ["patch"] * 3)
+        self.assertEqual([obj.get("source", {}).get("callName") for obj in slices], ["Axes.pie"] * 3)
+
+        pie_ids = {obj.get("identity", {}).get("relation", {}).get("pieId") for obj in slices}
+        self.assertEqual(pie_ids, {"pie.0.0"}, slices)
+        for index, pie_slice in enumerate(slices):
+            relation = pie_slice.get("identity", {}).get("relation", {})
+            self.assertEqual(relation.get("sliceIndex"), index, pie_slice)
+            self.assertIn(relation.get("pieLabelId"), objects, pie_slice)
+            self.assertIn(relation.get("pieValueLabelId"), objects, pie_slice)
+            self.assertEqual(objects[relation["pieLabelId"]].get("role"), "pie_label")
+            self.assertEqual(objects[relation["pieValueLabelId"]].get("role"), "pie_value_label")
+            self.assertEqual(
+                objects[relation["pieLabelId"]].get("identity", {}).get("relation", {}).get("pieSliceId"),
+                pie_slice["id"],
+            )
+            self.assertEqual(
+                objects[relation["pieValueLabelId"]].get("identity", {}).get("relation", {}).get("pieSliceId"),
+                pie_slice["id"],
+            )
+            self.assertEqual(pie_slice.get("semanticCoverage", {}).get("status"), "dedicated", pie_slice)
+            self.assertEqual(pie_slice.get("semanticCoverage", {}).get("family"), "pie", pie_slice)
+            self._assert_visual_only_capabilities(
+                pie_slice,
+                ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
+                [
+                    "values", "value", "fraction", "center", "radius", "theta1", "theta2",
+                    "width", "explode", "startangle", "counterclock", "normalize",
+                    "labeldistance", "pctdistance",
+                ],
+            )
+
+        first_props = slices[0].get("currentProps", {})
+        self.assertEqual(first_props.get("values"), [2, 3, 5], slices[0])
+        self.assertEqual(first_props.get("value"), 2, slices[0])
+        self.assertAlmostEqual(first_props.get("fraction"), 0.2, places=6)
+        self.assertEqual(first_props.get("explode"), 0.0)
+        self.assertEqual(first_props.get("startangle"), 25.0)
+        self.assertFalse(first_props.get("counterclock"))
+        self.assertTrue(first_props.get("normalize"))
+        self.assertEqual(first_props.get("labeldistance"), 1.15)
+        self.assertEqual(first_props.get("pctdistance"), 0.7)
+
+        for pie_slice in slices:
+            marker_ids = pie_slice.get("identity", {}).get("relation", {}).get("legendMarkerIds", [])
+            self.assertEqual(len(marker_ids), 1, pie_slice)
+            marker = objects[marker_ids[0]]
+            self.assertEqual(marker.get("role"), "legend_marker", marker)
+            self.assertEqual(
+                marker.get("identity", {}).get("relation", {}).get("parentId"),
+                pie_slice["id"],
+                marker,
+            )
+            self.assertEqual(
+                marker.get("identity", {}).get("relation", {}).get("pieSliceId"),
+                pie_slice["id"],
+                marker,
+            )
+
+        manual_wedge = next(obj for obj in manifest["objects"] if obj.get("label") == "manual wedge")
+        self.assertEqual(manual_wedge.get("role"), "wedge_slice", manual_wedge)
+        self.assertNotIn("callName", manual_wedge.get("source", {}), manual_wedge)
+        self.assertEqual(manual_wedge.get("semanticCoverage", {}).get("family"), "wedge", manual_wedge)
+        self.assertEqual(manual_wedge.get("semanticCoverage", {}).get("status"), "dedicated", manual_wedge)
+        self._assert_visual_only_capabilities(
+            manual_wedge,
+            ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
+            ["center", "radius", "theta1", "theta2", "width"],
+        )
+
+        ordinary_patch = next(obj for obj in manifest["objects"] if obj.get("label") == "ordinary patch")
+        self.assertEqual(ordinary_patch.get("role"), "bar_series", ordinary_patch)
+        self.assertNotIn(ordinary_patch["id"], {obj["id"] for obj in slices})
+
+        pie_a_bindings = [
+            binding for binding in manifest.get("bindings", [])
+            if binding.get("paletteId") == "PIE_A"
+        ]
+        self.assertEqual(len(pie_a_bindings), 1, manifest.get("bindings"))
+        pie_a_gids = pie_a_bindings[0].get("gids", [])
+        self.assertIn(slices[0]["id"], pie_a_gids, pie_a_bindings[0])
+        self.assertIn(
+            slices[0]["identity"]["relation"]["legendMarkerIds"][0],
+            pie_a_gids,
+            pie_a_bindings[0],
+        )
+        self.assertNotIn(ordinary_patch["id"], pie_a_gids, pie_a_bindings[0])
+        self.assertNotIn(manual_wedge["id"], pie_a_gids, pie_a_bindings[0])
+
+        self._assert_fingerprint_stable_after_style_edit(script, slices[0], "facecolor", "#8844aa")
+        blocked = replay_render(script, edit_logs={"fig_1": [{
+            "gid": slices[0]["id"],
+            "prop": "radius",
+            "value": 2.0,
+            "mode": "backend_patch",
+        }]})
+        self.assertEqual(blocked.get("status"), "success", blocked)
+        self.assertEqual(
+            [warning.get("type") for warning in blocked.get("warnings", [])],
+            ["unsupported_prop"],
+            blocked,
+        )
+
+        legacy_replayed = replay_render(script, edit_logs={"fig_1": [{
+            "gid": slices[0]["id"],
+            "prop": "facecolor",
+            "value": "#aa4499",
+            "mode": "local_patch",
+            "stableKey": slices[0]["stableKey"],
+            "fingerprint": slices[0]["fingerprint"],
+            "identity": {"seriesKey": slices[0]["identity"]["seriesKey"]},
+        }]})
+        self.assertEqual(legacy_replayed.get("status"), "success", legacy_replayed)
+        self.assertEqual(legacy_replayed.get("warnings", []), [], legacy_replayed)
+
+    def test_pyplot_and_multiple_pie_calls_get_stable_distinct_group_ids(self):
         manifest = self._render_manifest(
             """
 import matplotlib.pyplot as plt
-fig, ax = plt.subplots()
-ax.pie(
-    [2, 3, 5],
-    labels=["A", "B", "C"],
-    colors=["#4477aa", "#cc6677", "#228833"],
-    autopct="%1.0f%%",
-)
+fig, axes = plt.subplots(1, 2)
+plt.sca(axes[0])
+plt.pie([1, 2], labels=["A", "B"])
+axes[0].pie([2, 1], labels=["C", "D"], center=(2.5, 0.0))
+axes[1].pie([3, 4], labels=["E", "F"], autopct="%1.0f%%")
 """
         )
+        slices = [obj for obj in manifest["objects"] if obj.get("role") == "pie_slice"]
+        self.assertEqual(len(slices), 6, slices)
+        by_pie_id = {}
+        for pie_slice in slices:
+            relation = pie_slice.get("identity", {}).get("relation", {})
+            by_pie_id.setdefault(relation.get("pieId"), []).append(pie_slice)
+            self.assertEqual(pie_slice.get("source", {}).get("callName"), "Axes.pie", pie_slice)
+        self.assertEqual(set(by_pie_id), {"pie.0.0", "pie.0.1", "pie.1.0"}, by_pie_id)
+        self.assertEqual(sorted(len(items) for items in by_pie_id.values()), [2, 2, 2])
+        self.assertTrue(all(
+            [item.get("identity", {}).get("relation", {}).get("sliceIndex") for item in items] == [0, 1]
+            for items in by_pie_id.values()
+        ), by_pie_id)
 
-        self._assert_flattened_editable_reported(manifest, "Wedge", "wedge")
+    def test_figure_level_pie_legend_links_only_unique_slice_labels(self):
+        manifest = self._render_manifest(
+            """
+import matplotlib.pyplot as plt
+fig, axes = plt.subplots(1, 2)
+left, _, _ = axes[0].pie([1, 2], labels=["Unique A", "Shared"], autopct="%1.0f%%")
+axes[1].pie([2, 1], labels=["Unique B", "Shared"])
+fig.legend(left, ["Unique A", "Shared"])
+"""
+        )
+        objects = self._objects_by_id(manifest)
+        unique_slice = next(
+            obj for obj in manifest["objects"]
+            if obj.get("role") == "pie_slice" and obj.get("label") == "Unique A"
+        )
+        shared_slice = next(
+            obj for obj in manifest["objects"]
+            if obj.get("role") == "pie_slice" and obj.get("label") == "Shared"
+        )
+        marker_ids = unique_slice.get("identity", {}).get("relation", {}).get("legendMarkerIds", [])
+        self.assertEqual(len(marker_ids), 1, unique_slice)
+        self.assertTrue(marker_ids[0].startswith("legend_patch.figure."), marker_ids)
+        self.assertEqual(
+            objects[marker_ids[0]].get("identity", {}).get("relation", {}).get("parentId"),
+            unique_slice["id"],
+        )
+        self.assertEqual(
+            shared_slice.get("identity", {}).get("relation", {}).get("legendMarkerIds", []),
+            [],
+            shared_slice,
+        )
 
     def test_quiver_is_reported_as_flattened_editable(self):
         manifest = self._render_manifest(

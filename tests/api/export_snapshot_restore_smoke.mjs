@@ -45,6 +45,59 @@ function readRestoreState(projectId) {
   }
 }
 
+function readExportSnapshot(assetId) {
+  const databasePath = process.env.SCIFIGURE_DB_PATH;
+  assert(databasePath, 'isolated snapshot smoke requires SCIFIGURE_DB_PATH');
+  const database = new Database(databasePath, { readonly: true });
+  try {
+    database.pragma('busy_timeout = 5000');
+    const row = database.prepare(`
+      SELECT schema_version, snapshot_json
+      FROM export_asset_snapshots
+      WHERE asset_id = ?
+    `).get(assetId);
+    assert(row?.snapshot_json, `export snapshot row is missing for asset ${assetId}`);
+    return {
+      schemaVersion: row.schema_version,
+      snapshot: JSON.parse(row.snapshot_json),
+    };
+  } finally {
+    database.close();
+  }
+}
+
+function hasEdit(editLog, expected) {
+  return Array.isArray(editLog) && editLog.some(entry => (
+    entry?.gid === expected.gid
+    && entry?.prop === expected.prop
+    && String(entry?.mode || '') === String(expected.mode || '')
+    && (typeof expected.value === 'number'
+      ? Number(entry?.value) === expected.value
+      : String(entry?.value) === String(expected.value))
+  ));
+}
+
+function assertHasEdit(editLog, expected, message) {
+  assert(hasEdit(editLog, expected), message);
+}
+
+function assertMissingEdit(editLog, expected, message) {
+  assert(!hasEdit(editLog, expected), message);
+}
+
+function bufferMagic(format, binaryB64) {
+  if (!binaryB64) return false;
+  const buffer = Buffer.from(binaryB64, 'base64');
+  if (format === 'png') return buffer.length > 8 && buffer.subarray(0, 4).toString('hex') === '89504e47';
+  if (format === 'pdf') return buffer.length > 8 && buffer.subarray(0, 4).toString('ascii') === '%PDF';
+  if (format === 'tiff') {
+    const littleEndian = buffer.subarray(0, 4).toString('hex') === '49492a00';
+    const bigEndian = buffer.subarray(0, 4).toString('hex') === '4d4d002a';
+    return buffer.length > 8 && (littleEndian || bigEndian);
+  }
+  return false;
+}
+
 async function jsonRequest(path, token, options = {}) {
   const response = await fetch(`${BASE_URL}${path}`, {
     ...options,
@@ -114,6 +167,18 @@ ax.contour(
 ax.hist([0, 0.5, 1, 1, 1.5, 2], bins=[0, 0.75, 1.5, 2.25], color="#4477aa", alpha=0.45, label="Snapshot hist")
 ax.stairs([0.5, 1.4, 0.8], [0, 0.75, 1.5, 2.25], color="#cc6677", label="Snapshot stairs")
 ax.step([0, 0.75, 1.5, 2.25], [0.2, 1.0, 0.4, 1.2], where="mid", color="#228833", label="Snapshot step")
+pie_ax = fig.add_axes([0.61, 0.52, 0.25, 0.30])
+pie_labels = ["Alpha slice", "Beta slice", "Gamma slice"]
+pie_wedges, pie_label_texts, pie_value_texts = pie_ax.pie(
+    [3, 2, 1],
+    labels=pie_labels,
+    autopct="%1.0f%%",
+    colors=["#4477aa", "#88ccee", "#ddaa33"],
+    startangle=90,
+    wedgeprops={"linewidth": 0.8, "edgecolor": "#ffffff"},
+)
+pie_ax.legend(pie_wedges, pie_labels, loc="center left", bbox_to_anchor=(1.0, 0.5), title="Pie legend", fontsize=7)
+pie_ax.set_title("Pie inset", fontsize=8)
 fig.colorbar(filled, ax=ax, label="Response")
 ax.legend(loc="lower right")
 ax.set_title("Export snapshot smoke")
@@ -183,11 +248,29 @@ async function main() {
     const histogram = figure.manifest?.objects?.find(object => object.role === 'histogram_series');
     const stairs = figure.manifest?.objects?.find(object => object.role === 'stairs_series');
     const step = figure.manifest?.objects?.find(object => object.role === 'step_series');
+    const pieSlice = figure.manifest?.objects?.find(object => (
+      object.role === 'pie_slice' && object.kind === 'patch'
+    ));
+    const pieRelation = pieSlice?.identity?.relation || {};
+    const pieLabel = figure.manifest?.objects?.find(object => object.id === pieRelation.pieLabelId);
+    const pieValueLabel = figure.manifest?.objects?.find(object => object.id === pieRelation.pieValueLabelId);
+    const pieLegendMarker = figure.manifest?.objects?.find(object => (
+      object.role === 'legend_marker'
+      && (
+        object.id === pieRelation.legendMarkerIds?.[0]
+        || object.parentId === pieSlice?.id
+        || object.identity?.relation?.parentId === pieSlice?.id
+      )
+    ));
     assert(contourFill?.id, 'rendered manifest has no editable contourf target');
     assert(contourLine?.id, 'rendered manifest has no editable contour target');
     assert(histogram?.kind === 'bar_container', 'rendered manifest has no historical-kind histogram target');
     assert(stairs?.kind === 'patch', 'rendered manifest has no historical-kind stairs target');
     assert(step?.kind === 'line', 'rendered manifest has no historical-kind step target');
+    assert(pieSlice?.id, 'rendered manifest has no editable Axes.pie slice target');
+    assert(pieLabel?.role === 'pie_label', 'rendered manifest has no Axes.pie label text relation');
+    assert(pieValueLabel?.role === 'pie_value_label', 'rendered manifest has no Axes.pie autopct value text relation');
+    assert(pieLegendMarker?.role === 'legend_marker', 'rendered manifest has no Axes.pie legend marker relation');
 
     const exportedEdit = {
       gid: target.id,
@@ -238,6 +321,13 @@ async function main() {
       mode: 'local_patch',
       timestamp: 106,
     };
+    const exportedPieEdit = {
+      gid: pieSlice.id,
+      prop: 'facecolor',
+      value: '#f97316',
+      mode: 'local_patch',
+      timestamp: 107,
+    };
     const editedRender = await jsonRequest(`/api/projects/${projectId}/figures/render`, ownerToken, {
       method: 'POST',
       body: JSON.stringify({
@@ -251,6 +341,7 @@ async function main() {
             exportedHistogramEdit,
             exportedStairsEdit,
             exportedStepEdit,
+            exportedPieEdit,
           ],
         },
         language: 'python',
@@ -289,19 +380,60 @@ async function main() {
       beforeExportDb.close();
     }
 
-    const exported = await jsonRequest(`/api/projects/${projectId}/export`, ownerToken, {
-      method: 'POST',
-      body: JSON.stringify({ figureId: 'fig_1', format: 'svg', dpi: 300, saveToLibrary: true }),
-    });
-    assert(exported.response.ok && exported.data?.status === 'success', `export failed: ${JSON.stringify(exported.data)}`);
-    const asset = exported.data.figures?.[0]?.asset;
-    assert(asset?.assetId && asset.hasEditingSnapshot === true, `export did not persist a restorable snapshot: ${JSON.stringify(asset)}`);
+    const exportFormats = ['png', 'svg', 'pdf', 'tiff'];
+    const exportedByFormat = {};
+    let snapshotEditLogJson = null;
+    for (const format of exportFormats) {
+      const exportedForFormat = await jsonRequest(`/api/projects/${projectId}/export`, ownerToken, {
+        method: 'POST',
+        body: JSON.stringify({ figureId: 'fig_1', format, dpi: 300, saveToLibrary: true }),
+      });
+      assert(
+        exportedForFormat.response.ok && exportedForFormat.data?.status === 'success',
+        `${format} export failed: ${JSON.stringify(exportedForFormat.data)}`,
+      );
+      const exportedFigure = exportedForFormat.data.figures?.[0];
+      const formatAsset = exportedFigure?.asset;
+      assert(exportedFigure?.figureId === 'fig_1', `${format} export returned the wrong Figure: ${JSON.stringify(exportedFigure)}`);
+      assert(formatAsset?.assetId && formatAsset.hasEditingSnapshot === true, `${format} export did not persist a restorable snapshot: ${JSON.stringify(formatAsset)}`);
+      if (format === 'svg') {
+        assert(exportedFigure.format === 'svg' && typeof exportedFigure.svg === 'string' && !exportedFigure.binary_b64, `svg export returned an unexpected payload: ${JSON.stringify(exportedFigure)}`);
+      } else {
+        assert(exportedFigure.format === format && bufferMagic(format, exportedFigure.binary_b64), `${format} export returned invalid binary output`);
+      }
+      const formatSnapshot = readExportSnapshot(formatAsset.assetId);
+      const formatSnapshotEditLog = formatSnapshot.snapshot?.figures?.[0]?.editLog;
+      for (const expectedEdit of [
+        exportedEdit,
+        exportedContourAlphaEdit,
+        exportedContourVmaxEdit,
+        exportedContourLineWidthEdit,
+        exportedHistogramEdit,
+        exportedStairsEdit,
+        exportedStepEdit,
+        exportedPieEdit,
+      ]) {
+        assertHasEdit(formatSnapshotEditLog, expectedEdit, `${format} export snapshot is missing export-time edit ${expectedEdit.gid}:${expectedEdit.prop}`);
+      }
+      const currentSnapshotEditLogJson = JSON.stringify(formatSnapshotEditLog);
+      if (snapshotEditLogJson === null) snapshotEditLogJson = currentSnapshotEditLogJson;
+      assert(currentSnapshotEditLogJson === snapshotEditLogJson, `${format} export snapshot edit log differs from the first exported format`);
+      exportedByFormat[format] = {
+        result: exportedForFormat,
+        figure: exportedFigure,
+        asset: formatAsset,
+        snapshot: formatSnapshot,
+      };
+    }
+
+    const exported = exportedByFormat.svg.result;
+    const asset = exportedByFormat.svg.asset;
     assert(
       typeof exported.data.figures?.[0]?.svg === 'string' && exported.data.figures[0].svg.includes('fill-opacity: 0.35'),
       `exported SVG does not contain the export-time contourf alpha style: ${JSON.stringify(exported.data.figures?.[0]?.warnings || [])}`,
     );
     const exportedSvg = String(exported.data.figures?.[0]?.svg || '').toLowerCase();
-    for (const color of ['#6f42c1', '#d97706', '#0e7490']) {
+    for (const color of ['#6f42c1', '#d97706', '#0e7490', '#f97316']) {
       assert(exportedSvg.includes(color), `exported SVG does not contain WP6 export-time color ${color}`);
     }
     assert(
@@ -351,6 +483,13 @@ async function main() {
       mode: 'local_patch',
       timestamp: 205,
     };
+    const postExportPieEdit = {
+      gid: pieSlice.id,
+      prop: 'facecolor',
+      value: '#14b8a6',
+      mode: 'local_patch',
+      timestamp: 206,
+    };
     const updated = await jsonRequest(`/api/projects/${projectId}`, ownerToken, {
       method: 'PUT',
       body: JSON.stringify({
@@ -366,6 +505,7 @@ async function main() {
             postExportHistogramEdit,
             postExportStairsEdit,
             postExportStepEdit,
+            postExportPieEdit,
           ],
           revision: 2,
         }],
@@ -455,7 +595,15 @@ async function main() {
       body: JSON.stringify({
         script: slowScript,
         editLogs: {
-          fig_1: [postExportEdit, postExportContourAlphaEdit, postExportContourLineWidthEdit],
+          fig_1: [
+            postExportEdit,
+            postExportContourAlphaEdit,
+            postExportContourLineWidthEdit,
+            postExportHistogramEdit,
+            postExportStairsEdit,
+            postExportStepEdit,
+            postExportPieEdit,
+          ],
         },
         language: 'python',
       }),
@@ -480,25 +628,28 @@ async function main() {
     const projectAfterRestore = await jsonRequest(`/api/projects/${projectId}`, ownerToken);
     const restoredFigure = projectAfterRestore.data?.project?.figures?.find(item => item.figureId === 'fig_1');
     assert(restoredFigure, 'restored Figure is missing from project load');
-    assert(restoredFigure.editLog.some(entry => entry.gid === target.id && entry.prop === 'color' && entry.value === '#b42318'), 'export-time edit is missing after restore');
-    assert(restoredFigure.editLog.some(entry => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.35), 'export-time contourf alpha is missing after restore');
-    assert(restoredFigure.editLog.some(entry => entry.gid === contourFill.id && entry.prop === 'vmax' && Number(entry.value) === 1.25), 'export-time contourf vmax is missing after restore');
-    assert(restoredFigure.editLog.some(entry => entry.gid === contourLine.id && entry.prop === 'linewidth' && Number(entry.value) === 2.4), 'export-time contour linewidth is missing after restore');
-    assert(restoredFigure.editLog.some(entry => entry.gid === histogram.id && entry.prop === 'facecolor' && entry.value === '#6f42c1'), 'export-time histogram style is missing after restore');
-    assert(restoredFigure.editLog.some(entry => entry.gid === stairs.id && entry.prop === 'edgecolor' && entry.value === '#d97706'), 'export-time stairs style is missing after restore');
-    assert(restoredFigure.editLog.some(entry => entry.gid === step.id && entry.prop === 'color' && entry.value === '#0e7490'), 'export-time step style is missing after restore');
-    assert(!restoredFigure.editLog.some(entry => entry.gid === target.id && entry.prop === 'fontsize' && entry.value === 21), 'post-export edit leaked into restored state');
-    assert(!restoredFigure.editLog.some(entry => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.9), 'post-export contourf alpha leaked into restored state');
-    assert(!restoredFigure.editLog.some(entry => entry.gid === contourLine.id && entry.prop === 'linewidth' && Number(entry.value) === 0.7), 'post-export contour linewidth leaked into restored state');
-    assert(!restoredFigure.editLog.some(entry => entry.gid === histogram.id && entry.prop === 'facecolor' && entry.value === '#111111'), 'post-export histogram style leaked into restored state');
-    assert(!restoredFigure.editLog.some(entry => entry.gid === stairs.id && entry.prop === 'edgecolor' && entry.value === '#222222'), 'post-export stairs style leaked into restored state');
-    assert(!restoredFigure.editLog.some(entry => entry.gid === step.id && entry.prop === 'color' && entry.value === '#333333'), 'post-export step style leaked into restored state');
+    assertHasEdit(restoredFigure.editLog, exportedEdit, 'export-time edit is missing after restore');
+    assertHasEdit(restoredFigure.editLog, exportedContourAlphaEdit, 'export-time contourf alpha is missing after restore');
+    assertHasEdit(restoredFigure.editLog, exportedContourVmaxEdit, 'export-time contourf vmax is missing after restore');
+    assertHasEdit(restoredFigure.editLog, exportedContourLineWidthEdit, 'export-time contour linewidth is missing after restore');
+    assertHasEdit(restoredFigure.editLog, exportedHistogramEdit, 'export-time histogram style is missing after restore');
+    assertHasEdit(restoredFigure.editLog, exportedStairsEdit, 'export-time stairs style is missing after restore');
+    assertHasEdit(restoredFigure.editLog, exportedStepEdit, 'export-time step style is missing after restore');
+    assertHasEdit(restoredFigure.editLog, exportedPieEdit, 'export-time pie slice style is missing after restore');
+    assertMissingEdit(restoredFigure.editLog, postExportEdit, 'post-export edit leaked into restored state');
+    assertMissingEdit(restoredFigure.editLog, postExportContourAlphaEdit, 'post-export contourf alpha leaked into restored state');
+    assertMissingEdit(restoredFigure.editLog, postExportContourLineWidthEdit, 'post-export contour linewidth leaked into restored state');
+    assertMissingEdit(restoredFigure.editLog, postExportHistogramEdit, 'post-export histogram style leaked into restored state');
+    assertMissingEdit(restoredFigure.editLog, postExportStairsEdit, 'post-export stairs style leaked into restored state');
+    assertMissingEdit(restoredFigure.editLog, postExportStepEdit, 'post-export step style leaked into restored state');
+    assertMissingEdit(restoredFigure.editLog, postExportPieEdit, 'post-export pie slice style leaked into restored state');
     const checkpoint = restoredFigure.history?.past?.at(-1);
-    assert(checkpoint?.editLog?.some(entry => entry.gid === target.id && entry.prop === 'fontsize' && entry.value === 21), 'restore did not save the current state as a history checkpoint');
-    assert(checkpoint?.editLog?.some(entry => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.9), 'restore checkpoint did not preserve the newer contourf style');
-    assert(checkpoint?.editLog?.some(entry => entry.gid === histogram.id && entry.prop === 'facecolor' && entry.value === '#111111'), 'restore checkpoint did not preserve the newer histogram style');
-    assert(checkpoint?.editLog?.some(entry => entry.gid === stairs.id && entry.prop === 'edgecolor' && entry.value === '#222222'), 'restore checkpoint did not preserve the newer stairs style');
-    assert(checkpoint?.editLog?.some(entry => entry.gid === step.id && entry.prop === 'color' && entry.value === '#333333'), 'restore checkpoint did not preserve the newer step style');
+    assertHasEdit(checkpoint?.editLog, postExportEdit, 'restore did not save the current state as a history checkpoint');
+    assertHasEdit(checkpoint?.editLog, postExportContourAlphaEdit, 'restore checkpoint did not preserve the newer contourf style');
+    assertHasEdit(checkpoint?.editLog, postExportHistogramEdit, 'restore checkpoint did not preserve the newer histogram style');
+    assertHasEdit(checkpoint?.editLog, postExportStairsEdit, 'restore checkpoint did not preserve the newer stairs style');
+    assertHasEdit(checkpoint?.editLog, postExportStepEdit, 'restore checkpoint did not preserve the newer step style');
+    assertHasEdit(checkpoint?.editLog, postExportPieEdit, 'restore checkpoint did not preserve the newer pie slice style');
 
     const restoredDb = new Database(databasePath, { readonly: true });
     try {
@@ -547,10 +698,10 @@ async function main() {
       'regenerated preview does not contain the export-time contourf alpha style',
     );
     const regeneratedSvg = String(regeneratedFigure.svg || '').toLowerCase();
-    for (const color of ['#6f42c1', '#d97706', '#0e7490']) {
+    for (const color of ['#6f42c1', '#d97706', '#0e7490', '#f97316']) {
       assert(regeneratedSvg.includes(color), `regenerated preview does not contain WP6 export-time color ${color}`);
     }
-    for (const color of ['#111111', '#222222', '#333333']) {
+    for (const color of ['#111111', '#222222', '#333333', '#14b8a6']) {
       assert(!regeneratedSvg.includes(color), `regenerated preview leaked WP6 post-export color ${color}`);
     }
     assert(
@@ -675,6 +826,7 @@ async function main() {
     console.log('PASS restore rejects extra same-name datasets and export blocks concurrent upload/deletion');
     console.log('PASS contour and contourf export-time styles survive snapshot restore');
     console.log('PASS hist, stairs, and step export-time styles survive snapshot restore');
+    console.log('PASS Axes.pie edit state persists in PNG/SVG/PDF/TIFF snapshots; SVG verifies rendered color without ordinary patch leakage');
     console.log('PASS multi-Figure restore preserves each Figure script independently');
     console.log('PASS restore invalidates stale previews and regenerates the export-time visual state');
     console.log('PASS unrelated missing data records warn without blocking export');

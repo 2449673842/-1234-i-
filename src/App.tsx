@@ -1284,6 +1284,22 @@ export default function App() {
       }
       const targetManifest = projectFigures[targetId]?.manifest || null;
       if (draft.intent && targetManifest) {
+        const explicitSelection = draft.intent.scope.selectionMode === 'explicit_objects'
+          || draft.intent.scope.selectionMode === 'selected_only';
+        const pieRelation = draft.identity?.relation;
+        const identityConstrainedPieSelection = explicitSelection
+          && draft.intent.scope.crossFigure === 'allow'
+          && draft.intent.scope.objectIds?.length === 1
+          && ['data_pie_slice', 'pie_label', 'pie_value_label', 'pie_legend_marker'].includes(String(draft.intent.scope.targetRole))
+          && Boolean(pieRelation?.pieId)
+          && typeof pieRelation?.sliceIndex === 'number';
+        if (identityConstrainedPieSelection) {
+          const mapped = mapPatchesToTargetFigure([plainPatch], sourceManifest, targetManifest);
+          return {
+            patches: mapped.patches as PatchEntry[],
+            skipped: mapped.skipped.map(normalizeSkippedTarget),
+          };
+        }
         const compiled = compileEditingIntent(targetManifest, retargetEditingIntentForFigure(draft.intent));
         return { patches: compiled.patches, skipped: compiled.skipped };
       }

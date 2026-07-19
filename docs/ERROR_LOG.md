@@ -1,7 +1,40 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-30 04:35:45 +08:00
+> 最后修改时间：2026-07-30 07:03:06 +08:00
+
+---
+
+## 2026-07-19 19:51:21 +08:00 饼图扇区跨 Figure 扩散、关系歧义与结构参数误开放风险
+
+**状态与级别**
+
+- 状态：已修复并完成定向单元、真实浏览器、完整语义工作流、Matplotlib 3.8.4 兼容门禁和独立审查；尚未提交、推送或部署。
+- 级别：P0/P1 编辑正确性。不会删除源数据，但可能把单个扇区修改扩大到其他扇区、把源 Figure 身份写入目标 Figure，或把科学结构参数误当视觉样式。
+
+**根因**
+
+- `Axes.pie` 过去只表现为普通 `Wedge/Text/legend patch`，缺少扇区、类别标签、数值标签和图例标记的稳定关系。
+- 单对象跨 Figure 曾沿用通用语义 fanout，选中一个 slice 后可能扩展到目标 Figure 的全部 slice。
+- 语义评分最初只给相同 `pieId/sliceIndex` 加分，没有把不同、重复或缺失关系元数据作为硬拒绝条件。
+- 目标映射曾保留源 Figure 的 stableKey/fingerprint/identity，存在后续重放身份漂移风险。
+
+**修复**
+
+- 拦截可信 `Axes.pie` 调用，输出 `pie_slice`、`pie_label`、`pie_value_label`，并以 `pieId + sliceIndex` 关联唯一 legend marker；手工 `Wedge` 使用独立 `wedge_slice`。
+- 组件和配色中心新增专用分组；扇区颜色与唯一关联 marker 作为一个 Draft/历史动作，普通 patch、bar 和 legend marker 不混入。
+- 单 slice 跨 Figure 使用一对一身份映射；目标 patch 替换为目标 Figure 的 stableKey/fingerprint/identity。
+- 不同 `pieId`、不同 sliceIndex、同分重复候选和缺失 pie 关系元数据全部 fail-closed。
+- `values/value/fraction/center/radius/theta/width/explode/startangle` 等结构参数显式只读并加入零持久化拒绝回归。
+
+**验证与防复发**
+
+- 定向 Vitest 4 文件/26 项通过；覆盖错误 pieId、重复候选、缺失关系和普通 legend marker 兼容。
+- `test:python-semantic-workflow` 通过；包含 Draft、后端重绘、导出、后续编辑和快照恢复。
+- `test:cross-figure-smoke` 18/18；每个目标 Figure 只有一个对应 slice 和一个关联 marker。
+- Matplotlib 3.8.4 清华镜像 wheel SHA-256 为 `f51c4c869d4b60d769f7b4406eec39596648d9d70246428745a681c327a8ad30`，三项 pie 身份测试和 Python capability matrix 4/4 通过。
+- `npm run lint`、`npm run build`、`git diff --check` 通过；独立 5.5 high 审查 APPROVE，0 HIGH、0 MEDIUM，唯一 LOW 已修复。
+- 后续任何复合对象一对一映射必须把关系字段作为硬边界；关系缺失、重复或无法证明时跳过，不按颜色、数组位置或相似标签猜测。
 
 ---
 
@@ -2667,7 +2700,7 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 - 图例代理对象的派生坐标变化会触发 v2 fingerprint 漂移，正常旧项目编辑被拒绝。
 - 带 `matchColor` 的 collection 分色修改可能被判为 local，无法由 renderer 精确修改向量颜色中的匹配子集。
 - 项目中存在已失效的无关数据记录时，导出快照直接报错；放宽后恢复又会把该记录误判为导出后新增文件。
-- 同步渲染只携带 backend 编辑时会覆盖已持久化的 local 编辑，恢复前检查点因而丢失 histogram、stairs 和 step 样式。
+- 导出恢复并发测试只向同步渲染传入 backend 编辑子集，却要求恢复前检查点保留未传入的 local 编辑；该测试输入与同步渲染的完整 editLog 契约冲突。
 
 **根因**
 
@@ -2675,14 +2708,14 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 - `legend_marker` 的结构 fingerprint 错误包含图例布局派生坐标，而非只描述代理对象结构。
 - local SVG/manifest 路径不具备按 `matchColor` 修改向量颜色子集的能力，服务端却仍允许客户端 mode 影响分流。
 - 快照成员比较只按数据库记录 ID 判断，没有区分缺失存储文件的历史脏记录和真实新增文件。
-- 项目同步渲染按 Figure 整体替换 editLog，没有保留已持久化但本次后端请求未携带的 local patch。
+- 测试把同步渲染请求误当成 backend 增量；实际该接口的 `editLogs[figureId]` 表示完整目标状态，省略属性需要继续承担撤销语义。
 
 **修复**
 
 - `legend_marker` v2 fingerprint 排除派生 handle 坐标；真实数据 series 仍保留数据形状与统计结构。
 - 非空 `matchColor` 统一由服务端强制进入 backend renderer，不信任客户端伪报 mode。
 - 导出快照跳过缺失文件并记录 `snapshotWarnings`；恢复仅把具有真实存储文件的未快照记录判为导出后新增。
-- 同步渲染以新请求覆盖同键编辑，同时保留已有 `local_patch`，避免后端重放子集清空本地样式。
+- 保持同步渲染完整替换契约；并发恢复 fixture 改为传入全部恢复前编辑，使检查点断言与真实用户状态一致。
 
 **验证**
 
@@ -2695,4 +2728,4 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 - cherry-pick 共享主链路后必须逐项对照源提交的行为测试，不得以“冲突已解决”替代语义核验。
 - 结构 fingerprint 不得包含图例布局等派生样式坐标；颜色子集编辑不得走无法表达子集语义的 local 路径。
 - 缺失文件只能作为可审计 warning 被排除，真实新增或内容变化仍必须阻断精确恢复。
-- 后端重放子集不得清空 durable local edit；同键覆盖与显式撤销必须通过稳定 editLog 语义处理。
+- 测试不得把完整状态接口当成增量接口；撤销必须能够通过省略已撤销项生成新的完整 editLog。

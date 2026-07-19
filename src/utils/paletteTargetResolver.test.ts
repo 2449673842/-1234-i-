@@ -518,4 +518,70 @@ describe('palette target resolver', () => {
       { op: 'set', mode: 'local_patch', gid: relatedLegendMarker.id, prop: 'facecolor', value: '#33aa77' },
     ]);
   });
+
+  it('limits pie palette bindings to pie slices and their explicit legend markers', () => {
+    const pieSlice = object('patch.0.0', 'facecolor', 'pie-a', 'local_patch');
+    pieSlice.role = 'pie_slice';
+    pieSlice.identity!.relation = {
+      subplotId: 'subplot.0',
+      legendMarkerIds: ['legend_patch.0.0'],
+      pieId: 'pie.0.0',
+      sliceIndex: 0,
+    } as any;
+    const relatedLegend = object('legend_patch.0.0', 'facecolor', 'pie-a', 'local_patch');
+    relatedLegend.kind = 'patch';
+    relatedLegend.role = 'legend_marker';
+    relatedLegend.identity!.relation = {
+      subplotId: 'subplot.0', parentId: pieSlice.id, legendId: 'legend.0',
+    };
+    const ordinaryPatch = object('patch.0.1', 'facecolor', 'ordinary', 'local_patch');
+    ordinaryPatch.role = 'bar_series';
+    const unrelatedLegend = object('legend_patch.0.1', 'facecolor', 'other', 'local_patch');
+    unrelatedLegend.kind = 'patch';
+    unrelatedLegend.role = 'legend_marker';
+    const figure = manifest([
+      pieSlice, relatedLegend, ordinaryPatch, unrelatedLegend,
+    ], [binding('PIE_A', [
+      target(pieSlice.id, 'facecolor', 'pie-a'),
+      target(relatedLegend.id, 'facecolor', 'pie-a'),
+      target(ordinaryPatch.id, 'facecolor', 'ordinary'),
+      target(unrelatedLegend.id, 'facecolor', 'other'),
+    ])]);
+
+    const result = resolvePaletteTargets(figure, 'PIE_A', true);
+
+    expect(result.targets.map(item => item.objectId)).toEqual([pieSlice.id, relatedLegend.id]);
+  });
+
+  it('keeps rendered-color fallback inside an explicit pie relation boundary', () => {
+    const color = [0.2666666667, 0.4666666667, 0.6666666667, 1];
+    const pieSlice = object('patch.0.0', 'facecolor', 'pie-a', 'local_patch');
+    pieSlice.role = 'pie_slice';
+    pieSlice.currentProps.facecolor = color;
+    pieSlice.identity!.relation = {
+      subplotId: 'subplot.0', legendMarkerIds: ['legend_patch.0.0'], pieId: 'pie.0.0', sliceIndex: 0,
+    } as any;
+    const relatedLegend = object('legend_patch.0.0', 'facecolor', 'pie-a', 'local_patch');
+    relatedLegend.kind = 'patch';
+    relatedLegend.role = 'legend_marker';
+    relatedLegend.currentProps.facecolor = color;
+    relatedLegend.identity!.relation = { subplotId: 'subplot.0', parentId: pieSlice.id, legendId: 'legend.0' };
+    const ordinaryPatch = object('patch.0.1', 'facecolor', 'ordinary', 'local_patch');
+    ordinaryPatch.role = 'bar_series';
+    ordinaryPatch.currentProps.facecolor = color;
+    const unrelatedLegend = object('legend_patch.0.1', 'facecolor', 'other', 'local_patch');
+    unrelatedLegend.kind = 'patch';
+    unrelatedLegend.role = 'legend_marker';
+    unrelatedLegend.currentProps.facecolor = color;
+    const figure = manifest([pieSlice, relatedLegend, ordinaryPatch, unrelatedLegend], []);
+
+    const result = resolvePaletteColorFallbackTargets(
+      figure,
+      'PIE_A',
+      '#4477aa',
+      [pieSlice.id, relatedLegend.id, ordinaryPatch.id, unrelatedLegend.id],
+    );
+
+    expect(result.targets.map(item => item.objectId)).toEqual([pieSlice.id, relatedLegend.id]);
+  });
 });

@@ -33,6 +33,7 @@ export type SemanticTargetRole =
   | 'legend_text'
   | 'legend_title'
   | 'legend_marker'
+  | 'pie_legend_marker'
   | 'legend_container'
   | 'colorbar_label'
   | 'colorbar_tick_label'
@@ -51,6 +52,8 @@ export type SemanticTargetRole =
   | 'data_histogram'
   | 'data_stairs'
   | 'data_step'
+  | 'data_pie_slice'
+  | 'data_wedge_slice'
   | 'data_errorbar'
   | 'data_stem'
   | 'data_boxplot'
@@ -59,6 +62,8 @@ export type SemanticTargetRole =
   | 'colorbar'
   | 'annotation_text'
   | 'annotation_arrow'
+  | 'pie_label'
+  | 'pie_value_label'
   | 'component';
 
 export interface EditingIntentScope {

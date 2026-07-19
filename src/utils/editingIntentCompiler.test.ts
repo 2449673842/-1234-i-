@@ -49,6 +49,66 @@ function pythonSeriesObject(input: {
 }
 
 describe('editing intent compiler', () => {
+  it('keeps pie slices, manual wedges, labels, and value labels in distinct semantic roles', () => {
+    const pieSlice = pythonSeriesObject({
+      id: 'patch.0.0', kind: 'patch', role: 'pie_slice', prop: 'facecolor',
+    });
+    const wedgeSlice = pythonSeriesObject({
+      id: 'patch.0.1', kind: 'patch', role: 'wedge_slice', prop: 'facecolor',
+    });
+    const ordinaryPatch = pythonSeriesObject({
+      id: 'patch.0.2', kind: 'patch', role: 'bar_series', prop: 'facecolor',
+    });
+    const pieLabel = pythonSeriesObject({
+      id: 'text.0.0', kind: 'text', role: 'pie_label', prop: 'color',
+    });
+    const pieValueLabel = pythonSeriesObject({
+      id: 'text.0.1', kind: 'text', role: 'pie_value_label', prop: 'color',
+    });
+    const pieLegendMarker = pythonSeriesObject({
+      id: 'legend_patch.0.0', kind: 'patch', role: 'legend_marker', prop: 'facecolor',
+    });
+    pieLegendMarker.identity!.relation = {
+      subplotId: 'subplot.0',
+      parentId: pieSlice.id,
+      pieSliceId: pieSlice.id,
+      pieId: 'pie.0.0',
+      sliceIndex: 0,
+    };
+    const figure = baseManifest([
+      pieSlice, wedgeSlice, ordinaryPatch, pieLabel, pieValueLabel, pieLegendMarker,
+    ]);
+
+    const compileRole = (targetRole: any, prop: string, value: unknown) => compileEditingIntent(figure, {
+      intent: 'style.component',
+      scope: {
+        selectionMode: 'role_in_subplot',
+        targetRole,
+        subplotIds: ['subplot.0'],
+      },
+      operation: { prop, value },
+    });
+
+    expect(compileRole('data_pie_slice', 'facecolor', '#8844aa').patches).toEqual([
+      expect.objectContaining({ gid: pieSlice.id, prop: 'facecolor' }),
+    ]);
+    expect(compileRole('data_wedge_slice', 'facecolor', '#447799').patches).toEqual([
+      expect.objectContaining({ gid: wedgeSlice.id, prop: 'facecolor' }),
+    ]);
+    expect(compileRole('pie_label', 'color', '#222222').patches).toEqual([
+      expect.objectContaining({ gid: pieLabel.id, prop: 'color' }),
+    ]);
+    expect(compileRole('pie_value_label', 'color', '#333333').patches).toEqual([
+      expect.objectContaining({ gid: pieValueLabel.id, prop: 'color' }),
+    ]);
+    expect(compileRole('pie_legend_marker', 'facecolor', '#444444').patches).toEqual([
+      expect.objectContaining({ gid: pieLegendMarker.id, prop: 'facecolor' }),
+    ]);
+    expect(compileRole('data_bar', 'facecolor', '#555555').patches).toEqual([
+      expect.objectContaining({ gid: ordinaryPatch.id, prop: 'facecolor' }),
+    ]);
+  });
+
   it('keeps an explicit cross-figure deny contract observable to callers', () => {
     expect(isExplicitlyDeniedCrossFigure({
       intent: 'style.component',

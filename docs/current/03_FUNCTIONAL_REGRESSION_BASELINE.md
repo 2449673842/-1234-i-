@@ -1,9 +1,9 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-19 16:22:04 +08:00
-> 证据截止时间：2026-07-19 16:22:04 +08:00
-> 代码范围：`feature/standard-figure-model-v1`，`HEAD c771bca` 加当前工作区尚未提交的 Python 身份/事务保护、导出恢复、`fill_between`、`contour/contourf`、`hist/stairs/step` 和保存并发保护
+> 最后修改时间：2026-07-19 19:51:21 +08:00
+> 证据截止时间：2026-07-19 19:51:21 +08:00
+> 代码范围：`feature/standard-figure-model-v1`，`HEAD 986767c` 加当前工作区尚未提交的 `pie/wedge` 专用语义、身份隔离和回归保护
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -30,20 +30,21 @@
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
 | TypeScript | 通过 | `npm run lint` |
-| 前端单元测试 | 144 文件 / 966 测试通过 | `npm test` |
-| Python renderer/身份/复杂覆盖 | 两套升级验证环境均 110/110 通过 | Matplotlib 3.7.2 与 3.8.4 运行完整 discovery；生产仅固定一个镜像版本 |
-| 组件中心真实浏览器 | 41/41 通过 | 包含网格、图例、容器、三个 WP6 家族、父层重定向、保存刷新和拖拽模式多选保护 |
+| 前端单元测试 | 最近全量 1006/1006；最终映射 26 项定向通过 | 最终改动按 changed-path gate 验证，完整回归留到 Python 阶段候选 |
+| Python renderer/身份/复杂覆盖 | 既有完整 discovery 通过；pie 兼容门禁 4/4 | 本地 3.7.2 基线、3.8.4 定向兼容和网页 3.11.0 记录分开管理 |
+| 组件中心真实浏览器 | 既有 41/41；pie 专用分组直接回归通过 | 网格、图例、容器、四个 WP6 家族、父层重定向、保存刷新和拖拽模式多选保护 |
 | Python 完整用户链路 | 通过 | 选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和快照恢复 |
 | `fill_between` 专用语义 | 通过 | dedicated kind/role、旧 GID/stableKey、配色、组件、历史和导出恢复均通过 |
 | `contour/contourf` 专用语义 | 通过 | 父对象、只读子层、colorbar 关系、属性 scope、跨 Figure、旧项目和导出恢复均通过 |
 | `hist/stairs/step` 专用语义 | 通过 | 专用 role、hist 父子关系、普通对象负例、结构只读、配色、组件、历史和导出恢复均通过 |
+| `pie/wedge` 专用语义 | 通过 | 扇区/标签/百分比/图例/Wedge 独立 role，`pieId + sliceIndex` 身份隔离，结构只读、跨 Figure、导出和恢复均通过 |
 | R 共享协议回归 | 通过 | R renderer 31/31、R 浏览器 5/5、Python/R capability matrix 2/2 |
 | patch 事务保护 | 通过 | standalone 与项目 Figure 均由服务端按可信 manifest/renderer 决定 mode；拒绝批次不改变 revision、session、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |
 | 项目 PUT 保存预检 | 通过 | editLog/history 先预检；revision/hash CAS 阻止旧保存覆盖；GET/PUT 统一旧项目恢复源；排队保存与新 Draft 不丢失 |
 | 跨 Figure 目标保护 | 通过 | 无授权显式对象不 fanout；目标 mode 重算；同分语义候选跳过；组件语义组显式授权 fanout 保持 |
-| 跨 Figure 浏览器回归 | 16/16 通过 | 字体、内容限制、组件组 fanout、图例隔离、三个 WP6 家族 role 分离和部分失败 Draft 保留 |
+| 跨 Figure 浏览器回归 | 18/18 通过 | 字体、内容限制、组件组 fanout、图例隔离、四个 WP6 家族 role 分离、单 pie slice 映射和部分失败 Draft 保留 |
 | 扩展拖拽 | 10/10 通过 | 真实 Ctrl 三选、累计确认、取消、只读命中、annotation 和 R native 保护 |
 | Python cache | 通过 | 首次 miss、同语义重复 hit、值变化 miss；只信任本进程已确认 key |
 | 生产构建 | 通过 | 保留既有 bundle 体积和 CJS `import.meta` 警告 |
@@ -51,7 +52,7 @@
 
 本轮还重新运行了编辑、R、跨 Figure、历史、导出、页面、组合、安全和隔离 smoke。所有请求均使用随机 `127.0.0.1` 端口和临时数据库；未访问 3000，未修改 Docker/WSL。
 
-三轮独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包和旧项目 GET/PUT 恢复源不一致均已修复。当前项目保存接口同时执行可信 manifest 预检与 revision/hash CAS；新增 PUT、history、无 manifest、旧 contour 项目和跨 Figure 回归均通过。WP8 的恢复/导出事务证据已补齐，`fill_between`、`contour/contourf` 与 `hist/stairs/step` 已完成专用适配；后续仍需对其余复杂对象、特殊 axes 和性能门禁补齐证据。
+三轮独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包和旧项目 GET/PUT 恢复源不一致均已修复。当前项目保存接口同时执行可信 manifest 预检与 revision/hash CAS；新增 PUT、history、无 manifest、旧 contour 项目和跨 Figure 回归均通过。WP8 的恢复/导出事务证据已补齐，`fill_between`、`contour/contourf`、`hist/stairs/step` 与 `pie/wedge` 已完成专用适配；后续仍需对其余复杂对象、特殊 axes 和性能门禁补齐证据。
 
 第一轮隔离浏览器基线补充结果：
 
@@ -89,6 +90,18 @@ histogram child patch 标记 parentOwned，点击和批量编辑重定向到父�
 ```
 
 版本边界：开发、预发布和生产应使用同一套固定 renderer 镜像及精确依赖。上一生产/验证环境只在升级窗口内作为旧项目迁移门禁，不是长期支持矩阵；历史 manifest/editLog 兼容必须由数据协议测试证明，不能靠同时运行多套 renderer 规避。
+
+2026-07-19 19:51:21 的 `pie/wedge` 补充证据：
+
+```text
+Axes.pie 扇区、类别标签、autopct 数值标签和关联 legend marker 使用 pieId + sliceIndex 建立双向关系
+手工 Wedge 与 pie slice 分开分类；普通 patch、bar 和普通 legend marker 不被误归类
+选中单个扇区跨 Figure 只映射对应扇区及其唯一关联 marker，不扩散到同图其他扇区
+不同 pieId、同分重复候选和缺失关系元数据均跳过，不按数组顺序猜测
+values/角度/圆心/半径/width/explode 等结构参数只读，拒绝操作不产生 Draft 或持久化副作用
+Python 语义工作流、跨 Figure 18/18、26 项定向单测、Matplotlib 3.8.4 定向门禁和生产构建通过
+独立 5.5 high 审查 APPROVE，0 HIGH、0 MEDIUM；唯一 LOW 已 fail-closed 修复并回归
+```
 
 2026-07-18 21:03:51 的 WP3/WP4 补充证据：
 
@@ -295,6 +308,7 @@ Text / axis label / tick label / tick style
 Spine / axes frame / grid
 Line / Patch / Collection
 Bar / Errorbar / Stem / Boxplot / Violin container
+Fill-between / Contour / Histogram / Stairs / Step / Pie / Wedge 专用语义
 Legend container / title / text / marker
 Heatmap / Colorbar
 Annotation text / arrow / anchor
@@ -317,20 +331,44 @@ Multi-Figure / twin/shared axes relationship
 结构变化后的对象身份迁移
 任意第三方 Matplotlib Artist
 3D、地图投影、broken/inset/secondary axes 的完整位置编辑
-stackplot、pie、quiver、streamplot 等尚未完成的专用语义容器
+stackplot、quiver、streamplot 等尚未完成的专用语义容器
 超大数据图的交互性能
 全部真实科研项目和全部视觉截图基线
 ```
 
 这些是后续增强项，不允许为了“完整”宣传而伪装为已支持。
 
-## 6. 回归测试分级
+## 6. 回归测试分级与证据复用
+
+验证按改动影响范围分层，避免每写一处代码就重复执行全部历史门禁：
+
+1. 开发循环：只运行改动文件的单元测试，并追加一条直接相关的真实用户工作流。
+2. 工作包收敛：运行共享路径门禁，例如 renderer、manifest、target resolver、Draft、跨 Figure 或导出中实际受影响的部分。
+3. 阶段或发布候选：集中运行一次完整回归、安全门禁、构建和数据审计。
+4. 每条证据记录代码基线 SHA、未提交差异范围、runtime/依赖版本、命令、时间与结果。
+5. 上下文切换不使证据自动失效。只有相关文件、依赖版本、基线 SHA 或测试前置条件变化时才重跑。
+
+当前工作包未提交时使用“父 commit SHA + 明确工作包差异”作为候选键；形成提交后，后续工作包直接使用新 commit SHA。不得把较早全量结果冒充为最终改动的新鲜证据，必须同时列出最终改动的 changed-path gate。
+
+### 6.1 `pie/wedge` 证据台账
+
+| 代码键 | Runtime / 版本 | 命令或证据 | 时间 | 结果 |
+|---|---|---|---|---|
+| `986767c + pie/wedge worktree` | 本地 renderer / Matplotlib 3.7.2 基线 | `npm run test:python-semantic-workflow` | 2026-07-19 | PASS，含导出与快照恢复 |
+| `986767c + pie/wedge worktree` | Chromium 隔离服务 | `npm run test:cross-figure-smoke` | 2026-07-19 19:49 +08:00 | 18/18 PASS |
+| `986767c + pie/wedge worktree` | Vitest | `npm test -- src/utils/semanticPatchMapping.test.ts` | 2026-07-19 19:49 +08:00 | 4 文件 / 26 项 PASS |
+| `986767c + pie/wedge worktree` | Python 3.12 / Matplotlib 3.8.4 临时容器 | 三项 pie identity + Python capability matrix | 2026-07-19 | 4/4 PASS；wheel SHA-256 已核对 |
+| `986767c + pie/wedge worktree` | TypeScript / Vite | `npm run lint`、`npm run build`、`git diff --check` | 2026-07-19 | PASS；仅既有 bundle/CJS 警告 |
+| `986767c + pie/wedge worktree` | 独立 gpt-5.5 high | 最终代码审查 | 2026-07-19 | APPROVE；0 HIGH、0 MEDIUM；唯一 LOW 已修复并回归 |
+
+最近一次完整 Vitest 为 1006/1006，发生在最终 pie 语义映射收敛前；之后没有重跑无关全量，而是用上表 26 项单元测试和 18/18 真实跨 Figure 工作流覆盖最终改动。下一次完整回归安排在 Python 阶段候选，而不是在每个对象家族内重复执行。
 
 ### Gate A：任何代码修改
 
 ```text
 npm run lint
-npm test
+改动文件对应的定向单元测试
+一条直接相关的真实工作流
 git diff --check
 ```
 
@@ -387,6 +425,7 @@ npm run test:workspace-visual-smoke
 
 ### Gate D：候选发布
 
+- 运行一次完整 `npm test`，不得只引用工作包定向结果。
 - 运行 Gate A-C 中全部适用项。
 - 运行安全、隔离、缓存、组合、导航、帮助和公开认证 smoke。
 - 执行生产构建与仓库边界检查。

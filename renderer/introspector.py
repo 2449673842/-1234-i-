@@ -96,6 +96,7 @@ original_contourf = Axes.contourf
 original_hist = Axes.hist
 original_stairs = Axes.stairs
 original_step = Axes.step
+original_pie = Axes.pie
 
 
 def _plain_value(value):
@@ -252,6 +253,75 @@ def patched_step(self, *args, **kwargs):
         }
     return artists
 
+
+def patched_pie(self, *args, **kwargs):
+    result = original_pie(self, *args, **kwargs)
+    wedges = list(result[0]) if result else []
+    label_texts = list(result[1]) if len(result) > 1 else []
+    value_texts = list(result[2]) if len(result) > 2 else []
+    values_arg = args[0] if args else kwargs.get("x", [])
+    values = _plain_value(values_arg)
+    if not isinstance(values, list):
+        try:
+            values = list(values)
+        except TypeError:
+            values = []
+    explode = _plain_value(kwargs.get("explode"))
+    if not isinstance(explode, list):
+        explode = [0.0] * len(wedges)
+    pie_call_index = 1 + max(
+        [
+            int(provenance.get("pieCallIndex", -1))
+            for provenance in _intercepted_complex_artists.values()
+            if provenance.get("axes") is self and provenance.get("family") == "pie"
+        ],
+        default=-1,
+    )
+    try:
+        axes_index = list(self.figure.axes).index(self)
+    except (AttributeError, ValueError):
+        axes_index = 0
+    pie_id = f"pie.{axes_index}.{pie_call_index}"
+
+    for index, wedge in enumerate(wedges):
+        label_artist = label_texts[index] if index < len(label_texts) else None
+        value_artist = value_texts[index] if index < len(value_texts) else None
+        label = label_artist.get_text() if label_artist is not None else _safe_artist_label(wedge, "")
+        provenance = {
+            "axes": self,
+            "family": "pie",
+            "callName": "Axes.pie",
+            "semanticRole": "pie_slice",
+            "pieId": pie_id,
+            "pieCallIndex": pie_call_index,
+            "sliceIndex": index,
+            "values": values,
+            "value": values[index] if index < len(values) else None,
+            "explode": explode[index] if index < len(explode) else 0.0,
+            "startangle": kwargs.get("startangle", 0.0),
+            "counterclock": kwargs.get("counterclock", True),
+            "normalize": kwargs.get("normalize", True),
+            "labeldistance": kwargs.get("labeldistance", 1.1),
+            "pctdistance": kwargs.get("pctdistance", 0.6),
+            "labelArtist": label_artist,
+            "valueLabelArtist": value_artist,
+            "legendLabel": label,
+        }
+        _intercepted_complex_artists[wedge] = provenance
+        if label_artist is not None:
+            _intercepted_complex_artists[label_artist] = {
+                **provenance,
+                "semanticRole": "pie_label",
+                "sliceArtist": wedge,
+            }
+        if value_artist is not None:
+            _intercepted_complex_artists[value_artist] = {
+                **provenance,
+                "semanticRole": "pie_value_label",
+                "sliceArtist": wedge,
+            }
+    return result
+
 Axes.boxplot = patched_boxplot
 Axes.violinplot = patched_violinplot
 Axes.fill_between = patched_fill_between
@@ -260,6 +330,7 @@ Axes.contourf = patched_contourf
 Axes.hist = patched_hist
 Axes.stairs = patched_stairs
 Axes.step = patched_step
+Axes.pie = patched_pie
 
 
 def _describe_uploaded_data(data: Optional[dict]) -> dict:
@@ -1135,6 +1206,31 @@ def _read_patch_props(artist) -> dict:
             "edges": _plain_value(getattr(data, "edges", provenance.get("edges"))),
             "baseline": _plain_value(getattr(data, "baseline", provenance.get("baseline"))),
         })
+    try:
+        from matplotlib.patches import Wedge
+        if isinstance(artist, Wedge):
+            props.update({
+                "center": [float(value) for value in artist.center],
+                "radius": float(artist.r),
+                "theta1": float(artist.theta1),
+                "theta2": float(artist.theta2),
+                "width": None if artist.width is None else float(artist.width),
+            })
+            if provenance.get("family") == "pie":
+                angle_fraction = abs(float(artist.theta2) - float(artist.theta1)) / 360.0
+                props.update({
+                    "values": _plain_value(provenance.get("values")),
+                    "value": _plain_value(provenance.get("value")),
+                    "fraction": angle_fraction,
+                    "explode": _plain_value(provenance.get("explode", 0.0)),
+                    "startangle": float(provenance.get("startangle", 0.0)),
+                    "counterclock": bool(provenance.get("counterclock", True)),
+                    "normalize": bool(provenance.get("normalize", True)),
+                    "labeldistance": _plain_value(provenance.get("labeldistance")),
+                    "pctdistance": _plain_value(provenance.get("pctdistance")),
+                })
+    except Exception:
+        pass
     return props
 
 
@@ -1874,7 +1970,11 @@ def _determine_role(
     kind: Optional[str] = None,
     artist: Any = None,
 ) -> Optional[str]:
-    family = _intercepted_complex_artists.get(artist, {}).get("family")
+    provenance = _intercepted_complex_artists.get(artist, {})
+    semantic_role = provenance.get("semanticRole")
+    if semantic_role:
+        return semantic_role
+    family = provenance.get("family")
     if family == "hist":
         return "histogram_series"
     if family == "stairs":
@@ -1939,6 +2039,13 @@ def _determine_role(
         return "contour_series"
     if kind == "contourf":
         return "contourf_series"
+    if kind == "patch":
+        try:
+            from matplotlib.patches import Wedge
+            if isinstance(artist, Wedge):
+                return "wedge_slice"
+        except Exception:
+            pass
         
     if gid.startswith("line."):
         return "line_series"
@@ -2255,6 +2362,11 @@ def _build_object_identity(obj: dict) -> dict:
         relation["sharedXSubplotIds"] = list(obj["sharedXSubplotIds"])
     if obj.get("sharedYSubplotIds"):
         relation["sharedYSubplotIds"] = list(obj["sharedYSubplotIds"])
+    for relation_name in ("pieId", "pieSliceId", "pieLabelId", "pieValueLabelId"):
+        if obj.get(relation_name) is not None:
+            relation[relation_name] = obj[relation_name]
+    if obj.get("sliceIndex") is not None:
+        relation["sliceIndex"] = int(obj["sliceIndex"])
 
     shared_subplots = relation.get("subplotIds", [])
     scope = (
@@ -2541,6 +2653,70 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 legend_relationships.setdefault(text_gid, {})["legendMarkerIds"] = [marker_gid]
                 legend_relationships.setdefault(marker_gid, {})["legendTextId"] = text_gid
 
+    pie_relationships = {}
+    pie_slices = []
+    for slice_gid, slice_kind, slice_artist in raw_elements:
+        provenance = _intercepted_complex_artists.get(slice_artist, {})
+        if slice_kind != "patch" or provenance.get("semanticRole") != "pie_slice":
+            continue
+        label_gid = artist_to_gid.get(provenance.get("labelArtist"))
+        value_label_gid = artist_to_gid.get(provenance.get("valueLabelArtist"))
+        relation = {
+            "pieId": provenance.get("pieId"),
+            "sliceIndex": provenance.get("sliceIndex"),
+            "pieLabelId": label_gid,
+            "pieValueLabelId": value_label_gid,
+        }
+        pie_relationships[slice_gid] = {key: value for key, value in relation.items() if value is not None}
+        for text_gid in (label_gid, value_label_gid):
+            if text_gid:
+                pie_relationships[text_gid] = {
+                    "pieId": provenance.get("pieId"),
+                    "sliceIndex": provenance.get("sliceIndex"),
+                    "pieSliceId": slice_gid,
+                }
+        normalized_label = " ".join(str(provenance.get("legendLabel") or "").strip().lower().split())
+        pie_slices.append((slice_gid, provenance.get("axes"), normalized_label))
+
+    pie_label_counts = {}
+    global_pie_label_counts = {}
+    for _, axes, normalized_label in pie_slices:
+        if normalized_label:
+            key = (axes, normalized_label)
+            pie_label_counts[key] = pie_label_counts.get(key, 0) + 1
+            global_pie_label_counts[normalized_label] = global_pie_label_counts.get(normalized_label, 0) + 1
+    for slice_gid, axes, normalized_label in pie_slices:
+        if not normalized_label or pie_label_counts.get((axes, normalized_label)) != 1:
+            continue
+        marker_gids = []
+        for _, legend_kind, legend in raw_elements:
+            if legend_kind != "legend":
+                continue
+            legend_axes = getattr(legend, "axes", None)
+            if legend_axes is not axes and legend_axes is not None:
+                continue
+            if legend_axes is None and global_pie_label_counts.get(normalized_label) != 1:
+                continue
+            handles = _get_legend_handles(legend)
+            for index, text in enumerate(legend.get_texts()):
+                if index >= len(handles):
+                    continue
+                legend_label = " ".join(str(text.get_text()).strip().lower().split())
+                marker_gid = artist_to_gid.get(handles[index])
+                if legend_label == normalized_label and marker_gid:
+                    marker_gids.append(marker_gid)
+        marker_gids = list(dict.fromkeys(marker_gids))
+        if len(marker_gids) != 1:
+            continue
+        marker_gid = marker_gids[0]
+        pie_relationships.setdefault(slice_gid, {})["legendMarkerIds"] = [marker_gid]
+        pie_relationships.setdefault(marker_gid, {}).update({
+            "pieId": pie_relationships.get(slice_gid, {}).get("pieId"),
+            "sliceIndex": pie_relationships.get(slice_gid, {}).get("sliceIndex"),
+            "pieSliceId": slice_gid,
+        })
+        legend_relationships.setdefault(marker_gid, {})["parentId"] = slice_gid
+
     histogram_entries = []
     for histogram_gid, histogram_kind, histogram_artist in raw_elements:
         provenance = _intercepted_complex_artists.get(histogram_artist, {})
@@ -2590,6 +2766,8 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         provenance = _intercepted_complex_artists.get(artist, {})
         if provenance.get("family") == "hist" and provenance.get("legendLabel"):
             label = str(provenance["legendLabel"])
+        if provenance.get("semanticRole") in {"pie_label", "pie_value_label"}:
+            label = str(getattr(artist, "get_text", lambda: label)())
         if kind == "subplot":
             meta = subplot_meta.get(gid, {})
             label = meta.get("label", label)
@@ -2702,6 +2880,9 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         for relation_name, relation_value in legend_relationships.get(gid, {}).items():
             if relation_value:
                 obj[relation_name] = relation_value
+        for relation_name, relation_value in pie_relationships.get(gid, {}).items():
+            if relation_value is not None:
+                obj[relation_name] = relation_value
             
         # Extract axes index from gid or container parts
         ax_idx = 0
@@ -2801,6 +2982,11 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         obj.pop("twinSubplotIds", None)
         obj.pop("sharedXSubplotIds", None)
         obj.pop("sharedYSubplotIds", None)
+        obj.pop("pieId", None)
+        obj.pop("pieSliceId", None)
+        obj.pop("pieLabelId", None)
+        obj.pop("pieValueLabelId", None)
+        obj.pop("sliceIndex", None)
         obj["propertyCapabilities"] = _build_property_capabilities(obj)
 
     # 2. Build color groups (same-colored artists → batch editing)

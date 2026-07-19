@@ -2109,11 +2109,6 @@ ${inner}
     return result;
   }
 
-  function mergeProjectRenderEditLog(existing: EditEntry[], incoming: EditEntry[]): EditEntry[] {
-    const preservedLocal = existing.filter(entry => entry?.mode === 'local_patch');
-    return compressEditLog([...preservedLocal, ...incoming]);
-  }
-
   // Only disposable sessions expire. Sessions referenced by saved projects are durable.
   cleanExpiredSessions(120);
 
@@ -6040,15 +6035,7 @@ ${inner}
           oldSessionMap[key] = sess;
         }
       }
-      const effectiveEditLogs = { ...oldEditLogMap };
-      if (editLogs && typeof editLogs === 'object' && !Array.isArray(editLogs)) {
-        Object.entries(editLogs).forEach(([figureId, incoming]) => {
-          effectiveEditLogs[figureId] = mergeProjectRenderEditLog(
-            oldEditLogMap[figureId] || [],
-            Array.isArray(incoming) ? incoming : [],
-          );
-        });
-      }
+      const effectiveEditLogs = { ...oldEditLogMap, ...(editLogs || {}) };
       const compressedEditLogs: Record<string, EditEntry[]> = {};
       for (const key of Object.keys(effectiveEditLogs)) {
         compressedEditLogs[key] = compressEditLog(effectiveEditLogs[key]);

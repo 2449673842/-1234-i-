@@ -64,6 +64,18 @@
         { "from": "subplot.0", "field": "sharedXSubplotIds", "equals": ["subplot.1"] },
         { "from": "subplot.1", "field": "sharedXSubplotIds", "equals": ["subplot.0"] }
       ]
+    },
+    {
+      "id": "python_pie_wedge",
+      "file": "python/pie_wedge.py",
+      "expectedFigures": 1,
+      "minKindCounts": { "subplot": 1, "patch": 4, "text": 6, "legend": 1 },
+      "requiredIds": ["patch.0.0", "patch.0.1", "patch.0.2"],
+      "requiredRoles": ["pie_slice", "pie_label", "pie_value_label", "wedge_slice", "legend_marker"],
+      "relations": [
+        { "from": "patch.0.0", "field": "pieId", "equals": "pie.0.0" },
+        { "from": "patch.0.0", "field": "sliceIndex", "equals": 0 }
+      ]
     }
   ],
   "r": [

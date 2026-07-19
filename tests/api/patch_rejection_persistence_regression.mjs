@@ -62,8 +62,8 @@ const script = [
   'matplotlib.use("Agg")',
   'import matplotlib.pyplot as plt',
   '',
-  'fig, axes = plt.subplots(2, 2, figsize=(7, 5))',
-  'ax0, ax1, ax2, ax3 = axes.ravel()',
+  'fig, axes = plt.subplots(2, 3, figsize=(9, 5))',
+  'ax0, ax1, ax2, ax3, ax4, ax5 = axes.ravel()',
   'ax0.plot([0, 1, 2], [1, 3, 2], color="#225577", linewidth=1.2, label="series")',
   'ax0.set_title("Patch rejection persistence")',
   'ax0.set_xlabel("Original X")',
@@ -75,6 +75,9 @@ const script = [
   'ax2.legend(loc="upper right")',
   'ax3.step([0, 1, 2], [2, 1, 3], where="mid", color="#228833", label="step")',
   'ax3.legend(loc="upper right")',
+  'wedges, labels, values = ax4.pie([2, 3, 5], labels=["A", "B", "C"], colors=["#4477aa", "#cc6677", "#228833"], autopct="%1.0f%%")',
+  'ax4.legend(wedges, ["A", "B", "C"], loc="upper right")',
+  'ax5.plot([0, 1], [0, 1], color="#555555", label="control")',
   'fig.tight_layout()',
 ].join('\n');
 
@@ -232,6 +235,9 @@ async function createProject(token) {
   const stepTarget = figure.manifest.objects.find(object => (
     object.kind === 'line' && object.role === 'step_series'
   ));
+  const pieTarget = figure.manifest.objects.find(object => (
+    object.kind === 'patch' && object.role === 'pie_slice'
+  ));
   const localTarget = figure.manifest.objects.find(object => (
     Array.isArray(object.propertyCapabilities)
       && object.propertyCapabilities.some(capability => capability?.prop === 'color' && capability?.patchMode === 'local_patch')
@@ -240,6 +246,7 @@ async function createProject(token) {
   assertStructuralTarget(histogramTarget, 'histogram_series', 'bar_container', 'bins');
   assertStructuralTarget(stairsTarget, 'stairs_series', 'patch', 'edges');
   assertStructuralTarget(stepTarget, 'step_series', 'line', 'where');
+  assertStructuralTarget(pieTarget, 'pie_slice', 'patch', 'radius');
   assert(localTarget?.id, 'initial render has no capability-declared local color target for cache invalidation regression');
   return {
     projectId,
@@ -269,6 +276,14 @@ async function createProject(token) {
         prop: 'where',
         value: 'post',
         ...identityFields(stepTarget),
+      },
+      {
+        op: 'set',
+        mode: 'backend_patch',
+        gid: pieTarget.id,
+        prop: 'radius',
+        value: 2,
+        ...identityFields(pieTarget),
       },
     ],
     validMixedPatches: [
@@ -919,7 +934,7 @@ async function main() {
         'missing gid rejected patch was not persisted',
         'unsupported prop rejected patch was not persisted',
         'renderer-rejected patch was not persisted after manifest precheck passed',
-        'histogram bins, stairs edges, and step where structural patches were rejected without persistence',
+        'histogram bins, stairs edges, step where, and pie radius structural patches were rejected without persistence',
         'standalone direct session forced lying local patches through backend validation',
         'standalone missing gid conflict did not change revision or editLog',
         'session editLog, project figure edit_log/history, and export anchors stayed clean',

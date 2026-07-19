@@ -74,6 +74,7 @@ async function main() {
     SCIFIGURE_TEST_ISOLATED: '1',
     SCIFIGURE_VITE_HMR_PORT: String(hmrPort),
     DISABLE_HMR: 'false',
+    RENDER_RATE_LIMIT_PER_MINUTE: process.env.RENDER_RATE_LIMIT_PER_MINUTE || '120',
   };
   const tsxCli = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
   const logLines = [];

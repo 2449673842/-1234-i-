@@ -12,7 +12,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
 const FIXTURE_PATH = path.join(ROOT, 'tests/fixtures/capability_matrix/python/semantic_workflow_end_to_end.py');
-const FIXTURE_SCRIPT = fs.readFileSync(FIXTURE_PATH, 'utf8');
+const BASE_FIXTURE_SCRIPT = fs.readFileSync(FIXTURE_PATH, 'utf8');
+const FIXTURE_SCRIPT = BASE_FIXTURE_SCRIPT
+  .replace(
+    'fig, (ax, contour_ax) = plt.subplots(1, 2, figsize=(5.6, 3.6))',
+    'fig, (ax, contour_ax, pie_ax) = plt.subplots(1, 3, figsize=(5.6, 3.6))',
+  )
+  .replace(
+    'plt.tight_layout()',
+    [
+      'pie_wedges, pie_labels, pie_values = pie_ax.pie(',
+      '    [2, 3, 5],',
+      '    labels=["Alpha", "Beta", "Gamma"],',
+      '    colors=["#4477aa", "#cc6677", "#228833"],',
+      '    autopct="%1.0f%%",',
+      '    wedgeprops={"linewidth": 0.7, "edgecolor": "#ffffff"},',
+      ')',
+      'pie_ax.legend(pie_wedges, ["Alpha", "Beta", "Gamma"], loc="lower center", bbox_to_anchor=(0.5, -0.2), fontsize=6)',
+      'pie_ax.set_title("Pie slices")',
+      'plt.tight_layout()',
+    ].join('\n'),
+  );
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
 const OUTPUT_DIR = path.join(ROOT, 'output', 'playwright', `python-semantic-workflow-${RUN_ID}`);
 const TEST_PROJECT_PREFIX = 'Python semantic workflow smoke';
@@ -22,6 +42,7 @@ const apiRequests = [];
 const consoleErrors = [];
 const pageErrors = [];
 let authToken = '';
+let expectedPatchFailureConsoleErrors = 0;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -172,6 +193,7 @@ async function readWorkspaceFigureState(page) {
       editLog: Array.isArray(figure?.editLog) ? figure.editLog : [],
       history: figure?.history || null,
       selectedGids: Array.isArray(state.selectedGids) ? state.selectedGids : [],
+      projectDrafts: state.projectDrafts || {},
     };
   }).catch(() => null);
 }
@@ -248,6 +270,10 @@ function contourGroupLocator(page) {
   return page.locator('[data-component-group-label="等高线/填充等高线"]').first();
 }
 
+function pieSliceGroupLocator(page) {
+  return page.locator('[data-component-group-label="饼图扇区"]').first();
+}
+
 async function selectLineGroup(page) {
   const group = lineGroupLocator(page);
   await group.waitFor({ state: 'visible', timeout: 30000 });
@@ -266,11 +292,61 @@ async function selectLineGroup(page) {
   assert(groupSelectedCount === 2, `expected group selection to include both lines, got ${groupSelectedCount}`);
 }
 
+async function clickSvgObject(page, gid) {
+  const target = page.locator(`svg [id="${gid}"], svg [data-fig-id="${gid}"]`).first();
+  await target.waitFor({ state: 'attached', timeout: 30000 });
+  const leaf = target.locator('path, rect, use, polygon, polyline').first();
+  const clickable = await leaf.count() > 0 ? leaf : target;
+  const box = await clickable.boundingBox();
+  await clickable.dispatchEvent('click', {
+    button: 0,
+    clientX: box ? box.x + box.width / 2 : 1,
+    clientY: box ? box.y + box.height / 2 : 1,
+  });
+  await page.waitForTimeout(300);
+}
+
+async function selectPieSliceGroup(page, pieSliceIds) {
+  await clickSvgObject(page, pieSliceIds[0]);
+  const group = pieSliceGroupLocator(page);
+  await group.waitFor({ state: 'visible', timeout: 30000 });
+  const objectButtons = group.locator('button[data-component-object-id]');
+  const objectCount = await objectButtons.count();
+  assert(objectCount === pieSliceIds.length, `expected ${pieSliceIds.length} pie slice objects, got ${objectCount}`);
+
+  await group.getByRole('button', { name: '选中整组', exact: true }).click();
+  await page.waitForTimeout(300);
+  const groupSelectedCount = await group.locator('button[data-component-object-id][aria-pressed="true"]').count();
+  assert(groupSelectedCount === pieSliceIds.length, `expected pie group selection to include ${pieSliceIds.length} slices, got ${groupSelectedCount}`);
+}
+
 async function editLineWidth(page, nextValue) {
   const group = lineGroupLocator(page);
   const input = group.locator('input[data-param-role="number"][data-param-prop="linewidth"]').first();
   await input.waitFor({ state: 'visible', timeout: 30000 });
   await input.fill(String(nextValue));
+  await input.press('Enter').catch(() => {});
+  await input.evaluate((node) => node.blur());
+  await page.waitForTimeout(500);
+}
+
+async function editPieSliceLineWidth(page, nextValue) {
+  const group = pieSliceGroupLocator(page);
+  await group.waitFor({ state: 'visible', timeout: 30000 });
+  const input = group.locator('input[data-param-role="number"][data-param-prop="linewidth"]').first();
+  await input.waitFor({ state: 'visible', timeout: 30000 });
+  await input.fill(String(nextValue));
+  await input.press('Enter').catch(() => {});
+  await input.evaluate((node) => node.blur());
+  await page.waitForTimeout(500);
+}
+
+async function editPieSliceFaceColor(page, nextValue) {
+  const group = pieSliceGroupLocator(page);
+  await group.waitFor({ state: 'visible', timeout: 30000 });
+  const input = group.locator('input[data-color-role="text"][data-color-scope^="component:pieSlices"][data-color-scope$=":color"]').first();
+  await input.waitFor({ state: 'visible', timeout: 30000 });
+  await input.fill(nextValue);
   await input.press('Enter').catch(() => {});
   await input.evaluate((node) => node.blur());
   await page.waitForTimeout(500);
@@ -300,14 +376,22 @@ async function editContourVmax(page, nextValue) {
 
 async function editContourAlpha(page, nextValue) {
   const group = contourGroupLocator(page);
-  const input = group.locator('input[data-param-role="range"][data-param-prop="alpha"]').first();
+  const input = group.locator([
+    'input[data-property-control="alpha"][data-param-role="number"]',
+    'input[data-param-role="range"][data-param-prop="alpha"]',
+  ].join(', ')).first();
   await input.waitFor({ state: 'visible', timeout: 30000 });
   await input.fill(String(nextValue));
+  if (await input.getAttribute('data-param-role') === 'number') {
+    await input.press('Enter').catch(() => {});
+    await input.evaluate((node) => node.blur());
+  }
   assert(Number(await input.inputValue()) === nextValue, `contour alpha control did not reach ${nextValue}`);
   await page.waitForTimeout(500);
 }
 
-async function applyCurrentDraft(page, expectedPatchCount = 2) {
+async function applyCurrentDraft(page, expectedPatchCount = 2, options = {}) {
+  const requireBackendOnly = options.requireBackendOnly !== false;
   const start = apiRequests.length;
   const patchResponsePromise = page.waitForResponse((response) => (
     new URL(response.url()).pathname === '/api/figure/patch' &&
@@ -322,8 +406,43 @@ async function applyCurrentDraft(page, expectedPatchCount = 2) {
   assert(patchRequests.length === 1, `expected one patch request, got ${patchRequests.length}`);
   const patchBody = parseJson(patchRequests[0].postData);
   assert(patchBody?.figureId === 'fig_1', `patch targeted wrong figure: ${JSON.stringify(patchBody)}`);
-  assert(Array.isArray(patchBody?.patches) && patchBody.patches.length === expectedPatchCount, `expected backend batch of ${expectedPatchCount} patches, got ${JSON.stringify(patchBody?.patches)}`);
-  assert(patchBody.patches.every((patch) => patch.mode === 'backend_patch'), `patch batch was not backend-only: ${JSON.stringify(patchBody.patches)}`);
+  assert(Array.isArray(patchBody?.patches) && patchBody.patches.length === expectedPatchCount, `expected patch batch of ${expectedPatchCount} patches, got ${JSON.stringify(patchBody?.patches)}`);
+  if (requireBackendOnly) {
+    assert(patchBody.patches.every((patch) => patch.mode === 'backend_patch'), `patch batch was not backend-only: ${JSON.stringify(patchBody.patches)}`);
+  }
+  return patchBody;
+}
+
+async function applyCurrentDraftExpectFailure(page, expectedPatchCount) {
+  const start = apiRequests.length;
+  await page.route('**/api/figure/patch', async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ status: 'error', message: 'forced pie draft failure' }),
+    });
+  }, { times: 1 });
+
+  const patchResponsePromise = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/figure/patch' &&
+    response.request().method() === 'POST'
+  ), { timeout: 60000 });
+  expectedPatchFailureConsoleErrors += 1;
+  await page.getByRole('button', { name: '应用当前图', exact: true }).click();
+  const patchResponse = await patchResponsePromise;
+  assert(!patchResponse.ok(), `forced patch unexpectedly succeeded: ${patchResponse.status()}`);
+
+  const patchRequests = apiRequests.slice(start).filter((request) => new URL(request.url).pathname === '/api/figure/patch');
+  assert(patchRequests.length === 1, `expected one failed patch request, got ${patchRequests.length}`);
+  const patchBody = parseJson(patchRequests[0].postData);
+  assert(Array.isArray(patchBody?.patches) && patchBody.patches.length === expectedPatchCount, `expected failed backend batch of ${expectedPatchCount} patches, got ${JSON.stringify(patchBody?.patches)}`);
+
+  await page.waitForFunction(() => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    const state = raw ? JSON.parse(raw) : {};
+    const drafts = Object.values(state.projectDrafts?.fig_1 || {});
+    return drafts.length > 0 && drafts.every((draft) => Array.isArray(draft.pendingFigureIds) && draft.pendingFigureIds.includes('fig_1'));
+  }, null, { timeout: 10000 });
   return patchBody;
 }
 
@@ -349,6 +468,61 @@ async function clickRedo(page) {
   return response.json();
 }
 
+async function saveCurrentProject(page) {
+  const saveButton = page.getByRole('button', { name: /^保存$/ }).first();
+  await saveButton.waitFor({ state: 'visible', timeout: 30000 });
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'PUT'
+    && /\/api\/projects\/[^/]+$/.test(new URL(response.url()).pathname)
+  ), { timeout: 40000 });
+  await saveButton.click();
+  const response = await responsePromise;
+  assert(response.ok(), `project save failed: ${response.status()}`);
+}
+
+function editLogHasEntry(editLog, expected) {
+  return editLog.some((entry) => {
+    const valueOk = typeof expected.value === 'number'
+      ? Math.abs(Number(entry?.value) - expected.value) < 0.001
+      : String(entry?.value || '').toLowerCase() === String(expected.value).toLowerCase();
+    return entry?.gid === expected.gid
+      && entry?.prop === expected.prop
+      && valueOk
+      && (!expected.mode || entry?.mode === expected.mode);
+  });
+}
+
+function assertPieStyleEdits(editLog, targetIds, facecolor, linewidth, label) {
+  for (const gid of targetIds) {
+    assert(editLogHasEntry(editLog, { gid, prop: 'facecolor', value: facecolor, mode: 'local_patch' }), `${label} lost pie facecolor for ${gid}`);
+    assert(editLogHasEntry(editLog, { gid, prop: 'linewidth', value: linewidth, mode: 'backend_patch' }), `${label} lost pie linewidth for ${gid}`);
+  }
+}
+
+function assertNoPieStyleEdits(editLog, targetIds, facecolor, linewidth, label) {
+  for (const gid of targetIds) {
+    assert(!editLogHasEntry(editLog, { gid, prop: 'facecolor', value: facecolor }), `${label} kept pie facecolor for ${gid}`);
+    assert(!editLogHasEntry(editLog, { gid, prop: 'linewidth', value: linewidth }), `${label} kept pie linewidth for ${gid}`);
+  }
+}
+
+async function waitForPieStyleEdits(page, targetIds, facecolor, linewidth, timeoutMs = 60000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const state = await readWorkspaceFigureState(page);
+    const editLog = Array.isArray(state?.editLog) ? state.editLog : [];
+    if (targetIds.every((gid) => (
+      editLogHasEntry(editLog, { gid, prop: 'facecolor', value: facecolor, mode: 'local_patch' })
+      && editLogHasEntry(editLog, { gid, prop: 'linewidth', value: linewidth, mode: 'backend_patch' })
+    ))) {
+      return state;
+    }
+    await page.waitForTimeout(500);
+  }
+  const state = await readWorkspaceFigureState(page);
+  throw new Error(`pie slice state did not persist: ${JSON.stringify(state)}`);
+}
+
 async function main() {
   const url = new URL(BASE_URL);
   assert(process.env.SCIFIGURE_TEST_ISOLATED === '1', 'refusing to run outside the isolated server wrapper');
@@ -370,6 +544,22 @@ async function main() {
     object.kind === 'contourf' && object.role === 'contourf_series'
   ));
   assert(contourFill?.id, 'fixture manifest is missing the dedicated contourf parent');
+  const pieSlices = fixture.rendered.figures[0]?.manifest?.objects?.filter((object) => object.role === 'pie_slice') || [];
+  assert(pieSlices.length === 3, `fixture manifest expected 3 Axes.pie slices, got ${pieSlices.length}`);
+  assert(
+    pieSlices.every((object) => (
+      object.kind === 'patch'
+      && object.source?.callName === 'Axes.pie'
+      && object.identity?.relation?.pieLabelId
+      && object.identity?.relation?.pieValueLabelId
+      && Array.isArray(object.identity?.relation?.legendMarkerIds)
+      && object.identity.relation.legendMarkerIds.length > 0
+    )),
+    `fixture pie slices are missing labels, autopct, or legend relationships: ${JSON.stringify(pieSlices)}`,
+  );
+  const pieSliceIds = pieSlices.map((object) => object.id);
+  const pieLegendMarkerIds = pieSlices.flatMap((object) => object.identity?.relation?.legendMarkerIds || []);
+  const pieStyleTargetIds = [...pieSliceIds, ...pieLegendMarkerIds];
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 960 } });
   await installBrowserAuthentication(context, authToken);
@@ -377,6 +567,13 @@ async function main() {
 
   page.on('console', (message) => {
     if (message.type() === 'error' && !isIgnorableDevServerNoise(message.text())) {
+      if (
+        expectedPatchFailureConsoleErrors > 0
+        && message.text().includes('Failed to load resource: the server responded with a status of 500')
+      ) {
+        expectedPatchFailureConsoleErrors -= 1;
+        return;
+      }
       consoleErrors.push(message.text());
     }
   });
@@ -542,6 +739,82 @@ async function main() {
       'B0B-restore-checkpoint',
       'PASS',
       `restoredRevision=${restoredFigure?.revision}, checkpoint=${checkpoint?.label || 'unknown'}, checkpointEntries=${checkpoint?.editLog?.length || 0}`,
+    );
+
+    await openComponentCenter(page);
+    await selectPieSliceGroup(page, pieSliceIds);
+    const piePatchStart = apiRequests.length;
+    const pieFacecolor = '#bb8844';
+    const pieLinewidth = 1.75;
+    await editPieSliceFaceColor(page, pieFacecolor);
+    await editPieSliceLineWidth(page, pieLinewidth);
+    const bodyAfterPieDraft = await getBodyText(page);
+    assert(bodyAfterPieDraft.includes('已暂存'), 'pie draft indicator did not appear after editing');
+    assert(countPatchRequests(piePatchStart) === 0, 'pie draft emitted a backend patch before apply');
+
+    const piePatchBody = await applyCurrentDraft(page, pieStyleTargetIds.length * 2, { requireBackendOnly: false });
+    const piePatchCorrect = pieStyleTargetIds.every((gid) => (
+      piePatchBody.patches.some((patch) => patch.gid === gid && patch.prop === 'facecolor' && patch.mode === 'local_patch' && String(patch.value).toLowerCase() === pieFacecolor)
+      && piePatchBody.patches.some((patch) => patch.gid === gid && patch.prop === 'linewidth' && patch.mode === 'backend_patch' && Number(patch.value) === pieLinewidth)
+    ));
+    record(
+      'B0C-pie-slice-apply-batch',
+      piePatchCorrect ? 'PASS' : 'FAIL',
+      `pieSlices=${pieSliceIds.join(',')}, patches=${JSON.stringify(piePatchBody.patches)}`,
+    );
+    assert(piePatchCorrect, `pie slice batch did not target every slice: ${JSON.stringify(piePatchBody.patches)}`);
+
+    const persistedAfterPie = await requestJson(`/api/projects/${fixture.projectId}`);
+    const persistedPieFigure = persistedAfterPie.project?.figures?.find((figure) => figure.figureId === 'fig_1');
+    assertPieStyleEdits(persistedPieFigure?.editLog || [], pieStyleTargetIds, pieFacecolor, pieLinewidth, 'persisted pie editLog');
+
+    await saveCurrentProject(page);
+    await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+    await waitForWorkspaceReady(page);
+    const reloadedPieState = await waitForPieStyleEdits(page, pieStyleTargetIds, pieFacecolor, pieLinewidth);
+    assertPieStyleEdits(reloadedPieState?.editLog || [], pieStyleTargetIds, pieFacecolor, pieLinewidth, 'reloaded pie state');
+
+    const pieUndoRender = await clickUndo(page);
+    const pieUndoFigure = pieUndoRender.figures?.find((figure) => figure.figureId === 'fig_1');
+    assertNoPieStyleEdits(pieUndoFigure?.editLog || [], pieStyleTargetIds, pieFacecolor, pieLinewidth, 'pie undo render');
+    await waitForWorkspaceReady(page);
+    const pieUndoState = await readWorkspaceFigureState(page);
+    assertNoPieStyleEdits(pieUndoState?.editLog || [], pieStyleTargetIds, pieFacecolor, pieLinewidth, 'pie undo state');
+
+    const pieRedoRender = await clickRedo(page);
+    const pieRedoFigure = pieRedoRender.figures?.find((figure) => figure.figureId === 'fig_1');
+    assertPieStyleEdits(pieRedoFigure?.editLog || [], pieStyleTargetIds, pieFacecolor, pieLinewidth, 'pie redo render');
+    await waitForWorkspaceReady(page);
+    const pieRedoState = await waitForPieStyleEdits(page, pieStyleTargetIds, pieFacecolor, pieLinewidth);
+    assertPieStyleEdits(pieRedoState?.editLog || [], pieStyleTargetIds, pieFacecolor, pieLinewidth, 'pie redo state');
+
+    await openComponentCenter(page);
+    await selectPieSliceGroup(page, pieSliceIds);
+    const failedPieLinewidth = 2.25;
+    await editPieSliceLineWidth(page, failedPieLinewidth);
+    const failedDraftBody = await getBodyText(page);
+    assert(failedDraftBody.includes('已暂存'), 'pie failed-apply draft indicator did not appear');
+    const failedPiePatchBody = await applyCurrentDraftExpectFailure(page, pieStyleTargetIds.length);
+    const retainedState = await readWorkspaceFigureState(page);
+    const retainedDrafts = Object.values(retainedState?.projectDrafts?.fig_1 || {});
+    assert(
+      retainedDrafts.length === pieStyleTargetIds.length
+        && retainedDrafts.every((draft) => (
+          pieStyleTargetIds.includes(draft.gid)
+          && draft.prop === 'linewidth'
+          && Number(draft.value) === failedPieLinewidth
+          && Array.isArray(draft.pendingFigureIds)
+          && draft.pendingFigureIds.includes('fig_1')
+        ))
+        && pieSliceIds.every((gid) => retainedDrafts.some((draft) => draft.gid === gid && draft.prop === 'linewidth')),
+      `failed pie apply did not retain drafts: ${JSON.stringify(retainedState?.projectDrafts?.fig_1)}`,
+    );
+    const bodyAfterFailedPieApply = await getBodyText(page);
+    assert(bodyAfterFailedPieApply.includes('已暂存') && bodyAfterFailedPieApply.includes('上次应用部分失败'), 'failed pie apply did not keep draft UI visible');
+    record(
+      'B0D-pie-slice-failed-draft-retained',
+      'PASS',
+      `failedPatches=${JSON.stringify(failedPiePatchBody.patches)}, retainedDrafts=${retainedDrafts.length}`,
     );
 
     if (consoleErrors.length > 0 || pageErrors.length > 0) {

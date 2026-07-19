@@ -50,6 +50,42 @@ function capability(
 }
 
 describe('shadow target resolver', () => {
+  it('resolves pie slices without absorbing ordinary patches or manual wedges', () => {
+    const figure = manifest([
+      {
+        id: 'patch.0.0', kind: 'patch', label: 'A', editable: ['facecolor'],
+        currentProps: { facecolor: '#4477aa' }, role: 'pie_slice', subplotId: 'subplot.0',
+        identity: identity('patch.0.0', 'subplot.0'), propertyCapabilities: [capability('facecolor', 'local_patch')],
+      },
+      {
+        id: 'patch.0.1', kind: 'patch', label: 'manual', editable: ['facecolor'],
+        currentProps: { facecolor: '#4477aa' }, role: 'wedge_slice', subplotId: 'subplot.0',
+        identity: identity('patch.0.1', 'subplot.0'), propertyCapabilities: [capability('facecolor', 'local_patch')],
+      },
+      {
+        id: 'patch.0.2', kind: 'patch', label: 'ordinary', editable: ['facecolor'],
+        currentProps: { facecolor: '#4477aa' }, role: 'bar_series', subplotId: 'subplot.0',
+        identity: identity('patch.0.2', 'subplot.0'), propertyCapabilities: [capability('facecolor', 'local_patch')],
+      },
+    ]);
+    const intent = {
+      intent: 'style.component' as const,
+      scope: {
+        selectionMode: 'role_in_subplot' as const,
+        targetRole: 'data_pie_slice' as any,
+        subplotIds: ['subplot.0'],
+      },
+      operation: { prop: 'facecolor', value: '#8844aa' },
+    };
+
+    const resolution = resolveEditingTargetsShadow(figure, intent);
+    const compiled = compileEditingIntentWithControlledResolver(figure, intent, true);
+    expect(resolution.resolved.map(target => target.objectId)).toEqual(['patch.0.0']);
+    expect(compiled.patches).toEqual([
+      expect.objectContaining({ gid: 'patch.0.0', prop: 'facecolor', value: '#8844aa' }),
+    ]);
+  });
+
   it('overrides stale local capabilities for virtual grid visibility', () => {
     const figure = manifest([{
       id: 'grid.0',

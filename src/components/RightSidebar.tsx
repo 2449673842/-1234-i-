@@ -948,6 +948,10 @@ export function RightSidebar({
     if (obj.role === 'histogram_series') return '直方图系列';
     if (obj.role === 'stairs_series') return '阶梯填充系列';
     if (obj.role === 'step_series') return '阶梯线系列';
+    if (obj.role === 'pie_slice') return '饼图扇区';
+    if (obj.role === 'wedge_slice') return '楔形图元';
+    if (obj.role === 'pie_label') return '饼图类别标签';
+    if (obj.role === 'pie_value_label') return '饼图数值标签';
     if (id.startsWith('patch.')) return '图形块';
     return '';
   };
@@ -3848,6 +3852,10 @@ export function RightSidebar({
     const histogramObjects = scopedObjects.filter(obj => obj.role === 'histogram_series');
     const stairsObjects = scopedObjects.filter(obj => obj.role === 'stairs_series');
     const stepObjects = scopedObjects.filter(obj => obj.role === 'step_series');
+    const pieSliceObjects = scopedObjects.filter(obj => obj.role === 'pie_slice');
+    const wedgeSliceObjects = scopedObjects.filter(obj => obj.role === 'wedge_slice');
+    const pieLabelObjects = scopedObjects.filter(obj => obj.role === 'pie_label');
+    const pieValueLabelObjects = scopedObjects.filter(obj => obj.role === 'pie_value_label');
     const barContainerObjects = scopedObjects.filter(obj => obj.kind === 'bar_container' && obj.role !== 'histogram_series');
     const errorbarContainerObjects = scopedObjects.filter(obj => obj.kind === 'errorbar_container');
     const stemContainerObjects = scopedObjects.filter(obj => obj.kind === 'stem_container');
@@ -3896,10 +3904,14 @@ export function RightSidebar({
     const patchObjects = scopedObjects.filter(obj => (
       obj.kind === 'patch'
       && !['annotation_arrow', 'histogram_series', 'stairs_series'].includes(String(obj.role || ''))
+      && !['pie_slice', 'wedge_slice'].includes(String(obj.role || ''))
       && !isLegendChild(obj)
       && !isClaimedContainerChild(obj)
     ));
-    const textObjects = scopedObjects.filter(obj => obj.kind === 'text');
+    const textObjects = scopedObjects.filter(obj => (
+      obj.kind === 'text'
+      && !['pie_label', 'pie_value_label'].includes(String(obj.role || ''))
+    ));
     const axisObjects = scopedObjects.filter(obj => ['axes', 'axis_x', 'axis_y'].includes(obj.kind));
     const subplotPanelObjects = scopedObjects.filter(obj => obj.kind === 'subplot');
     const legendObjects = scopedObjects.filter(obj => obj.kind === 'legend');
@@ -3941,6 +3953,22 @@ export function RightSidebar({
         description: 'Legend 容器，适合批量控制显隐、透明度、字号和图例符号缩放。',
         objects: legendObjects,
         colorProp: null,
+        sizeProp: null,
+      },
+      {
+        id: 'pieLabels',
+        label: '饼图类别标签',
+        description: '饼图各扇区的类别文字，可独立调整内容、字体、颜色、对齐、旋转和位置。',
+        objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? pieLabelObjects : [],
+        colorProp: 'color',
+        sizeProp: null,
+      },
+      {
+        id: 'pieValueLabels',
+        label: '饼图数值 / 百分比标签',
+        description: '由 autopct 生成的数值或百分比文字，与类别标签分开编辑。',
+        objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? pieValueLabelObjects : [],
+        colorProp: 'color',
         sizeProp: null,
       },
       {
@@ -4000,6 +4028,24 @@ export function RightSidebar({
         description: 'Step 线条，只调整颜色、线宽、线型等视觉属性，不修改 x/y/where/drawstyle 数据语义。',
         objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? stepObjects : [],
         colorProp: 'color',
+        sizeProp: null,
+      },
+      {
+        id: 'pieSlices',
+        label: '饼图扇区',
+        description: '饼图切片，只调整填充色、边框、透明度、线宽和层级；数值、角度、半径和 explode 保持只读。',
+        objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? pieSliceObjects : [],
+        colorProp: 'facecolor',
+        edgeColorProp: 'edgecolor',
+        sizeProp: null,
+      },
+      {
+        id: 'wedgeSlices',
+        label: '楔形图元',
+        description: '手工 Wedge 图元，与 Axes.pie 扇区分开；仅开放视觉样式，不改变圆心、半径或角度。',
+        objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? wedgeSliceObjects : [],
+        colorProp: 'facecolor',
+        edgeColorProp: 'edgecolor',
         sizeProp: null,
       },
       {
@@ -4117,6 +4163,10 @@ export function RightSidebar({
       if (items.every(obj => obj.role === 'histogram_series')) return 'data_histogram';
       if (items.every(obj => obj.role === 'stairs_series')) return 'data_stairs';
       if (items.every(obj => obj.role === 'step_series')) return 'data_step';
+      if (items.every(obj => obj.role === 'pie_slice')) return 'data_pie_slice';
+      if (items.every(obj => obj.role === 'wedge_slice')) return 'data_wedge_slice';
+      if (items.every(obj => obj.role === 'pie_label')) return 'pie_label';
+      if (items.every(obj => obj.role === 'pie_value_label')) return 'pie_value_label';
       if (items.every(obj => obj.kind === 'bar_container' || obj.role === 'bar_series')) return 'data_bar';
       if (items.every(obj => obj.kind === 'errorbar_container' || obj.role === 'errorbar_series')) return 'data_errorbar';
       if (items.every(obj => obj.kind === 'stem_container' || obj.role === 'stem_series')) return 'data_stem';
@@ -4181,6 +4231,34 @@ export function RightSidebar({
           ? compileComponentIntentPatches(intent)
           : compileIntentPatches(intent);
       });
+      if (
+        ['facecolor', 'edgecolor', 'alpha', 'linewidth'].includes(prop)
+        && supportedItems.some(obj => obj.role === 'pie_slice')
+      ) {
+        const markerIds = new Set(supportedItems.flatMap(obj => (
+          obj.role === 'pie_slice' ? obj.identity?.relation?.legendMarkerIds ?? [] : []
+        )));
+        const relatedMarkers = objects.filter(obj => (
+          markerIds.has(obj.id)
+          && obj.role === 'legend_marker'
+          && supportsBatchProp(obj, prop)
+        ));
+        if (relatedMarkers.length > 0) {
+          patches.push(...compileComponentIntentPatches({
+            intent: 'style.component',
+            scope: {
+              selectionMode: 'explicit_objects',
+              objectIds: relatedMarkers.map(obj => obj.id),
+              targetKinds: Array.from(new Set(relatedMarkers.map(obj => obj.kind))),
+              targetRole: 'pie_legend_marker',
+              crossFigure: resolveCrossFigurePolicy(relatedMarkers, prop),
+            },
+            operation: { prop, value },
+            commit: { mode: 'draft', applyAsOneHistoryStep: true },
+            fallback: { onUnsupported: 'skip_with_warning' },
+          }));
+        }
+      }
       if (prop === 'fontsize') {
         patches.push(...buildLegendMarkerScalePatches(supportedItems, value));
       }
