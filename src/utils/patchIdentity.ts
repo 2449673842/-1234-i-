@@ -1,24 +1,14 @@
 import type { Manifest, ManifestObjectIdentity, PatchEntry } from '../schemas/manifest';
 import type { DraftPatch } from '../schemas/draftPatchBatch';
+import { cloneManifestIdentity } from './diagramIdentity';
 
-function cloneIdentity(identity: ManifestObjectIdentity | undefined): ManifestObjectIdentity | undefined {
-  if (!identity) return undefined;
-  const relation = identity.relation;
-  return {
-    ...identity,
-    relation: relation ? {
-      ...relation,
-      subplotIds: relation.subplotIds ? [...relation.subplotIds] : undefined,
-      layerIds: relation.layerIds ? [...relation.layerIds] : undefined,
-      groupIds: relation.groupIds ? [...relation.groupIds] : undefined,
-      legendTextIds: relation.legendTextIds ? [...relation.legendTextIds] : undefined,
-      legendMarkerIds: relation.legendMarkerIds ? [...relation.legendMarkerIds] : undefined,
-      mappableIds: relation.mappableIds ? [...relation.mappableIds] : undefined,
-      twinSubplotIds: relation.twinSubplotIds ? [...relation.twinSubplotIds] : undefined,
-      sharedXSubplotIds: relation.sharedXSubplotIds ? [...relation.sharedXSubplotIds] : undefined,
-      sharedYSubplotIds: relation.sharedYSubplotIds ? [...relation.sharedYSubplotIds] : undefined,
-    } : undefined,
-  };
+function mergeCapturedIdentity(
+  captured: ManifestObjectIdentity | undefined,
+  current: ManifestObjectIdentity | undefined,
+): ManifestObjectIdentity | undefined {
+  // Existing identity is evidence captured with the draft. Backfilling it
+  // from a newer manifest could hide structural or diagram-topology drift.
+  return cloneManifestIdentity(captured ?? current);
 }
 
 function isOrdinaryObjectPatch(patch: PatchEntry): patch is Extract<PatchEntry, { op: 'set' }> {
@@ -36,6 +26,7 @@ export function enrichPatchEntriesWithIdentity(
 
     const object = objectsById.get(patch.gid);
     if (!object) return patch;
+    const identity = mergeCapturedIdentity(patch.identity, object.identity);
 
     return {
       ...patch,
@@ -45,9 +36,7 @@ export function enrichPatchEntriesWithIdentity(
       ...(patch.fingerprint === undefined && object.fingerprintVersion === 2
         ? { fingerprint: object.fingerprint, fingerprintVersion: 2 }
         : {}),
-      ...(patch.identity === undefined && object.identity
-        ? { identity: cloneIdentity(object.identity) }
-        : {}),
+      ...(identity ? { identity } : {}),
     };
   });
 }
@@ -59,6 +48,7 @@ export function enrichDraftPatchWithIdentity(
   if (patch.type === 'code_patch' || patch.gid === 'global') return patch;
   const object = manifest?.objects?.find(candidate => candidate.id === patch.gid);
   if (!object) return patch;
+  const identity = mergeCapturedIdentity(patch.identity, object.identity);
   return {
     ...patch,
     ...(patch.stableKey === undefined && object.stableKey !== undefined
@@ -67,8 +57,6 @@ export function enrichDraftPatchWithIdentity(
     ...(patch.fingerprint === undefined && object.fingerprintVersion === 2
       ? { fingerprint: object.fingerprint, fingerprintVersion: 2 }
       : {}),
-    ...(patch.identity === undefined && object.identity
-      ? { identity: cloneIdentity(object.identity) }
-      : {}),
+    ...(identity ? { identity } : {}),
   };
 }

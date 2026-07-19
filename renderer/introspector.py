@@ -24,6 +24,7 @@ import time
 import copy
 from typing import Any, Optional
 from contextlib import contextmanager
+from urllib.parse import parse_qs, urlencode
 
 import matplotlib
 import matplotlib.colors as mcolors
@@ -142,6 +143,223 @@ def _plain_value(value):
     if isinstance(value, (list, tuple)):
         return [_plain_value(item) for item in value]
     return value
+
+
+_SCIFIGURE_DIAGRAM_GID_PREFIX = "scifigure-sem-v1:"
+_DIAGRAM_TYPES = {"network", "path", "sem"}
+_DIAGRAM_ROLE_MAP = {
+    "node": "diagram_node",
+    "edge": "diagram_edge",
+    "arrow": "diagram_arrow",
+    "node_label": "diagram_node_label",
+    "coefficient_label": "diagram_coefficient_label",
+    "fit_annotation": "diagram_fit_annotation",
+    "group": "diagram_group",
+}
+_DIAGRAM_RELATION_FIELDS = (
+    "diagramId",
+    "diagramType",
+    "diagramObjectId",
+    "nodeId",
+    "edgeId",
+    "sourceNodeId",
+    "targetNodeId",
+)
+_DIAGRAM_PROTECTED_TEXT_ROLES = {
+    "diagram_node_label",
+    "diagram_coefficient_label",
+    "diagram_fit_annotation",
+}
+_DIAGRAM_STRUCTURAL_PROPS_BY_ROLE = {
+    "diagram_node": {
+        "diagram_id", "diagram_type", "node_id", "data", "x", "y",
+    },
+    "diagram_edge": {
+        "diagram_id", "diagram_type", "edge_id", "source_node_id",
+        "target_node_id", "direction", "path", "vertices", "control_points",
+    },
+    "diagram_arrow": {
+        "diagram_id", "diagram_type", "edge_id", "source_node_id",
+        "target_node_id", "direction", "path", "vertices", "control_points",
+    },
+    "diagram_node_label": {"text", "node_id"},
+    "diagram_coefficient_label": {
+        "text", "edge_id", "coefficient", "value", "p_value", "pvalue",
+        "significance", "confidence_interval", "ci_low", "ci_high",
+    },
+    "diagram_fit_annotation": {
+        "text", "fit", "fit_indices", "cfi", "tli", "rmsea", "srmr",
+        "aic", "bic", "chi_square", "p_value", "pvalue",
+    },
+    "diagram_group": {"diagram_id", "diagram_type", "members", "node_ids"},
+}
+
+
+def _semantic_identifier(value: Any, field: str) -> str:
+    text = str(value).strip() if value is not None else ""
+    if not text:
+        raise ValueError(f"{field} must be a non-empty identifier")
+    if len(text) > 256 or re.search(r"[\x00-\x1f\x7f]", text):
+        raise ValueError(f"{field} contains unsupported characters or is too long")
+    return text
+
+
+def _diagram_semantic_fields(
+    diagram_id: Any,
+    role: Any,
+    object_id: Any,
+    *,
+    diagram_type: Any = "sem",
+    node_id: Any = None,
+    edge_id: Any = None,
+    source_node_id: Any = None,
+    target_node_id: Any = None,
+) -> dict:
+    diagram_id_text = _semantic_identifier(diagram_id, "diagram_id")
+    role_text = _semantic_identifier(role, "role").lower()
+    object_id_text = _semantic_identifier(object_id, "object_id")
+    diagram_type_text = _semantic_identifier(diagram_type, "diagram_type").lower()
+    if role_text not in _DIAGRAM_ROLE_MAP:
+        raise ValueError(f"unsupported diagram role: {role_text}")
+    if diagram_type_text not in _DIAGRAM_TYPES:
+        raise ValueError(f"unsupported diagram_type: {diagram_type_text}")
+
+    optional = {
+        "nodeId": _semantic_identifier(node_id, "node_id") if node_id is not None else None,
+        "edgeId": _semantic_identifier(edge_id, "edge_id") if edge_id is not None else None,
+        "sourceNodeId": _semantic_identifier(source_node_id, "source_node_id") if source_node_id is not None else None,
+        "targetNodeId": _semantic_identifier(target_node_id, "target_node_id") if target_node_id is not None else None,
+    }
+    if role_text == "node":
+        optional["nodeId"] = object_id_text
+    elif role_text == "edge":
+        optional["edgeId"] = object_id_text
+        if not optional["sourceNodeId"] or not optional["targetNodeId"]:
+            raise ValueError("edge semantics require source_node_id and target_node_id")
+    elif role_text == "arrow" and not optional["edgeId"]:
+        raise ValueError("arrow semantics require edge_id")
+    elif role_text == "node_label" and not optional["nodeId"]:
+        raise ValueError("node_label semantics require node_id")
+    elif role_text == "coefficient_label" and not optional["edgeId"]:
+        raise ValueError("coefficient_label semantics require edge_id")
+
+    return {
+        "family": "diagram",
+        "callName": "SciFigure.semantic_gid",
+        "semanticRole": _DIAGRAM_ROLE_MAP[role_text],
+        "diagramRole": role_text,
+        "diagramId": diagram_id_text,
+        "diagramType": diagram_type_text,
+        "diagramObjectId": object_id_text,
+        **{key: value for key, value in optional.items() if value is not None},
+    }
+
+
+def _scifigure_semantic_gid(
+    diagram_id: Any,
+    role: Any,
+    object_id: Any,
+    *,
+    diagram_type: Any = "sem",
+    node_id: Any = None,
+    edge_id: Any = None,
+    source_node_id: Any = None,
+    target_node_id: Any = None,
+) -> str:
+    fields = _diagram_semantic_fields(
+        diagram_id,
+        role,
+        object_id,
+        diagram_type=diagram_type,
+        node_id=node_id,
+        edge_id=edge_id,
+        source_node_id=source_node_id,
+        target_node_id=target_node_id,
+    )
+    query = {
+        "diagram": fields["diagramId"],
+        "type": fields["diagramType"],
+        "role": fields["diagramRole"],
+        "id": fields["diagramObjectId"],
+    }
+    for field, query_name in (
+        ("nodeId", "node"),
+        ("edgeId", "edge"),
+        ("sourceNodeId", "source"),
+        ("targetNodeId", "target"),
+    ):
+        if fields.get(field) is not None:
+            query[query_name] = fields[field]
+    return _SCIFIGURE_DIAGRAM_GID_PREFIX + urlencode(query)
+
+
+def _parse_scifigure_semantic_gid(value: Any) -> Optional[dict]:
+    if not isinstance(value, str) or not value.startswith(_SCIFIGURE_DIAGRAM_GID_PREFIX):
+        return None
+    try:
+        parsed = parse_qs(
+            value[len(_SCIFIGURE_DIAGRAM_GID_PREFIX):],
+            keep_blank_values=True,
+            strict_parsing=True,
+        )
+        if any(len(values) != 1 for values in parsed.values()):
+            return None
+        single = {key: values[0] for key, values in parsed.items()}
+        return _diagram_semantic_fields(
+            single.get("diagram"),
+            single.get("role"),
+            single.get("id"),
+            diagram_type=single.get("type", "sem"),
+            node_id=single.get("node"),
+            edge_id=single.get("edge"),
+            source_node_id=single.get("source"),
+            target_node_id=single.get("target"),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _register_explicit_diagram_artist(artist: Any) -> Optional[dict]:
+    existing = _intercepted_complex_artists.get(artist)
+    if existing and existing.get("family") == "diagram":
+        return existing
+    getter = getattr(artist, "get_gid", None)
+    marker = getter() if callable(getter) else None
+    metadata = _parse_scifigure_semantic_gid(marker)
+    if metadata is None:
+        return existing
+    metadata["axes"] = getattr(artist, "axes", None)
+    _intercepted_complex_artists[artist] = metadata
+    return metadata
+
+
+def _apply_diagram_metadata_to_object(obj: dict, artist: Any) -> None:
+    provenance = _register_explicit_diagram_artist(artist)
+    if not provenance or provenance.get("family") != "diagram":
+        return
+    for field in _DIAGRAM_RELATION_FIELDS:
+        if provenance.get(field) is not None:
+            obj[field] = provenance[field]
+
+
+def _diagram_relation_signature(identity: Any) -> Optional[dict]:
+    if not isinstance(identity, dict):
+        return None
+    relation = identity.get("relation")
+    if not isinstance(relation, dict):
+        return None
+    if not any(field in relation for field in _DIAGRAM_RELATION_FIELDS):
+        return None
+    return {
+        field: _plain_value(relation.get(field)) if field in relation else None
+        for field in _DIAGRAM_RELATION_FIELDS
+    }
+
+
+def _is_diagram_structural_prop(artist: Any, prop: str) -> bool:
+    provenance = _register_explicit_diagram_artist(artist)
+    role = provenance.get("semanticRole") if provenance else None
+    return str(prop).lower() in _DIAGRAM_STRUCTURAL_PROPS_BY_ROLE.get(role, set())
 
 
 def _next_complex_call_index(axes, family: str, field: str) -> int:
@@ -2413,6 +2631,13 @@ _DEDICATED_COMPLEX_ROLE_FAMILIES = {
     "stairs_series": "stairs",
     "step_series": "step",
     "wedge_slice": "wedge",
+    "diagram_node": "diagram",
+    "diagram_edge": "diagram",
+    "diagram_arrow": "diagram",
+    "diagram_node_label": "diagram",
+    "diagram_coefficient_label": "diagram",
+    "diagram_fit_annotation": "diagram",
+    "diagram_group": "diagram",
 }
 
 
@@ -2610,6 +2835,9 @@ def _build_object_identity(obj: dict) -> dict:
             relation[relation_name] = obj[relation_name]
     if obj.get("arrowPatchIds"):
         relation["arrowPatchIds"] = list(obj["arrowPatchIds"])
+    for relation_name in _DIAGRAM_RELATION_FIELDS:
+        if obj.get(relation_name) is not None:
+            relation[relation_name] = obj[relation_name]
 
     shared_subplots = relation.get("subplotIds", [])
     scope = (
@@ -2622,6 +2850,10 @@ def _build_object_identity(obj: dict) -> dict:
         side_match = re.match(r"^spine\.([^.]+)\.", gid)
         if side_match:
             semantic_suffix = f"{semantic_suffix}:{side_match.group(1)}"
+    diagram_id = relation.get("diagramId")
+    diagram_object_id = relation.get("diagramObjectId")
+    if diagram_id and diagram_object_id:
+        semantic_suffix = f"{diagram_id}:{role}:{diagram_object_id}"
 
     identity = {
         "semanticKey": f"{role}:{semantic_suffix}",
@@ -2631,6 +2863,8 @@ def _build_object_identity(obj: dict) -> dict:
     }
     if kind in _SERIES_KINDS and role != "annotation_arrow":
         identity["seriesKey"] = obj.get("stableKey") or f"{kind}:{gid}"
+    if diagram_id and diagram_object_id:
+        identity["seriesKey"] = f"diagram:{diagram_id}:{role}:{diagram_object_id}"
     if relation:
         identity["relation"] = relation
     return identity
@@ -2661,6 +2895,7 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
     for prop in obj.get("editable", []):
         requires_backend_patch = (
             obj.get("kind") in {"stem_container", "contour", "contourf", "quiver", "streamplot"}
+            or str(obj.get("role", "")).startswith("diagram_")
             or (obj.get("kind") == "grid" and prop == "visible")
         )
         scopes = ["object"]
@@ -2777,6 +3012,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
     for gid, kind, artist in iter_artists(fig):
         if artist is None:
             continue
+        _register_explicit_diagram_artist(artist)
         if hasattr(artist, 'set_gid'):
             artist.set_gid(gid)
         artist_to_gid[artist] = gid
@@ -3065,6 +3301,8 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             label = str(provenance["legendLabel"])
         if provenance.get("semanticRole") in {"pie_label", "pie_value_label"}:
             label = str(getattr(artist, "get_text", lambda: label)())
+        if provenance.get("semanticRole") in _DIAGRAM_PROTECTED_TEXT_ROLES:
+            label = str(getattr(artist, "get_text", lambda: label)())
         if kind == "subplot":
             meta = subplot_meta.get(gid, {})
             label = meta.get("label", label)
@@ -3076,6 +3314,21 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 "label": label,
             }
         editable = _get_editable(kind)
+        diagram_role = provenance.get("semanticRole") if provenance.get("family") == "diagram" else None
+        if diagram_role in _DIAGRAM_PROTECTED_TEXT_ROLES:
+            editable = [prop for prop in editable if prop != "text"]
+        if diagram_role:
+            unsupported_props = sorted(_DIAGRAM_STRUCTURAL_PROPS_BY_ROLE.get(diagram_role, set()))
+            current_props = {
+                **current_props,
+                "diagramSemanticRole": diagram_role,
+                "unsupportedProps": unsupported_props,
+            }
+            if diagram_role in _DIAGRAM_PROTECTED_TEXT_ROLES:
+                current_props["textContentReadonly"] = True
+                current_props["textContentUnsupportedReason"] = (
+                    "Scientific diagram labels preserve model meaning; edit typography or position, not content."
+                )
         annotation_link = annotation_links.get(gid)
         if annotation_link and annotation_link.get("role") == "annotation_text":
             anchor_coord_system = current_props.get("anchor_coord_system")
@@ -3177,6 +3430,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 obj["textId"] = annotation_link["textId"]
         if role:
             obj["role"] = role
+        _apply_diagram_metadata_to_object(obj, artist_obj)
 
         complex_provenance = _intercepted_complex_artists.get(artist_obj, {})
         if complex_provenance.get("family") == "quiver" and complex_provenance.get("quiverId"):
@@ -3973,6 +4227,9 @@ def _apply_streamplot_patch(container, prop: str, value: Any):
 
 
 def _apply_single(artist, prop: str, value: Any, gid: str = ""):
+    if _is_diagram_structural_prop(artist, prop):
+        return "unsupported_prop"
+
     if gid.startswith(("xtick.", "ytick.")) and prop == "text":
         _set_tick_label_text_override(artist, gid, value)
         return
@@ -4548,11 +4805,12 @@ def _axes_index_from_gid(gid: str) -> int:
 
 def _build_gid_index(fig) -> dict:
     """Rebuild gid → artist metadata via iter_artists (same source as introspect)."""
-    raw_elements = [
-        (gid, kind, artist)
-        for gid, kind, artist in iter_artists(fig)
-        if artist is not None
-    ]
+    raw_elements = []
+    for gid, kind, artist in iter_artists(fig):
+        if artist is None:
+            continue
+        _register_explicit_diagram_artist(artist)
+        raw_elements.append((gid, kind, artist))
     artist_to_gid = {artist: gid for gid, kind, artist in raw_elements}
     for gid, kind, artist in raw_elements:
         if kind in {"contour", "contourf"}:
@@ -4599,6 +4857,9 @@ def _entry_identity_metadata(entry: dict) -> dict:
     identity = entry.get("identity")
     if isinstance(identity, dict) and "seriesKey" in identity:
         expected["seriesKey"] = identity.get("seriesKey")
+    diagram_relation = _diagram_relation_signature(identity)
+    if diagram_relation is not None:
+        expected["diagramRelationSignature"] = diagram_relation
 
     return {
         key: value
@@ -4613,6 +4874,10 @@ def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=No
     provenance = _intercepted_complex_artists.get(artist, {})
     if provenance.get("family") == "hist" and provenance.get("legendLabel"):
         label = str(provenance["legendLabel"])
+    if provenance.get("semanticRole") in {"pie_label", "pie_value_label"}:
+        label = str(getattr(artist, "get_text", lambda: label)())
+    if provenance.get("semanticRole") in _DIAGRAM_PROTECTED_TEXT_ROLES:
+        label = str(getattr(artist, "get_text", lambda: label)())
     if kind == "subplot":
         meta = subplot_meta or {}
         label = meta.get("label", label)
@@ -4637,6 +4902,7 @@ def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=No
     role = _determine_role(gid, parent_kind, kind, artist)
     if role:
         obj["role"] = role
+    _apply_diagram_metadata_to_object(obj, artist)
 
     stable_key, fingerprint = _generate_stable_key_and_fingerprint(
         obj,
@@ -4646,11 +4912,15 @@ def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=No
     obj["stableKey"] = stable_key
     obj["fingerprint"] = fingerprint
     identity = _build_object_identity(obj)
-    return {
+    signature = {
         "stableKey": stable_key,
         "fingerprint": fingerprint,
         "seriesKey": identity.get("seriesKey"),
     }
+    diagram_relation = _diagram_relation_signature(identity)
+    if diagram_relation is not None:
+        signature["diagramRelationSignature"] = diagram_relation
+    return signature
 
 
 def _identity_mismatch_warning(gid: str, prop: str, mode: str, value: Any, expected: dict, actual: dict, artist: Any) -> dict:
@@ -4659,6 +4929,22 @@ def _identity_mismatch_warning(gid: str, prop: str, mode: str, value: Any, expec
         for key, expected_value in expected.items()
         if expected_value != actual.get(key)
     ]
+    if "diagramRelationSignature" in mismatches:
+        expected_relation = expected.get("diagramRelationSignature")
+        actual_relation = actual.get("diagramRelationSignature")
+        relation_mismatches = [
+            f"identity.relation.{field}"
+            for field in _DIAGRAM_RELATION_FIELDS
+            if (
+                expected_relation.get(field) if isinstance(expected_relation, dict) else None
+            ) != (
+                actual_relation.get(field) if isinstance(actual_relation, dict) else None
+            )
+        ]
+        mismatches = [
+            *[key for key in mismatches if key != "diagramRelationSignature"],
+            *(relation_mismatches or ["identity.relation"]),
+        ]
     return {
         "type": "identity_mismatch",
         "mode": mode,
@@ -4780,7 +5066,12 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
             continue
 
         expected_identity = _entry_identity_metadata(entry)
-        if expected_identity:
+        diagram_provenance = _register_explicit_diagram_artist(artist)
+        actual_is_diagram = bool(
+            diagram_provenance
+            and diagram_provenance.get("family") == "diagram"
+        )
+        if expected_identity or actual_is_diagram:
             gid_info = gid_index.get(gid, {})
             actual_identity = _current_identity_signature(
                 gid,
@@ -4789,6 +5080,8 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
                 parent_info=gid_info.get("parent"),
                 subplot_meta=gid_info.get("subplotMeta"),
             )
+            if actual_is_diagram and "diagramRelationSignature" not in expected_identity:
+                expected_identity["diagramRelationSignature"] = None
             identity_mismatches = [
                 key
                 for key, expected in expected_identity.items()
@@ -5147,6 +5440,7 @@ def replay_render(
         "__name__": "__main__",
         "_uploaded_data": data.get("custom_data", []) if data else [],
         "_uploaded_file_paths": uploaded_file_paths or {},
+        "_scifigure_semantic_gid": _scifigure_semantic_gid,
     }
 
     script_execution_started = time.perf_counter()

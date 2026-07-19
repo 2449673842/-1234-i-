@@ -70,6 +70,24 @@ const COLOR_FALLBACK_KINDS = new Set([
   'violinplot_container',
 ]);
 const COLOR_FALLBACK_PROPS = ['facecolor', 'color', 'edgecolor'];
+const DIAGRAM_ROLES = new Set([
+  'diagram_node',
+  'diagram_edge',
+  'diagram_arrow',
+  'diagram_node_label',
+  'diagram_coefficient_label',
+  'diagram_fit_annotation',
+  'diagram_group',
+]);
+
+interface DiagramIdentity {
+  diagramId: string;
+  diagramType: string;
+  semanticRole: string;
+  diagramObjectId: string;
+  signature: string;
+  edgeSignature?: string;
+}
 
 function isContourParent(object: ManifestObject | undefined): boolean {
   return object?.kind === 'contour'
@@ -91,6 +109,61 @@ function matchingBindings(manifest: Manifest, paletteId: string): Binding[] {
 
 function objectById(manifest: Manifest, gid: string): ManifestObject | undefined {
   return (manifest.objects ?? []).find(object => object.id === gid);
+}
+
+function targetKey(target: BindingTarget): string {
+  return `${target.gid}:${target.prop}`;
+}
+
+function isDiagramSemanticObject(object: ManifestObject | undefined): boolean {
+  return Boolean(object?.role && DIAGRAM_ROLES.has(object.role));
+}
+
+function relationString(
+  relation: Record<string, unknown> | undefined,
+  key: string,
+): string | null {
+  const value = relation?.[key];
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function diagramIdentityFor(object: ManifestObject): DiagramIdentity | null {
+  if (!isDiagramSemanticObject(object) || !object.role) return null;
+  const relation = object.identity?.relation as Record<string, unknown> | undefined;
+  const diagramId = relationString(relation, 'diagramId');
+  const diagramType = relationString(relation, 'diagramType');
+  const diagramObjectId = relationString(relation, 'diagramObjectId');
+  if (!diagramId || !diagramType || !diagramObjectId) return null;
+
+  const edgeId = relationString(relation, 'edgeId');
+  const sourceNodeId = relationString(relation, 'sourceNodeId');
+  const targetNodeId = relationString(relation, 'targetNodeId');
+  const edgeSignature = edgeId && sourceNodeId && targetNodeId
+    ? `${diagramId}:${diagramType}:${edgeId}:${sourceNodeId}:${targetNodeId}`
+    : undefined;
+
+  return {
+    diagramId,
+    diagramType,
+    semanticRole: object.role,
+    diagramObjectId,
+    signature: `${diagramId}:${diagramType}:${object.role}:${diagramObjectId}`,
+    edgeSignature,
+  };
+}
+
+function expectedDiagramSeriesKey(identity: DiagramIdentity): string {
+  return `diagram:${identity.diagramId}:${identity.semanticRole}:${identity.diagramObjectId}`;
+}
+
+function diagramIdentityOwners(manifest: Manifest): Map<string, string[]> {
+  const owners = new Map<string, string[]>();
+  (manifest.objects ?? []).forEach((object) => {
+    const identity = diagramIdentityFor(object);
+    if (!identity) return;
+    owners.set(identity.signature, [...(owners.get(identity.signature) ?? []), object.id]);
+  });
+  return owners;
 }
 
 function isMultiColorValue(value: unknown): boolean {
@@ -324,6 +397,119 @@ function isPieScopedPaletteTarget(
     || scope.legendMarkerIds.has(object.id);
 }
 
+function diagramPaletteScope(
+  manifest: Manifest,
+  binding: Binding,
+  selected: Set<string> | null,
+  diagramOwners: Map<string, string[]>,
+): {
+  hasDiagramTargets: boolean;
+  allowedTargetKeys: Set<string>;
+  issue?: PaletteTargetIssue;
+} {
+  const entries: Array<{
+    target: BindingTarget;
+    object: ManifestObject;
+    identity: DiagramIdentity;
+  }> = [];
+  let hasDiagramTargets = false;
+
+  for (const target of binding.targets ?? []) {
+    if (selected && !selected.has(target.gid)) continue;
+    const object = objectById(manifest, target.gid);
+    if (!isDiagramSemanticObject(object)) continue;
+    hasDiagramTargets = true;
+    if (!object) continue;
+
+    const identity = diagramIdentityFor(object);
+    if (!identity) {
+      return {
+        hasDiagramTargets,
+        allowedTargetKeys: new Set(),
+        issue: {
+          objectId: target.gid,
+          reason: 'identity_mismatch',
+          detail: `${target.gid} is missing trusted diagram relation metadata.`,
+        },
+      };
+    }
+    const duplicateOwners = diagramOwners.get(identity.signature) ?? [];
+    if (duplicateOwners.length > 1) {
+      return {
+        hasDiagramTargets,
+        allowedTargetKeys: new Set(),
+        issue: {
+          objectId: target.gid,
+          reason: 'duplicate_identity',
+          detail: `${identity.signature} belongs to multiple diagram objects.`,
+          candidates: duplicateOwners,
+        },
+      };
+    }
+    if (target.seriesKey !== expectedDiagramSeriesKey(identity)) {
+      return {
+        hasDiagramTargets,
+        allowedTargetKeys: new Set(),
+        issue: {
+          objectId: target.gid,
+          reason: 'series_mismatch',
+          detail: `${target.gid} diagram relation conflicts with its palette binding identity.`,
+        },
+      };
+    }
+    entries.push({ target, object, identity });
+  }
+
+  if (!hasDiagramTargets) {
+    return { hasDiagramTargets: false, allowedTargetKeys: new Set() };
+  }
+  if (entries.length === 0) {
+    return {
+      hasDiagramTargets: true,
+      allowedTargetKeys: new Set(),
+      issue: {
+        reason: 'identity_mismatch',
+        detail: `${binding.paletteId} has diagram targets without resolvable manifest objects.`,
+      },
+    };
+  }
+
+  const signatures = new Set(entries.map(entry => entry.identity.signature));
+  if (signatures.size === 1) {
+    return {
+      hasDiagramTargets: true,
+      allowedTargetKeys: new Set(entries.map(entry => targetKey(entry.target))),
+    };
+  }
+
+  const roles = new Set(entries.map(entry => entry.identity.semanticRole));
+  const edgeSignatures = new Set(entries
+    .map(entry => entry.identity.edgeSignature)
+    .filter((value): value is string => Boolean(value)));
+  const isLinkedEdgeArrow = roles.size === 2
+    && roles.has('diagram_edge')
+    && roles.has('diagram_arrow')
+    && edgeSignatures.size === 1
+    && entries.every(entry => Boolean(entry.identity.edgeSignature));
+
+  if (isLinkedEdgeArrow) {
+    return {
+      hasDiagramTargets: true,
+      allowedTargetKeys: new Set(entries.map(entry => targetKey(entry.target))),
+    };
+  }
+
+  return {
+    hasDiagramTargets: true,
+    allowedTargetKeys: new Set(),
+    issue: {
+      reason: 'ambiguous_binding',
+      detail: `${binding.paletteId} spans multiple diagram identities without an explicit edge/arrow relation.`,
+      candidates: entries.map(entry => entry.object.id),
+    },
+  };
+}
+
 export function resolvePaletteTargets(
   manifest: Manifest,
   paletteId: string,
@@ -389,6 +575,7 @@ export function resolvePaletteTargets(
 
   const selected = selectedObjectIds ? new Set(selectedObjectIds) : null;
   const owners = identityOwners(manifest);
+  const diagramOwners = diagramIdentityOwners(manifest);
   const targets = new Map<string, ResolvedPaletteTarget>();
   const skipped: PaletteTargetIssue[] = [];
   const ambiguous: PaletteTargetIssue[] = [];
@@ -397,11 +584,16 @@ export function resolvePaletteTargets(
   bindings.forEach((binding) => {
     const histogramScope = histogramPaletteScope(manifest, binding);
     const pieScope = piePaletteScope(manifest, binding);
+    const diagramScope = diagramPaletteScope(manifest, binding, selected, diagramOwners);
     if (binding.targetMode === 'ambiguous' || binding.targetMode === 'unresolved') {
       ambiguous.push({
         reason: 'ambiguous_binding',
         detail: binding.warnings?.[0] || `${paletteId} binding is ${binding.targetMode}.`,
       });
+      return;
+    }
+    if (diagramScope.issue) {
+      ambiguous.push(diagramScope.issue);
       return;
     }
     (binding.targets ?? []).forEach((target) => {
@@ -410,6 +602,24 @@ export function resolvePaletteTargets(
       if (!object) {
         skipped.push({ objectId: target.gid, reason: 'not_found', detail: `${target.gid} is not present in the manifest.` });
         return;
+      }
+      if (diagramScope.hasDiagramTargets) {
+        if (!isDiagramSemanticObject(object)) {
+          skipped.push({
+            objectId: target.gid,
+            reason: 'series_mismatch',
+            detail: `${target.gid} is outside the diagram palette binding scope.`,
+          });
+          return;
+        }
+        if (!diagramScope.allowedTargetKeys.has(targetKey(target))) {
+          skipped.push({
+            objectId: target.gid,
+            reason: 'identity_mismatch',
+            detail: `${target.gid} is not part of the trusted diagram palette identity.`,
+          });
+          return;
+        }
       }
       const duplicateOwners = target.instanceKey ? owners.get(target.instanceKey) ?? [] : [];
       if (duplicateOwners.length > 1) {
@@ -507,9 +717,25 @@ export function resolvePaletteColorFallbackTargets(
     };
   }
 
+  if (selected && (manifest.objects ?? []).some(object => selected.has(object.id) && isDiagramSemanticObject(object))) {
+    return {
+      paletteId,
+      strategy: 'strict',
+      targetMode: 'conditional',
+      targets: [],
+      skipped: [],
+      ambiguous: [{
+        reason: 'ambiguous_binding',
+        detail: `${paletteId} selected a diagram semantic object without an exact trusted diagram binding.`,
+      }],
+      warnings: ['Diagram semantic objects require exact diagram palette bindings; rendered-color fallback was disabled.'],
+    };
+  }
+
   const selectedObjects = (manifest.objects ?? []).filter(object => (
     (!selected || selected.has(object.id))
     && COLOR_FALLBACK_KINDS.has(object.kind)
+    && !isDiagramSemanticObject(object)
     && !isParentOwnedManifestObject(object)
   ));
   const matchingPieSlices = selectedObjects.filter(object => (
@@ -528,6 +754,7 @@ export function resolvePaletteColorFallbackTargets(
   (manifest.objects ?? []).forEach((object) => {
     if (selected && !selected.has(object.id)) return;
     if (!COLOR_FALLBACK_KINDS.has(object.kind)) return;
+    if (isDiagramSemanticObject(object)) return;
     if (isParentOwnedManifestObject(object)) return;
     if (object.kind === 'collection' && isContourChildCollection(manifest, object)) return;
     if (hasPieBoundary) {

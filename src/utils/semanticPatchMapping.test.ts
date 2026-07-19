@@ -720,4 +720,196 @@ describe('semantic patch mapping', () => {
     expect(result.patches).toHaveLength(0);
     expect(result.skipped).toEqual([input]);
   });
+
+  it('maps diagram objects only through the complete trusted semantic relation', () => {
+    const diagramObject = (id: string, fingerprint: string): ManifestObject => ({
+      id,
+      kind: 'line',
+      label: 'SEM path',
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      role: 'diagram_edge',
+      stableKey: `stable-${id}`,
+      fingerprint,
+      fingerprintVersion: 2,
+      identity: {
+        instanceKey: `subplot:${id}`,
+        seriesKey: 'diagram:sem.demo:diagram_edge:path.a.b',
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation: {
+          subplotId: 'subplot.0',
+          diagramId: 'sem.demo',
+          diagramType: 'sem',
+          diagramObjectId: 'path.a.b',
+          edgeId: 'path.a.b',
+          sourceNodeId: 'node.a',
+          targetNodeId: 'node.b',
+        },
+      },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+    const source = baseManifest([diagramObject('line.source', 'source-fingerprint')]);
+    const targetObject = diagramObject('line.target', 'target-fingerprint');
+    const target = baseManifest([targetObject]);
+
+    const result = mapPatchesToTargetFigure(
+      [{ gid: 'line.source', prop: 'color', value: '#abcdef', mode: 'local_patch' }],
+      source,
+      target,
+    );
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toEqual([{
+      gid: 'line.target',
+      prop: 'color',
+      value: '#abcdef',
+      mode: 'backend_patch',
+      stableKey: 'stable-line.target',
+      fingerprint: 'target-fingerprint',
+      fingerprintVersion: 2,
+      identity: targetObject.identity,
+    }]);
+  });
+
+  it.each([
+    [{ diagramId: 'sem.other' }, 'different diagram'],
+    [{ diagramObjectId: 'path.other' }, 'different object'],
+    [{ edgeId: 'path.other' }, 'different edge'],
+    [{ sourceNodeId: 'node.other' }, 'different source node'],
+    [{ targetNodeId: 'node.other' }, 'different target node'],
+    [{ diagramType: undefined }, 'missing diagram type'],
+    [{ diagramObjectId: undefined }, 'missing object id'],
+  ])('fails closed for a diagram target with %s', (relationOverride, _description) => {
+    const relation = {
+      subplotId: 'subplot.0',
+      diagramId: 'sem.demo',
+      diagramType: 'sem',
+      diagramObjectId: 'path.a.b',
+      edgeId: 'path.a.b',
+      sourceNodeId: 'node.a',
+      targetNodeId: 'node.b',
+    };
+    const diagramObject = (id: string, overrides: Record<string, unknown> = {}): ManifestObject => ({
+      id,
+      kind: 'line',
+      label: 'SEM path',
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      role: 'diagram_edge',
+      identity: {
+        instanceKey: `subplot:${id}`,
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation: { ...relation, ...overrides },
+      },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+    const source = baseManifest([diagramObject('line.source')]);
+    const target = baseManifest([diagramObject('line.target', relationOverride)]);
+    const input = { gid: 'line.source', prop: 'color', value: '#abcdef', mode: 'backend_patch' };
+
+    const result = mapPatchesToTargetFigure([input], source, target);
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([input]);
+  });
+
+  it('does not map a diagram edge to an ordinary line with matching generic identity', () => {
+    const sourceObject: ManifestObject = {
+      id: 'line.source',
+      kind: 'line',
+      label: 'shared label',
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      role: 'diagram_edge',
+      stableKey: 'shared-stable-key',
+      identity: {
+        semanticKey: 'shared-semantic-key',
+        instanceKey: 'shared-instance-key',
+        seriesKey: 'shared-series-key',
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation: {
+          subplotId: 'subplot.0',
+          diagramId: 'sem.demo',
+          diagramType: 'sem',
+          diagramObjectId: 'path.a.b',
+          edgeId: 'path.a.b',
+          sourceNodeId: 'node.a',
+          targetNodeId: 'node.b',
+        },
+      },
+      propertyCapabilities: [{
+        prop: 'color', patchMode: 'backend_patch', scopes: ['object', 'cross_figure'],
+        preview: 'none', replay: 'stable',
+      }],
+    };
+    const targetObject: ManifestObject = {
+      ...sourceObject,
+      id: 'line.target',
+      role: 'line_series',
+      identity: { ...sourceObject.identity, relation: { subplotId: 'subplot.0' } },
+    };
+    const input = { gid: sourceObject.id, prop: 'color', value: '#abcdef', mode: 'backend_patch' };
+
+    const result = mapPatchesToTargetFigure(
+      [input],
+      baseManifest([sourceObject]),
+      baseManifest([targetObject]),
+    );
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([input]);
+  });
+
+  it('fails closed when an exact diagram gid has a duplicate trusted relation target', () => {
+    const relation = {
+      subplotId: 'subplot.0',
+      diagramId: 'sem.demo',
+      diagramType: 'sem',
+      diagramObjectId: 'path.a.b',
+      edgeId: 'path.a.b',
+      sourceNodeId: 'node.a',
+      targetNodeId: 'node.b',
+    };
+    const diagramEdge = (id: string): ManifestObject => ({
+      id,
+      kind: 'line',
+      label: 'SEM path',
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      role: 'diagram_edge',
+      identity: {
+        instanceKey: `subplot:${id}`,
+        scope: 'subplot',
+        coordinateSpace: 'data',
+        relation,
+      },
+      propertyCapabilities: [{
+        prop: 'color', patchMode: 'backend_patch', scopes: ['object', 'cross_figure'],
+        preview: 'none', replay: 'stable',
+      }],
+    });
+    const source = baseManifest([diagramEdge('line.0.0')]);
+    const target = baseManifest([diagramEdge('line.0.0'), diagramEdge('line.0.1')]);
+    const input = { gid: 'line.0.0', prop: 'color', value: '#abcdef', mode: 'backend_patch' };
+
+    const result = mapPatchesToTargetFigure([input], source, target);
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([input]);
+  });
 });

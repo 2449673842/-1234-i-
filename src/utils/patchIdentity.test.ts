@@ -213,6 +213,139 @@ describe('patch identity enrichment', () => {
     });
   });
 
+  it('preserves partial diagram patch identity so missing topology stays detectable', () => {
+    const partialIdentity = {
+      instanceKey: 'stale-edge-instance',
+      relation: {
+        diagramId: 'stale-diagram',
+        sourceNodeId: 'stale-source',
+      },
+    };
+    const patches: PatchEntry[] = [
+      {
+        op: 'set',
+        mode: 'backend_patch',
+        gid: 'diagram.edge.0',
+        prop: 'linewidth',
+        value: 2,
+        identity: partialIdentity,
+      },
+    ];
+    const targetManifest = manifest([{
+      id: 'diagram.edge.0',
+      kind: 'patch',
+      label: 'Edge A to B',
+      editable: ['linewidth'],
+      currentProps: { linewidth: 1 },
+      identity: {
+        instanceKey: 'manifest-edge-instance',
+        seriesKey: 'manifest-edge-series',
+        semanticKey: 'manifest-edge-semantic',
+        scope: 'figure',
+        coordinateSpace: 'data',
+        relation: {
+          diagramId: 'current-diagram',
+          diagramType: 'networkx',
+          diagramObjectId: 'current-network',
+          edgeId: 'current-edge',
+          sourceNodeId: 'current-source',
+          targetNodeId: 'current-target',
+        },
+      },
+    }]);
+
+    const enriched = enrichPatchEntriesWithIdentity(patches, targetManifest);
+
+    expect(enriched[0]).not.toBe(patches[0]);
+    expect(enriched[0]).toMatchObject({
+      identity: {
+        instanceKey: 'stale-edge-instance',
+        relation: {
+          diagramId: 'stale-diagram',
+          sourceNodeId: 'stale-source',
+        },
+      },
+    });
+    expect(enriched[0]).not.toHaveProperty('identity.seriesKey');
+    expect(enriched[0]).not.toHaveProperty('identity.semanticKey');
+    expect(enriched[0]).not.toHaveProperty('identity.relation.targetNodeId');
+
+    if (!('type' in enriched[0])) {
+      enriched[0].identity!.instanceKey = 'mutated-instance';
+      enriched[0].identity!.relation!.sourceNodeId = 'mutated-source';
+    }
+
+    if ('type' in patches[0]) throw new Error('expected an ordinary patch entry');
+    expect(patches[0].identity).toEqual(partialIdentity);
+    expect(targetManifest.objects[0].identity?.seriesKey).toBe('manifest-edge-series');
+    expect(targetManifest.objects[0].identity?.relation?.targetNodeId).toBe('current-target');
+  });
+
+  it('preserves partial diagram draft identity instead of backfilling current topology', () => {
+    const draft = {
+      gid: 'diagram.node.0',
+      prop: 'facecolor',
+      value: '#cc5500',
+      mode: 'local_patch' as const,
+      identity: {
+        semanticKey: 'stale-node-semantic',
+        relation: {
+          diagramObjectId: 'stale-network',
+          nodeId: 'stale-node',
+        },
+      },
+    };
+    const targetManifest = manifest([{
+      id: 'diagram.node.0',
+      kind: 'patch',
+      label: 'Node A',
+      editable: ['facecolor'],
+      currentProps: { facecolor: '#333333' },
+      identity: {
+        instanceKey: 'manifest-node-instance',
+        seriesKey: 'manifest-node-series',
+        semanticKey: 'manifest-node-semantic',
+        scope: 'figure',
+        coordinateSpace: 'data',
+        relation: {
+          diagramId: 'current-diagram',
+          diagramType: 'networkx',
+          diagramObjectId: 'current-network',
+          nodeId: 'current-node',
+        },
+      },
+    }]);
+
+    const enriched = enrichDraftPatchWithIdentity(draft, targetManifest);
+
+    expect(enriched).not.toBe(draft);
+    expect(enriched).toMatchObject({
+      identity: {
+        semanticKey: 'stale-node-semantic',
+        relation: {
+          diagramObjectId: 'stale-network',
+          nodeId: 'stale-node',
+        },
+      },
+    });
+    expect(enriched).not.toHaveProperty('identity.instanceKey');
+    expect(enriched).not.toHaveProperty('identity.seriesKey');
+    expect(enriched).not.toHaveProperty('identity.relation.diagramId');
+
+    enriched.identity!.semanticKey = 'mutated-semantic';
+    enriched.identity!.relation!.nodeId = 'mutated-node';
+
+    expect(draft.identity).toEqual({
+      semanticKey: 'stale-node-semantic',
+      relation: {
+        diagramObjectId: 'stale-network',
+        nodeId: 'stale-node',
+      },
+    });
+    expect(targetManifest.objects[0].identity?.instanceKey).toBe('manifest-node-instance');
+    expect(targetManifest.objects[0].identity?.relation?.diagramId).toBe('current-diagram');
+  });
+
   it('fills identity for legacy drafts that were created before v2 metadata', () => {
     const enriched = enrichDraftPatchWithIdentity({
       gid: 'line.legacy',

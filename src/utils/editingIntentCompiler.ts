@@ -48,6 +48,13 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.role === 'pie_value_label') return 'pie_value_label';
   if (object.role === 'quiver_field' || object.kind === 'quiver') return 'data_quiver';
   if (object.role === 'streamplot_field' || object.kind === 'streamplot') return 'data_streamplot';
+  if (object.role === 'diagram_node') return 'diagram_node';
+  if (object.role === 'diagram_edge') return 'diagram_edge';
+  if (object.role === 'diagram_arrow') return 'diagram_arrow';
+  if (object.role === 'diagram_node_label') return 'diagram_node_label';
+  if (object.role === 'diagram_coefficient_label') return 'diagram_coefficient_label';
+  if (object.role === 'diagram_fit_annotation') return 'diagram_fit_annotation';
+  if (object.role === 'diagram_group') return 'diagram_group';
   if (object.role === 'bar_series' || object.kind === 'bar_container') return 'data_bar';
   if (object.role === 'errorbar_series' || object.kind === 'errorbar_container') return 'data_errorbar';
   if (object.role === 'stem_series' || object.kind === 'stem_container') return 'data_stem';

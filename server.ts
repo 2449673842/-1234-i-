@@ -12,6 +12,7 @@ import { randomUUID } from 'crypto';
 import crypto from 'crypto';
 import { buildFigureRenderCacheKey } from './src/utils/renderCacheKey';
 import { fnv1a } from './src/utils/stableJson';
+import { diagramRelationSignature, requiresDiagramRelationIdentity } from './src/utils/diagramIdentity';
 import { blockingRRisks, scanRScriptRisks, type RRiskFinding } from './src/utils/rRiskScanner';
 import { planCompositionLayout } from './src/utils/compositionPlanner';
 import multer from 'multer';
@@ -3168,6 +3169,17 @@ ${inner}
       if (patch.identity?.seriesKey !== undefined && patch.identity.seriesKey !== object.identity?.seriesKey) {
         reject('identity_mismatch', `${gid} identity.seriesKey does not match.`, { field: 'identity.seriesKey' });
       }
+      if (requiresDiagramRelationIdentity(object)) {
+        const expectedRelation = diagramRelationSignature(object.identity);
+        const actualRelation = diagramRelationSignature(patch.identity);
+        if (expectedRelation === null || actualRelation !== expectedRelation) {
+          reject('identity_mismatch', `${gid} diagram relationship does not match the manifest object.`, {
+            field: 'identity.relation',
+            expected: object.identity?.relation ?? null,
+            actual: patch.identity?.relation ?? null,
+          });
+        }
+      }
     });
 
     return { ok: warnings.length === 0, warnings };
@@ -3935,6 +3947,20 @@ ${inner}
           prop,
           message: `${figureId} 快照目标 ${gid} 的 seriesKey 已变化。`,
         });
+        return;
+      }
+      if (requiresDiagramRelationIdentity(object)) {
+        const expectedRelation = diagramRelationSignature(object.identity);
+        const snapshotRelation = diagramRelationSignature(entry.identity);
+        if (expectedRelation === null || snapshotRelation !== expectedRelation) {
+          issues.push({
+            type: 'identity_mismatch',
+            figureId,
+            gid,
+            prop,
+            message: `${figureId} 快照目标 ${gid} 的图示关系身份已变化或缺失。`,
+          });
+        }
       }
     });
     return issues;
@@ -4362,6 +4388,7 @@ ${inner}
           '- In a multi-file project, do not use `_uploaded_data` to guess the active dataset. Always load each required file explicitly by exact copied filename through `_uploaded_file_paths["filename.csv"]` or `_uploaded_file_paths["filename.xlsx"]`.',
           '- Do not use `__file__`, `Path(__file__)`, `Path(...).resolve().parents[...]`, local absolute paths, historical project directories, Desktop/OneDrive paths, network paths, or any file that is not listed as copied data below.',
           '- Do not import or call `shutil`, `shutil.copy`, `shutil.copy2`, `open`, `os`, `sys`, `subprocess`, `requests`, `urllib`, `eval`, or `exec`. Remove any original preserve/copy/archive/save-note logic; this script is only allowed to read uploaded data and draw figures.',
+          '- Preserve every existing `_scifigure_semantic_gid(...)` declaration and its exact diagram/node/edge/object identifiers when a source is a network, path, or SEM figure. Do not infer new relations from color, label, draw order, or screen position, and do not alter coefficients, p values, significance, fit indices, direction, or topology.',
         ];
     const dataValidationInstruction = isRTarget
       ? '- Before plotting, assert that every loaded data frame contains the columns required by that panel; if not, stop with an error naming the filename and missing columns.'

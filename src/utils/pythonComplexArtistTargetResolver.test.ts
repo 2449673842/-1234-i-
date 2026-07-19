@@ -356,4 +356,48 @@ describe('Python complex artist target roles', () => {
       { op: 'set', mode: 'backend_patch', gid: streamplot.id, prop: 'color', value: '#118833' },
     ]);
   });
+
+  it.each([
+    ['diagram_node', 'patch.0.0', 'patch', 'facecolor'],
+    ['diagram_edge', 'line.0.0', 'line', 'color'],
+    ['diagram_arrow', 'patch.0.1', 'patch', 'edgecolor'],
+    ['diagram_node_label', 'text.0.0', 'text', 'fontsize'],
+    ['diagram_coefficient_label', 'text.0.1', 'text', 'color'],
+    ['diagram_fit_annotation', 'text.0.2', 'text', 'fontweight'],
+    ['diagram_group', 'patch.0.2', 'patch', 'alpha'],
+  ])('routes %s only to its explicitly declared diagram role', (
+    targetRole,
+    targetId,
+    targetKind,
+    prop,
+  ) => {
+    const dedicated = complexObject({
+      id: targetId,
+      kind: targetKind,
+      role: targetRole,
+      prop,
+    });
+    dedicated.propertyCapabilities![0]!.patchMode = 'backend_patch';
+    dedicated.propertyCapabilities![0]!.preview = 'none';
+    dedicated.identity!.relation = {
+      subplotId: 'subplot.0',
+      diagramId: 'sem.demo',
+      diagramType: 'sem',
+      diagramObjectId: targetId,
+    };
+    const ordinary = complexObject({
+      id: `${targetKind}.0.9`,
+      kind: targetKind,
+      role: targetKind === 'text' ? 'annotation_text' : `${targetKind}_series`,
+      prop,
+    });
+    const manifest = manifestWith([dedicated, ordinary]);
+    const intent = styleIntentFor(targetRole, prop, '#118833');
+
+    expect(inferEditingTargetRole(dedicated)).toBe(targetRole);
+    expect(inferEditingTargetRole(ordinary)).not.toBe(targetRole);
+    expect(compileEditingIntentStrict(manifest, intent).patches).toEqual([
+      { op: 'set', mode: 'backend_patch', gid: targetId, prop, value: '#118833' },
+    ]);
+  });
 });

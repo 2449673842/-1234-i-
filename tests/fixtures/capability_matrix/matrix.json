@@ -96,6 +96,26 @@
         { "from": "collection.1.0", "field": "parentId", "equals": "container.streamplot.1.0" },
         { "from": "collection.1.0", "field": "streamplotId", "equals": "container.streamplot.1.0" }
       ]
+    },
+    {
+      "id": "python_network_path_sem",
+      "file": "python/network_path_sem.py",
+      "expectedFigures": 1,
+      "minKindCounts": { "subplot": 2, "collection": 2, "line": 2, "patch": 4, "text": 5 },
+      "requiredIds": ["patch.0.0", "collection.0.0", "line.0.0", "patch.0.1", "patch.0.2", "text.0.0", "text.0.2"],
+      "requiredRoles": ["diagram_node", "diagram_edge", "diagram_arrow", "diagram_node_label", "diagram_coefficient_label", "diagram_fit_annotation", "diagram_group"],
+      "relations": [
+        { "from": "patch.0.0", "field": "diagramId", "equals": "sem.demo" },
+        { "from": "patch.0.0", "field": "nodeId", "equals": "latent_a" },
+        { "from": "collection.0.0", "field": "nodeId", "equals": "observed_b" },
+        { "from": "line.0.0", "field": "edgeId", "equals": "latent_a_to_observed_b" },
+        { "from": "line.0.0", "field": "sourceNodeId", "equals": "latent_a" },
+        { "from": "line.0.0", "field": "targetNodeId", "equals": "observed_b" },
+        { "from": "patch.0.1", "field": "edgeId", "equals": "latent_a_to_observed_b" },
+        { "from": "patch.0.2", "field": "diagramObjectId", "equals": "measurement_model" },
+        { "from": "text.0.0", "field": "nodeId", "equals": "latent_a" },
+        { "from": "text.0.2", "field": "edgeId", "equals": "latent_a_to_observed_b" }
+      ]
     }
   ],
   "r": [

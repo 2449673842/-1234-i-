@@ -54,6 +54,7 @@ export const publicAiDrawingPrompts: Record<PublicPromptLanguage, string> = {
 9. 色条必须把真实 mappable 显式传给 fig.colorbar(mappable, ax=ax)。
 10. 为标题、坐标轴、图例和统计标注设置清晰文本；颜色尽量定义为有语义的命名常量。
 11. 代码必须能够直接执行并生成 Figure；不要要求我再手工补充未说明的变量。
+12. 如果任务是网络图、路径图或 SEM，且数据中已有稳定的 node/edge 键，请使用平台运行时提供的 _scifigure_semantic_gid 为节点、路径、箭头和标签声明关系：node_artist.set_gid(_scifigure_semantic_gid(diagram_id, "node", node_id, diagram_type="sem"))；edge_line.set_gid(_scifigure_semantic_gid(diagram_id, "edge", edge_id, diagram_type="sem", source_node_id=source_id, target_node_id=target_id))；arrow 和 coefficient_label 还要提供对应 edge_id。不得按颜色、位置、绘制顺序或显示文字猜测关系，也不得改写系数、p 值、显著性、方向、拟合指标或模型拓扑。
 
 现在根据我的数据和要求输出最终纯 Python 代码。`,
   r: `你是一名科研数据可视化工程师。请基于我提供的数据文件和绘图要求，直接生成可在 SciFigure Studio 中运行的 R 绘图脚本。

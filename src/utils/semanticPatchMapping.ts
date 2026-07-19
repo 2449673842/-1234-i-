@@ -48,6 +48,63 @@ const VECTOR_FIELD_RELATION_BY_ROLE: Record<string, 'quiverId' | 'streamplotId'>
   streamplot_field: 'streamplotId',
 };
 
+const DIAGRAM_RELATION_ROLES = new Set([
+  'diagram_node',
+  'diagram_edge',
+  'diagram_arrow',
+  'diagram_node_label',
+  'diagram_coefficient_label',
+  'diagram_fit_annotation',
+  'diagram_group',
+]);
+
+const DIAGRAM_REQUIRED_RELATION_FIELDS_BY_ROLE: Record<string, Array<keyof NonNullable<ManifestObject['identity']>['relation']>> = {
+  diagram_node: ['nodeId'],
+  diagram_edge: ['edgeId', 'sourceNodeId', 'targetNodeId'],
+  diagram_arrow: ['edgeId', 'sourceNodeId', 'targetNodeId'],
+  diagram_node_label: ['nodeId'],
+  diagram_coefficient_label: ['edgeId'],
+  diagram_fit_annotation: [],
+  diagram_group: [],
+};
+
+function isDiagramRelationCompatible(source: ManifestObject, target: ManifestObject): boolean {
+  const sourceRole = String(source.role || '');
+  const targetRole = String(target.role || '');
+  const sourceIsDiagram = DIAGRAM_RELATION_ROLES.has(sourceRole);
+  const targetIsDiagram = DIAGRAM_RELATION_ROLES.has(targetRole);
+  if (!sourceIsDiagram && !targetIsDiagram) return true;
+  if (!sourceIsDiagram || !targetIsDiagram || sourceRole !== targetRole) return false;
+
+  const sourceRelation = source.identity?.relation;
+  const targetRelation = target.identity?.relation;
+  const requiredFields: Array<keyof NonNullable<ManifestObject['identity']>['relation']> = [
+    'diagramId',
+    'diagramType',
+    'diagramObjectId',
+    ...(DIAGRAM_REQUIRED_RELATION_FIELDS_BY_ROLE[sourceRole] || []),
+  ];
+  return requiredFields.every((field) => {
+    const sourceValue = sourceRelation?.[field];
+    const targetValue = targetRelation?.[field];
+    return typeof sourceValue === 'string'
+      && sourceValue.length > 0
+      && sourceValue === targetValue;
+  });
+}
+
+function hasUniqueDiagramRelationTarget(
+  source: ManifestObject,
+  targets: ManifestObject[],
+  prop: string | undefined,
+): boolean {
+  if (!DIAGRAM_RELATION_ROLES.has(String(source.role))) return true;
+  return targets.filter(target => (
+    supportsProp(target, prop)
+    && isDiagramRelationCompatible(source, target)
+  )).length === 1;
+}
+
 function vectorFieldRelation(object: ManifestObject): {
   field: 'quiverId' | 'streamplotId';
   value: string;
@@ -100,7 +157,8 @@ function isExactTargetCompatible(source: ManifestObject, target: ManifestObject)
   if (source.subplotId && target.subplotId && source.subplotId !== target.subplotId) return false;
   if (source.kind !== target.kind && (!source.role || source.role !== target.role)) return false;
   return isPieRelationCompatible(source, target)
-    && isVectorFieldRelationCompatible(source, target);
+    && isVectorFieldRelationCompatible(source, target)
+    && isDiagramRelationCompatible(source, target);
 }
 
 function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop: string | undefined): number {
@@ -108,6 +166,7 @@ function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop
   if (source.role && target.role && source.role !== target.role) return -1;
   if (!isPieRelationCompatible(source, target)) return -1;
   if (!isVectorFieldRelationCompatible(source, target)) return -1;
+  if (!isDiagramRelationCompatible(source, target)) return -1;
 
   let score = 0;
   if (source.identity?.instanceKey && source.identity.instanceKey === target.identity?.instanceKey) score += 140;
@@ -139,6 +198,10 @@ function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop
     && sourceVectorRelation.value === targetVectorRelation.value
   ) {
     score += 120;
+  }
+
+  if (DIAGRAM_RELATION_ROLES.has(String(source.role))) {
+    score += 240;
   }
 
   return score;
@@ -180,6 +243,7 @@ export function mapPatchToTargetFigure(
   if (!sourceObject) return null;
 
   const targetObjects = objectList(targetManifest);
+  if (!hasUniqueDiagramRelationTarget(sourceObject, targetObjects, patch.prop)) return null;
   const exactTarget = targetObjects.find(object => (
     object.id === patch.gid
     && supportsProp(object, patch.prop)

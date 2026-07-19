@@ -264,6 +264,15 @@ describe('resolveCrossFigurePolicy', () => {
     ['streamplot_field', 'streamplot', 'density'],
     ['streamplot_field', 'streamplot', 'start_points'],
     ['streamplot_field', 'streamplot', 'integration_direction'],
+    ['diagram_node', 'patch', 'node_id'],
+    ['diagram_edge', 'line', 'source_node_id'],
+    ['diagram_edge', 'line', 'target_node_id'],
+    ['diagram_arrow', 'patch', 'direction'],
+    ['diagram_node_label', 'text', 'text'],
+    ['diagram_coefficient_label', 'text', 'coefficient'],
+    ['diagram_coefficient_label', 'text', 'p_value'],
+    ['diagram_fit_annotation', 'text', 'fit_indices'],
+    ['diagram_group', 'patch', 'members'],
   ])('denies cross-Figure replay for structural Python series prop %s', (role, kind, prop) => {
     const structural = legacyObject({
       id: `${role}.0`,
@@ -330,6 +339,15 @@ describe('Python structural series patch modes', () => {
     ['streamplot_field', 'streamplot', 'density'],
     ['streamplot_field', 'streamplot', 'start_points'],
     ['streamplot_field', 'streamplot', 'integration_direction'],
+    ['diagram_node', 'patch', 'node_id'],
+    ['diagram_edge', 'line', 'source_node_id'],
+    ['diagram_edge', 'line', 'target_node_id'],
+    ['diagram_arrow', 'patch', 'direction'],
+    ['diagram_node_label', 'text', 'text'],
+    ['diagram_coefficient_label', 'text', 'coefficient'],
+    ['diagram_coefficient_label', 'text', 'p_value'],
+    ['diagram_fit_annotation', 'text', 'fit_indices'],
+    ['diagram_group', 'patch', 'members'],
   ])('does not honor local patch capability for structural prop %s', (role, kind, prop) => {
     const structural = legacyObject({
       id: `${role}.0`,

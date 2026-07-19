@@ -125,6 +125,13 @@ export interface ManifestObjectRelation {
   streamplotId?: string;
   lineCollectionId?: string;
   arrowPatchIds?: string[];
+  diagramId?: string;
+  diagramType?: string;
+  diagramObjectId?: string;
+  nodeId?: string;
+  edgeId?: string;
+  sourceNodeId?: string;
+  targetNodeId?: string;
 }
 
 /**

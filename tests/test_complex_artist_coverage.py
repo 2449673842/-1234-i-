@@ -935,6 +935,262 @@ ax.autoscale()
         self.assertNotEqual(plain_arrow.get("role"), "streamplot_field", plain_arrow)
         self.assertNotEqual(plain_arrow.get("currentProps", {}).get("parentOwned"), True, plain_arrow)
 
+    def test_explicit_network_path_sem_semantics_preserve_generic_gids_and_relations(self):
+        fixture_path = os.path.join(
+            project_root,
+            "tests",
+            "fixtures",
+            "capability_matrix",
+            "python",
+            "network_path_sem.py",
+        )
+        with open(fixture_path, "r", encoding="utf-8") as handle:
+            script = handle.read()
+
+        manifest = self._render_manifest(script)
+        objects = self._objects_by_id(manifest)
+        semantic_objects = {
+            obj.get("role"): obj
+            for obj in manifest.get("objects", [])
+            if str(obj.get("role", "")).startswith("diagram_")
+        }
+
+        self.assertEqual(
+            set(semantic_objects),
+            {
+                "diagram_node",
+                "diagram_edge",
+                "diagram_arrow",
+                "diagram_node_label",
+                "diagram_coefficient_label",
+                "diagram_fit_annotation",
+                "diagram_group",
+            },
+            semantic_objects,
+        )
+
+        latent = objects["patch.0.0"]
+        observed = objects["collection.0.0"]
+        edge = objects["line.0.0"]
+        arrow = objects["patch.0.1"]
+        node_label = objects["text.0.0"]
+        coefficient = objects["text.0.2"]
+        fit_annotation = objects["text.0.3"]
+        diagram_group = objects["patch.0.2"]
+
+        self.assertEqual(latent.get("role"), "diagram_node", latent)
+        self.assertEqual(observed.get("role"), "diagram_node", observed)
+        self.assertEqual(edge.get("role"), "diagram_edge", edge)
+        self.assertEqual(arrow.get("role"), "diagram_arrow", arrow)
+        self.assertEqual(node_label.get("role"), "diagram_node_label", node_label)
+        self.assertEqual(coefficient.get("role"), "diagram_coefficient_label", coefficient)
+        self.assertEqual(fit_annotation.get("role"), "diagram_fit_annotation", fit_annotation)
+        self.assertEqual(diagram_group.get("role"), "diagram_group", diagram_group)
+        self.assertEqual(latent.get("kind"), "patch", latent)
+        self.assertEqual(observed.get("kind"), "collection", observed)
+        self.assertEqual(edge.get("kind"), "line", edge)
+        self.assertEqual(arrow.get("kind"), "patch", arrow)
+
+        for obj in [latent, observed, edge, arrow, node_label, coefficient, fit_annotation, diagram_group]:
+            relation = obj.get("identity", {}).get("relation", {})
+            self.assertEqual(relation.get("diagramId"), "sem.demo", obj)
+            self.assertEqual(relation.get("diagramType"), "sem", obj)
+            self.assertEqual(obj.get("source", {}).get("callName"), "SciFigure.semantic_gid", obj)
+            self.assertEqual(obj.get("semanticCoverage", {}).get("family"), "diagram", obj)
+            self.assertEqual(obj.get("semanticCoverage", {}).get("status"), "dedicated", obj)
+            self.assertTrue(obj.get("propertyCapabilities"), obj)
+            self.assertTrue(all(
+                item.get("patchMode") == "backend_patch"
+                for item in obj.get("propertyCapabilities", [])
+            ), obj)
+
+        self.assertEqual(latent["identity"]["relation"].get("nodeId"), "latent_a")
+        self.assertEqual(observed["identity"]["relation"].get("nodeId"), "observed_b")
+        self.assertEqual(edge["identity"]["relation"].get("edgeId"), "latent_a_to_observed_b")
+        self.assertEqual(edge["identity"]["relation"].get("sourceNodeId"), "latent_a")
+        self.assertEqual(edge["identity"]["relation"].get("targetNodeId"), "observed_b")
+        self.assertEqual(arrow["identity"]["relation"].get("edgeId"), "latent_a_to_observed_b")
+        self.assertEqual(node_label["identity"]["relation"].get("nodeId"), "latent_a")
+        self.assertEqual(coefficient["identity"]["relation"].get("edgeId"), "latent_a_to_observed_b")
+        self.assertEqual(diagram_group["identity"]["relation"].get("diagramObjectId"), "measurement_model")
+
+        for protected_text in [node_label, coefficient, fit_annotation]:
+            self.assertNotIn("text", protected_text.get("editable", []), protected_text)
+            self.assertNotIn("text", self._capability_props(protected_text), protected_text)
+            self.assertIn("fontsize", protected_text.get("editable", []), protected_text)
+            self.assertIn("position", protected_text.get("editable", []), protected_text)
+
+        ordinary_scatter = next(obj for obj in manifest["objects"] if obj.get("label") == "ordinary scatter")
+        ordinary_line = next(obj for obj in manifest["objects"] if obj.get("label") == "ordinary line")
+        ordinary_arrow = next(obj for obj in manifest["objects"] if obj.get("label") == "ordinary arrow")
+        ordinary_text = objects["text.1.0"]
+        for ordinary in [ordinary_scatter, ordinary_line, ordinary_arrow, ordinary_text]:
+            self.assertFalse(str(ordinary.get("role", "")).startswith("diagram_"), ordinary)
+            self.assertNotIn("diagramId", ordinary.get("identity", {}).get("relation", {}), ordinary)
+
+        self._assert_fingerprint_stable_after_style_edit(script, latent, "facecolor", "#228833")
+        self._assert_fingerprint_stable_after_style_edit(script, diagram_group, "edgecolor", "#225588")
+        self._assert_fingerprint_stable_after_style_edit(script, node_label, "fontsize", 13.0)
+        self._assert_fingerprint_stable_after_style_edit(script, coefficient, "fontsize", 11.0)
+        self._assert_fingerprint_stable_after_style_edit(script, fit_annotation, "fontsize", 10.0)
+        blocked = replay_render(script, edit_logs={"fig_1": [{
+            "gid": coefficient["id"],
+            "prop": "text",
+            "value": "beta = 9.99",
+            "mode": "backend_patch",
+            "stableKey": coefficient["stableKey"],
+            "fingerprint": coefficient["fingerprint"],
+            "fingerprintVersion": 2,
+            "identity": coefficient["identity"],
+        }]})
+        self.assertEqual(blocked.get("status"), "success", blocked)
+        self.assertEqual(
+            [warning.get("type") for warning in blocked.get("warnings", [])],
+            ["unsupported_prop"],
+            blocked,
+        )
+
+    def test_diagram_replay_rejects_changed_edge_endpoints_despite_stable_visual_identity(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot(
+    [0.2, 0.8],
+    [0.5, 0.5],
+    color="#333333",
+    linewidth=1.8,
+    gid=_scifigure_semantic_gid(
+        "sem.identity",
+        "edge",
+        "edge_ab",
+        diagram_type="sem",
+        source_node_id="node_a",
+        target_node_id="node_b",
+    ),
+)
+ax.set(xlim=(0, 1), ylim=(0, 1))
+"""
+        manifest = self._render_manifest(script)
+        edge = next(obj for obj in manifest["objects"] if obj.get("role") == "diagram_edge")
+        original_color = edge.get("currentProps", {}).get("color")
+        relation = dict(edge["identity"]["relation"])
+        self.assertEqual(relation.get("diagramObjectId"), "edge_ab", edge)
+        self.assertEqual(relation.get("sourceNodeId"), "node_a", edge)
+        self.assertEqual(relation.get("targetNodeId"), "node_b", edge)
+
+        mismatched_relation = {
+            **relation,
+            "sourceNodeId": "node_x",
+            "targetNodeId": "node_y",
+        }
+        edit = {
+            "gid": edge["id"],
+            "prop": "color",
+            "value": "#228833",
+            "mode": "backend_patch",
+            "stableKey": edge["stableKey"],
+            "fingerprint": edge["fingerprint"],
+            "fingerprintVersion": 2,
+            "identity": {
+                **edge["identity"],
+                "seriesKey": edge["identity"]["seriesKey"],
+                "relation": mismatched_relation,
+            },
+        }
+        replayed = replay_render(script, edit_logs={"fig_1": [edit]})
+        self.assertEqual(replayed.get("status"), "success", replayed)
+        warnings = replayed.get("warnings", [])
+        self.assertEqual([warning.get("type") for warning in warnings], ["identity_mismatch"], warnings)
+        mismatch_fields = warnings[0].get("mismatches", [])
+        self.assertTrue(any("sourceNodeId" in field for field in mismatch_fields), warnings[0])
+        self.assertTrue(any("targetNodeId" in field for field in mismatch_fields), warnings[0])
+
+        replayed_edge = next(
+            obj for obj in replayed["figures"][0]["manifest"]["objects"]
+            if obj.get("id") == edge["id"]
+        )
+        self.assertEqual(replayed_edge.get("currentProps", {}).get("color"), original_color, replayed_edge)
+
+    def test_hand_written_scifigure_semantic_gid_string_is_explicit_user_protocol_marker(self):
+        manifest = self._render_manifest(
+            """
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
+fig, ax = plt.subplots()
+node = Circle(
+    (0.5, 0.5),
+    0.12,
+    facecolor="#4477aa",
+    edgecolor="#223355",
+    gid="scifigure-sem-v1:diagram=manual.sem&type=sem&role=node&id=node_a",
+)
+ax.add_patch(node)
+ax.set(xlim=(0, 1), ylim=(0, 1))
+"""
+        )
+        node = next(obj for obj in manifest["objects"] if obj.get("role") == "diagram_node")
+        relation = node.get("identity", {}).get("relation", {})
+        self.assertEqual(node.get("source", {}).get("callName"), "SciFigure.semantic_gid", node)
+        self.assertEqual(node.get("semanticCoverage", {}).get("family"), "diagram", node)
+        self.assertEqual(node.get("semanticCoverage", {}).get("status"), "dedicated", node)
+        self.assertEqual(relation.get("diagramId"), "manual.sem", node)
+        self.assertEqual(relation.get("diagramType"), "sem", node)
+        self.assertEqual(relation.get("diagramObjectId"), "node_a", node)
+        self.assertEqual(relation.get("nodeId"), "node_a", node)
+        self.assertEqual(node.get("identity", {}).get("seriesKey"), "diagram:manual.sem:diagram_node:node_a", node)
+
+    def test_malformed_scifigure_semantic_gid_markers_fail_closed_as_ordinary_objects(self):
+        manifest = self._render_manifest(
+            """
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
+fig, ax = plt.subplots()
+bad_node = Circle(
+    (0.25, 0.6),
+    0.1,
+    facecolor="#4477aa",
+    label="bad blank node id",
+    gid="scifigure-sem-v1:diagram=bad&type=sem&role=node&id=",
+)
+ax.add_patch(bad_node)
+ax.plot(
+    [0.45, 0.8],
+    [0.6, 0.6],
+    color="#333333",
+    label="bad missing target",
+    gid="scifigure-sem-v1:diagram=bad&type=sem&role=edge&id=edge_ab&source=node_a",
+)
+ax.text(
+    0.5,
+    0.3,
+    "bad query",
+    gid="scifigure-sem-v1:not-a-valid-query",
+)
+ax.set(xlim=(0, 1), ylim=(0, 1))
+"""
+        )
+        malformed = [
+            obj for obj in manifest["objects"]
+            if obj.get("label") in {"bad blank node id", "bad missing target"}
+            or obj.get("currentProps", {}).get("text") == "bad query"
+        ]
+        self.assertEqual(len(malformed), 3, manifest)
+        for obj in malformed:
+            self.assertFalse(str(obj.get("role", "")).startswith("diagram_"), obj)
+            self.assertNotEqual(obj.get("source", {}).get("callName"), "SciFigure.semantic_gid", obj)
+            self.assertNotEqual(obj.get("semanticCoverage", {}).get("family"), "diagram", obj)
+            relation = obj.get("identity", {}).get("relation", {})
+            for field in (
+                "diagramId",
+                "diagramType",
+                "diagramObjectId",
+                "nodeId",
+                "edgeId",
+                "sourceNodeId",
+                "targetNodeId",
+            ):
+                self.assertNotIn(field, relation, obj)
+
     def test_streamplot_legacy_child_gid_edit_remains_replayable(self):
         script = """
 import matplotlib.pyplot as plt

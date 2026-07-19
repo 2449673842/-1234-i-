@@ -247,6 +247,100 @@ type LayoutPreset = {
   hint: string;
 };
 
+type ComponentCenterObjectLike = Pick<ManifestObject, 'id' | 'kind' | 'role' | 'currentProps' | 'identity' | 'children'>;
+
+export type DiagramComponentGroup<T extends ComponentCenterObjectLike = ComponentCenterObjectLike> = {
+  id: string;
+  label: string;
+  description: string;
+  objects: T[];
+  colorProp: string | null;
+  edgeColorProp?: string;
+  sizeProp: string | null;
+};
+
+const DIAGRAM_COMPONENT_ROLES = new Set([
+  'diagram_node',
+  'diagram_edge',
+  'diagram_arrow',
+  'diagram_node_label',
+  'diagram_coefficient_label',
+  'diagram_fit_annotation',
+  'diagram_group',
+]);
+
+export function isDedicatedDiagramComponentObject(obj: Pick<ManifestObject, 'role'> | undefined): boolean {
+  return Boolean(obj?.role && DIAGRAM_COMPONENT_ROLES.has(obj.role));
+}
+
+export function buildDiagramComponentGroups<T extends ComponentCenterObjectLike>(
+  scopedObjects: T[],
+  enabled = true,
+): DiagramComponentGroup<T>[] {
+  if (!enabled) return [];
+  const objectsByRole = (role: string) => scopedObjects.filter(obj => obj.role === role);
+  return [
+    {
+      id: 'diagramGroups',
+      label: '图示 / SEM 整体组',
+      description: '网络图、路径图或 SEM 图的语义整体容器。用于识别同一张图示的成员，不重复修改内部节点和路径。',
+      objects: objectsByRole('diagram_group'),
+      colorProp: null,
+      sizeProp: null,
+    },
+    {
+      id: 'diagramNodes',
+      label: '图示节点',
+      description: '网络图、路径图或 SEM 图中的节点图形。只调整节点填充、边框、透明度、线宽和层级，不改变节点身份或布局坐标。',
+      objects: objectsByRole('diagram_node'),
+      colorProp: 'facecolor',
+      edgeColorProp: 'edgecolor',
+      sizeProp: null,
+    },
+    {
+      id: 'diagramEdges',
+      label: '图示连线 / 路径',
+      description: '节点之间的语义连线或路径。只调整颜色、透明度、线宽、线型和层级，不改变 source/target 关系。',
+      objects: objectsByRole('diagram_edge'),
+      colorProp: 'color',
+      sizeProp: null,
+    },
+    {
+      id: 'diagramArrows',
+      label: '图示箭头',
+      description: '路径方向的箭头图元。只调整箭头颜色、边框、透明度、线宽和层级，不改变路径几何或方向语义。',
+      objects: objectsByRole('diagram_arrow'),
+      colorProp: 'facecolor',
+      edgeColorProp: 'edgecolor',
+      sizeProp: null,
+    },
+    {
+      id: 'diagramNodeLabels',
+      label: '图示节点标签',
+      description: '节点内部或附近的名称标签。与普通文本分开，避免批量文本编辑时误改 SEM / 网络图节点说明。',
+      objects: objectsByRole('diagram_node_label'),
+      colorProp: 'color',
+      sizeProp: null,
+    },
+    {
+      id: 'diagramCoefficientLabels',
+      label: '路径系数标签',
+      description: 'SEM 或路径图中边上的系数、显著性和数值标签。与节点标签和普通文本分开编辑。',
+      objects: objectsByRole('diagram_coefficient_label'),
+      colorProp: 'color',
+      sizeProp: null,
+    },
+    {
+      id: 'diagramFitAnnotations',
+      label: '模型拟合注释',
+      description: 'SEM 模型拟合指标和图示说明文字。与普通文本分开，避免全局文本批量编辑造成重复修改。',
+      objects: objectsByRole('diagram_fit_annotation'),
+      colorProp: 'color',
+      sizeProp: null,
+    },
+  ].filter(group => group.objects.length > 0);
+}
+
 const DEFAULT_PHYSICAL_AXES_LAYOUT: PhysicalAxesLayoutSettings = {
   targetWidthIn: 2.2,
   targetHeightIn: 2.2,
@@ -3868,6 +3962,10 @@ export function RightSidebar({
     const contourObjects = scopedObjects.filter(obj => obj.kind === 'contour' || obj.kind === 'contourf');
     const quiverObjects = scopedObjects.filter(obj => obj.kind === 'quiver' || obj.role === 'quiver_field');
     const streamplotObjects = scopedObjects.filter(obj => obj.kind === 'streamplot' || obj.role === 'streamplot_field');
+    const diagramComponentGroups = buildDiagramComponentGroups(scopedObjects, COMPONENT_TARGET_RESOLVER_V2_ENABLED);
+    const diagramGroupObjects = diagramComponentGroups
+      .filter(group => group.id === 'diagramGroups')
+      .flatMap(group => group.objects);
     const claimedChildIds = new Set(
       [
         ...barContainerObjects,
@@ -3880,6 +3978,7 @@ export function RightSidebar({
         ...stepObjects,
         ...contourObjects,
         ...streamplotObjects,
+        ...diagramGroupObjects,
       ].flatMap(container => container.children || []),
     );
     const claimedContainerIds = new Set([
@@ -3896,8 +3995,8 @@ export function RightSidebar({
         || claimedContainerIds.has(String(obj.parentId || obj.identity?.relation?.parentId || ''))
       )
     );
-    const lineObjects = scopedObjects.filter(obj => obj.kind === 'line' && obj.role !== 'step_series' && !isLegendChild(obj) && !isMarkerLine(obj) && !isClaimedContainerChild(obj));
-    const pointObjects = scopedObjects.filter(obj => !['step_series', 'stairs_series', 'histogram_series'].includes(String(obj.role || '')) && !isLegendChild(obj) && !isClaimedContainerChild(obj) && (isMarkerLine(obj) || isScatterCollection(obj)));
+    const lineObjects = scopedObjects.filter(obj => obj.kind === 'line' && obj.role !== 'step_series' && !isDedicatedDiagramComponentObject(obj) && !isLegendChild(obj) && !isMarkerLine(obj) && !isClaimedContainerChild(obj));
+    const pointObjects = scopedObjects.filter(obj => !['step_series', 'stairs_series', 'histogram_series'].includes(String(obj.role || '')) && !isDedicatedDiagramComponentObject(obj) && !isLegendChild(obj) && !isClaimedContainerChild(obj) && (isMarkerLine(obj) || isScatterCollection(obj)));
     const bandObjects = scopedObjects.filter(obj => (
       obj.kind === 'fill_between' || obj.role === 'fill_between_series'
     ) && !isLegendChild(obj) && !isClaimedContainerChild(obj));
@@ -3912,12 +4011,14 @@ export function RightSidebar({
       obj.kind === 'patch'
       && !['annotation_arrow', 'histogram_series', 'stairs_series'].includes(String(obj.role || ''))
       && !['pie_slice', 'wedge_slice'].includes(String(obj.role || ''))
+      && !isDedicatedDiagramComponentObject(obj)
       && !isLegendChild(obj)
       && !isClaimedContainerChild(obj)
     ));
     const textObjects = scopedObjects.filter(obj => (
       obj.kind === 'text'
       && !['pie_label', 'pie_value_label'].includes(String(obj.role || ''))
+      && !isDedicatedDiagramComponentObject(obj)
     ));
     const axisObjects = scopedObjects.filter(obj => ['axes', 'axis_x', 'axis_y'].includes(obj.kind));
     const subplotPanelObjects = scopedObjects.filter(obj => obj.kind === 'subplot');
@@ -3986,6 +4087,7 @@ export function RightSidebar({
         colorProp: null,
         sizeProp: null,
       },
+      ...diagramComponentGroups,
       {
         id: 'lines',
         label: '线条 / 拟合线',
@@ -4193,6 +4295,13 @@ export function RightSidebar({
       if (items.every(obj => obj.role === 'pie_value_label')) return 'pie_value_label';
       if (items.every(obj => obj.kind === 'quiver' || obj.role === 'quiver_field')) return 'data_quiver';
       if (items.every(obj => obj.kind === 'streamplot' || obj.role === 'streamplot_field')) return 'data_streamplot';
+      if (items.every(obj => obj.role === 'diagram_node')) return 'diagram_node';
+      if (items.every(obj => obj.role === 'diagram_edge')) return 'diagram_edge';
+      if (items.every(obj => obj.role === 'diagram_arrow')) return 'diagram_arrow';
+      if (items.every(obj => obj.role === 'diagram_node_label')) return 'diagram_node_label';
+      if (items.every(obj => obj.role === 'diagram_coefficient_label')) return 'diagram_coefficient_label';
+      if (items.every(obj => obj.role === 'diagram_fit_annotation')) return 'diagram_fit_annotation';
+      if (items.every(obj => obj.role === 'diagram_group')) return 'diagram_group';
       if (items.every(obj => obj.kind === 'bar_container' || obj.role === 'bar_series')) return 'data_bar';
       if (items.every(obj => obj.kind === 'errorbar_container' || obj.role === 'errorbar_series')) return 'data_errorbar';
       if (items.every(obj => obj.kind === 'stem_container' || obj.role === 'stem_series')) return 'data_stem';
@@ -4402,19 +4511,25 @@ export function RightSidebar({
       const patches: PatchEntry[] = [];
 
       if (directItems.length > 0) {
+        const migratedRole = componentRoleForItems(directItems);
         const intent: EditingIntent = {
           intent: 'style.component',
           scope: {
             selectionMode: 'explicit_objects',
             objectIds: directItems.map(obj => obj.id),
             targetKinds: Array.from(new Set(directItems.map(obj => obj.kind))),
+            ...(COMPONENT_TARGET_RESOLVER_V2_ENABLED && migratedRole ? { targetRole: migratedRole } : {}),
             crossFigure: resolveCrossFigurePolicy(directItems, prop),
           },
           operation: { prop, value },
           commit: { mode: 'draft', applyAsOneHistoryStep: true },
           fallback: { onUnsupported: 'skip_with_warning' },
         };
-        patches.push(...compileIntentPatches(intent));
+        patches.push(...(
+          COMPONENT_TARGET_RESOLVER_V2_ENABLED && migratedRole
+            ? compileComponentIntentPatches(intent)
+            : compileIntentPatches(intent)
+        ));
       }
 
       if (axisItems.length > 0) {

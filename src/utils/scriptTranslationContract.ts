@@ -427,6 +427,33 @@ build_figure(df)
 | 散点/填充 | collection.{idx}.{i} | facecolor, edgecolor, alpha, linewidth |
 | 图例 | legend.{idx} | visible, fontsize, facecolor |
 
+**网络图、路径图和 SEM：** 只有原始数据或脚本已经提供稳定的节点/路径身份时，才为对应 Matplotlib artist 设置平台语义 GID。平台运行时会注入 \`_scifigure_semantic_gid\`，不需要导入它：
+\`\`\`python
+diagram_id = "sem.main"
+node_artist.set_gid(_scifigure_semantic_gid(diagram_id, "node", "node_A", diagram_type="sem"))
+edge_line.set_gid(_scifigure_semantic_gid(
+    diagram_id, "edge", "edge_A_B", diagram_type="sem",
+    source_node_id="node_A", target_node_id="node_B",
+))
+arrow_artist.set_gid(_scifigure_semantic_gid(
+    diagram_id, "arrow", "arrow_A_B", diagram_type="sem",
+    edge_id="edge_A_B", source_node_id="node_A", target_node_id="node_B",
+))
+node_label.set_gid(_scifigure_semantic_gid(
+    diagram_id, "node_label", "label_A", diagram_type="sem", node_id="node_A",
+))
+coefficient_label.set_gid(_scifigure_semantic_gid(
+    diagram_id, "coefficient_label", "coef_A_B", diagram_type="sem", edge_id="edge_A_B",
+))
+fit_annotation.set_gid(_scifigure_semantic_gid(
+    diagram_id, "fit_annotation", "fit_summary", diagram_type="sem",
+))
+\`\`\`
+- \`diagram_type\` 只能使用 \`network\`、\`path\` 或 \`sem\`。
+- node id 必须来自稳定数据键；edge id 必须稳定且 edge 同时声明真实 source/target node id。多重边不能只依赖 source/target，必须有各自唯一 edge id。
+- 不得按绘制顺序、颜色、屏幕位置或显示文字猜测身份，也不得编造节点、路径、系数、p 值、显著性或拟合指标。
+- 系数文字、显著性和拟合指标保持原始内容；平台只开放其字体、颜色和视觉位置编辑，不把科研数值当普通文本改写。
+
 ### 七、样式约定（推荐）
 - 白色背景，无网格线
 - 四边脊柱全显示
@@ -452,6 +479,8 @@ os / sys / subprocess / builtins / shutil / socket / urllib / requests / eval / 
 12. 共享坐标轴共享刻度约束 (sharex=True/sharey=True)：当使用 sharex=True 或 sharey=True 共享坐标轴时，切勿在非目标子图上通过 ax.set_xticklabels([]) 或 ax.set_yticklabels([]) 擦除刻度标签，否则这会波及并擦除整个共享列/行的所有标签。如果需要隐藏特定子图的刻度标签，应使用 ax.tick_params(axis="x", labelbottom=show_xlabel) 或 ax.tick_params(axis="y", labelleft=show_ylabel) 控制其可见性。
 13. 每个语义分组只能有一个权威颜色常量或颜色字典条目；不要再定义同色但未使用的别名。若散点通过 \`c=df["Color"]\` 逐点着色，\`Color\` 列必须直接由这些权威常量生成，确保修改一个组只重绘该组，不影响其它组。
 
+
+14. 网络图、路径图或 SEM 仅在存在稳定 node/edge 键时使用 \`_scifigure_semantic_gid\`；必须保持真实 node、edge、arrow、label 关系，不能按外观猜测或改变模型拓扑和科研数值。
 
 ### 十、自检清单（这些条件必须在代码层面成立）
 - 单文件数据可来自 \`_uploaded_data\`；多文件具名数据表必须来自 \`_uploaded_file_paths\`

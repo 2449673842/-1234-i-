@@ -53,6 +53,29 @@ function binding(paletteId: string, targets: ReturnType<typeof target>[]): Bindi
   };
 }
 
+function diagramObject(
+  id: string,
+  role: string,
+  prop: string,
+  diagramId: string,
+  diagramObjectId: string,
+  extraRelation: Record<string, unknown> = {},
+): ManifestObject {
+  const item = object(id, prop, `diagram:${diagramId}:${role}:${diagramObjectId}`, 'backend_patch');
+  item.kind = id.startsWith('line.') ? 'line' : 'patch';
+  item.role = role;
+  item.identity!.seriesKey = `diagram:${diagramId}:${role}:${diagramObjectId}`;
+  item.identity!.semanticKey = `${role}:${diagramId}:${role}:${diagramObjectId}`;
+  item.identity!.relation = {
+    subplotId: 'subplot.0',
+    diagramId,
+    diagramType: 'sem',
+    diagramObjectId,
+    ...extraRelation,
+  } as any;
+  return item;
+}
+
 function manifest(objects: ManifestObject[], bindings: Binding[]): Manifest {
   return {
     generatedBy: 'introspection',
@@ -619,5 +642,78 @@ describe('palette target resolver', () => {
     );
 
     expect(result.targets.map(item => item.objectId)).toEqual([pieSlice.id, relatedLegend.id]);
+  });
+
+  it('fails closed for unscoped diagram palette bindings that span another diagram object or ordinary artist', () => {
+    const latent = diagramObject('patch.0.10', 'diagram_node', 'facecolor', 'sem.demo', 'latent_a');
+    const observed = diagramObject('patch.0.11', 'diagram_node', 'facecolor', 'sem.demo', 'observed_b');
+    const ordinary = object('patch.0.12', 'facecolor', 'ordinary-node-color', 'backend_patch');
+    const figure = manifest([latent, observed, ordinary], [binding('NODE_BLUE', [
+      target(latent.id, 'facecolor', latent.identity!.seriesKey!),
+      target(observed.id, 'facecolor', observed.identity!.seriesKey!),
+      target(ordinary.id, 'facecolor', 'ordinary-node-color'),
+    ])]);
+
+    const unscoped = resolvePaletteTargets(figure, 'NODE_BLUE', true);
+    expect(unscoped.targets).toEqual([]);
+    expect(unscoped.ambiguous[0]?.reason).toBe('ambiguous_binding');
+
+    const selected = resolvePaletteTargets(figure, 'NODE_BLUE', true, [latent.id]);
+    expect(selected.targets.map(item => item.objectId)).toEqual([latent.id]);
+    expect(buildPaletteObjectPatches(selected, '#118833')).toEqual([{
+      op: 'set',
+      mode: 'backend_patch',
+      gid: latent.id,
+      prop: 'facecolor',
+      value: '#118833',
+    }]);
+  });
+
+  it('allows a diagram edge palette to include only the explicitly linked arrow', () => {
+    const edge = diagramObject('line.0.10', 'diagram_edge', 'color', 'sem.demo', 'latent_a_to_observed_b', {
+      edgeId: 'latent_a_to_observed_b',
+      sourceNodeId: 'latent_a',
+      targetNodeId: 'observed_b',
+    });
+    const arrow = diagramObject('patch.0.13', 'diagram_arrow', 'edgecolor', 'sem.demo', 'arrow_a_b', {
+      edgeId: 'latent_a_to_observed_b',
+      sourceNodeId: 'latent_a',
+      targetNodeId: 'observed_b',
+    });
+    const unrelatedArrow = diagramObject('patch.0.14', 'diagram_arrow', 'edgecolor', 'sem.demo', 'arrow_other', {
+      edgeId: 'other_edge',
+      sourceNodeId: 'latent_a',
+      targetNodeId: 'other_node',
+    });
+    const ordinary = object('line.0.11', 'color', 'ordinary-edge-color', 'backend_patch');
+    const figure = manifest([edge, arrow, unrelatedArrow, ordinary], [binding('EDGE_GRAY', [
+      target(edge.id, 'color', edge.identity!.seriesKey!),
+      target(arrow.id, 'edgecolor', arrow.identity!.seriesKey!),
+      target(unrelatedArrow.id, 'edgecolor', unrelatedArrow.identity!.seriesKey!),
+      target(ordinary.id, 'color', 'ordinary-edge-color'),
+    ])]);
+
+    const unscoped = resolvePaletteTargets(figure, 'EDGE_GRAY', true);
+    expect(unscoped.targets).toEqual([]);
+    expect(unscoped.ambiguous[0]?.reason).toBe('ambiguous_binding');
+
+    const linkedOnly = resolvePaletteTargets(figure, 'EDGE_GRAY', true, [edge.id, arrow.id]);
+    expect(linkedOnly.targets.map(item => item.objectId)).toEqual([edge.id, arrow.id]);
+  });
+
+  it('does not rendered-color fallback from a selected diagram object to same-color ordinary artists', () => {
+    const diagramNode = diagramObject('patch.0.20', 'diagram_node', 'facecolor', 'sem.demo', 'latent_a');
+    diagramNode.currentProps.facecolor = '#4477aa';
+    const ordinary = object('patch.0.21', 'facecolor', 'ordinary-node-color', 'backend_patch');
+    ordinary.currentProps.facecolor = '#4477aa';
+    const figure = manifest([diagramNode, ordinary], []);
+
+    const fallback = resolvePaletteColorFallbackTargets(figure, 'NODE_BLUE', '#4477aa', [
+      diagramNode.id,
+      ordinary.id,
+    ]);
+
+    expect(fallback.targets).toEqual([]);
+    expect(buildPaletteObjectPatches(fallback, '#118833')).toEqual([]);
   });
 });

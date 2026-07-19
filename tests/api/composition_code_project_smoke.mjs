@@ -270,6 +270,7 @@ async function main() {
     assert(loadedSpec?.composition?.aiPrompt === composed.prompt, 'Created project should persist the generated AI prompt for audit/re-copy');
     assert(String(loadedSpec?.composition?.aiPrompt || '').includes('SOURCE_LINE_COLOR = "#123456"'), 'Persisted prompt missing source constants outside codeSlice');
     assert(String(loadedSpec?.composition?.aiPrompt || '').includes('fontsize = 16'), 'Persisted prompt missing current source edits');
+    assert(String(loadedSpec?.composition?.aiPrompt || '').includes('Preserve every existing `_scifigure_semantic_gid(...)` declaration'), 'Python composition prompt missing diagram semantic preservation rule');
 
     const rSourceA = await createRSourceProject('R Source A', 'r_source_a.csv', [1, 4, 2]);
     const rSourceB = await createRSourceProject('R Source B', 'r_source_b.csv', [3, 2, 5]);

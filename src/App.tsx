@@ -1288,10 +1288,25 @@ export default function App() {
           || draft.intent.scope.selectionMode === 'selected_only';
         const identityRelation = draft.identity?.relation;
         const targetRole = String(draft.intent.scope.targetRole);
+        const diagramTargetRoles = [
+          'diagram_node',
+          'diagram_edge',
+          'diagram_arrow',
+          'diagram_node_label',
+          'diagram_coefficient_label',
+          'diagram_fit_annotation',
+          'diagram_group',
+        ];
+        const diagramIdentityConstrainedSelection = explicitSelection
+          && draft.intent.scope.crossFigure === 'allow'
+          && draft.intent.scope.objectIds?.length === 1
+          && diagramTargetRoles.includes(targetRole);
         const identityConstrainedSelection = explicitSelection
           && draft.intent.scope.crossFigure === 'allow'
           && draft.intent.scope.objectIds?.length === 1
           && (
+            diagramIdentityConstrainedSelection
+            ||
             (
               ['data_pie_slice', 'pie_label', 'pie_value_label', 'pie_legend_marker'].includes(targetRole)
               && Boolean(identityRelation?.pieId)
