@@ -664,9 +664,9 @@ git diff --check                            PASS
 
 这表示显式关系和当前 fixture 已通过，不表示任意第三方 annotation、嵌套 parasite axes 或超大真实项目已经全覆盖。
 
-### 13.3 Python 复杂对象父级语义（2026-07-19 21:02:01 +08:00）
+### 13.3 Python 复杂对象父级语义（2026-07-19 21:57:22 +08:00）
 
-`fill_between`、`contour/contourf`、`hist/stairs/step`、`pie/wedge` 和 `quiver/streamplot` 已从通用 collection/patch/line/container 提升为可审计的专用语义：
+`fill_between`、`contour/contourf`、`hist/stairs/step`、`pie/wedge`、`quiver/streamplot` 和显式标记的网络图/路径图/SEM 已从通用 collection/patch/line/container 提升为可审计的专用语义：
 
 ```text
 fill_between -> fill_between_series -> data_band
@@ -681,11 +681,16 @@ manual Wedge     -> wedge_slice
 Quiver           -> quiver + quiver_field，保留 collection.* 历史身份
 StreamplotSet    -> container.streamplot.* + streamplot_field
 stream children  -> streamplot_child_line/arrow + parentOwned + readonly
+diagram node     -> diagram_node
+diagram edge     -> diagram_edge + sourceNodeId/targetNodeId
+diagram arrow    -> diagram_arrow + edgeId
+diagram text     -> diagram_node_label/coefficient_label/fit_annotation
+diagram group    -> diagram_group
 ```
 
-父对象持有可证明的视觉能力；contour、histogram 和 streamplot 的内部 child 只保留用于渲染关系和旧 editLog 重放，现代组件中心、配色中心和批量属性入口不会新建子层编辑。`levels/X/Y/Z/paths/segments`、`bins/counts/edges/values/density/cumulative/orientation/weights/where/x/y/baseline`、pie 数值/角度/几何、quiver 向量/尺度/箭头几何以及 streamplot 密度/起点/积分方向等结构属性不开放。跨 Figure 只有在属性能力明确包含 `cross_figure` 时才允许 fanout；pie 和向量场还必须分别匹配可信 `pieId + sliceIndex`、`quiverId` 或 `streamplotId`，否则 fail-closed。
+父对象持有可证明的视觉能力；contour、histogram 和 streamplot 的内部 child 只保留用于渲染关系和旧 editLog 重放，现代组件中心、配色中心和批量属性入口不会新建子层编辑。`levels/X/Y/Z/paths/segments`、`bins/counts/edges/values/density/cumulative/orientation/weights/where/x/y/baseline`、pie 数值/角度/几何、quiver 向量/尺度/箭头几何以及 streamplot 密度/起点/积分方向等结构属性不开放。图示对象只允许样式、字体和位置等视觉编辑；路径系数、p 值、显著性、拟合指标、方向和拓扑保持只读。跨 Figure 只有在属性能力明确包含 `cross_figure` 时才允许 fanout；pie、向量场和图示对象还必须分别匹配可信关系，其中图示 edge/arrow/coefficient 需要完整边关系且目标唯一，否则 fail-closed。
 
-兼容范围不是支持任意历史版本：新 manifest 使用 v2 结构 fingerprint；旧 contour child 只在 stableKey/seriesKey 一致且差异仅为已知 fingerprint 漂移时兼容。quiver 保留原 `collection.*` GID/stableKey，streamplot 内部 line/arrow 保留历史 GID，但由新的语义父对象拥有。普通 `LineCollection`、`FancyArrowPatch`、bar、手工 `StepPatch`、drawstyle line、scatter 和 patch 保持原分类。项目加载、PUT、history、四格式导出、子图导出和快照恢复均有隔离测试。
+兼容范围不是支持任意历史版本：新 manifest 使用 v2 结构 fingerprint；旧 contour child 只在 stableKey/seriesKey 一致且差异仅为已知 fingerprint 漂移时兼容。quiver 保留原 `collection.*` GID/stableKey，streamplot 内部 line/arrow 保留历史 GID，但由新的语义父对象拥有。图示语义只接受脚本通过 `_scifigure_semantic_gid(...)` 提供的显式声明；该 marker 是声明协议，不是认证或科学真实性证明。renderer、项目 patch 预检和快照 dry-run 逐字段比较完整 diagram relation signature，已有部分 identity 不从新 manifest 回填。普通 `LineCollection`、`FancyArrowPatch`、bar、手工 `StepPatch`、drawstyle line、scatter、line、arrow 和 text 保持原分类。项目加载、PUT、history、四格式导出、子图导出和快照恢复均有隔离测试。
 
 ## 14. Python/R 对齐表
 
@@ -718,7 +723,7 @@ R 未知 geom 会只读显示并记录 unsupported；没有显式数据键的 te
 AI 自动改图尚未接入
 annotation/箭头仍只达到部分覆盖；tick line 与 tick label 的样式隔离已通过当前 Python fixture
 twinx/twiny、复杂共享轴和超大 scatter 的真实项目验证不足
-网络图、路径图和 SEM 尚未完成节点/边/箭头/系数文字的专用关系与完整用户链路
+未使用显式语义声明的任意第三方网络图、路径图和 SEM 不会按外观自动推断关系
 生产构建仍有主 bundle 大于 500 kB 和 CJS import.meta warning
 ```
 
@@ -766,6 +771,8 @@ npm run test:export-snapshot-restore-ui
 2026-07-30 04:35:45 +08:00 集成候选证据：服务端权威、contour 父对象、V2 组件布尔控件和快照恢复批次已通过 TypeScript、284 项 Vitest、63 项 Python renderer、组件 35/35、跨 Figure 11/11、拖拽和导出矩阵；`hist/stairs/step` 批次正在当前隔离工作树中集成，尚未完成生产 Docker 或部署验收。
 
 2026-07-19 向量场工作包原分支证据：TypeScript、Vitest 1035 项、Python complex artist 22/22、向量场 API 持久化、真实浏览器工作流、真实控件跨 Figure、结构参数拒绝零持久化和 Matplotlib 3.8.4 兼容门禁通过；该证据将在当前生产集成候选完成后重新运行适用门禁，不能替代最终 release gate。
+
+2026-07-30 当前集成候选新增证据：向量场协议单测 180 项、complex artist 22/22、API、单 Figure 与跨 Figure 浏览器通过；网络/路径/SEM 协议单测 185 项、complex artist 26/26、API、单 Figure 与跨 Figure 浏览器通过。两类对象均覆盖 Draft、保存刷新、撤销重做、导出、快照恢复与关系缺失/冲突 fail-closed；完整 release gate 和生产 Docker 验收尚未完成。
 
 ## 17. 详细参考文档
 

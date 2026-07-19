@@ -1,9 +1,9 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-19 21:02:01 +08:00
-> 证据截止时间：2026-07-19 21:02:01 +08:00
-> 代码范围：`feature/standard-figure-model-v1`，`HEAD 3c448f3` 加当前工作区尚未提交的 `quiver/streamplot` 专用语义、身份隔离和回归保护
+> 最后修改时间：2026-07-19 22:52:22 +08:00
+> 证据截止时间：2026-07-19 22:52:22 +08:00
+> 代码范围：`feature/standard-figure-model-v1`，网络图/路径图/SEM 显式语义、身份隔离和回归保护实现提交 `b20b103`
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -30,8 +30,8 @@
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
 | TypeScript | 通过 | `npm run lint` |
-| 前端单元测试 | 144 文件、1035/1035 | 包含向量场专用 resolver、能力、映射和 fail-closed 关系回归 |
-| Python renderer/身份/复杂覆盖 | complex artist coverage 22/22；3.8.4 向量兼容门禁 5/5 | 本地 Matplotlib 3.7.2 基线与临时容器 Matplotlib 3.8.4 定向兼容分开管理；Python runtime 另行记录 |
+| 前端单元测试 | 145 文件、1078/1078 | 包含图示专用 resolver、能力、映射、组件分组、identity 捕获和 fail-closed 关系回归 |
+| Python renderer/身份/复杂覆盖 | complex artist 26/26、结构身份漂移 7/7 | 本地既有 renderer 基线；本工作包未修改 Python 或 Matplotlib 版本，也未新增兼容版本声明 |
 | 组件中心真实浏览器 | 41/41；向量场专用分组直接回归通过 | 网格、图例、容器、五个 WP6 家族、父层重定向、保存刷新和拖拽模式多选保护 |
 | Python 完整用户链路 | 通过 | 选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和快照恢复 |
 | `fill_between` 专用语义 | 通过 | dedicated kind/role、旧 GID/stableKey、配色、组件、历史和导出恢复均通过 |
@@ -39,6 +39,7 @@
 | `hist/stairs/step` 专用语义 | 通过 | 专用 role、hist 父子关系、普通对象负例、结构只读、配色、组件、历史和导出恢复均通过 |
 | `pie/wedge` 专用语义 | 通过 | 扇区/标签/百分比/图例/Wedge 独立 role，`pieId + sliceIndex` 身份隔离，结构只读、跨 Figure、导出和恢复均通过 |
 | `quiver/streamplot` 专用语义 | 通过 | 专用父对象/role、旧 GID 兼容、内部 child 只读、可信关系映射、图例联动、结构只读、跨 Figure、导出和恢复均通过 |
+| 网络图/路径图/SEM 显式语义 | 通过 | 七类专用 role、完整关系签名、科学结构只读、组件/配色隔离、Draft/backend replay、跨 Figure、导出和恢复均通过 |
 | R 共享协议回归 | 通过 | R renderer 31/31、R 浏览器 5/5、Python/R capability matrix 2/2 |
 | patch 事务保护 | 通过 | standalone 与项目 Figure 均由服务端按可信 manifest/renderer 决定 mode；拒绝批次不改变 revision、session、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
@@ -53,7 +54,7 @@
 
 本轮还重新运行了编辑、R、跨 Figure、历史、导出、页面、组合、安全和隔离 smoke。所有请求均使用随机 `127.0.0.1` 端口和临时数据库；未访问 3000，未修改 Docker/WSL。
 
-三轮独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包和旧项目 GET/PUT 恢复源不一致均已修复。当前项目保存接口同时执行可信 manifest 预检与 revision/hash CAS；新增 PUT、history、无 manifest、旧 contour 项目和跨 Figure 回归均通过。WP8 的恢复/导出事务证据已补齐，`fill_between`、`contour/contourf`、`hist/stairs/step`、`pie/wedge` 与 `quiver/streamplot` 已完成专用适配；后续仍需对网络/路径/SEM、特殊 axes 和性能门禁补齐证据。
+三轮独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包和旧项目 GET/PUT 恢复源不一致均已修复。当前项目保存接口同时执行可信 manifest 预检与 revision/hash CAS；新增 PUT、history、无 manifest、旧 contour 项目和跨 Figure 回归均通过。WP8 的恢复/导出事务证据已补齐，WP6 六个复杂对象家族已完成当前计划范围的专用适配；后续仍需对特殊 axes、性能、默认启用和剩余 legacy 审计补齐证据。
 
 第一轮隔离浏览器基线补充结果：
 
@@ -116,6 +117,22 @@ streamplot 使用 container.streamplot.* 父对象；内部 line collection 和 
 结构参数拒绝不增加 revision，不写 session/history/cache/export anchor/snapshot
 Vitest 1035/1035、complex artist 22/22、API、真实浏览器、真实控件跨 Figure、组件 41/41、跨 Figure 18/18、R 5/5、Matplotlib 3.8.4 兼容 5/5、lint/build/diff-check 均通过
 独立 gpt-5.5 high 审查 APPROVE，0 HIGH/MEDIUM/LOW
+```
+
+2026-07-19 22:46:07 的网络图/路径图/SEM 补充证据：
+
+```text
+只接受 _scifigure_semantic_gid(...) 显式关系，不按颜色、形状或标签猜测图示身份
+diagram_node/edge/arrow/node_label/coefficient_label/fit_annotation/group 使用独立 role 和组件分组
+节点、边、箭头和文字样式走 backend replay；路径系数、p 值、显著性、拟合指标、方向和拓扑只读
+跨 Figure 需要完整且唯一的 diagram relation；关系不同、缺失或重复时 fail-closed
+renderer、项目 patch 预检与导出快照 dry-run 比较完整 diagram relation signature；端点变化或部分 identity 不回填
+scifigure-sem-v1 marker 是用户声明协议，不是认证；合法手写可识别，畸形 marker 保持普通图元
+普通 scatter、line、FancyArrowPatch 和 text 保持通用分类，不进入图示组
+受保护图示文字的初始 manifest 与重放身份统一使用真实文本标签，完整 v2 身份下字体修改可重放
+真实浏览器覆盖 Draft、应用、保存刷新、撤销重做、位置、SVG 导出、后续编辑和快照恢复
+Vitest 145 文件、1078/1078；complex artist 26/26、结构身份 7/7、R renderer 31/31；API、浏览器、patch 拒绝、快照恢复、跨 Figure、组合项目、R 5/5、R 风险预检、lint/build/diff-check 均通过
+数据审计保持 25 用户、121 项目、263 项目文件、101 导出资产、0 错误
 ```
 
 2026-07-18 21:03:51 的 WP3/WP4 补充证据：
@@ -346,7 +363,7 @@ Multi-Figure / twin/shared axes relationship
 结构变化后的对象身份迁移
 任意第三方 Matplotlib Artist
 3D、地图投影、broken/inset/secondary axes 的完整位置编辑
-stackplot、网络图、路径图和 SEM 等尚未完成的专用语义容器
+stackplot 及未显式声明关系的第三方复杂语义容器
 超大数据图的交互性能
 全部真实科研项目和全部视觉截图基线
 ```
@@ -389,6 +406,18 @@ pie/wedge 工作包当时的完整 Vitest 基线为 1006/1006；其最终映射�
 | `3c448f3 + vector-field worktree` | Python 3.12 / Matplotlib 3.8.4 临时容器 | 向量场定向兼容与 capability matrix | 2026-07-19 | 5/5 PASS；固定 wheel SHA-256 已核对 |
 | `3c448f3 + vector-field worktree` | TypeScript / Vite | `npm run lint`、`npm run build`、`git diff --check` | 2026-07-19 | PASS；仅既有 bundle/CJS 警告 |
 | `3c448f3 + vector-field worktree` | 独立 gpt-5.5 high | 最终代码审查 | 2026-07-19 | APPROVE；0 HIGH/MEDIUM/LOW |
+
+### 6.3 网络图/路径图/SEM 显式语义证据台账
+
+| 代码键 | Runtime / 版本 | 命令或证据 | 时间 | 结果 |
+|---|---|---|---|---|
+| `b20b103` | 本地既有 Python renderer | complex artist、结构身份漂移 | 2026-07-19 22:26 +08:00 | 26/26 + 7/7 PASS |
+| `b20b103` | 隔离 API / 临时数据目录 | `python_diagram_semantics_persistence_smoke.mjs` | 2026-07-19 22:43 +08:00 | PASS；合法样式、科学结构拒绝、拓扑漂移、关系缺失、混合批次与篡改快照零持久化 |
+| `b20b103` | Chromium 隔离服务 | `python_diagram_semantics_smoke.mjs`、`python_diagram_cross_figure_smoke.mjs` | 2026-07-19 22:49 +08:00 | PASS；完整用户链路和三类关系 fail-closed 场景通过 |
+| `b20b103` | Vitest | `npm test` | 2026-07-19 22:50 +08:00 | 145 文件、1078/1078 PASS |
+| `b20b103` | 共享协议与组合链路 | R renderer 31/31、R semantic 5/5、R 风险预检、组合代码项目 | 2026-07-19 22:27 +08:00 | PASS |
+| `b20b103` | TypeScript / Vite | `npm run lint`、`npm run build`、`git diff --check` | 2026-07-19 22:50 +08:00 | PASS；仅既有 bundle/CJS 警告 |
+| `b20b103` | 独立 gpt-5.5 high | 关系身份修复最终复审 | 2026-07-19 22:47 +08:00 | APPROVE；0 HIGH/MEDIUM |
 
 版本记录按两个维度维护：本机 renderer resolver 当前回退到 Python 3.8.19 / Matplotlib 3.7.2；3.8.4 是 Python 3.12 临时容器中的 Matplotlib 兼容门禁。此前“网页 3.11.0”不能作为 Matplotlib 版本证据；网页 Python runtime 只有在运行时命令或不可变镜像元数据证明后才记录。本工作包未修改 `requirements.txt`、Dockerfile 或任何运行服务。
 

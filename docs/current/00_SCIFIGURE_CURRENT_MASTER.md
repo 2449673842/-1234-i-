@@ -112,7 +112,7 @@ P3：管理员后台剩余页面/受控操作、更多编辑能力和 AI 接入
 
 组合代码项目选择器 C1-C5 已于 2026-07-12 完成实现和阶段验收。当前支持来源项目搜索、项目类型与最近使用筛选、更新时间、Figure 缩略图和语义摘要、已选队列排序、`auto` 明确布局、物理尺寸预览、panel 位置映射以及重复、嵌套、版面和数据依赖检查。30 Figure fixture 已验证仅清洗可见区附近 SVG；Python/R 组合提示词按目标语言分别生成。详细状态和限制见能力架构文档第 13.1 节。
 
-### 3.4 Python 编辑正确性保护（2026-07-19 19:51:21 +08:00）
+### 3.4 Python 编辑正确性保护（2026-07-19 21:57:22 +08:00）
 
 本轮在保留既有编辑中心交互的前提下，补齐对象身份、三个复杂对象家族和 patch 持久化边界：
 
@@ -130,15 +130,15 @@ missing、unsupported、identity mismatch 返回 conflict
 现代 manifest 的 patch mode 由统一 capability helper 决定，跨 Figure 显式对象默认不 fanout
 ```
 
-新隔离 E2E 已连续证明选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和导出快照恢复。R semantic、跨 Figure、历史、导出、组合、安全、页面导航和数据审计均有对应基线证据。该结论不等于网络图、路径图、SEM 或任意第三方 Artist 已经具备专用细粒度写回。
+新隔离 E2E 已连续证明选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和导出快照恢复。R semantic、跨 Figure、历史、导出、组合、安全、页面导航和数据审计均有对应基线证据。网络图、路径图和 SEM 只有在脚本通过平台注入的 `_scifigure_semantic_gid(...)` 显式声明对象关系时才进入专用语义；任意第三方 Artist 或没有关系声明的普通线、点、箭头和文字仍按通用能力处理，不按外观猜测。
 
 独立代码审查发现的 standalone mode 权威、项目 PUT 侧门、跨 Figure replay warning、批量导出部分落库、contour 拖拽模式多选和保存 CAS 绕过均已修复。`test:patch-rejection-persistence`、`test:project-save-preflight`、`test:replay-warning-persistence`、跨 Figure 16/16 和组件浏览器 41/41 通过；最终复审没有 HIGH/MEDIUM 未解决问题。
 
 WP8 已完成首轮收敛：导出快照先经 renderer dry-run，再在数据库事务内复核并发状态；错误恢复不会写入项目、session、history 或快照。导出文件创建和资产删除具备失败补偿，单 Figure v1 保持兼容，信息不足的旧多 Figure 快照安全拒绝。相关 API、数据库、UI、并发、文件事务和完整导出矩阵均已通过隔离回归。
 
-WP6 已完成 `fill_between`、`contour/contourf`、`hist/stairs/step`、`pie/wedge` 与 `quiver/streamplot` 五个复杂对象家族。`fill_between` 具有专用 `fill_between/fill_between_series/data_band` 语义并保留旧 `collection.*` GID；`contour/contourf` 使用独立父对象、只读父对象托管子层和显式 colorbar 关系；直方图、阶梯填充和阶梯线使用专用 role，普通 bar/patch/line 不会误分类；饼图扇区、类别标签、数值标签、关联图例标记和手工 Wedge 使用独立 role 与 `pieId + sliceIndex` 关系。`quiver` 使用专用 `kind=quiver`、`role=quiver_field`，同时保留历史 `collection.*` GID/stableKey；`streamplot` 使用 `container.streamplot.*` 语义父对象，内部 line collection 和 arrow patch 只作为 `parentOwned` 只读关系对象。平台只开放可证明的视觉样式，不修改数据、统计量、角度、几何结构、向量方向/尺度、积分路径、起点或密度。
+WP6 已完成 `fill_between`、`contour/contourf`、`hist/stairs/step`、`pie/wedge`、`quiver/streamplot` 与网络图/路径图/SEM 六个复杂对象家族。前五个家族沿用已验证的专用父对象与关系模型；图示对象新增 `diagram_node`、`diagram_edge`、`diagram_arrow`、`diagram_node_label`、`diagram_coefficient_label`、`diagram_fit_annotation` 和 `diagram_group`，以 `diagramId/diagramObjectId/nodeId/edgeId/sourceNodeId/targetNodeId` 建立显式关系。平台只开放可证明的视觉样式；路径系数、p 值、显著性、拟合指标、边方向、节点身份和模型拓扑保持只读。
 
-contour 的 `cmap/vmin/vmax` 按属性能力留在当前对象/Figure；只有属性在全部目标上明确声明 `cross_figure` 才允许 fanout。当前生产集成候选已纳入 `fill_between`、`contour/contourf`、`hist/stairs/step`、`pie/wedge` 和 `quiver/streamplot` 专用语义；pie 使用 `pieId + sliceIndex`，向量场使用可信 `quiverId` 或 `streamplotId` 约束一对一映射，关系不同、重复或缺失均 fail-closed。向量场原工作包已完成 fixture、renderer、组件、Draft/backend replay、浏览器、跨 Figure、导出和恢复验证，本集成分支仍须重新完成针对性及完整 release gate。Python 后续网络/路径/SEM、特殊 axes、性能和默认启用能力仍按独立批次推进，不能据此宣布计划全部完成。
+contour 的 `cmap/vmin/vmax` 按属性能力留在当前对象/Figure；只有属性在全部目标上明确声明 `cross_figure` 才允许 fanout。pie/wedge、向量场和显式图示语义均具备专用 identity/relation、组件分组、Draft/backend replay、跨 Figure 映射、导出和快照恢复；关系缺失、冲突或重复候选均 fail-closed。图示文本的初始 manifest 与重放身份统一使用真实文本标签，关系另由完整 signature 保护，已有部分 identity 不从新 manifest 回填。当前集成分支已重新通过向量场和网络/路径/SEM 的协议、renderer、API 与真实浏览器针对性门禁；完整 release gate、特殊 axes、性能、默认启用和剩余 legacy 审计仍待完成，不能据此宣布 Python 计划全部完成。
 
 生产部署只运行一套内容固定的 renderer 镜像，并锁定 Python、R、绘图库、字体和系统依赖。Python 运行时版本与 Matplotlib 包版本必须分栏记录，不能互相替代：当前仓库 `Dockerfile.renderer` 声明 `python:3.12-slim`，`requirements.txt` 声明 `matplotlib>=3.8`；本地测试证据中的 Matplotlib 3.7.2 是既有基线，3.8.4 是显式兼容门禁。此前“网页 Matplotlib 3.11.0”没有对应包版本证据，现已撤销；`3.11.0` 只能在有运行时证据时作为 Python 版本记录。本工作包不修改依赖文件、运行服务或部署版本。
 
@@ -217,7 +217,7 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 | 能力 | 当前状态 | 说明 |
 |---|---|---|
 | 公开宣传页与注册门禁 | 已实现，邮箱生产通道待配置 | 匿名访问先进入宣传页；启用邮箱验证后，新账号必须完成六位验证码验证才会获得会话；现有账号兼容迁移 |
-| Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选已加入 `fill_between`、`contour/contourf`、`hist/stairs/step` 专用语义，完成全部门禁和部署前不视为线上能力 |
+| Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选 WP6 六个复杂对象家族已有专用语义，其中网络图/路径图/SEM 依赖显式关系声明，不承诺按外观自动识别任意第三方图示；完成全部门禁和部署前不视为线上能力 |
 | R 渲染与语义编辑 | 已实现 MVP | ggplot2 主链路可用，细粒度仍弱于 Python |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |

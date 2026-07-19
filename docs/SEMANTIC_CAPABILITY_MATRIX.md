@@ -1,6 +1,6 @@
 # SciFigure Studio 语义能力矩阵
 
-> 最后修改时间：2026-07-19 21:02:01 +08:00
+> 最后修改时间：2026-07-19 22:48:05 +08:00
 
 本矩阵记录了 SciFigure Studio 对于各类科研绘图图元的内省识别、可视化编辑以及渲染一致性的支持级别。
 
@@ -24,6 +24,7 @@
 | **pie / wedge** (饼图 / 楔形) | 🟢 是 | 🟢 通过 | 🟢 已验证 | 扇区：`facecolor`, `edgecolor`, `linewidth`, `alpha`, `visible`, `zorder`；标签：文字与字体样式 | 🟢 已验证 | 🟢 有 | `pieId + sliceIndex` 隔离扇区、标签和图例；数值、角度、圆心、半径、width 和 explode 保持只读。 |
 | **quiver** (箭矢向量场) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `color`, `facecolor`, `edgecolor`, `alpha`, `linewidth`, `visible`, `zorder` | 🟢 已验证 | 🟢 有 | 保留历史 `collection.*` 身份；U/V、scale、angles、pivot、units 和箭头几何只读。 |
 | **streamplot** (流线图) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `color`, `alpha`, `linewidth`, `visible`, `zorder` | 🟢 已验证 | 🟢 有 | 专用父对象拥有内部 line/arrow；density、start points、integration direction、向量数据和路径结构只读。 |
+| **network / path / SEM** (显式图示语义) | 🟢 是 | 🟢 通过 | 🟢 已验证 | 节点/边/箭头/组的视觉样式；标签字体、颜色与位置 | 🟢 已验证 | 🟢 有 | 仅接受 `_scifigure_semantic_gid(...)` 显式关系并比较完整 relation signature；marker 是声明协议而非认证。系数、p 值、显著性、拟合指标、方向和拓扑只读，不自动猜测第三方图示。 |
 | **heatmap** (热图) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `cmap`, `vmin`, `vmax`, `alpha` | 🟢 高一致性 | 🟢 有 | `imshow` / `pcolormesh` 底层对象目前已实现全自动只读识别和 patch 安全应用。 |
 | **colorbar** (色条) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `label`, `tick_fontsize`, `left`, `bottom`, `width`, `height` | 🟢 高一致性 | 🟢 有 | 单色条保留 `subplotId`；共享色条使用 `subplotIds` 显式多归属，并按全部 owner 的联合外框对齐，不压缩为 mappable 所在单图。 |
 | **annotation** (标注) | 🟢 Python / 🟡 R | 🟢 通过 | 🟢 已验证 | 文本：`text`, `fontsize`, `fontfamily`, `color`, `position`, `anchor_position`；箭头：`edgecolor`, `facecolor`, `linewidth`, `alpha` | 🟢 标准坐标高一致性 | 🟢 有 | Python 标准 Annotation 已建立 text/arrow/anchor 关系；callable/复合坐标与 R 独立 segment/curve 不猜测配对。 |
@@ -47,6 +48,7 @@
 | `wedge/pie` | `Axes.pie` provenance / manual `Wedge` -> dedicated | 扇区、类别标签、数值标签和手工 Wedge 分组 | 关系缺失或歧义时 fail-closed，不猜测扇区身份 |
 | `contour/contourf` | `ContourSet -> dedicated parent` | 专用父对象托管只读 child collection | levels/X/Y/Z 和路径结构只读 |
 | `streamplot` | 可信调用 -> dedicated parent | 专用 Streamplot 组件与配色，children parentOwned/readonly | 视觉样式可写；密度、起点、积分方向和路径结构只读 |
+| `network/path/SEM` | 显式 `_scifigure_semantic_gid` -> dedicated | 节点、边、箭头、节点标签、系数标签、拟合注释和整体组独立分组 | 未显式声明关系的对象保持通用分类；科学数值和拓扑只读 |
 
 对象结构身份使用 `fingerprintVersion=2`。颜色、线宽、字号等可编辑样式不再改变结构 fingerprint；旧 manifest 无版本时只使用兼容 stableKey/seriesKey，不比较历史 fingerprint。
 
@@ -77,6 +79,10 @@
 | `pie_label` / `pie_value_label` | `Axes.pie` 生成的类别文字和 `autopct` 文字 | 🟢 已接入并浏览器验证 | 标签按 `pieId + sliceIndex` 关联，不与普通 text 混组。 |
 | `data_quiver` | `kind=quiver`, `role=quiver_field` | 🟢 已接入并浏览器验证 | 独立于普通 collection/scatter；按 `quiverId` 约束跨 Figure 和图例联动。 |
 | `data_streamplot` | `kind=streamplot`, `role=streamplot_field` | 🟢 已接入并浏览器验证 | 编辑语义父对象，内部 line/arrow 不直接生成现代 patch；按 `streamplotId` 约束映射。 |
+| `diagram_node` / `diagram_group` | 显式图示节点与整体组 | 🟢 已接入并浏览器验证 | 只开放视觉样式；节点身份、坐标和组成员结构不开放。 |
+| `diagram_edge` / `diagram_arrow` | 显式图示边与方向箭头 | 🟢 已接入并浏览器验证 | 按完整 edge/source/target 关系约束跨 Figure；方向、端点和路径结构只读。 |
+| `diagram_node_label` | 节点名称标签 | 🟢 已接入并浏览器验证 | 字体、颜色和位置可编辑；内容保持只读，避免改变节点语义。 |
+| `diagram_coefficient_label` / `diagram_fit_annotation` | 路径系数与拟合指标文字 | 🟢 已接入并浏览器验证 | 字体、颜色和位置可编辑；文字、系数、p 值、显著性和拟合指标只读。 |
 | `heatmap` | `heatmap` | 🟢 已接入 | 热图色阶和透明度。 |
 | `annotation_text` | Python `text.*` Annotation、R `r.text.*` | 🟢 已接入 | 文本内容/字体/位置；位置默认禁止跨 Figure。 |
 | `annotation_arrow` | `annotation_arrow.*` | 🟢 已接入 | 箭头样式独立于普通数据线和普通 patch。 |

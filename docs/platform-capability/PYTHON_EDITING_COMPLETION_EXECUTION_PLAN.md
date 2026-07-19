@@ -1,7 +1,7 @@
 # Python 图元编辑与分组识别收敛执行计划
 
-> 状态：WP3/WP4 核心边界和 WP8 已完成；WP6 的前五个复杂对象家族已通过工作包门禁，下一家族为网络图、路径图和 SEM
-> 最后修改时间：2026-07-19 21:02:01 +08:00
+> 状态：WP3/WP4 核心边界和 WP8 已完成；WP6 六个复杂对象家族已通过工作包门禁，下一主工作包为 WP7 特殊 axes
+> 最后修改时间：2026-07-19 22:52:22 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
 > 当前部署状态：未推送、未部署；本计划不改变线上版本
@@ -29,12 +29,12 @@
 - 常见 Python 二维图元、legend、colorbar、annotation、container、twin/shared axes 已有真实 renderer 和测试基础。
 - 组件中心、字体中心、配色中心、布局中心、Draft、拖拽、历史、导出快照等主链路已经可用。
 - `identity`、`relation`、`propertyCapabilities` 和严格 target resolver 已部分接入。
-- 最新全量 Vitest 为 144 文件、1035/1035；Python complex artist coverage 22/22。`quiver/streamplot` 的 API 持久化、真实浏览器、真实控件跨 Figure、Python 完整语义工作流、组件 41/41、跨 Figure 18/18、R 5/5 和 Matplotlib 3.8.4 定向兼容门禁 5/5 均通过，生产构建通过。
+- 最新全量 Vitest 为 145 文件、1078/1078；complex artist 26/26、结构身份漂移 7/7、R renderer 31/31。网络图/路径图/SEM 显式语义的 API 持久化、真实浏览器、真实控件跨 Figure、完整用户链路、组合项目、R 5/5 和 R 风险预检均通过，生产构建通过。
 
 ### 2.2 尚未完整证明
 
 - 已有一条隔离 E2E 连续证明“选择 -> 语义分组 -> Draft -> 后端重绘 -> 刷新 -> 撤销/重做 -> 导出 -> 后续编辑 -> 快照恢复”，但尚未扩展到全部复杂对象家族。
-- 当前 Python capability matrix 只有 5 个 renderer 级 fixture，不等同于完整用户流程。
+- capability matrix 只证明当前 renderer fixture，不等同于任意真实科研脚本的完整用户流程。
 - line、scatter、bar、errorbar、boxplot、violin 等文档能力仍缺少完整浏览器矩阵证据。
 - 结构变化后的对象身份、复杂 collection 的真实语义和特殊 axes 坐标契约仍不完整。
 
@@ -46,7 +46,7 @@
 4. [已在 WP8 修复] 导出文件与数据库记录之间只有补偿式流程，没有完整失败回滚证据。
 5. `instanceKey` 仍以 GID 为核心，插入、删除或重排 artist 后可能漂移。
 6. [已在 WP4 修复] `fingerprint` 包含可编辑样式，不适合作为结构身份锚点。
-7. [已在 WP6 修复] quiver 和 streamplot 曾被压平成普通 collection/patch/container，缺少稳定父对象、结构只读边界和跨 Figure 关系约束。
+7. [已在 WP6 修复] quiver、streamplot 及网络图/路径图/SEM 曾被压平成普通 collection/patch/container/text，缺少稳定父对象或显式关系、结构只读边界和跨 Figure 关系约束。
 8. [renderer 已修复，用户摘要待 WP5] `coverageReport` 不能区分“真正语义支持”和“被普通基类接住”。
 
 ### 2.4 2026-07-18 首轮执行结果
@@ -57,7 +57,7 @@
 - 项目 Figure 的 Python patch 以 manifest `propertyCapabilities.patchMode` 为权威；客户端不能把 backend 属性伪装成 local。
 - 预检或 renderer 拒绝任一新 patch 时，整批返回 `conflict`，revision、session、项目 Figure、history、cache、导出锚点和快照均不改变。
 - 合法 local/backend 混合批次完整重放并只增加一次 revision；前端 conflict 保留 Draft，不把现有 Figure 标成渲染失败。
-- 复杂对象先通过 `semanticCoverage` Shadow 报告记录证据；已完成的 fill_between、contour、hist/stairs/step、pie/wedge 和 quiver/streamplot 已按家族提升为 dedicated，未完成家族继续保持 flattened/conditional/readonly。
+- 复杂对象先通过 `semanticCoverage` Shadow 报告记录证据；WP6 六个家族已按可信来源提升为 dedicated，未显式声明关系的第三方图示和其他未完成家族继续保持 generic/flattened/conditional/readonly。
 - Python patch cache 只命中本进程已通过 renderer 确认的 key；旧磁盘 cache 在重启后先重新验证。
 - 项目 PUT 保存接口现在复用可信 manifest/propertyCapabilities 预检；editLog、history 和无 manifest 新编辑均不会绕过验证。
 - 统一 `resolvePatchMode` 已接入前端编译器、配色、属性/组件/字体/图层入口；现代 manifest 缺失属性声明时不再使用 legacy 猜测。
@@ -65,7 +65,7 @@
 
 第二轮代码审查发现的 standalone mode 权威问题已修复，并由 `test:patch-rejection-persistence` 覆盖无 projectId 伪报 local、missing gid 和 mixed batch。项目 PUT 另由 `test:project-save-preflight` 覆盖保存入口和 history 侧门。
 
-仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 用户可见能力报告、WP6 网络/路径/SEM 等其余复杂对象家族、WP7 特殊 axes、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP8 已完成；WP6 的 `fill_between`、`contour/contourf`、`hist/stairs/step`、`pie/wedge`、`quiver/streamplot` 已完成专用写回和适用用户链路。
+仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 用户可见能力报告、WP7 特殊 axes、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP8 已完成；WP6 六个复杂对象家族已完成当前计划范围的专用写回和适用用户链路。
 
 ### 2.5 2026-07-18 WP8 执行结果
 
@@ -127,7 +127,19 @@
 - 跨 Figure 必须匹配可信 `quiverId` 或 `streamplotId`，包括关联图例 marker；关系缺失、冲突或重复候选均 fail-closed。修复显式 `crossFigure: allow` 曾绕过身份映射、对关系不匹配 Figure 做 role-wide fanout 的问题。
 - 结构参数拒绝测试证明 revision、session、history、cache、export anchor 和 snapshot 均不改变；普通 `LineCollection`、`FancyArrowPatch`、scatter 和 patch 保持通用分类。
 - 最新证据：Vitest 144 文件、1035/1035；complex artist coverage 22/22；向量场 API 持久化、真实浏览器、真实控件跨 Figure、Python 完整语义工作流、patch 拒绝、组件 41/41、跨 Figure 18/18、R 5/5、Matplotlib 3.8.4 兼容 5/5、lint/build/diff-check 均通过。
-- 独立 gpt-5.5 high 审查 APPROVE，0 HIGH/MEDIUM/LOW；未提交、推送或部署。
+- 独立 gpt-5.5 high 审查 APPROVE，0 HIGH/MEDIUM/LOW；已包含于本地提交 `b20b103`，未推送或部署。
+
+### 2.12 2026-07-19 WP6 网络图/路径图/SEM 显式语义收敛
+
+- renderer 注入 `_scifigure_semantic_gid(...)`，只接受脚本显式声明的 `diagramId/diagramType/diagramObjectId/nodeId/edgeId/sourceNodeId/targetNodeId`，不按外观、颜色或标签猜测关系。
+- 专用角色包括 node、edge、arrow、node label、coefficient label、fit annotation 和 group；普通 scatter、line、FancyArrowPatch 和 text 保持通用分类。
+- 节点、边、箭头、组和文字样式统一走 backend replay；路径系数、p 值、显著性、拟合指标、边方向、节点身份和模型拓扑保持只读。
+- 组件中心和配色中心按完整图示身份隔离；跨 Figure 只映射关系完整且唯一的目标，关系不同、缺失、冲突或重复均 fail-closed。
+- 修复受保护图示文字初始 manifest 与重放身份标签不一致导致合法字体修改被 `identity_mismatch` 拒绝的问题；两条路径统一使用真实文本，同时保留 v2 stableKey/fingerprint/seriesKey 核验。
+- 新增完整 diagram relation signature，renderer、项目 patch 预检和导出快照恢复逐字段核验 `diagramId/diagramType/diagramObjectId/nodeId/edgeId/sourceNodeId/targetNodeId`；部分 identity 不使用当前 manifest 回填，防止静默掩盖拓扑漂移。
+- 显式 marker 是用户声明协议而非认证机制；合法手写 marker 可进入 dedicated，畸形或不完整 marker 保持普通图元，不赋予科学真实性。
+- 真实浏览器连续覆盖 Draft、应用、保存刷新、撤销重做、位置、SVG 导出、后续编辑和快照恢复；API 覆盖 7 类视觉样式持久化和 13 类科学结构属性零持久化拒绝。
+- 最新证据：Vitest 145 文件、1078/1078；complex artist 26/26、结构身份 7/7、R renderer 31/31；图示 API、浏览器、跨 Figure、组合代码项目、patch 拒绝、快照恢复、R 5/5、R 风险预检、lint/build/diff-check 和数据审计均通过。首次独立审查的 HIGH 已修复，最终复审 APPROVE、0 HIGH/MEDIUM；实现提交为 `b20b103`，未推送或部署。
 
 ## 3. 决策原则
 
@@ -304,9 +316,9 @@
 3. `hist/stairs/step` / 直方与阶梯系列。[已完成专用语义、结构只读、保存并发与完整门禁]
 4. `pie/wedge` / 扇区、标签和图例。[已完成专用语义、结构只读、身份隔离和工作包门禁]
 5. `quiver/streamplot` / 向量场。[已完成专用父对象、结构只读、身份隔离和工作包门禁]
-6. 网络图、路径图和 SEM 的节点/边/箭头/系数文字关系。[下一执行家族]
+6. 网络图、路径图和 SEM 的节点/边/箭头/系数文字关系。[已完成显式语义、科学结构只读、身份隔离和工作包门禁]
 
-下一执行家族为网络图、路径图和 SEM。必须先建立 node/edge/arrow/coefficient/label 的可信来源和关系模型；图形样式与科学结构分离，任何路径系数、p 值、拟合指标、显著性、方向或模型拓扑在没有专项证据前保持只读。
+WP6 当前清单已完成。下一主工作包为 WP7 特殊 axes 和坐标契约；WP3/WP4/WP5 的剩余审计继续在阶段门禁中收敛。显式图示语义仍坚持图形样式与科学结构分离，路径系数、p 值、拟合指标、显著性、方向和模型拓扑保持只读。
 
 每个家族必须依次完成：
 

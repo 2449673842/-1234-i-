@@ -5,6 +5,45 @@
 
 ---
 
+## 2026-07-19 22:48:05 +08:00 图示对象关系身份不完整且受保护文字重放被误判身份漂移
+
+**状态与级别**
+
+- 状态：已修复并通过 renderer、API、真实浏览器、跨 Figure、导出恢复、R 共享协议和数据审计；首次独立审查发现的关系补齐 HIGH 已修复，最终复审 APPROVE、0 HIGH/MEDIUM。实现已包含于本地提交 `b20b103`，尚未推送或部署。
+- 级别：P0/P1 编辑正确性。不会删除源数据，但可能把网络图、路径图或 SEM 图元按外观错误联动，或把合法字体修改拒绝为 `identity_mismatch`。
+
+**根因**
+
+- 普通 Matplotlib patch、collection、line、arrow 和 text 无法仅凭颜色、形状或标签可靠区分节点、边、箭头、路径系数和拟合指标。
+- 第一版专用语义的初始 manifest 对受保护图示文字使用真实文本生成 stableKey/fingerprint；renderer 重放身份校验仍使用内部 GID 标签，两条路径不一致。
+- 第一版图示 `seriesKey` 只包含 diagram、role 和 object id，未包含 `diagramType/nodeId/edgeId/sourceNodeId/targetNodeId`；相同 GID、几何和 object id 但端点变化时，旧样式可能静默作用于新的科学关系。
+- 对已经携带部分 identity 的旧 Draft 使用当前 manifest 补齐缺失端点，会掩盖本应被发现的拓扑漂移。
+- 新浏览器测试把“导出前 session editLog”直接当成导出快照状态，遗漏既有契约会补齐最后成功预览的 `figure.width_in/height_in/dpi`，产生假失败。
+
+**修复**
+
+- renderer 注入 `_scifigure_semantic_gid(...)`，只接受脚本显式声明的 diagram、node 和 edge 关系；普通外观相似对象保持通用分类。
+- 新增 `diagram_node/edge/arrow/node_label/coefficient_label/fit_annotation/group` 七类 role、独立组件与配色分组，全部样式使用 backend replay。
+- 路径系数、p 值、显著性、拟合指标、方向、端点、节点身份和模型拓扑保持只读；拒绝请求不写 revision、session、history、cache、导出锚点或快照。
+- 初始 manifest 与 `_current_identity_signature()` 对受保护文字统一使用真实文本标签，保留完整 v2 stableKey/fingerprint/seriesKey 校验。
+- renderer、项目 patch 预检和导出快照 dry-run 统一比较七个关系字段组成的完整 diagram relation signature；关系缺失、类型异常或任一端点变化均整批 fail-closed。
+- patch 只有在 identity 完全缺失时才从当前 manifest 首次捕获；已存在的完整或部分 identity 原样保留，不使用较新的 manifest 回填证据。
+- `scifigure-sem-v1:` / `_scifigure_semantic_gid(...)` 是用户脚本的显式声明协议，不是密码、签名或科学真实性认证；合法手写 marker 可识别，畸形 marker 保持普通图元。
+- 导出恢复浏览器测试按 `mergePreviewGlobalsIntoEditLog` 的既有契约计算期望快照，不修改产品恢复逻辑。
+
+**验证与防复发**
+
+- Vitest 145 文件、1078/1078；complex artist 26/26、结构身份漂移 7/7、R renderer 31/31。
+- 图示 API 持久化覆盖 7 类合法视觉样式和 13 类科学结构属性零持久化拒绝。
+- 真实浏览器覆盖 Draft、应用、保存刷新、撤销重做、文字位置、SVG 导出、后续编辑和快照恢复；跨 Figure 覆盖关系不同、缺失和重复三类 fail-closed 场景。
+- 组合代码项目、R 浏览器 5/5、R 风险预检、TypeScript、生产构建和 `git diff --check` 通过。
+- 图示 API 额外覆盖拓扑变化、关系缺失、合法+冲突混合批次和篡改导出快照；拒绝后 revision、session、history、cache、export anchor 和 snapshot 均不改变。
+- 数据审计保持 25 用户、121 项目、263 项目文件、101 导出资产、0 错误。
+- 后续新增身份标签规则必须同时修改初始 manifest 与重放身份路径，并用携带完整 v2 身份的 backend patch 回归；不得通过删除 fingerprint 校验修复合法编辑。
+- 后续图示能力只能由显式语义或可证明的库级 adapter 开放，不能按外观、颜色或文字内容猜测科学关系。
+
+---
+
 ## 2026-07-19 21:02:01 +08:00 向量场被压平、跨 Figure 关系绕过与结构参数误编辑风险
 
 **状态与级别**
