@@ -3,6 +3,7 @@ import type { ManifestObject } from '../schemas/manifest';
 import {
   buildDiagramComponentGroups,
   isDedicatedDiagramComponentObject,
+  supportsComponentBatchProp,
   supportsSubplotBoundProp,
 } from './RightSidebar';
 
@@ -113,5 +114,71 @@ describe('RightSidebar subplot bound capability gates', () => {
     expect(supportsSubplotBoundProp(legacySubplot, 'left')).toBe(true);
     expect(supportsSubplotBoundProp(legacySubplot, 'height')).toBe(true);
     expect(supportsSubplotBoundProp(legacySubplot, 'width')).toBe(false);
+  });
+});
+
+describe('RightSidebar component center capability gates', () => {
+  it('uses propertyCapabilities as the modern per-prop authority for subplot batch controls', () => {
+    const subplot = {
+      id: 'subplot.0',
+      kind: 'subplot',
+      label: 'subplot.0',
+      editable: ['left', 'bottom', 'width', 'height', 'aspect'],
+      currentProps: {
+        left: 0.1,
+        bottom: 0.1,
+        width: 0.8,
+        height: 0.8,
+        aspect: 'auto',
+      },
+      propertyCapabilities: [{
+        prop: 'width',
+        patchMode: 'backend_patch',
+        scopes: ['object'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    } as ManifestObject;
+
+    expect(supportsComponentBatchProp(subplot, 'width')).toBe(true);
+    expect(supportsComponentBatchProp(subplot, 'left')).toBe(false);
+    expect(supportsComponentBatchProp(subplot, 'bottom')).toBe(false);
+    expect(supportsComponentBatchProp(subplot, 'height')).toBe(false);
+    expect(supportsComponentBatchProp(subplot, 'aspect')).toBe(false);
+  });
+
+  it('keeps legacy component center subplot bounds editable without propertyCapabilities', () => {
+    const legacySubplot = {
+      id: 'subplot.legacy',
+      kind: 'subplot',
+      label: 'subplot.legacy',
+      editable: ['left'],
+      currentProps: { left: 0.1, bottom: 0.1, width: 0.8, height: 0.8 },
+    } as ManifestObject;
+
+    expect(supportsComponentBatchProp(legacySubplot, 'left')).toBe(true);
+    expect(supportsComponentBatchProp(legacySubplot, 'bottom')).toBe(true);
+    expect(supportsComponentBatchProp(legacySubplot, 'width')).toBe(true);
+    expect(supportsComponentBatchProp(legacySubplot, 'height')).toBe(true);
+  });
+
+  it('does not expose modern legend layout props omitted from capabilities', () => {
+    const legend = {
+      id: 'legend.0',
+      kind: 'legend',
+      label: 'legend.0',
+      editable: ['handlelength', 'handleheight'],
+      currentProps: { handlelength: 2, handleheight: 0.7 },
+      propertyCapabilities: [{
+        prop: 'handlelength',
+        patchMode: 'backend_patch',
+        scopes: ['object'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    } as ManifestObject;
+
+    expect(supportsComponentBatchProp(legend, 'handlelength')).toBe(true);
+    expect(supportsComponentBatchProp(legend, 'handleheight')).toBe(false);
   });
 });

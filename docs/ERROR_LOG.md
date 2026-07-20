@@ -5,6 +5,49 @@
 
 ---
 
+## 2026-07-20 11:36:50 +08:00 组件中心批量入口仍可能显示未声明属性并残留已应用 Draft
+
+**状态与级别**
+
+- 状态：已修复并通过 RightSidebar、Draft transaction、lint、组件中心真实浏览器 smoke 和 diff 检查；随本轮本地候选提交保存，未推送或部署。
+- 级别：P1 编辑入口一致性与暂存状态正确性。不会删除数据，但可能让现代 manifest 未声明的组件属性出现在批量控件中，或在应用成功后残留同一批已确认 Draft，导致下一次保存预检冲突。
+
+**现象**
+
+- 组件中心批量入口的 `supportsBatchProp` 与子图详情入口已开始收敛，但批量组内仍有部分控件按 kind/legacy 规则整体显示。
+- 现代对象只有部分 `propertyCapabilities` 时，批量区块可能出现未声明的 `left/bottom/height/aspect` 等控件。
+- 部分组件中心 set patch 以 local 方式暂存后，保存成功响应返回时可能仍读取旧 React state；已持久化的 Draft 没有立即从当前 scope 清除，后续批次可能再次提交同一 patch。
+
+**根因**
+
+- 组件中心批量支持判断仍是 RightSidebar 内部局部函数，外部测试无法直接覆盖，并且部分 legacy fallback 没有统一暴露为可测 helper。
+- `apply current drafts` 在异步执行期间读取闭包中的 `projectDrafts`，可能落后于最新 Draft 状态。
+- Draft 清理只依赖 settlement 流程，没有在当前 Figure 成功应用后做同内容确认删除。
+
+**修复**
+
+- 新增并导出 `supportsComponentBatchProp`，批量控件统一复用 capability-aware 规则：现代 `propertyCapabilities` 为权威，旧 manifest 才走 legacy fallback。
+- 子图批量 bounds 控件改为按 `left/bottom/width/height/aspect` 逐项显示，不再因 `width` 可编辑而展示其他未声明字段。
+- 组件中心生成的 set patch 保守标记为 `backend_patch`，由 renderer 验证后再持久化，避免语义组件编辑被未验证 local Draft 误认为成功。
+- `projectDraftsRef` 与 state 同步；成功应用当前 Figure 后，仅当当前 Draft 与执行快照内容完全一致时删除该 Draft，避免误删保存期间用户新改动。
+- 新增 `isSameDraftPatch` 做内容级比较，不再依赖对象引用相同。
+
+**验证**
+
+- `npm test -- RightSidebar`：8 项通过。
+- `npm test -- draftTransaction`：4 个测试文件、32 项通过。
+- `npm run lint`：通过。
+- `npm run test:component-container-smoke`：PASS=41、FAIL=0。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+**防复发规则**
+
+- 组件中心、配色中心、字体中心和布局中心不得各自维护不可测试的 capability 判断；新增批量属性必须暴露或复用可测 helper。
+- 已应用 Draft 的清理必须比较执行前快照与当前 Draft 内容，不能按 `gid/prop` 粗略删除，也不能保留已确认成功的同内容 Draft。
+- 组件中心语义 set patch 默认走 renderer 验证；只有 capability 明确证明可本地安全应用时，才允许 local persistence。
+
+---
+
 ## 2026-07-20 10:37:13 +08:00 子图 bounds 外层 capability 通过后内部仍显示未声明属性
 
 **状态与级别**

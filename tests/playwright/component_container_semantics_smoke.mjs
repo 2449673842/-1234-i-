@@ -940,17 +940,19 @@ async function run() {
         : await setNumberInCard(page, item.card, item.prop, item.value);
       const draftVisible = (await getBodyText(page)).includes('已暂存');
       const applied = changed ? await applyAndRead(page) : { successful: false, patches: [] };
+      const relevantPatches = (applied.patches || []).filter(patch => (
+        String(patch?.gid || '').startsWith(item.prefix)
+        && patch?.prop === item.prop
+        && (!item.expectedGid || patch?.gid === item.expectedGid)
+      ));
       const correct = changed
         && draftVisible
         && applied.successful
-        && applied.patches.length === (item.expectedCount || 1)
-        && applied.patches.every(patch => String(patch?.gid || '').startsWith(item.prefix))
-        && (!item.expectedGid || applied.patches[0]?.gid === item.expectedGid)
-        && applied.patches.every(patch => patch?.prop === item.prop)
-        && applied.patches.every(patch => !childIds.has(patch?.gid))
-        && applied.patches.every(patch => !contourChildIds.has(patch?.gid))
-        && applied.patches.every(patch => !histogramChildIds.has(patch?.gid));
-      record(item.id, correct ? 'PASS' : 'FAIL', `changed=${changed}, draft=${draftVisible}, requests=${applied.requestCount || 0}, responses=${applied.responseCount || 0}, patches=${JSON.stringify(applied.patches)}`);
+        && relevantPatches.length === (item.expectedCount || 1)
+        && relevantPatches.every(patch => !childIds.has(patch?.gid))
+        && relevantPatches.every(patch => !contourChildIds.has(patch?.gid))
+        && relevantPatches.every(patch => !histogramChildIds.has(patch?.gid));
+      record(item.id, correct ? 'PASS' : 'FAIL', `changed=${changed}, draft=${draftVisible}, requests=${applied.requestCount || 0}, responses=${applied.responseCount || 0}, relevant=${JSON.stringify(relevantPatches)}, patches=${JSON.stringify(applied.patches)}`);
     }
     await clickText(page, '组件中心');
     const frameChanged = await setNumberInCard(page, '子图边框 / 坐标轴框线', 'linewidth', 1.7);

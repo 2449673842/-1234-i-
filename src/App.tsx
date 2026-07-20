@@ -27,6 +27,7 @@ import { compileEditingIntent, retargetEditingIntentForFigure } from './utils/ed
 import {
   draftAppliesToFigure,
   draftsEligibleForDirectPersistence,
+  isSameDraftPatch,
   mergeDraftSettlement,
   settleDraftTransaction,
 } from './utils/draftTransaction';
@@ -551,7 +552,16 @@ export default function App() {
     }
   };
 
-  const [projectDrafts, setProjectDrafts] = useState<Record<string, Record<string, DraftPatch>>>(initialState.projectDrafts ?? {});
+  const [projectDrafts, setProjectDraftsState] = useState<Record<string, Record<string, DraftPatch>>>(initialState.projectDrafts ?? {});
+  const projectDraftsRef = useRef<Record<string, Record<string, DraftPatch>>>(initialState.projectDrafts ?? {});
+  const setProjectDrafts = (nextValue: React.SetStateAction<Record<string, Record<string, DraftPatch>>>) => {
+    const previous = projectDraftsRef.current;
+    const next = typeof nextValue === 'function'
+      ? (nextValue as (prevState: Record<string, Record<string, DraftPatch>>) => Record<string, Record<string, DraftPatch>>)(previous)
+      : nextValue;
+    projectDraftsRef.current = next;
+    setProjectDraftsState(next);
+  };
   const [editingIntentReports, setEditingIntentReports] = useState<EditingIntentApplyReport[]>([]);
 
   const normalizeDraftForFigure = (figId: string, draft: DraftPatch): DraftPatch => {
@@ -1240,7 +1250,7 @@ export default function App() {
       return;
     }
 
-    const draftSourceBucket = (projectDrafts[figId] || {}) as Record<string, DraftPatch>;
+    const draftSourceBucket = (projectDraftsRef.current[figId] || {}) as Record<string, DraftPatch>;
     const draftEntries = Object.entries(draftSourceBucket);
     if (draftEntries.length === 0) return;
 
@@ -1423,6 +1433,25 @@ export default function App() {
       try {
         const result = await executeSingleFigurePatch(nextJob.targetId, nextJob.patches);
         executionResults.push(result);
+        if (scope === 'current' && result.success) {
+          setProjectDrafts(prev => {
+            const currentBucket = prev[figId] || {};
+            const nextBucket = { ...currentBucket };
+            nextJob.draftKeys.forEach((draftKey) => {
+              const snapshotDraft = draftSourceBucket[draftKey];
+              if (snapshotDraft && isSameDraftPatch(currentBucket[draftKey], snapshotDraft)) {
+                delete nextBucket[draftKey];
+              }
+            });
+            const next = { ...prev };
+            if (Object.keys(nextBucket).length > 0) {
+              next[figId] = nextBucket;
+            } else {
+              delete next[figId];
+            }
+            return next;
+          });
+        }
       } catch (err: any) {
         console.error(`Failed to apply patches to ${nextJob.targetId}:`, err);
         executionResults.push({

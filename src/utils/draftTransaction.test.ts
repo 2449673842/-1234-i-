@@ -103,6 +103,15 @@ describe('draft transaction settlement', () => {
     expect(merged).toEqual({ color: newerColorDraft, width: widthDraft });
   });
 
+  it('clears an applied draft when React recreated the same draft object', () => {
+    const snapshot = { color: colorDraft };
+    const current = { color: { ...colorDraft }, width: widthDraft };
+
+    const merged = mergeDraftSettlement(current, snapshot, {});
+
+    expect(merged).toEqual({ width: widthDraft });
+  });
+
   it('does not let save consume drafts reserved for failed-figure retry', () => {
     const retryDraft = { ...colorDraft, pendingFigureIds: ['fig_2'] };
 

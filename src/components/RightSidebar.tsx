@@ -56,6 +56,7 @@ interface RightSidebarProps {
 }
 
 const LOCAL_PROPS = new Set(['text', 'color', 'visible', 'facecolor', 'edgecolor', 'alpha']);
+const COLORBAR_LAYOUT_PROPS = new Set(['left', 'bottom', 'width', 'height']);
 const LEGEND_LAYOUT_PROPS = new Set([
   'markerscale',
   'marker_yoffset',
@@ -348,6 +349,60 @@ export function supportsSubplotBoundProp(
   prop: 'left' | 'bottom' | 'width' | 'height',
 ): boolean {
   return supportsObjectProp(obj, prop);
+}
+
+function componentUnsupportedProps(obj: ManifestObject | undefined): string[] {
+  const unsupported = obj?.currentProps?.unsupportedProps;
+  return Array.isArray(unsupported) ? unsupported.map(String) : [];
+}
+
+export function supportsComponentBatchProp(
+  obj: ManifestObject | undefined,
+  prop: string,
+  generatedBy?: string,
+): boolean {
+  if (!obj) return false;
+  if (supportsObjectProp(obj, prop)) return true;
+  if (isParentOwnedManifestObject(obj)) return false;
+  if (isPythonStructuralSeriesProp(obj, prop)) return false;
+  if (hasAuthoritativePropertyCapabilities(obj)) return false;
+
+  const unsupportedProps = componentUnsupportedProps(obj);
+  if (prop === 'visible') return true;
+  if (STEM_PROPS.has(prop)) return obj.kind === 'stem_container' && !unsupportedProps.includes(prop);
+  if (prop === 'alpha') return ['line', 'patch', 'collection', 'fill_between', 'legend', 'grid', 'text', 'figure', 'bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container', 'heatmap', 'contour', 'contourf'].includes(obj.kind);
+  if (prop === 'color') return ['line', 'patch', 'collection', 'text', 'spine', 'spine_group', 'grid', 'xtick', 'ytick', 'bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container'].includes(obj.kind);
+  if (prop === 'facecolor') return ['patch', 'collection', 'fill_between', 'legend', 'bar_container', 'violinplot_container'].includes(obj.kind);
+  if (prop === 'edgecolor') return ['patch', 'collection', 'fill_between', 'legend', 'bar_container', 'violinplot_container'].includes(obj.kind);
+  if (prop === 'linewidth') return ['line', 'patch', 'collection', 'fill_between', 'spine', 'spine_group', 'grid', 'bar_container', 'errorbar_container', 'boxplot_container', 'violinplot_container', 'contour'].includes(obj.kind);
+  if (['cmap', 'vmin', 'vmax'].includes(prop)) return ['heatmap', 'contour', 'contourf'].includes(obj.kind);
+  if (prop === 'zorder') return ['line', 'patch', 'collection', 'fill_between', 'bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container', 'heatmap', 'contour', 'contourf'].includes(obj.kind);
+  if (['elinewidth', 'capsize', 'capthick'].includes(prop)) return obj.kind === 'errorbar_container';
+  if (prop === 'box_color' || prop === 'median_color') return obj.kind === 'boxplot_container';
+  if (prop === 'markersize') return obj.kind === 'line' || obj.kind === 'stem_container' || obj.kind === 'errorbar_container';
+  if (LEGEND_LAYOUT_PROPS.has(prop)) {
+    return obj.kind === 'legend' && (generatedBy !== 'r_svg' || obj.editable.includes(prop));
+  }
+  if (prop === 'size') return obj.kind === 'collection';
+  if (prop === 'size_scale') return obj.kind === 'collection';
+  if (prop === 'fontsize') return obj.kind === 'text' || obj.kind === 'legend' || obj.kind === 'xtick' || obj.kind === 'ytick';
+  if (prop === 'fontfamily') return obj.kind === 'text' || obj.kind === 'legend' || obj.kind === 'xtick' || obj.kind === 'ytick';
+  if (prop === 'fontweight' || prop === 'fontstyle') return obj.kind === 'text' || obj.kind === 'legend' || obj.kind === 'xtick' || obj.kind === 'ytick';
+  if (prop === 'tick_fontweight' || prop === 'tick_fontstyle') return obj.kind === 'axis_x' || obj.kind === 'axis_y';
+  if (obj.kind === 'colorbar' && (COLORBAR_LAYOUT_PROPS.has(prop) || prop === 'tick_fontsize' || prop === 'label')) {
+    return !unsupportedProps.includes(prop);
+  }
+  if (['left', 'bottom', 'width', 'height', 'aspect'].includes(prop)) {
+    return obj.kind === 'subplot' && !unsupportedProps.includes(prop);
+  }
+  if (prop === 'linestyle') return ['line', 'grid', 'spine', 'spine_group', 'contour'].includes(obj.kind);
+  if (['tick_rotation', 'tick_label_dx', 'tick_label_dy'].includes(prop)) {
+    return ['axis_x', 'axis_y'].includes(obj.kind);
+  }
+  if (['tick_direction', 'tick_length', 'tick_width', 'tick_color', 'show_minor_ticks'].includes(prop)) {
+    return ['axis_x', 'axis_y', 'axes'].includes(obj.kind);
+  }
+  return false;
 }
 
 const DEFAULT_PHYSICAL_AXES_LAYOUT: PhysicalAxesLayoutSettings = {
@@ -1193,7 +1248,11 @@ export function RightSidebar({
     if (result.skipped.length > 0) {
       console.warn('[ComponentTargetResolverV2] skipped targets', result.skipped);
     }
-    return result.patches.map(patch => ({ ...patch, intent } as unknown as PatchEntry));
+    return result.patches.map(patch => ({
+      ...patch,
+      ...('op' in patch && patch.op === 'set' ? { mode: 'backend_patch' as const } : {}),
+      intent,
+    } as unknown as PatchEntry));
   };
 
   const skippedReasonLabel = (reason: EditingIntentSkippedTarget['reason']) => {
@@ -3976,45 +4035,7 @@ export function RightSidebar({
   };
 
   const supportsBatchProp = (obj: ManifestObject | undefined, prop: string): boolean => {
-    if (!obj) return false;
-    if (isParentOwnedManifestObject(obj)) return false;
-    if (isPythonStructuralSeriesProp(obj, prop)) return false;
-    const declaredCapability = obj.propertyCapabilities?.find(capability => capability.prop === prop);
-    if (declaredCapability) return declaredCapability.replay !== 'unsupported';
-    if (hasAuthoritativePropertyCapabilities(obj)) return false;
-    if (obj.editable.includes(prop) && !getUnsupportedProps(obj).includes(prop)) return true;
-    if (prop === 'visible') return true;
-    if (STEM_PROPS.has(prop)) return obj.kind === 'stem_container' && !getUnsupportedProps(obj).includes(prop);
-    if (prop === 'alpha') return ['line', 'patch', 'collection', 'fill_between', 'legend', 'grid', 'text', 'figure', 'bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container', 'heatmap', 'contour', 'contourf'].includes(obj.kind);
-    if (prop === 'color') return ['line', 'patch', 'collection', 'text', 'spine', 'spine_group', 'grid', 'xtick', 'ytick', 'bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container'].includes(obj.kind);
-    if (prop === 'facecolor') return ['patch', 'collection', 'fill_between', 'legend', 'bar_container', 'violinplot_container'].includes(obj.kind);
-    if (prop === 'edgecolor') return ['patch', 'collection', 'fill_between', 'legend', 'bar_container', 'violinplot_container'].includes(obj.kind);
-    if (prop === 'linewidth') return ['line', 'patch', 'collection', 'fill_between', 'spine', 'spine_group', 'grid', 'bar_container', 'errorbar_container', 'boxplot_container', 'violinplot_container', 'contour'].includes(obj.kind);
-    if (['cmap', 'vmin', 'vmax'].includes(prop)) return ['heatmap', 'contour', 'contourf'].includes(obj.kind);
-    if (prop === 'zorder') return ['line', 'patch', 'collection', 'fill_between', 'bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container', 'heatmap', 'contour', 'contourf'].includes(obj.kind);
-    if (['elinewidth', 'capsize', 'capthick'].includes(prop)) return obj.kind === 'errorbar_container';
-    if (prop === 'box_color' || prop === 'median_color') return obj.kind === 'boxplot_container';
-    if (prop === 'markersize') return obj.kind === 'line';
-    if (LEGEND_LAYOUT_PROPS.has(prop)) return obj.kind === 'legend';
-    if (prop === 'size') return obj.kind === 'collection';
-    if (prop === 'size_scale') return obj.kind === 'collection';
-    if (prop === 'fontsize') return obj.kind === 'text' || obj.kind === 'legend' || obj.kind === 'xtick' || obj.kind === 'ytick';
-    if (prop === 'fontfamily') return obj.kind === 'text' || obj.kind === 'legend' || obj.kind === 'xtick' || obj.kind === 'ytick';
-    if (prop === 'fontweight' || prop === 'fontstyle') return obj.kind === 'text' || obj.kind === 'legend' || obj.kind === 'axis_x' || obj.kind === 'axis_y' || obj.kind === 'xtick' || obj.kind === 'ytick';
-    if (['left', 'bottom', 'width', 'height', 'aspect'].includes(prop)) {
-      return obj.kind === 'subplot' && !getUnsupportedProps(obj).includes(prop);
-    }
-    if (['left', 'bottom', 'width', 'height', 'tick_fontsize', 'label'].includes(prop)) {
-      return obj.kind === 'colorbar';
-    }
-    if (prop === 'linestyle') return ['line', 'grid', 'spine', 'spine_group', 'contour'].includes(obj.kind);
-    if (['tick_rotation', 'tick_label_dx', 'tick_label_dy'].includes(prop)) {
-      return ['axis_x', 'axis_y'].includes(obj.kind);
-    }
-    if (['tick_direction', 'tick_length', 'tick_width', 'tick_color', 'show_minor_ticks'].includes(prop)) {
-      return ['axis_x', 'axis_y', 'axes'].includes(obj.kind);
-    }
-    return false;
+    return supportsComponentBatchProp(obj, prop, manifest.generatedBy);
   };
 
   const clampNumber = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -4822,6 +4843,9 @@ export function RightSidebar({
           const projectedControls = COMPONENT_CONTROLS_V2_ENABLED
             ? projectComponentGroupControls(targetObjects, group.id)
             : [];
+          const supportsComponentProp = (prop: string) => targetObjects.some(obj => supportsBatchProp(obj, prop));
+          const hasSubplotBoundsControl = ['left', 'bottom', 'width', 'height', 'aspect']
+            .some(prop => targetObjects.some(obj => obj.kind === 'subplot' && supportsBatchProp(obj, prop)));
           return (
             <div
               key={group.id}
@@ -5046,15 +5070,15 @@ export function RightSidebar({
                 {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'fontstyle')) && (
                   renderSelectInput('字形', commonComponentProp(targetObjects, 'fontstyle', 'normal') as string, ['normal', 'italic', 'oblique'], (value) => patchComponentGroup(targetObjects, 'fontstyle', value))
                 )}
-                {targetObjects.some(obj => obj.kind === 'subplot' && supportsBatchProp(obj, 'width')) && (
+                {hasSubplotBoundsControl && (
                   <div className="space-y-2 rounded-md border border-slate-100 bg-white/80 p-2">
                     <div className="text-[11px] font-semibold text-slate-500">真实绘图区 / 坐标轴框</div>
                     <div className="text-[11px] leading-relaxed text-slate-400">批量统一多个子图坐标轴框的位置和宽高，不改变整张白色画布。</div>
-                    {renderNumberInput(`component-${group.id}`, 'left', commonComponentProp(targetObjects, 'left', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'left', value), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区左边距' })}
-                    {renderNumberInput(`component-${group.id}`, 'bottom', commonComponentProp(targetObjects, 'bottom', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'bottom', value), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区下边距' })}
-                    {renderNumberInput(`component-${group.id}`, 'width', commonComponentProp(targetObjects, 'width', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'width', value), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区宽度' })}
-                    {renderNumberInput(`component-${group.id}`, 'height', commonComponentProp(targetObjects, 'height', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'height', value), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区高度' })}
-                    {renderSelectInput('比例', commonComponentProp(targetObjects, 'aspect', 'auto') as string, ['auto', 'equal', '1'], (value) => patchComponentGroup(targetObjects, 'aspect', value))}
+                    {supportsComponentProp('left') && renderNumberInput(`component-${group.id}`, 'left', commonComponentProp(targetObjects, 'left', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'left', value), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区左边距' })}
+                    {supportsComponentProp('bottom') && renderNumberInput(`component-${group.id}`, 'bottom', commonComponentProp(targetObjects, 'bottom', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'bottom', value), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区下边距' })}
+                    {supportsComponentProp('width') && renderNumberInput(`component-${group.id}`, 'width', commonComponentProp(targetObjects, 'width', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'width', value), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区宽度' })}
+                    {supportsComponentProp('height') && renderNumberInput(`component-${group.id}`, 'height', commonComponentProp(targetObjects, 'height', undefined) as number | undefined, (value) => patchComponentGroup(targetObjects, 'height', value), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区高度' })}
+                    {supportsComponentProp('aspect') && renderSelectInput('比例', commonComponentProp(targetObjects, 'aspect', 'auto') as string, ['auto', 'equal', '1'], (value) => patchComponentGroup(targetObjects, 'aspect', value))}
                   </div>
                 )}
                 {targetObjects.some(obj => supportsBatchProp(obj, 'linestyle')) && (

@@ -1,7 +1,7 @@
 # Python 图元编辑与分组识别收敛执行计划
 
-> 状态：WP3/WP4 核心边界、WP6、WP7 和 WP8 已完成当前计划范围；WP3 剩余 legacy 审计已修复前端 RightSidebar 批量/详情入口、ChartPreview 拖拽入口、配色中心 fallback、项目 patch 预检和导出快照 dry-run fallback 缺口；WP4 已补齐无标签 collection 交换顺序的首轮关键结构身份缺口；WP5 已完成首个用户可见能力摘要 contract、右侧栏展示和真实浏览器 smoke，仍需完整矩阵和 release gate
-> 最后修改时间：2026-07-20 11:02:23 +08:00
+> 状态：WP3/WP4 核心边界、WP6、WP7 和 WP8 已完成当前计划范围；WP3 剩余 legacy 审计已修复前端 RightSidebar 批量/详情入口、ChartPreview 拖拽入口、配色中心 fallback、组件中心批量入口、Draft 应用清理、项目 patch 预检和导出快照 dry-run fallback 缺口；WP4 已补齐无标签 collection 交换顺序的首轮关键结构身份缺口；WP5 已完成首个用户可见能力摘要 contract、右侧栏展示和真实浏览器 smoke，仍需完整矩阵和 release gate
+> 最后修改时间：2026-07-20 11:36:50 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
 > 当前部署状态：未推送、未部署；本计划不改变线上版本
@@ -82,6 +82,8 @@
 2026-07-20 10:55 WP5 用户可见能力摘要补充真实浏览器证据：`tests/playwright/special_axes_ui_smoke.mjs` 在隔离服务器和 sessionStorage fixture 中验证右侧栏 `figure-capability-summary` 可见，并报告特殊轴混合 Figure 为“部分可编辑”、`8/10 objects`、`可编辑 8 · 只读 2 · 不支持 0`。同一 smoke 继续验证 polar/secondary/3D scope、布局中心排除特殊 panel bounds、axes.patch 命中特殊 panel、特殊标题不开放 geometry 且字体修改进入 Draft。验证：`npm run test:special-axes-ui` 通过。该增量只证明摘要在真实 UI 可见，不代表 WP5 完整能力矩阵或 release gate 完成。
 
 2026-07-20 11:02 WP4 无标签 collection 结构身份矩阵完成首轮关键缺口修复：两个无标签 scatter/PathCollection 交换调用顺序时，旧 `collection.0.1` 的 v2 身份不再按索引静默打到另一组点。generic collection fingerprint 现在纳入 offsets 结构签名，但不纳入 size、颜色、linewidth 等可编辑样式；旧弱 collection fingerprint 只在当前 axes 没有多个 collection sibling 时兼容。验证：`python -m unittest tests.test_structural_identity_drift -v` 10/10 通过，`python -m unittest tests.test_complex_artist_coverage -v` 26/26 通过，`python -m unittest tests.test_special_axes_coverage -v` 8 通过/2 依赖缺失跳过，`python -m py_compile renderer/introspector.py tests/test_structural_identity_drift.py` 通过，`npm run test:patch-rejection-persistence` 通过，`npm run data:audit` 仍为 25 用户、121 项目、263 文件、101 导出资产、0 issue、23 条既有测试账号 warning，`git diff --check` 通过。
+
+2026-07-20 11:36 WP3 组件中心批量入口继续收敛：批量属性支持判断导出为 `supportsComponentBatchProp`，现代 manifest 只按 `propertyCapabilities` 显示属性，旧 manifest 继续 legacy fallback；子图批量 bounds 控件按 `left/bottom/width/height/aspect` 逐项显示；组件中心 set patch 保守走 `backend_patch`，避免语义组件编辑被未验证 local Draft 持久化。Draft 应用链路新增 `projectDraftsRef` 和 `isSameDraftPatch`，成功应用当前 Figure 后只清除与执行快照完全一致的 Draft，不误删保存期间新改动，也不保留已确认成功的同内容 Draft。验证：`npm test -- RightSidebar` 8 项通过，`npm test -- draftTransaction` 4 文件/32 项通过，`npm run lint` 通过，`npm run test:component-container-smoke` PASS=41/FAIL=0，`git diff --check` 通过。
 
 仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP5 完整用户可见能力报告、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP4 无标签 collection 首轮关键矩阵已完成，但后续新增 collection 家族仍必须按同一结构身份规则验证。WP6、WP7 和 WP8 已完成当前计划范围；Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。
 

@@ -17,6 +17,28 @@ export interface DraftTransactionSettlement {
   failedTargetIds: string[];
 }
 
+function stableDraftValue(value: unknown): string {
+  if (value === undefined) return '__undefined__';
+  try {
+    return JSON.stringify(value, Object.keys(value as Record<string, unknown> || {}).sort());
+  } catch {
+    return String(value);
+  }
+}
+
+export function isSameDraftPatch(current: DraftPatch | undefined, snapshot: DraftPatch): boolean {
+  if (!current) return false;
+  return current.gid === snapshot.gid
+    && current.prop === snapshot.prop
+    && current.mode === snapshot.mode
+    && current.type === snapshot.type
+    && current.target_id === snapshot.target_id
+    && stableDraftValue(current.value) === stableDraftValue(snapshot.value)
+    && stableDraftValue(current.new_value) === stableDraftValue(snapshot.new_value)
+    && stableDraftValue(current.gids) === stableDraftValue(snapshot.gids)
+    && stableDraftValue(current.pendingFigureIds) === stableDraftValue(snapshot.pendingFigureIds);
+}
+
 export function mergeDraftSettlement(
   currentBucket: Record<string, DraftPatch>,
   snapshotBucket: Record<string, DraftPatch>,
@@ -24,7 +46,7 @@ export function mergeDraftSettlement(
 ): Record<string, DraftPatch> {
   const nextBucket = { ...currentBucket };
   Object.entries(snapshotBucket).forEach(([draftKey, snapshotDraft]) => {
-    if (currentBucket[draftKey] !== snapshotDraft) return;
+    if (!isSameDraftPatch(currentBucket[draftKey], snapshotDraft)) return;
     const settledDraft = settledSnapshotBucket[draftKey];
     if (settledDraft) {
       nextBucket[draftKey] = settledDraft;
