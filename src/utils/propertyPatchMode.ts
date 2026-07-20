@@ -223,6 +223,25 @@ export function hasAuthoritativePropertyCapabilities(
   return Array.isArray(object?.propertyCapabilities);
 }
 
+export function supportsObjectProp(
+  object: ManifestObject | null | undefined,
+  prop: string,
+): boolean {
+  if (!object) return false;
+  if (isParentOwnedManifestObject(object)) return false;
+  if (isPythonStructuralSeriesProp(object, prop)) return false;
+
+  const capability = propertyCapabilityFor(object, prop);
+  if (capability) return capability.replay !== 'unsupported';
+
+  // Modern manifests are authoritative: omitted props are intentionally hidden.
+  if (hasAuthoritativePropertyCapabilities(object)) return false;
+
+  return Array.isArray(object.editable)
+    && object.editable.includes(prop)
+    && !unsupportedProps(object).includes(prop);
+}
+
 export function resolveCrossFigurePolicy(
   objects: Array<ManifestObject | null | undefined>,
   prop: string,

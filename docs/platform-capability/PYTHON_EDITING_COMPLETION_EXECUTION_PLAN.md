@@ -1,7 +1,7 @@
 # Python 图元编辑与分组识别收敛执行计划
 
-> 状态：WP3/WP4 核心边界、WP6、WP7 和 WP8 已完成当前计划范围；WP3 剩余 legacy 审计已修复前端 RightSidebar、配色中心 fallback、项目 patch 预检和导出快照 dry-run fallback 缺口；下一主工作包为 WP3/WP4 剩余 legacy 审计，随后完成 WP5
-> 最后修改时间：2026-07-20 10:17:38 +08:00
+> 状态：WP3/WP4 核心边界、WP6、WP7 和 WP8 已完成当前计划范围；WP3 剩余 legacy 审计已修复前端 RightSidebar 批量/详情入口、ChartPreview 拖拽入口、配色中心 fallback、项目 patch 预检和导出快照 dry-run fallback 缺口；下一主工作包为 WP3/WP4 剩余 legacy 审计，随后完成 WP5
+> 最后修改时间：2026-07-20 10:27:46 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
 > 当前部署状态：未推送、未部署；本计划不改变线上版本
@@ -70,6 +70,8 @@
 2026-07-20 10:14 WP3 剩余审计继续发现：服务端项目 patch 预检和导出快照 dry-run 也存在同类缺口。对象只要存在 `propertyCapabilities` 数组，即使数组未声明目标属性，也必须视为现代权威能力协议，不能再用旧 `editable.includes(prop)` 放行。已修复 `precheckProjectFigurePatches` 与导出快照重放预检；新增回归把存储 manifest 人为设为“`propertyCapabilities` 省略 `linewidth`，但旧 `editable` 仍包含 `linewidth`”，确认服务端直接 conflict，revision/session/project_figure/editLog 均不变。验证：`npm run test:patch-rejection-persistence` 通过，新增检查项 `modern manifest omitted capability did not fall back to legacy editable on the server`；`npm run test:special-axes-api` 通过；`npm run lint` 通过；`git diff --check` 通过。
 
 2026-07-20 10:17 WP3 剩余审计继续发现：`paletteTargetResolver` 的 legacy binding fallback 会通过 `editable`、`kind === "line"` 或 `binding.props[0]` 猜测配色属性；现代对象若已有 `propertyCapabilities` 但省略目标颜色属性，仍可能被配色中心生成错误对象 patch。已改为 capability-aware fallback：现代对象只允许 renderer 声明且 `replay !== unsupported` 的颜色属性；旧 manifest 才允许 `editable/kind` 兜底；没有可证明颜色属性时跳过并记录 `unsupported_prop`。验证：`npm test -- paletteTargetResolver propertyPatchMode targetResolver semanticPatchMapping editingIntentCompiler` 25 文件/438 项通过；`npm run lint` 通过。
+
+2026-07-20 10:27 WP3 剩余审计继续发现：`ChartPreview` 文本拖拽、`RightSidebar` 单对象详情面板中的子图 bounds/aspect、轴刻度文字偏移、图例 layout 细项、annotation anchor 和通用属性列表仍直接读取 `editable`。已新增统一 `supportsObjectProp`：现代对象以 `propertyCapabilities` 为权威，未声明属性不再显示控件或进入拖拽；旧 manifest 没有 capability 字段时继续使用 `editable + unsupportedProps` 兼容。验证：`npm test -- propertyPatchMode` 4 文件/115 项通过；`npm test -- paletteTargetResolver propertyPatchMode targetResolver semanticPatchMapping editingIntentCompiler` 25 文件/441 项通过；`npm run test:drag-extended-smoke` 通过；`npm run lint` 通过；`git diff --check` 通过；`npm run data:audit` 仍为 25 用户、121 项目、263 文件、101 导出资产、0 issue、23 条既有测试账号 warning。
 
 仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 用户可见能力报告、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP6、WP7 和 WP8 已完成当前计划范围；Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。
 

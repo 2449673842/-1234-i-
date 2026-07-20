@@ -5,6 +5,51 @@
 
 ---
 
+## 2026-07-20 10:27:46 +08:00 单对象详情和拖拽入口仍可绕过现代 propertyCapabilities
+
+**状态与级别**
+
+- 状态：已修复并通过 `propertyPatchMode` 单元回归；尚未提交、推送或部署。
+- 级别：P1 前端能力边界一致性。不会删除数据，但可能让现代 manifest 中 renderer 未声明的属性仍显示控件或进入拖拽流程，造成“看起来能改，实际不可安全重放”的错误体验。
+
+**现象**
+
+- `ChartPreview` 文本拖拽仍直接判断 `editable.includes("position")`。
+- `RightSidebar` 单对象详情面板中，子图 bounds/aspect、轴刻度文字偏移、图例 layout 细项、annotation anchor 和通用属性列表仍直接读取 `editable`。
+- WP3 已规定：对象存在 `propertyCapabilities` 数组时，未声明属性必须视为不可编辑；`editable` 只能兼容没有 capability 字段的旧 manifest。
+
+**根因**
+
+- 早期前端将 `editable` 同时作为旧 UI 控件开关和编辑能力来源；后续服务端、批量入口、配色入口逐步切到 `propertyCapabilities`，但拖拽和单对象详情入口没有统一使用同一判定函数。
+- 这类问题不一定触发数据损坏，因为服务端仍会校验，但会制造不可用控件、错误 Draft 或用户误判。
+
+**修复**
+
+- 新增 `supportsObjectProp(object, prop)`：
+  - 现代 manifest：只接受 `propertyCapabilities` 中声明且 `replay !== "unsupported"` 的属性。
+  - 旧 manifest：没有 `propertyCapabilities` 字段时继续使用 `editable + unsupportedProps` 兼容。
+  - parent-owned 对象和 Python 结构属性仍不开放普通对象控件。
+- `ChartPreview.isDraggableTextObject` 改为用 `supportsObjectProp(obj, "position")`。
+- `RightSidebar` 单对象详情中的子图、轴、图例、annotation anchor 和通用属性列表改为使用同一 helper。
+
+**验证**
+
+- `npm test -- propertyPatchMode`：4 个测试文件、115 项通过。
+- `npm test -- paletteTargetResolver propertyPatchMode targetResolver semanticPatchMapping editingIntentCompiler`：25 个测试文件、441 项通过。
+- `npm run test:drag-extended-smoke`：通过，覆盖多选拖拽、实时对象预览、取消、unsupported 拦截、annotation 拖拽和 R 原生保护。
+- `npm run lint`：通过。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+- `npm run data:audit`：25 用户、121 项目、263 项目文件、101 导出资产，issue 0；23 条既有测试账号 warning 保持不变。
+- 新增回归覆盖：现代对象 `editable` 仍包含 `position` 但 capability 未声明时不支持；旧对象无 capability 字段时仍支持；unsupported、parent-owned 和结构属性均拒绝。
+
+**防复发规则**
+
+- 前端所有“是否显示控件/是否允许拖拽”的对象级判断必须复用 capability-aware helper，不能直接读取 `editable.includes`。
+- `editable` fallback 只服务旧 manifest 兼容；新协议对象的 capability 省略是明确拒绝，不是待猜测状态。
+- 修复 UI 入口后仍要检查服务端预检、导出快照、配色 fallback 和批量入口是否使用同一边界。
+
+---
+
 ## 2026-07-19 22:48:05 +08:00 图示对象关系身份不完整且受保护文字重放被误判身份漂移
 
 **状态与级别**

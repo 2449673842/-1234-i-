@@ -7,6 +7,7 @@ import {
   resolvePatchMode,
   resolvePatchModeById,
   resolvePropertyPatchMode,
+  supportsObjectProp,
 } from './propertyPatchMode';
 
 function object(patchMode: 'local_patch' | 'backend_patch', prop = 'color', kind: ManifestObject['kind'] = 'text'): ManifestObject {
@@ -290,6 +291,68 @@ describe('resolveCrossFigurePolicy', () => {
     });
 
     expect(resolveCrossFigurePolicy([structural], prop)).toBe('deny');
+  });
+});
+
+describe('supportsObjectProp', () => {
+  it('treats modern propertyCapabilities as authoritative for object controls', () => {
+    const target = legacyObject({
+      editable: ['position', 'color'],
+      currentProps: { x: 0.5, y: 0.5, coord_system: 'axes', color: '#123456' },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+
+    expect(supportsObjectProp(target, 'color')).toBe(true);
+    expect(supportsObjectProp(target, 'position')).toBe(false);
+  });
+
+  it('preserves legacy editable fallback when no capability list exists', () => {
+    const target = legacyObject({
+      editable: ['position'],
+      currentProps: { x: 0.5, y: 0.5, coord_system: 'axes' },
+    });
+
+    expect(supportsObjectProp(target, 'position')).toBe(true);
+  });
+
+  it('rejects unsupported, parent-owned, and structural object controls', () => {
+    const unsupported = legacyObject({
+      editable: ['position'],
+      currentProps: {
+        x: 0.5,
+        y: 0.5,
+        coord_system: 'axes',
+        unsupportedProps: ['position'],
+      },
+    });
+    const parentOwned = legacyObject({
+      editable: ['color'],
+      currentProps: { parentOwned: true, color: '#123456' },
+    });
+    const structural = legacyObject({
+      id: 'histogram_series.0',
+      kind: 'bar_container',
+      role: 'histogram_series',
+      editable: ['bins'],
+      currentProps: { bins: [1, 2, 3] },
+      propertyCapabilities: [{
+        prop: 'bins',
+        patchMode: 'backend_patch',
+        scopes: ['object'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+
+    expect(supportsObjectProp(unsupported, 'position')).toBe(false);
+    expect(supportsObjectProp(parentOwned, 'color')).toBe(false);
+    expect(supportsObjectProp(structural, 'bins')).toBe(false);
   });
 });
 

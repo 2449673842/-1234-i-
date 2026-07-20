@@ -7,7 +7,7 @@ import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent
 import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
 import { compileEditingIntentWithControlledResolver } from '../utils/targetResolver';
 import { recordLegacyRetireObservation } from '../utils/legacyRetireObservationClient';
-import { isParentOwnedManifestObject } from '../utils/propertyPatchMode';
+import { isParentOwnedManifestObject, supportsObjectProp } from '../utils/propertyPatchMode';
 
 const TEXT_GID_RE = /^(r\.text|text|title|xlabel|ylabel|zlabel|legend_text|legend_title|fig_text)\./;
 const TICK_LABEL_GID_RE = /^(xtick|ytick|ztick)\./;
@@ -271,6 +271,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     }).find(projection => projection.key === 'position');
     const coordinateSpace = positionProjection?.coordinateSpaceByObjectId?.[gid];
     return (obj?.kind === 'text' || obj?.kind === 'legend')
+      && supportsObjectProp(obj, 'position')
       && positionProjection?.stateByObjectId[gid] === 'editable'
       && positionProjection.propByObjectId[gid] === 'position'
       && typeof props.x === 'number'

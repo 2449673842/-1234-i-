@@ -14,6 +14,7 @@ import {
   isParentOwnedManifestObject,
   resolveCrossFigurePolicy,
   resolvePatchModeById,
+  supportsObjectProp,
 } from '../utils/propertyPatchMode';
 import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolvePaletteColorFallbackTargets, resolvePaletteTargets } from '../utils/paletteTargetResolver';
 import { projectPaletteColorControl } from '../utils/palettePropertyProjection';
@@ -2322,9 +2323,9 @@ export function RightSidebar({
     const props = obj.currentProps as any;
     const unsupportedProps = getUnsupportedProps(obj);
     const boundsProps = ['left', 'bottom', 'width', 'height'];
-    const editable = Array.isArray(obj.editable) ? obj.editable : [];
-    const canEditBounds = boundsProps.some(prop => editable.includes(prop) && !unsupportedProps.includes(prop));
-    const canEditAspect = editable.includes('aspect') || props.aspect !== undefined;
+    const canEditBounds = boundsProps.some(prop => supportsObjectProp(obj, prop) && !unsupportedProps.includes(prop));
+    const canEditAspect = supportsObjectProp(obj, 'aspect')
+      || (!hasAuthoritativePropertyCapabilities(obj) && props.aspect !== undefined);
     const unsupportedReason = typeof props.unsupportedReason === 'string'
       ? props.unsupportedReason
       : '当前图形引擎没有提供独立坐标轴框位置映射。';
@@ -3330,7 +3331,6 @@ export function RightSidebar({
   const renderAxisDetailPanel = (obj: ManifestObject, axisName: string) => {
     const props = obj.currentProps as any;
     const limits = Array.isArray(props.limits) ? props.limits : [0, 1];
-    const editable = Array.isArray(obj.editable) ? obj.editable : [];
     return (
       <div className="space-y-6">
         {renderPanelTitle(`${axisName} 轴详细控制`)}
@@ -3352,8 +3352,8 @@ export function RightSidebar({
           {renderNumberInput(obj.id, 'tick_labelsize', props.tick_labelsize || 10, (v) => handlePatch(obj.id, 'tick_labelsize', v), { min: 4, max: 30, step: 0.5 })}
           {renderColorInput(`${axisName} 刻度文字颜色`, props.tick_labelcolor || '#000000', (v) => handlePatch(obj.id, 'tick_labelcolor', v), `${obj.id}:tick_labelcolor`)}
           {renderFontSelect(obj.id, 'tick_labelfamily', props.tick_labelfamily || 'Arial', (v) => handlePatch(obj.id, 'tick_labelfamily', v))}
-          {editable.includes('tick_label_dx') && renderNumberInput(obj.id, 'tick_label_dx', props.tick_label_dx || 0, (v) => handlePatch(obj.id, 'tick_label_dx', v), { min: -80, max: 80, step: 0.5 })}
-          {editable.includes('tick_label_dy') && renderNumberInput(obj.id, 'tick_label_dy', props.tick_label_dy || 0, (v) => handlePatch(obj.id, 'tick_label_dy', v), { min: -80, max: 80, step: 0.5 })}
+          {supportsObjectProp(obj, 'tick_label_dx') && renderNumberInput(obj.id, 'tick_label_dx', props.tick_label_dx ?? 0, (v) => handlePatch(obj.id, 'tick_label_dx', v), { min: -80, max: 80, step: 0.5, commitOnChange: true })}
+          {supportsObjectProp(obj, 'tick_label_dy') && renderNumberInput(obj.id, 'tick_label_dy', props.tick_label_dy ?? 0, (v) => handlePatch(obj.id, 'tick_label_dy', v), { min: -80, max: 80, step: 0.5, commitOnChange: true })}
           {renderBoolInput('sci_notation', Boolean(props.sci_notation), (v) => handlePatch(obj.id, 'sci_notation', v))}
           {renderBoolInput('use_math_text', Boolean(props.use_math_text), (v) => handlePatch(obj.id, 'use_math_text', v))}
           {renderNumberInput(obj.id, 'offset_text_size', props.offset_text_size || 10, (v) => handlePatch(obj.id, 'offset_text_size', v), { min: 4, max: 30, step: 0.5 })}
@@ -3380,11 +3380,11 @@ export function RightSidebar({
               {renderNumberInput(obj.id, 'marker_yoffset', props.marker_yoffset || 0, (v) => handlePatch(obj.id, 'marker_yoffset', v), { min: -20, max: 20, step: 0.25, displayLabel: '图例符号垂直偏移' })}
               {renderNumberInput(obj.id, 'handletextpad', props.handletextpad ?? 0.8, (v) => handlePatch(obj.id, 'handletextpad', v), { min: 0, max: 5, step: 0.1, displayLabel: '符号文字间距' })}
               {renderNumberInput(obj.id, 'labelspacing', props.labelspacing ?? 0.5, (v) => handlePatch(obj.id, 'labelspacing', v), { min: 0, max: 5, step: 0.1, displayLabel: '图例行距' })}
-              {supportsBatchProp(obj, 'handlelength') && renderNumberInput(obj.id, 'handlelength', props.handlelength ?? 2, (v) => handlePatch(obj.id, 'handlelength', v), { min: 0.1, max: 8, step: 0.1, displayLabel: '符号区域宽度' })}
-              {supportsBatchProp(obj, 'handleheight') && renderNumberInput(obj.id, 'handleheight', props.handleheight ?? 0.7, (v) => handlePatch(obj.id, 'handleheight', v), { min: 0.1, max: 5, step: 0.1, displayLabel: '符号区域高度' })}
-              {supportsBatchProp(obj, 'columnspacing') && renderNumberInput(obj.id, 'columnspacing', props.columnspacing ?? 2, (v) => handlePatch(obj.id, 'columnspacing', v), { min: 0, max: 8, step: 0.1, displayLabel: '图例列间距' })}
-              {supportsBatchProp(obj, 'borderpad') && renderNumberInput(obj.id, 'borderpad', props.borderpad ?? 0.4, (v) => handlePatch(obj.id, 'borderpad', v), { min: 0, max: 5, step: 0.1, displayLabel: '图例内部边距' })}
-              {supportsBatchProp(obj, 'borderaxespad') && renderNumberInput(obj.id, 'borderaxespad', props.borderaxespad ?? 0.5, (v) => handlePatch(obj.id, 'borderaxespad', v), { min: 0, max: 5, step: 0.1, displayLabel: '图例与主图间距' })}
+              {supportsObjectProp(obj, 'handlelength') && renderNumberInput(obj.id, 'handlelength', props.handlelength ?? 2, (v) => handlePatch(obj.id, 'handlelength', v), { min: 0.1, max: 8, step: 0.1, displayLabel: '符号区域宽度' })}
+              {supportsObjectProp(obj, 'handleheight') && renderNumberInput(obj.id, 'handleheight', props.handleheight ?? 0.7, (v) => handlePatch(obj.id, 'handleheight', v), { min: 0.1, max: 5, step: 0.1, displayLabel: '符号区域高度' })}
+              {supportsObjectProp(obj, 'columnspacing') && renderNumberInput(obj.id, 'columnspacing', props.columnspacing ?? 2, (v) => handlePatch(obj.id, 'columnspacing', v), { min: 0, max: 8, step: 0.1, displayLabel: '图例列间距' })}
+              {supportsObjectProp(obj, 'borderpad') && renderNumberInput(obj.id, 'borderpad', props.borderpad ?? 0.4, (v) => handlePatch(obj.id, 'borderpad', v), { min: 0, max: 5, step: 0.1, displayLabel: '图例内部边距' })}
+              {supportsObjectProp(obj, 'borderaxespad') && renderNumberInput(obj.id, 'borderaxespad', props.borderaxespad ?? 0.5, (v) => handlePatch(obj.id, 'borderaxespad', v), { min: 0, max: 5, step: 0.1, displayLabel: '图例与主图间距' })}
               {renderBoolInput('显示背景框 (Border)', Boolean(props.frameon), (v) => handlePatch(obj.id, 'frameon', v))}
               {props.frameon !== false && (
                 <>
@@ -3425,7 +3425,7 @@ export function RightSidebar({
     }
 
     const annotationAnchor = obj.role === 'annotation_text'
-      && obj.editable.includes('anchor_position')
+      && supportsObjectProp(obj, 'anchor_position')
       && obj.currentProps.anchor_position
       && typeof obj.currentProps.anchor_position === 'object'
       ? obj.currentProps.anchor_position as { x?: unknown; y?: unknown; coord_system?: unknown }
@@ -3524,7 +3524,10 @@ export function RightSidebar({
               </select>
             </div>
           )}
-          {remainingLegacyEditable.filter(prop => !isPythonStructuralSeriesProp(obj, prop)).map((prop) => {
+          {remainingLegacyEditable.filter(prop => (
+            supportsObjectProp(obj, prop)
+            && !isPythonStructuralSeriesProp(obj, prop)
+          )).map((prop) => {
             const val = obj.currentProps[prop];
             return renderField(obj.id, prop, typeof val, val);
           })}
