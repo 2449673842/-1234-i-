@@ -343,6 +343,13 @@ export function buildDiagramComponentGroups<T extends ComponentCenterObjectLike>
   ].filter(group => group.objects.length > 0);
 }
 
+export function supportsSubplotBoundProp(
+  obj: ManifestObject | undefined,
+  prop: 'left' | 'bottom' | 'width' | 'height',
+): boolean {
+  return supportsObjectProp(obj, prop);
+}
+
 const DEFAULT_PHYSICAL_AXES_LAYOUT: PhysicalAxesLayoutSettings = {
   targetWidthIn: 2.2,
   targetHeightIn: 2.2,
@@ -2322,8 +2329,8 @@ export function RightSidebar({
   const renderSubplotPanel = (obj: ManifestObject) => {
     const props = obj.currentProps as any;
     const unsupportedProps = getUnsupportedProps(obj);
-    const boundsProps = ['left', 'bottom', 'width', 'height'];
-    const canEditBounds = boundsProps.some(prop => supportsObjectProp(obj, prop) && !unsupportedProps.includes(prop));
+    const boundsProps = ['left', 'bottom', 'width', 'height'] as const;
+    const canEditBounds = boundsProps.some(prop => supportsSubplotBoundProp(obj, prop) && !unsupportedProps.includes(prop));
     const canEditAspect = supportsObjectProp(obj, 'aspect')
       || (!hasAuthoritativePropertyCapabilities(obj) && props.aspect !== undefined);
     const unsupportedReason = typeof props.unsupportedReason === 'string'
@@ -2386,10 +2393,10 @@ export function RightSidebar({
             <div className="space-y-2 rounded-lg border border-slate-100 bg-white p-3">
               <div className="text-[11px] font-semibold text-slate-500">坐标轴框在白色画布内的位置和大小（0-1 归一化）</div>
               <div className="grid grid-cols-2 gap-2">
-                {!unsupportedProps.includes('left') && renderNumberInput(obj.id, 'left', props.left ?? 0, (v) => handlePatch(obj.id, 'left', v), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区左边距' })}
-                {!unsupportedProps.includes('bottom') && renderNumberInput(obj.id, 'bottom', props.bottom ?? 0, (v) => handlePatch(obj.id, 'bottom', v), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区下边距' })}
-                {!unsupportedProps.includes('width') && renderNumberInput(obj.id, 'width', props.width ?? 0.5, (v) => handlePatch(obj.id, 'width', v), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区宽度' })}
-                {!unsupportedProps.includes('height') && renderNumberInput(obj.id, 'height', props.height ?? 0.5, (v) => handlePatch(obj.id, 'height', v), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区高度' })}
+                {supportsSubplotBoundProp(obj, 'left') && !unsupportedProps.includes('left') && renderNumberInput(obj.id, 'left', props.left ?? 0, (v) => handlePatch(obj.id, 'left', v), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区左边距' })}
+                {supportsSubplotBoundProp(obj, 'bottom') && !unsupportedProps.includes('bottom') && renderNumberInput(obj.id, 'bottom', props.bottom ?? 0, (v) => handlePatch(obj.id, 'bottom', v), { min: 0, max: 1, step: 0.01, displayLabel: '绘图区下边距' })}
+                {supportsSubplotBoundProp(obj, 'width') && !unsupportedProps.includes('width') && renderNumberInput(obj.id, 'width', props.width ?? 0.5, (v) => handlePatch(obj.id, 'width', v), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区宽度' })}
+                {supportsSubplotBoundProp(obj, 'height') && !unsupportedProps.includes('height') && renderNumberInput(obj.id, 'height', props.height ?? 0.5, (v) => handlePatch(obj.id, 'height', v), { min: 0.005, max: 1, step: 0.01, displayLabel: '绘图区高度' })}
               </div>
             </div>
           ) : (

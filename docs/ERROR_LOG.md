@@ -5,6 +5,45 @@
 
 ---
 
+## 2026-07-20 10:37:13 +08:00 子图 bounds 外层 capability 通过后内部仍显示未声明属性
+
+**状态与级别**
+
+- 状态：已修复并通过 RightSidebar/property/target 相关单元回归；尚未提交、推送或部署。
+- 级别：P1 前端控件边界一致性。不会删除数据，但可能让 modern manifest 只声明部分子图 bounds 能力时，未声明的 `left/bottom/width/height` 输入框仍显示。
+
+**现象**
+
+- `RightSidebar.renderSubplotPanel` 的外层 `canEditBounds` 已使用 capability 判断。
+- 但进入 bounds 区块后，四个输入框仍只检查 `unsupportedProps`，没有逐项检查 `propertyCapabilities`。
+- 结果是：只要 `left/bottom/width/height` 中任意一个属性可编辑，其他未声明属性也可能显示。
+
+**根因**
+
+- 前一轮修复把区块级入口切到 `supportsObjectProp`，但没有把区块内部每个字段的显示条件一并收敛。
+- 这是典型“外层门禁正确，内层字段旧逻辑残留”的 UI 漏口。
+
+**修复**
+
+- 新增并导出 `supportsSubplotBoundProp`，当前复用 `supportsObjectProp`，用于子图 bounds 字段级显示。
+- `left/bottom/width/height` 四个输入框全部改为逐项检查 `supportsSubplotBoundProp(obj, prop)`。
+- 保留旧 manifest 无 `propertyCapabilities` 时的 legacy editable fallback。
+
+**验证**
+
+- `npm test -- RightSidebar propertyPatchMode targetResolver`：18 个测试文件、310 项通过。
+- `npm run lint`：通过。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+- `npm run data:audit`：25 用户、121 项目、263 项目文件、101 导出资产，issue 0；23 条既有测试账号 warning 保持不变。
+- 新增回归覆盖：modern subplot 仍有 `editable: ["left","bottom","width","height"]`，但 capability 只声明 `width` 时，只支持 `width`；legacy subplot 无 capability 字段时仍按 `editable` 支持。
+
+**防复发规则**
+
+- UI 区块级门禁通过后，区块内部每个输入控件仍必须逐项检查 capability，不得用 `unsupportedProps` 替代 capability。
+- 子图 bounds、图例 layout、轴细项这类组合控件必须同时覆盖“部分属性可编辑”的测试。
+
+---
+
 ## 2026-07-20 10:32:45 +08:00 capability 支持判定在多个工具中重复实现，存在再次分叉风险
 
 **状态与级别**
