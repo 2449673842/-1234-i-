@@ -79,6 +79,8 @@
 
 2026-07-20 10:42 WP5 首个增量完成：`StandardFigureModel` 新增 `capabilitySummary`，只消费 renderer 的 `coverageReport`、对象 `propertyCapabilities`、`semanticCoverage` 和 `unsupportedNotes`，不扫描 SVG、不自行猜测对象能力。右侧栏顶部显示当前 Figure 的“可编辑 / 部分可编辑 / 只读 / 暂不支持”摘要、对象计数、类型概览和首条限制说明。验证：`npm test -- standardFigureModel RightSidebar propertyPatchMode targetResolver` 22 文件/397 项通过；`npm run lint` 通过；`git diff --check` 通过；`npm run data:audit` 仍为 25 用户、121 项目、263 文件、101 导出资产、0 issue、23 条既有测试账号 warning；`npm run build` 通过，仅有既有 chunk size 和 `import.meta` CJS 警告。该增量不代表 WP5 完成，后续仍需更完整的能力矩阵、用户说明和 release gate。
 
+2026-07-20 10:55 WP5 用户可见能力摘要补充真实浏览器证据：`tests/playwright/special_axes_ui_smoke.mjs` 在隔离服务器和 sessionStorage fixture 中验证右侧栏 `figure-capability-summary` 可见，并报告特殊轴混合 Figure 为“部分可编辑”、`8/10 objects`、`可编辑 8 · 只读 2 · 不支持 0`。同一 smoke 继续验证 polar/secondary/3D scope、布局中心排除特殊 panel bounds、axes.patch 命中特殊 panel、特殊标题不开放 geometry 且字体修改进入 Draft。验证：`npm run test:special-axes-ui` 通过。该增量只证明摘要在真实 UI 可见，不代表 WP5 完整能力矩阵或 release gate 完成。
+
 仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 完整用户可见能力报告、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP6、WP7 和 WP8 已完成当前计划范围；Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。
 
 ### 2.5 2026-07-18 WP8 执行结果

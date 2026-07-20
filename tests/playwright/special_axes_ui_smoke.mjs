@@ -366,6 +366,13 @@ async function run() {
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
     await page.locator('[data-layer-node-id="polar_subplot.0"]').waitFor();
 
+    const capabilitySummary = page.getByTestId('figure-capability-summary');
+    await capabilitySummary.waitFor();
+    const capabilitySummaryText = await capabilitySummary.innerText();
+    assert(capabilitySummaryText.includes('当前 Figure：部分可编辑'), `capability summary did not report partial editability: ${capabilitySummaryText}`);
+    assert(capabilitySummaryText.includes('8/10 objects'), `capability summary object count drifted: ${capabilitySummaryText}`);
+    assert(capabilitySummaryText.includes('可编辑 8 · 只读 2 · 不支持 0'), `capability summary breakdown drifted: ${capabilitySummaryText}`);
+
     assert(await specialPanelIsAssigned(page), 'polar panel is not assigned under the subplot structure');
     const polarLineSection = await treeParentSectionId(page, 'line.polar.0');
     const polarTitleSection = await treeParentSectionId(page, 'title.polar.0');
@@ -439,6 +446,7 @@ async function run() {
     assert(consoleErrors.length === 0, `console errors: ${JSON.stringify(consoleErrors)}`);
 
     console.log('PASS special panel is assigned under subplot structure');
+    console.log('PASS capability summary reports partial special-axes editability');
     console.log('PASS polar line drives component and font scopes');
     console.log('PASS secondary axis resolves to subplot.0');
     console.log('PASS 3D Z-axis label and tick fonts use dedicated font-center groups');
