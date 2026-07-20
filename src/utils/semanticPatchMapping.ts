@@ -1,6 +1,6 @@
 import type { Manifest, ManifestObject } from '../schemas/manifest';
 import type { DraftPatch } from '../schemas/draftPatchBatch';
-import { propertyCapabilityFor, resolvePatchMode } from './propertyPatchMode';
+import { resolvePatchMode, supportsObjectProp } from './propertyPatchMode';
 import {
   requiresSpecialAxesRelationIdentity,
   specialAxesRelationSignature,
@@ -27,12 +27,7 @@ function objectList(manifest: Manifest | null | undefined): ManifestObject[] {
 
 function supportsProp(object: ManifestObject, prop: string | undefined): boolean {
   if (!prop) return true;
-  const capability = propertyCapabilityFor(object, prop);
-  if (capability) return capability.replay !== 'unsupported';
-  if (Array.isArray(object.propertyCapabilities)) return false;
-  const unsupported = object.currentProps?.unsupportedProps;
-  if (Array.isArray(unsupported) && unsupported.map(String).includes(prop)) return false;
-  return Array.isArray(object.editable) && object.editable.includes(prop);
+  return supportsObjectProp(object, prop);
 }
 
 function findSourceObject(sourceManifest: Manifest | null | undefined, gid: string | undefined) {

@@ -6,10 +6,9 @@ import type {
   SemanticTargetRole,
 } from '../schemas/editingIntent';
 import {
-  isContourObject,
-  isContourStructuralProp,
   isPythonStructuralSeriesProp,
   resolvePatchMode,
+  supportsObjectProp,
 } from './propertyPatchMode';
 import { requiresSpecialAxesRelationIdentity } from './specialAxesIdentity';
 
@@ -98,13 +97,8 @@ function objectSubplotId(object: ManifestObject): string | undefined {
 }
 
 function supportsProp(object: ManifestObject, prop: string): boolean {
-  if (isContourObject(object) && isContourStructuralProp(prop)) return false;
-  if (isPythonStructuralSeriesProp(object, prop)) return false;
   if (unsupportedProps(object).includes(prop)) return false;
-  const capability = object.propertyCapabilities?.find(item => item.prop === prop);
-  if (capability) return capability.replay !== 'unsupported';
-  if (Array.isArray(object.propertyCapabilities)) return false;
-  return Array.isArray(object.editable) && object.editable.includes(prop);
+  return supportsObjectProp(object, prop);
 }
 
 function skip(

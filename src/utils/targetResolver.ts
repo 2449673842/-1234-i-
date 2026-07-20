@@ -18,6 +18,7 @@ import {
   isPythonStructuralSeriesProp,
   propertyCapabilityFor,
   resolvePatchMode,
+  supportsObjectProp,
 } from './propertyPatchMode';
 
 export type ShadowTargetMatch = 'exact' | 'semantic' | 'fanout';
@@ -84,14 +85,7 @@ const TICK_PROP_MAP: Record<string, string> = {
 };
 
 function supportsProp(object: ManifestObject, prop: string): boolean {
-  if (isContourObject(object) && isContourStructuralProp(prop)) return false;
-  if (isPythonStructuralSeriesProp(object, prop)) return false;
-  const capability = propertyCapabilityFor(object, prop);
-  if (capability) return capability.replay !== 'unsupported';
-  const unsupported = object.currentProps?.unsupportedProps;
-  if (Array.isArray(unsupported) && unsupported.map(String).includes(prop)) return false;
-  if (Array.isArray(object.propertyCapabilities)) return false;
-  return object.editable.includes(prop);
+  return supportsObjectProp(object, prop);
 }
 
 function requiredCapabilityScope(intent: EditingIntent): ManifestEditScope {

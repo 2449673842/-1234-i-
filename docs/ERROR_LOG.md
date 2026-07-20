@@ -5,6 +5,41 @@
 
 ---
 
+## 2026-07-20 10:32:45 +08:00 capability 支持判定在多个工具中重复实现，存在再次分叉风险
+
+**状态与级别**
+
+- 状态：已收敛到统一 helper，并通过相关单元矩阵；尚未提交、推送或部署。
+- 级别：P2 维护性/回归预防。当前未发现直接数据损坏，但重复逻辑容易让后续某个入口再次回退到旧 `editable` 行为。
+
+**现象**
+
+- `editingIntentCompiler`、`targetResolver` 和 `semanticPatchMapping` 各自实现了一份 `supportsProp`。
+- 这些实现大体遵守现代 `propertyCapabilities` 边界，但细节不同，例如 unsupported、contour 结构属性、legacy editable fallback 和 parent-owned 对象边界需要人工保持一致。
+
+**根因**
+
+- WP3 是逐入口收敛，早期为了快速封堵风险在多个文件内各自加了 capability 判断。
+- 缺少单一对象级能力判定函数时，后续新增图元或属性容易只改其中一个入口。
+
+**修复**
+
+- `supportsObjectProp` 增加 contour 结构属性拒绝，避免 `levels/x/y/z` 这类结构属性被普通对象控件放行。
+- `editingIntentCompiler`、`targetResolver` 和 `semanticPatchMapping` 的普通对象属性支持判断改为复用 `supportsObjectProp`。
+- strict `targetResolver` 仍保留额外 `capability.scopes` 校验，避免把 object 支持误认为 cross-Figure/figure/subplot 支持。
+
+**验证**
+
+- `npm test -- paletteTargetResolver propertyPatchMode targetResolver semanticPatchMapping editingIntentCompiler`：25 个测试文件、441 项通过。
+- 新增回归：contour 对象即使声明 `levels` capability，`supportsObjectProp(contour, "levels")` 仍返回 false。
+
+**防复发规则**
+
+- 新增普通对象控件、语义 intent 或 editLog 映射前，先复用 `supportsObjectProp`；只有 scope、cross-Figure 或特殊事务语义才允许在外层追加判断。
+- contour、histogram、pie、quiver、streamplot、diagram 等结构属性不得因 capability 字段存在而被当作普通样式控件开放。
+
+---
+
 ## 2026-07-20 10:27:46 +08:00 单对象详情和拖拽入口仍可绕过现代 propertyCapabilities
 
 **状态与级别**

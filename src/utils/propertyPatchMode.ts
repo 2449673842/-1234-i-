@@ -229,6 +229,7 @@ export function supportsObjectProp(
 ): boolean {
   if (!object) return false;
   if (isParentOwnedManifestObject(object)) return false;
+  if (isContourObject(object) && isContourStructuralProp(prop)) return false;
   if (isPythonStructuralSeriesProp(object, prop)) return false;
 
   const capability = propertyCapabilityFor(object, prop);

@@ -349,10 +349,24 @@ describe('supportsObjectProp', () => {
         replay: 'stable',
       }],
     });
+    const contourStructural = legacyObject({
+      id: 'contour.0.0',
+      kind: 'contour',
+      editable: ['levels'],
+      currentProps: { levels: [0, 1, 2] },
+      propertyCapabilities: [{
+        prop: 'levels',
+        patchMode: 'backend_patch',
+        scopes: ['object'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
 
     expect(supportsObjectProp(unsupported, 'position')).toBe(false);
     expect(supportsObjectProp(parentOwned, 'color')).toBe(false);
     expect(supportsObjectProp(structural, 'bins')).toBe(false);
+    expect(supportsObjectProp(contourStructural, 'levels')).toBe(false);
   });
 });
 
