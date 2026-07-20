@@ -1,7 +1,7 @@
 # Python 图元编辑与分组识别收敛执行计划
 
-> 状态：WP3/WP4 核心边界和 WP8 已完成；WP6 六个复杂对象家族已通过工作包门禁，下一主工作包为 WP7 特殊 axes
-> 最后修改时间：2026-07-19 22:52:22 +08:00
+> 状态：WP3/WP4 核心边界、WP6、WP7 和 WP8 已完成当前计划范围；WP3 剩余 legacy 审计已修复前端 RightSidebar、配色中心 fallback、项目 patch 预检和导出快照 dry-run fallback 缺口；下一主工作包为 WP3/WP4 剩余 legacy 审计，随后完成 WP5
+> 最后修改时间：2026-07-20 10:17:38 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
 > 当前部署状态：未推送、未部署；本计划不改变线上版本
@@ -36,7 +36,7 @@
 - 已有一条隔离 E2E 连续证明“选择 -> 语义分组 -> Draft -> 后端重绘 -> 刷新 -> 撤销/重做 -> 导出 -> 后续编辑 -> 快照恢复”，但尚未扩展到全部复杂对象家族。
 - capability matrix 只证明当前 renderer fixture，不等同于任意真实科研脚本的完整用户流程。
 - line、scatter、bar、errorbar、boxplot、violin 等文档能力仍缺少完整浏览器矩阵证据。
-- 结构变化后的对象身份、复杂 collection 的真实语义和特殊 axes 坐标契约仍不完整。
+- 结构变化后的无标签对象身份、剩余 legacy collection 矩阵、用户可见能力报告和性能/碰撞门禁仍不完整。
 
 ### 2.3 已发现的高风险问题
 
@@ -65,7 +65,13 @@
 
 第二轮代码审查发现的 standalone mode 权威问题已修复，并由 `test:patch-rejection-persistence` 覆盖无 projectId 伪报 local、missing gid 和 mixed batch。项目 PUT 另由 `test:project-save-preflight` 覆盖保存入口和 history 侧门。
 
-仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 用户可见能力报告、WP7 特殊 axes、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP8 已完成；WP6 六个复杂对象家族已完成当前计划范围的专用写回和适用用户链路。
+2026-07-20 09:42 WP3 剩余审计新增结果：`RightSidebar` 的批量属性入口在未命中 `propertyCapabilities` 时仍会退回 `editable.includes(prop)` 和按 kind 的启发式判断，可能让现代 manifest 省略的属性继续显示并生成 patch。已新增统一 `hasAuthoritativePropertyCapabilities` 边界，现代对象省略属性时不再走 legacy fallback；旧 manifest 没有该字段时继续兼容。验证：`npm test -- propertyPatchMode targetResolver editingIntentCompiler semanticPatchMapping` 25 文件/437 项通过，`npm run lint` 通过，`npm run data:audit` 仍为 25 用户、121 项目、263 文件、101 导出资产、0 issue、23 条既有测试账号 warning。
+
+2026-07-20 10:14 WP3 剩余审计继续发现：服务端项目 patch 预检和导出快照 dry-run 也存在同类缺口。对象只要存在 `propertyCapabilities` 数组，即使数组未声明目标属性，也必须视为现代权威能力协议，不能再用旧 `editable.includes(prop)` 放行。已修复 `precheckProjectFigurePatches` 与导出快照重放预检；新增回归把存储 manifest 人为设为“`propertyCapabilities` 省略 `linewidth`，但旧 `editable` 仍包含 `linewidth`”，确认服务端直接 conflict，revision/session/project_figure/editLog 均不变。验证：`npm run test:patch-rejection-persistence` 通过，新增检查项 `modern manifest omitted capability did not fall back to legacy editable on the server`；`npm run test:special-axes-api` 通过；`npm run lint` 通过；`git diff --check` 通过。
+
+2026-07-20 10:17 WP3 剩余审计继续发现：`paletteTargetResolver` 的 legacy binding fallback 会通过 `editable`、`kind === "line"` 或 `binding.props[0]` 猜测配色属性；现代对象若已有 `propertyCapabilities` 但省略目标颜色属性，仍可能被配色中心生成错误对象 patch。已改为 capability-aware fallback：现代对象只允许 renderer 声明且 `replay !== unsupported` 的颜色属性；旧 manifest 才允许 `editable/kind` 兜底；没有可证明颜色属性时跳过并记录 `unsupported_prop`。验证：`npm test -- paletteTargetResolver propertyPatchMode targetResolver semanticPatchMapping editingIntentCompiler` 25 文件/438 项通过；`npm run lint` 通过。
+
+仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 用户可见能力报告、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP6、WP7 和 WP8 已完成当前计划范围；Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。
 
 ### 2.5 2026-07-18 WP8 执行结果
 
@@ -318,7 +324,7 @@
 5. `quiver/streamplot` / 向量场。[已完成专用父对象、结构只读、身份隔离和工作包门禁]
 6. 网络图、路径图和 SEM 的节点/边/箭头/系数文字关系。[已完成显式语义、科学结构只读、身份隔离和工作包门禁]
 
-WP6 当前清单已完成。下一主工作包为 WP7 特殊 axes 和坐标契约；WP3/WP4/WP5 的剩余审计继续在阶段门禁中收敛。显式图示语义仍坚持图形样式与科学结构分离，路径系数、p 值、拟合指标、显著性、方向和模型拓扑保持只读。
+WP6 当前清单已完成。WP7 也已完成当前固定运行时范围；下一主工作包回到 WP3/WP4 的剩余 legacy 审计，然后完成 WP5 用户可见能力报告。显式图示语义仍坚持图形样式与科学结构分离，路径系数、p 值、拟合指标、显著性、方向和模型拓扑保持只读。
 
 每个家族必须依次完成：
 
@@ -339,6 +345,8 @@ WP6 当前清单已完成。下一主工作包为 WP7 特殊 axes 和坐标契�
 
 ### WP7：特殊 axes 和坐标契约
 
+**状态：已完成当前固定运行时范围；继续作为后续性能、默认启用和 R 共享协议修改的不可回退门禁。**
+
 先识别和分类，再开放编辑：
 
 ```text
@@ -351,6 +359,18 @@ broken axes / parasite axes
 ```
 
 默认策略：样式可证明则开放；位置、布局或跨轴归属不可证明则 readonly/unsupported。不得把所有 `fig.axes` 都当普通二维 subplot。
+
+当前实现结果：
+
+- polar、3D、inset、secondary x/y、parasite host/child、GeoAxes、brokenaxes 占位和未知投影均有独立 family/kind/role，不再统一冒充普通 subplot。
+- identity relation 增加 `axesFamily/projection/parentSubplotId/ownerSubplotId`；跨 Figure、保存和快照恢复按完整关系 fail-closed。
+- polar 的安全数据样式、文字和图例保持可编辑；3D Z 轴标签/刻度字体与 secondary axis 安全轴文字能力已接入。
+- parasite host/child 整族只读；brokenaxes、GeoAxes/Cartopy 和未知投影不开放布局、相机、投影或跨轴几何。
+- 导出快照 schema v3 强制完整 relation；v1/v2 只在 stableKey 与 v2 fingerprint 同时一致时兼容历史缺失 relation。
+- standalone 和项目 full render 在写入前同时检查返回 manifest 与 renderer warnings；项目脚本和 Figure/session 同事务提交，冲突请求零持久化。
+- standalone 重渲染复用原 session；数据库已存在的旧 editLog 仅在 stableKey 一致，且已有 fingerprint/seriesKey 也分别一致时受控兼容；gid-only 历史日志继续阻断，新请求不能借 legacy 规则绕过。
+
+当前门禁：`test:special-axes-python` 10 项中 8 通过、Cartopy/brokenaxes 2 项因依赖缺失跳过；`test:special-axes-api`、`test:special-axes-ui`、patch 拒绝、旧 contour、项目 history、R semantic、lint/build/diff-check 通过。真实 Cartopy 和 brokenaxes 支持必须在未来明确安装固定版本并补齐 renderer/API/UI/导出证据后单独启用。
 
 ### WP8：恢复和导出事务安全
 

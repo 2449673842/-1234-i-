@@ -912,4 +912,129 @@ describe('semantic patch mapping', () => {
     expect(result.patches).toHaveLength(0);
     expect(result.skipped).toEqual([input]);
   });
+
+  it('rejects cross-figure mapping when special axes family or projection differs', () => {
+    const specialAxis = (
+      id: string,
+      axesFamily: string,
+      projection: string,
+    ): ManifestObject => ({
+      id,
+      kind: 'axis_y',
+      label: 'Y axis',
+      editable: ['label'],
+      currentProps: { label: 'Y' },
+      role: 'y_axis',
+      stableKey: 'axis:y:special',
+      identity: {
+        instanceKey: 'axis:y:special',
+        scope: 'subplot',
+        coordinateSpace: 'axes',
+        relation: {
+          subplotId: 'subplot.special.0',
+          axesFamily,
+          projection,
+          parentSubplotId: 'subplot.0',
+          ownerSubplotId: 'subplot.special.0',
+        } as any,
+      },
+      propertyCapabilities: [{
+        prop: 'label',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+    const source = baseManifest([specialAxis('axis.y.source', 'polar', 'polar')]);
+    const target = baseManifest([specialAxis('axis.y.target', '3d', '3d')]);
+    const input = { gid: 'axis.y.source', prop: 'label', value: 'New Y', mode: 'backend_patch' };
+
+    const result = mapPatchesToTargetFigure([input], source, target);
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([input]);
+  });
+
+  it('maps cross-figure when the same special axes relation contract matches', () => {
+    const specialAxis = (id: string, fingerprint: string): ManifestObject => ({
+      id,
+      kind: 'axis_y',
+      label: 'Y axis',
+      editable: ['label'],
+      currentProps: { label: 'Y' },
+      role: 'y_axis',
+      stableKey: 'axis:y:special',
+      fingerprint,
+      fingerprintVersion: 2,
+      identity: {
+        instanceKey: 'axis:y:special',
+        scope: 'subplot',
+        coordinateSpace: 'axes',
+        relation: {
+          subplotId: 'subplot.special.0',
+          axesFamily: 'polar',
+          projection: 'polar',
+          parentSubplotId: 'subplot.0',
+          ownerSubplotId: 'subplot.special.0',
+        } as any,
+      },
+      propertyCapabilities: [{
+        prop: 'label',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+    const source = baseManifest([specialAxis('axis.y.source', 'source-fingerprint')]);
+    const target = baseManifest([specialAxis('axis.y.target', 'target-fingerprint')]);
+
+    const result = mapPatchesToTargetFigure(
+      [{ gid: 'axis.y.source', prop: 'label', value: 'New Y', mode: 'local_patch' }],
+      source,
+      target,
+    );
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toEqual([{
+      gid: 'axis.y.target',
+      prop: 'label',
+      value: 'New Y',
+      mode: 'backend_patch',
+      stableKey: 'axis:y:special',
+      fingerprint: 'target-fingerprint',
+      fingerprintVersion: 2,
+      identity: target.objects[0].identity,
+    }]);
+  });
+
+  it('keeps legacy objects compatible when both special axes relations are absent', () => {
+    const legacyAxis = (id: string): ManifestObject => ({
+      id,
+      kind: 'axis_y',
+      label: 'Y axis',
+      editable: ['label'],
+      currentProps: { label: 'Y' },
+      role: 'y_axis',
+      stableKey: 'axis:y:legacy',
+      identity: {
+        instanceKey: 'axis:y:legacy',
+        scope: 'subplot',
+        coordinateSpace: 'axes',
+        relation: { subplotId: 'subplot.0' },
+      },
+    });
+    const source = baseManifest([legacyAxis('axis.y.source')]);
+    const target = baseManifest([legacyAxis('axis.y.target')]);
+
+    const result = mapPatchesToTargetFigure(
+      [{ gid: 'axis.y.source', prop: 'label', value: 'New Y', mode: 'local_patch' }],
+      source,
+      target,
+    );
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches[0].gid).toBe('axis.y.target');
+  });
 });

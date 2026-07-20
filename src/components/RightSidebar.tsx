@@ -9,6 +9,7 @@ import { recordTargetResolverShadowDiagnostic } from '../utils/targetResolverDia
 import { recordPropertyProjectionShadowDiagnostic } from '../utils/propertyProjectionDiagnostics';
 import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
 import {
+  hasAuthoritativePropertyCapabilities,
   isPythonStructuralSeriesProp,
   isParentOwnedManifestObject,
   resolveCrossFigurePolicy,
@@ -667,6 +668,7 @@ export function RightSidebar({
   const [lastSelectedGroupId, setLastSelectedGroupId] = useState<string | null>(null);
   const [componentSubplotScope, setComponentSubplotScope] = useState<string>('all');
   const [fontSubplotScope, setFontSubplotScope] = useState<string>('all');
+  const [paletteSubplotScope, setPaletteSubplotScope] = useState<string>('all');
   const [componentPatchNotice, setComponentPatchNotice] = useState<string | null>(null);
   const [fontBrushStyle, setFontBrushStyle] = useState<FontBrushStyle | null>(null);
   const textInputRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
@@ -912,11 +914,76 @@ export function RightSidebar({
   useEffect(() => {
     setComponentSubplotScope(selectedSubplotScope);
     setFontSubplotScope(selectedSubplotScope);
-  }, [selectedGids, selectedObject, selectedSubplotScope]);
+    setPaletteSubplotScope(selectedSubplotScope);
+  }, [selectedSubplotScope]);
+
+  const isObjectInSubplotScope = (
+    obj: Pick<StandardFigureObject, 'id' | 'kind' | 'role' | 'subplotId' | 'source' | 'identity'> | undefined,
+    scope: string,
+  ) => {
+    if (!obj) return false;
+    if (scope === 'all') return true;
+    return getObjectSubplotId(obj) === scope;
+  };
+  const getObjectIdsInSubplotScope = (scope: string) => (
+    objects
+      .filter(obj => isObjectInSubplotScope(obj, scope))
+      .map(obj => obj.id)
+  );
+  const isRenderedPaletteId = (paletteId: string) => paletteId.startsWith('rendered_');
+  const resolvePaletteForScope = (
+    paletteId: string,
+    paletteColor: unknown,
+    baseResolution: ReturnType<typeof resolvePaletteTargets>,
+    scope: string,
+  ) => {
+    if (scope === 'all' && !isRenderedPaletteId(paletteId)) return baseResolution;
+    if (scope === 'all') {
+      return resolvePaletteColorFallbackTargets(manifest, paletteId, paletteColor);
+    }
+    const scopedObjectIds = Array.from(new Set(
+      baseResolution.targets
+        .map(target => target.objectId)
+        .filter(gid => isObjectInSubplotScope(manifest.objects.find(item => item.id === gid), scope)),
+    ));
+    if (scopedObjectIds.length > 0) {
+      const scopedResolution = resolvePaletteTargets(
+        manifest,
+        paletteId,
+        PALETTE_TARGET_RESOLVER_V2_ENABLED,
+        scopedObjectIds,
+        PALETTE_CONTROLS_V2_ENABLED,
+      );
+      if (scopedResolution.targets.some(target => target.replayMode !== 'code_only')) {
+        return scopedResolution;
+      }
+    }
+    return resolvePaletteColorFallbackTargets(
+      manifest,
+      paletteId,
+      paletteColor,
+      getObjectIdsInSubplotScope(scope),
+    );
+  };
 
   const allSubplotOptions = useMemo(() => objects
     .filter(obj => obj.kind === 'subplot')
     .sort((a, b) => Number(a.currentProps.subplotIndex ?? a.source?.axesIndex ?? 0) - Number(b.currentProps.subplotIndex ?? b.source?.axesIndex ?? 0)), [objects]);
+  const editingSubplotOptions = useMemo(() => {
+    const editingPanelKinds = new Set([
+      'subplot',
+      'polar_subplot',
+      'three_d_subplot',
+      'inset_subplot',
+      'geo_subplot',
+      'parasite_subplot',
+      'unsupported_axes',
+      'brokenaxes_group',
+    ]);
+    return objects
+      .filter(obj => editingPanelKinds.has(obj.kind))
+      .sort((a, b) => Number(a.source?.axesIndex ?? 0) - Number(b.source?.axesIndex ?? 0));
+  }, [objects]);
   const subplotOptions = useMemo(() => allSubplotOptions.filter(subplot => {
     const twinIds = subplot.identity?.relation?.twinSubplotIds ?? [];
     if (twinIds.length === 0) return true;
@@ -1560,8 +1627,10 @@ export function RightSidebar({
     setLayoutSnapshotAvailable(false);
   };
 
-  const handlePaletteColorChange = (paletteId: string, newColor: string) => {
-    const resolution = resolvePaletteBindingTargets(paletteId);
+  const handlePaletteColorChange = (paletteId: string, newColor: string, scope: string = paletteSubplotScope) => {
+    const palette = proxiedPalettes.find((item: any) => item.id === paletteId);
+    const baseResolution = resolvePaletteBindingTargets(paletteId);
+    const resolution = resolvePaletteForScope(paletteId, palette?.color, baseResolution, scope);
     recordPaletteResolverObservation(resolution);
     if (resolution.fallbackReason && resolution.fallbackReason !== 'feature_disabled') {
       console.info('[PaletteTargetResolverV2] compatibility fallback', {
@@ -1577,11 +1646,14 @@ export function RightSidebar({
       });
     }
 
-    const patchBatch = buildPaletteUpdatePatches(
-      resolution,
-      newColor,
-      manifest.generatedBy === 'r_svg' ? undefined : paletteId,
-    ).map((patch) => {
+    const patchSource = scope === 'all'
+      ? buildPaletteUpdatePatches(
+        resolution,
+        newColor,
+        manifest.generatedBy === 'r_svg' || isRenderedPaletteId(paletteId) ? undefined : paletteId,
+      )
+      : buildPaletteObjectPatches(resolution, newColor);
+    const patchBatch = patchSource.map((patch) => {
       if ('type' in patch) return patch;
       const object = manifest.objects.find(item => item.id === patch.gid);
       const intent: EditingIntent = {
@@ -3847,6 +3919,7 @@ export function RightSidebar({
     if (isPythonStructuralSeriesProp(obj, prop)) return false;
     const declaredCapability = obj.propertyCapabilities?.find(capability => capability.prop === prop);
     if (declaredCapability) return declaredCapability.replay !== 'unsupported';
+    if (hasAuthoritativePropertyCapabilities(obj)) return false;
     if (obj.editable.includes(prop) && !getUnsupportedProps(obj).includes(prop)) return true;
     if (prop === 'visible') return true;
     if (STEM_PROPS.has(prop)) return obj.kind === 'stem_container' && !getUnsupportedProps(obj).includes(prop);
@@ -4020,8 +4093,9 @@ export function RightSidebar({
       && !['pie_label', 'pie_value_label'].includes(String(obj.role || ''))
       && !isDedicatedDiagramComponentObject(obj)
     ));
-    const axisObjects = scopedObjects.filter(obj => ['axes', 'axis_x', 'axis_y'].includes(obj.kind));
-    const subplotPanelObjects = scopedObjects.filter(obj => obj.kind === 'subplot');
+    const axisObjects = scopedObjects.filter(obj => ['axes', 'axis_x', 'axis_y', 'axis_z'].includes(obj.kind));
+    const physicalSubplotIds = new Set(subplotOptions.map(subplot => subplot.id));
+    const subplotPanelObjects = scopedObjects.filter(obj => obj.kind === 'subplot' && physicalSubplotIds.has(obj.id));
     const legendObjects = scopedObjects.filter(obj => obj.kind === 'legend');
     const heatmapObjects = scopedObjects.filter(obj => obj.kind === 'heatmap');
     const colorbarObjects = scopedObjects.filter(obj => obj.kind === 'colorbar');
@@ -4604,7 +4678,7 @@ export function RightSidebar({
             {componentPatchNotice}
           </div>
         )}
-        {allSubplotOptions.length > 0 && (
+        {editingSubplotOptions.length > 0 && (
           <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 space-y-2">
             <div className="flex flex-col gap-3">
               <div>
@@ -4619,7 +4693,7 @@ export function RightSidebar({
                 onChange={(event) => setComponentSubplotScope(event.target.value)}
               >
                 <option value="all">全部子图</option>
-                {allSubplotOptions.map(subplot => (
+                {editingSubplotOptions.map(subplot => (
                   <option key={subplot.id} value={subplot.id}>
                     {String(subplot.currentProps.label || subplot.label || subplot.id)}
                   </option>
@@ -5275,11 +5349,17 @@ export function RightSidebar({
       if (obj.role === 'y_axis_label') {
         return { id: 'ylabels', label: 'Y 轴标签', presetKey: 'label' };
       }
+      if (obj.role === 'z_axis_label') {
+        return { id: 'zlabels', label: 'Z 轴标签', presetKey: 'label' };
+      }
       if (obj.role === 'x_tick_label' || obj.role === 'x_axis') {
         return { id: 'xticks', label: 'X 轴刻度文字', presetKey: 'tick' };
       }
       if (obj.role === 'y_tick_label' || obj.role === 'y_axis') {
         return { id: 'yticks', label: 'Y 轴刻度文字', presetKey: 'tick' };
+      }
+      if (obj.role === 'z_tick_label' || obj.role === 'z_axis') {
+        return { id: 'zticks', label: 'Z 轴刻度文字', presetKey: 'tick' };
       }
       if (obj.role === 'legend_text' || obj.role === 'legend') {
         return { id: 'legend_text', label: '图例文字', presetKey: 'legend' };
@@ -5295,6 +5375,9 @@ export function RightSidebar({
     if (obj.kind === 'axis_y') {
       return { id: 'yticks', label: 'Y 轴刻度文字', presetKey: 'tick' };
     }
+    if (obj.kind === 'axis_z') {
+      return { id: 'zticks', label: 'Z 轴刻度文字', presetKey: 'tick' };
+    }
     if (obj.kind !== 'text' && obj.kind !== 'legend') return null;
     if (obj.id.startsWith('title.') || obj.id.startsWith('fig_text.')) {
       return { id: 'titles', label: '标题 / 图内主文本', presetKey: 'title' };
@@ -5305,11 +5388,17 @@ export function RightSidebar({
     if (obj.id.startsWith('ylabel.')) {
       return { id: 'ylabels', label: 'Y 轴标签', presetKey: 'label' };
     }
+    if (obj.id.startsWith('zlabel.')) {
+      return { id: 'zlabels', label: 'Z 轴标签', presetKey: 'label' };
+    }
     if (obj.id.startsWith('xtick.')) {
       return { id: 'xticks', label: 'X 轴刻度文字', presetKey: 'tick' };
     }
     if (obj.id.startsWith('ytick.')) {
       return { id: 'yticks', label: 'Y 轴刻度文字', presetKey: 'tick' };
+    }
+    if (obj.id.startsWith('ztick.')) {
+      return { id: 'zticks', label: 'Z 轴刻度文字', presetKey: 'tick' };
     }
     if (obj.id.startsWith('legend_text.') || obj.id.startsWith('legend_title.') || obj.kind === 'legend') {
       return { id: 'legend_text', label: '图例文字', presetKey: 'legend' };
@@ -5328,11 +5417,13 @@ export function RightSidebar({
     });
     const hasAxisX = scopedFontObjects.some(obj => obj.kind === 'axis_x');
     const hasAxisY = scopedFontObjects.some(obj => obj.kind === 'axis_y');
+    const hasAxisZ = scopedFontObjects.some(obj => obj.kind === 'axis_z');
     scopedFontObjects.forEach((obj) => {
       // Tick Text artists are regenerated by matplotlib. Prefer the stable
       // virtual Axis objects so font edits survive backend rerenders.
       if (hasAxisX && obj.id.startsWith('xtick.')) return;
       if (hasAxisY && obj.id.startsWith('ytick.')) return;
+      if (hasAxisZ && obj.id.startsWith('ztick.')) return;
       const role = getFontRole(obj);
       if (!role) return;
       const current = groups.get(role.id) || { ...role, objects: [] };
@@ -5348,7 +5439,7 @@ export function RightSidebar({
   };
 
   const fontGroupProp = (roleId: string, prop: FontGroupPatchProp) => {
-    if (roleId === 'xticks' || roleId === 'yticks') {
+    if (roleId === 'xticks' || roleId === 'yticks' || roleId === 'zticks') {
       if (prop === 'fontsize') return 'tick_labelsize';
       if (prop === 'fontfamily') return 'tick_labelfamily';
       if (prop === 'color') return 'tick_labelcolor';
@@ -5376,13 +5467,15 @@ export function RightSidebar({
       titles: 'title',
       xlabels: 'x_axis_label',
       ylabels: 'y_axis_label',
+      zlabels: 'z_axis_label',
       xticks: 'x_tick_label',
       yticks: 'y_tick_label',
+      zticks: 'z_tick_label',
       legend_text: 'legend_text',
     };
     const targetRole = roleMap[roleId];
     const patches = compileFontIntentPatches({
-      intent: roleId === 'xticks' || roleId === 'yticks'
+      intent: roleId === 'xticks' || roleId === 'yticks' || roleId === 'zticks'
         ? 'style.text.tick_label'
         : roleId === 'legend_text'
           ? 'style.text.legend'
@@ -5649,7 +5742,7 @@ export function RightSidebar({
         <div>
           {renderPanelTitle('字体中心')}
           <p className="text-xs text-slate-400 mb-4">按真实 matplotlib 文本对象自动分组，统一修改标题、轴标签、刻度和图例字体。</p>
-          {allSubplotOptions.length > 0 && (
+          {editingSubplotOptions.length > 0 && (
             <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 space-y-2 mb-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -5664,7 +5757,7 @@ export function RightSidebar({
                   onChange={(event) => setFontSubplotScope(event.target.value)}
                 >
                   <option value="all">全部子图</option>
-                  {allSubplotOptions.map(subplot => (
+                  {editingSubplotOptions.map(subplot => (
                     <option key={subplot.id} value={subplot.id}>
                       {String(subplot.currentProps.label || subplot.label || subplot.id)}
                     </option>
@@ -5899,7 +5992,8 @@ export function RightSidebar({
     const bindings = debugModel?.bindings || [];
     const paletteGroups = palettes.map((palette: any) => {
       const binding = bindings.find((b: any) => b.paletteId === palette.id);
-      const resolution = resolvePaletteBindingTargets(palette.id);
+      const baseResolution = resolvePaletteBindingTargets(palette.id);
+      const resolution = resolvePaletteForScope(palette.id, palette.color, baseResolution, paletteSubplotScope);
       const gids = Array.from(new Set(resolution.targets.map(target => target.objectId)));
       const selectableGids = Array.from(new Set(
         resolution.targets.map(target => target.objectId),
@@ -5932,23 +6026,17 @@ export function RightSidebar({
     const handleApplyPreset = (presetName: string) => {
       const colors = presetMap[presetName];
       if (!colors) return;
-      if (manifest.generatedBy === 'r_svg') {
-        const patchArray = palettes.flatMap((p: any, idx: number) => {
-          const resolution = resolvePaletteBindingTargets(p.id);
-          recordPaletteResolverObservation(resolution);
-          return buildPaletteObjectPatches(resolution, colors[idx % colors.length]);
-        });
-        void onPatch(patchArray);
-        return;
-      }
       const patchArray = palettes.flatMap((p: any, idx: number) => {
-        const resolution = resolvePaletteBindingTargets(p.id);
+        const baseResolution = resolvePaletteBindingTargets(p.id);
+        const resolution = resolvePaletteForScope(p.id, p.color, baseResolution, paletteSubplotScope);
         recordPaletteResolverObservation(resolution);
-        return buildPaletteUpdatePatches(
-          resolution,
-          colors[idx % colors.length],
-          p.id,
-        );
+        return paletteSubplotScope === 'all'
+          ? buildPaletteUpdatePatches(
+            resolution,
+            colors[idx % colors.length],
+            manifest.generatedBy === 'r_svg' || isRenderedPaletteId(p.id) ? undefined : p.id,
+          )
+          : buildPaletteObjectPatches(resolution, colors[idx % colors.length]);
       });
       void onPatch(patchArray);
     };
@@ -5975,6 +6063,32 @@ export function RightSidebar({
         <div>
           {renderPanelTitle('配色中心')}
           <p className="text-xs text-slate-400 mb-4">按脚本颜色常量/字典分组，先看命中的真实图元，再统一改色。</p>
+          {editingSubplotOptions.length > 0 && (
+            <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 space-y-2 mb-4">
+              <div className="flex flex-col gap-3">
+                <div>
+                  <div className="text-xs font-semibold text-blue-900">作用范围</div>
+                  <div className="text-[11px] text-blue-700">
+                    选择某个子图后，下方颜色命中对象和“仅修改当前范围”只作用于该子图。
+                  </div>
+                </div>
+                <select
+                  aria-label="配色中心子图作用范围"
+                  data-testid="palette-subplot-scope"
+                  className="w-full rounded-md border border-blue-200 bg-white px-2 py-1 text-xs text-blue-900 outline-none"
+                  value={paletteSubplotScope}
+                  onChange={(event) => setPaletteSubplotScope(event.target.value)}
+                >
+                  <option value="all">全部子图</option>
+                  {editingSubplotOptions.map(subplot => (
+                    <option key={subplot.id} value={subplot.id}>
+                      {String(subplot.currentProps.label || subplot.label || subplot.id)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          )}
           
           <div className="space-y-4">
             {paletteGroups.map(({ palette: p, binding, resolution, gids, selectableGids, targetObjects, selectedCount, isActive }) => {
@@ -6021,7 +6135,7 @@ export function RightSidebar({
                   resolution,
                   paletteColor: resolvePickerColor(p.color),
                   controlId: `palette:${p.id}`,
-                  allowCodePatch: manifest.generatedBy !== 'r_svg',
+                  allowCodePatch: paletteSubplotScope === 'all' && manifest.generatedBy !== 'r_svg',
                 })
                 : null;
               const subsetPaletteControl = PALETTE_CONTROLS_V2_ENABLED && selectedResolution
@@ -6059,9 +6173,11 @@ export function RightSidebar({
                 });
                 if (patches.length > 0) void onPatch(patches);
               };
-              const fullPaletteLabel = manifest.generatedBy === 'r_svg'
-                ? `统一修改该组颜色 (整组同步: ${count} 个图元)`
-                : `统一修改代码全局常量 (整组同步: ${count} 个图元)`;
+              const fullPaletteLabel = paletteSubplotScope !== 'all'
+                ? `仅修改当前子图范围 (${count} 个图元)`
+                : manifest.generatedBy === 'r_svg'
+                  ? `统一修改该组颜色 (整组同步: ${count} 个图元)`
+                  : `统一修改代码全局常量 (整组同步: ${count} 个图元)`;
               return (
                 <div
                   key={p.id}

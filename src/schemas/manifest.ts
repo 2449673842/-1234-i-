@@ -59,10 +59,21 @@ export type ManifestObjectKind =
   | "patch"
   | "figure"
   | "subplot"
+  | "polar_subplot"
+  | "three_d_subplot"
+  | "inset_subplot"
+  | "geo_subplot"
+  | "parasite_subplot"
+  | "parasite_axis"
+  | "secondary_xaxis"
+  | "secondary_yaxis"
+  | "unsupported_axes"
+  | "brokenaxes_group"
   | "axes"
   | "grid"
   | "axis_x"
   | "axis_y"
+  | "axis_z"
   | "xtick"
   | "ytick"
   | "bar_container"
@@ -116,6 +127,10 @@ export interface ManifestObjectRelation {
   twinSubplotIds?: string[];
   sharedXSubplotIds?: string[];
   sharedYSubplotIds?: string[];
+  axesFamily?: string;
+  projection?: string;
+  parentSubplotId?: string;
+  ownerSubplotId?: string;
   pieId?: string;
   pieSliceId?: string;
   pieLabelId?: string;

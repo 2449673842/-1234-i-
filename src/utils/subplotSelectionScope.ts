@@ -1,8 +1,9 @@
 import type { StandardFigureObject } from '../schemas/standardFigureModel';
+import { requiresSpecialAxesRelationIdentity } from './specialAxesIdentity';
 
 type SubplotResolvableObject = Pick<
   StandardFigureObject,
-  'id' | 'kind' | 'subplotId' | 'source' | 'identity'
+  'id' | 'kind' | 'role' | 'subplotId' | 'source' | 'identity'
 >;
 
 export function getObjectSubplotId(obj: SubplotResolvableObject): string | null {
@@ -12,6 +13,17 @@ export function getObjectSubplotId(obj: SubplotResolvableObject): string | null 
   if ((relation?.subplotIds?.length ?? 0) > 1) return null;
   if (relation?.subplotIds?.length === 1) return relation.subplotIds[0];
   if (typeof obj.subplotId === 'string') return obj.subplotId;
+  if (typeof relation?.axesFamily === 'string') {
+    if (
+      ['secondary_x', 'secondary_y', 'parasite'].includes(relation.axesFamily)
+      && typeof relation.parentSubplotId === 'string'
+    ) {
+      return relation.parentSubplotId;
+    }
+    return typeof relation.ownerSubplotId === 'string' ? relation.ownerSubplotId : null;
+  }
+  if (requiresSpecialAxesRelationIdentity(obj)) return null;
+  if (obj.kind === 'unsupported') return null;
   if (obj.kind === 'colorbar' || relation?.colorbarId) {
     return typeof obj.source?.ownerAxesIndex === 'number'
       ? `subplot.${obj.source.ownerAxesIndex}`

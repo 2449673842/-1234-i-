@@ -213,13 +213,20 @@ function replayModeForTarget(
   return isMultiColorValue(object.currentProps?.[prop]) ? 'code_only' : 'object_patch';
 }
 
-function fallbackProp(binding: Binding, object: ManifestObject): string {
-  const declared = (binding.props ?? []).find(prop => object.editable.includes(prop));
+function colorPropSupportedByObject(object: ManifestObject, prop: string): boolean {
+  const capability = object.propertyCapabilities?.find(item => item.prop === prop);
+  if (capability) return capability.replay !== 'unsupported';
+  if (Array.isArray(object.propertyCapabilities)) return false;
+  return object.editable.includes(prop);
+}
+
+function fallbackProp(binding: Binding, object: ManifestObject): string | null {
+  const declared = (binding.props ?? []).find(prop => colorPropSupportedByObject(object, prop));
   if (declared) return declared;
-  if (object.kind === 'line') return 'color';
-  if (object.editable.includes('facecolor')) return 'facecolor';
-  if (object.editable.includes('color')) return 'color';
-  return binding.props?.[0] || 'color';
+  if (object.kind === 'line' && colorPropSupportedByObject(object, 'color')) return 'color';
+  if (colorPropSupportedByObject(object, 'facecolor')) return 'facecolor';
+  if (colorPropSupportedByObject(object, 'color')) return 'color';
+  return null;
 }
 
 function identityOwners(manifest: Manifest): Map<string, string[]> {
@@ -278,6 +285,14 @@ function legacyResolution(
       return;
     }
     const prop = fallbackProp(binding, object);
+    if (!prop) {
+      skipped.push({
+        objectId: gid,
+        reason: 'unsupported_prop',
+        detail: `${gid} has no renderer-declared palette color property.`,
+      });
+      return;
+    }
     targets.push({
       objectId: gid,
       prop,

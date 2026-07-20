@@ -187,7 +187,44 @@ describe('shadow target resolver', () => {
     expect(comparison.shadowPatchKeys).toEqual(['axis.x.0:tick_labelsize']);
   });
 
-  it('exposes legacy suffix inference when a figure-level legend is scoped as a subplot', () => {
+  it('keeps grouped 3D Z tick styles on the special axis.z object', () => {
+    const specialIdentity = identity('axis.z.0', 'three_d_subplot.0');
+    specialIdentity.relation = {
+      subplotId: 'three_d_subplot.0',
+      axesFamily: '3d',
+      projection: '3d',
+      parentSubplotId: 'three_d_subplot.0',
+      ownerSubplotId: 'three_d_subplot.0',
+    };
+    const figure = manifest([{
+      id: 'axis.z.0',
+      kind: 'axis_z',
+      label: 'Z axis',
+      editable: ['tick_labelsize'],
+      currentProps: { tick_labelsize: 9 },
+      subplotId: 'three_d_subplot.0',
+      identity: specialIdentity,
+      propertyCapabilities: [capability('tick_labelsize')],
+    }]);
+    const intent: EditingIntent = {
+      intent: 'style.text.tick_label',
+      scope: {
+        selectionMode: 'role_in_figure',
+        objectIds: ['axis.z.0'],
+        targetRole: 'z_tick_label',
+      },
+      operation: { prop: 'fontsize', value: 13 },
+    };
+
+    const compiled = compileEditingIntentWithControlledResolver(figure, intent, true);
+
+    expect(compiled.strategy).toBe('strict');
+    expect(compiled.patches).toEqual([{
+      op: 'set', mode: 'backend_patch', gid: 'axis.z.0', prop: 'tick_labelsize', value: 13,
+    }]);
+  });
+
+  it('does not infer subplot scope from a figure-level legend numeric suffix', () => {
     const figure = manifest([{
       id: 'legend.figure.0',
       kind: 'legend',
@@ -209,8 +246,8 @@ describe('shadow target resolver', () => {
 
     const comparison = compareTargetResolverWithCurrentCompiler(figure, intent);
 
-    expect(comparison.equivalent).toBe(false);
-    expect(comparison.currentOnlyPatchKeys).toEqual(['legend.figure.0:fontsize']);
+    expect(comparison.equivalent).toBe(true);
+    expect(comparison.currentOnlyPatchKeys).toEqual([]);
     expect(comparison.shadowPatchKeys).toEqual([]);
   });
 

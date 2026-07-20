@@ -297,6 +297,16 @@ export function LeftSidebar({
 
   const tree = useMemo<TreeNode[]>(() => {
     const objects = figSession?.manifest?.objects || [];
+    const specialPanelKinds = new Set<ManifestObject['kind']>([
+      'polar_subplot',
+      'three_d_subplot',
+      'inset_subplot',
+      'geo_subplot',
+      'parasite_subplot',
+      'unsupported_axes',
+      'brokenaxes_group',
+    ]);
+    const isPanelObject = (o: ManifestObject) => o.kind === 'subplot' || specialPanelKinds.has(o.kind);
 
     const truncateText = (value: unknown, max = 36) => {
       const text = String(value ?? '').replace(/\s+/g, ' ').trim();
@@ -308,13 +318,16 @@ export function LeftSidebar({
       if (o.role === 'axes_title' || o.id.startsWith('title.')) return '标题';
       if (o.role === 'x_axis_label' || o.id.startsWith('xlabel.')) return 'X标签';
       if (o.role === 'y_axis_label' || o.id.startsWith('ylabel.')) return 'Y标签';
+      if (o.role === 'z_axis_label' || o.id.startsWith('zlabel.')) return 'Z标签';
       if (o.role === 'x_tick_label' || o.id.startsWith('xtick.')) return 'X刻度';
       if (o.role === 'y_tick_label' || o.id.startsWith('ytick.')) return 'Y刻度';
+      if (o.role === 'z_tick_label' || o.id.startsWith('ztick.')) return 'Z刻度';
       if (o.id.startsWith('legend_text.')) return '图例文字';
       if (o.id.startsWith('legend_title.')) return '图例标题';
       if (o.id.startsWith('fig_text.')) return '全局文字';
       if (o.kind === 'text') return '文本';
       if (o.kind === 'subplot') return '子图';
+      if (specialPanelKinds.has(o.kind)) return '特殊轴';
       return undefined;
     };
 
@@ -343,8 +356,8 @@ export function LeftSidebar({
     };
 
     const getSubplotId = (o: ManifestObject): string | null => {
-      if (o.kind === 'subplot') return o.id;
       const relation = o.identity?.relation;
+      if (isPanelObject(o) && typeof relation?.subplotId !== 'string') return o.id;
       if (typeof relation?.subplotId === 'string') return relation.subplotId;
       if ((relation?.subplotIds?.length ?? 0) > 1) return null;
       if (relation?.subplotIds?.length === 1) return relation.subplotIds[0];
@@ -371,7 +384,7 @@ export function LeftSidebar({
     const canvasNodes = canvasObjects.map(o => nodeForObject(o, o.id.startsWith('fig_text.') ? <Type className="w-3.5 h-3.5" /> : undefined));
 
     const subplotObjects = objects
-      .filter(o => o.kind === 'subplot')
+      .filter(isPanelObject)
       .sort((a, b) => Number(a.currentProps.subplotIndex ?? getAxesIndex(a) ?? 0) - Number(b.currentProps.subplotIndex ?? getAxesIndex(b) ?? 0));
 
     const colorbarLike = (o: ManifestObject) => o.kind === 'colorbar' || Boolean(o.identity?.relation?.colorbarId);
@@ -379,13 +392,19 @@ export function LeftSidebar({
       o.kind === 'axes' ||
       o.kind === 'axis_x' ||
       o.kind === 'axis_y' ||
+      o.kind === 'axis_z' ||
+      o.kind === 'secondary_xaxis' ||
+      o.kind === 'secondary_yaxis' ||
+      o.kind === 'parasite_axis' ||
       o.kind === 'spine' ||
       o.kind === 'spine_group' ||
       o.kind === 'grid' ||
       o.id.startsWith('xtick.') ||
       o.id.startsWith('ytick.') ||
+      o.id.startsWith('ztick.') ||
       o.id.startsWith('xlabel.') ||
       o.id.startsWith('ylabel.') ||
+      o.id.startsWith('zlabel.') ||
       o.id.startsWith('title.')
     );
     const legendLike = (o: ManifestObject) => o.id.startsWith('legend');
@@ -393,7 +412,7 @@ export function LeftSidebar({
     const dataLike = (o: ManifestObject) => (
       !canvasObjects.some(co => co.id === o.id) &&
       o.kind !== 'figure' &&
-      o.kind !== 'subplot' &&
+      !isPanelObject(o) &&
       !axisLike(o) &&
       !legendLike(o) &&
       !colorbarLike(o) &&
@@ -408,10 +427,13 @@ export function LeftSidebar({
       const sharedYSubplotIds = relation?.sharedYSubplotIds ?? [];
       const relationBadge = twinSubplotIds.length > 0
         ? '双轴'
+        : typeof relation?.axesFamily === 'string'
+          ? '特殊轴'
         : sharedXSubplotIds.length > 0 || sharedYSubplotIds.length > 0
           ? '共享轴'
           : undefined;
       const relationSubtitle = [
+        relation?.axesFamily ? `${relation.axesFamily} / ${relation.projection || 'custom'}` : '',
         twinSubplotIds.length > 0 ? `双轴关联 ${twinSubplotIds.join(', ')}` : '',
         sharedXSubplotIds.length > 0 ? `共享 X ${sharedXSubplotIds.join(', ')}` : '',
         sharedYSubplotIds.length > 0 ? `共享 Y ${sharedYSubplotIds.join(', ')}` : '',

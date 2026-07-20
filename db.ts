@@ -1718,15 +1718,38 @@ export interface FigSessionInput {
   history?: unknown;
 }
 
+export interface ProjectRenderCommitInput {
+  name: string;
+  spec: object;
+  script: string;
+}
+
 export function replaceProjectFiguresAndSessions(
   projectId: string,
   userId: string,
   figures: FigSessionInput[],
   script: string,
-  dataPayload: Record<string, unknown> | null
+  dataPayload: Record<string, unknown> | null,
+  projectUpdate?: ProjectRenderCommitInput,
 ): void {
   const db = getDb();
   db.transaction(() => {
+    if (projectUpdate) {
+      const updated = db.prepare(`
+        UPDATE projects
+        SET name = ?, spec = ?, script = ?, updated_at = datetime('now')
+        WHERE id = ? AND user_id = ?
+      `).run(
+        projectUpdate.name,
+        JSON.stringify(projectUpdate.spec),
+        projectUpdate.script,
+        projectId,
+        userId,
+      );
+      if (updated.changes !== 1) {
+        throw new Error('Project render commit could not update the owned project row.');
+      }
+    }
     const previousRows = db.prepare(`
       SELECT figure_index, history
       FROM project_figures

@@ -11,6 +11,7 @@ import {
   isPythonStructuralSeriesProp,
   resolvePatchMode,
 } from './propertyPatchMode';
+import { requiresSpecialAxesRelationIdentity } from './specialAxesIdentity';
 
 const TICK_PROP_MAP: Record<string, string> = {
   fontsize: 'tick_labelsize',
@@ -30,8 +31,10 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.id.startsWith('title.') || object.id.startsWith('suptitle.')) return 'title';
   if (object.id.startsWith('xlabel.') || object.id.startsWith('supxlabel.')) return 'x_axis_label';
   if (object.id.startsWith('ylabel.') || object.id.startsWith('supylabel.')) return 'y_axis_label';
+  if (object.id.startsWith('zlabel.')) return 'z_axis_label';
   if (object.id.startsWith('xtick.') || object.kind === 'axis_x') return 'x_tick_label';
   if (object.id.startsWith('ytick.') || object.kind === 'axis_y') return 'y_tick_label';
+  if (object.id.startsWith('ztick.') || object.kind === 'axis_z') return 'z_tick_label';
   if (object.role === 'legend_title' || object.id.startsWith('legend_title.')) return 'legend_title';
   if (object.role === 'legend_marker' && object.identity?.relation?.pieSliceId) return 'pie_legend_marker';
   if (object.role === 'legend_marker' || /^legend_(?:line|patch|collection|marker)\./.test(object.id)) return 'legend_marker';
@@ -84,7 +87,12 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
 }
 
 function objectSubplotId(object: ManifestObject): string | undefined {
+  const relation = object.identity?.relation;
+  if (relation?.subplotIds?.length === 1) return relation.subplotIds[0];
+  if ((relation?.subplotIds?.length ?? 0) > 1) return undefined;
+  if (relation?.subplotId) return relation.subplotId;
   if (object.subplotId) return object.subplotId;
+  if (requiresSpecialAxesRelationIdentity(object) || object.identity) return undefined;
   const suffix = object.id.match(/\.(\d+)(?:\.\d+)?$/)?.[1];
   return suffix !== undefined ? `subplot.${suffix}` : undefined;
 }
@@ -151,15 +159,18 @@ export function isLayoutIntent(intentName: EditingIntent['intent']): boolean {
 
 function resolveTickAxisObjects(
   manifest: Manifest,
-  role: 'x_tick_label' | 'y_tick_label',
+  role: 'x_tick_label' | 'y_tick_label' | 'z_tick_label',
   candidates: ManifestObject[],
 ): ManifestObject[] {
-  const axisPrefix = role === 'x_tick_label' ? 'axis.x.' : 'axis.y.';
-  const axisKind = role === 'x_tick_label' ? 'axis_x' : 'axis_y';
+  const axisContract = role === 'x_tick_label'
+    ? { prefix: 'axis.x.', kind: 'axis_x' as const }
+    : role === 'y_tick_label'
+      ? { prefix: 'axis.y.', kind: 'axis_y' as const }
+      : { prefix: 'axis.z.', kind: 'axis_z' as const };
   const indexes = new Set<string>();
 
   candidates.forEach((object) => {
-    if (object.kind === axisKind) {
+    if (object.kind === axisContract.kind) {
       const index = object.id.match(/\.(\d+)$/)?.[1];
       if (index !== undefined) indexes.add(index);
       return;
@@ -169,7 +180,7 @@ function resolveTickAxisObjects(
   });
 
   return Array.from(indexes)
-    .map(index => manifest.objects.find(object => object.id === `${axisPrefix}${index}`))
+    .map(index => manifest.objects.find(object => object.id === `${axisContract.prefix}${index}`))
     .filter((object): object is ManifestObject => Boolean(object));
 }
 
@@ -225,7 +236,7 @@ export function compileEditingIntent(manifest: Manifest, intent: EditingIntent):
   let prop = requestedProp;
 
   if (
-    (role === 'x_tick_label' || role === 'y_tick_label')
+    (role === 'x_tick_label' || role === 'y_tick_label' || role === 'z_tick_label')
     && intent.intent !== 'content.text'
     && intent.scope.selectionMode !== 'explicit_objects'
     && intent.scope.selectionMode !== 'selected_only'

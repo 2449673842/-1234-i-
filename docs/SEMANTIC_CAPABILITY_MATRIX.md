@@ -1,6 +1,6 @@
 # SciFigure Studio 语义能力矩阵
 
-> 最后修改时间：2026-07-19 22:48:05 +08:00
+> 最后修改时间：2026-07-20 08:41:21 +08:00
 
 本矩阵记录了 SciFigure Studio 对于各类科研绘图图元的内省识别、可视化编辑以及渲染一致性的支持级别。
 
@@ -10,6 +10,7 @@
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **text** (普通文本) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `text`, `fontsize`, `fontfamily`, `color`, `ha`, `va`, `rotation`, `position`, `zorder` | 🟢 高一致性 | 🟢 有 | 数学公式 `$` 语法渲染暂不可进行纯文本修改，建议通过 `code_patch` 调整。 |
 | **axis** (坐标轴系统) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `xlim`, `ylim`, `show_minor_ticks`, `x_tick_rotation`, `tick_direction`, `zorder` | 🟢 高一致性 | 🟢 有 | 部分复杂的 twinx / twiny 双轴共享需要特别注意坐标轴重叠。 |
+| **special axes** (polar / 3D / inset / secondary) | 🟢 是 | 🟢 通过 | 🟢 polar/3D/secondary 已验证 | 按对象能力开放数据样式、文字、图例和安全轴字体；布局、投影、相机和跨轴几何只读 | 🟢 已验证代表链路 | 🟢 有 | identity 必须包含完整 axes relation；parasite 只读。Cartopy/brokenaxes 未安装，不能宣称真实第三方包支持。 |
 | **tick** (刻度线/刻度标签) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `limits`, `label`, `label_fontsize`, `label_color`, `tick_rotation`, `tick_direction`, `tick_length`, `tick_width`, `tick_color`, `tick_pad`, `show_minor_ticks` | 🟢 高一致性 | 🟢 有 | 动态添加刻度位置在 matplotlib 脚本层 and 图元 patch 层可能有少量偏移。 |
 | **spine** (外框线) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `visible`, `color`, `linewidth`, `zorder` | 🟢 高一致性 | 🟢 有 | 隐藏 top/right spine 后若进行局部修改，可能触发重新着色。 |
 | **grid** (网格线) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `visible`, `color`, `linewidth`, `linestyle`, `alpha`, `zorder` | 🟢 高一致性 | 🟢 有 | 显隐属于后端补丁，因为开启网格可能创建新图元；密度与坐标轴 tick 数目自动关联。 |
@@ -51,6 +52,21 @@
 | `network/path/SEM` | 显式 `_scifigure_semantic_gid` -> dedicated | 节点、边、箭头、节点标签、系数标签、拟合注释和整体组独立分组 | 未显式声明关系的对象保持通用分类；科学数值和拓扑只读 |
 
 对象结构身份使用 `fingerprintVersion=2`。颜色、线宽、字号等可编辑样式不再改变结构 fingerprint；旧 manifest 无版本时只使用兼容 stableKey/seriesKey，不比较历史 fingerprint。
+
+### 2.2 Python 特殊 axes 覆盖
+
+| 家族 | kind/role | 默认编辑状态 | 验证状态 |
+|---|---|---|---|
+| polar | `polar_subplot/polar_subplot_panel` | 可证明的 artist 样式和轴文字可编辑；布局/投影只读 | renderer、API、UI、导出快照通过 |
+| 3D | `three_d_subplot/three_d_subplot_panel` | Z 轴标签与刻度字体可编辑；camera/projection 只读 | renderer 与 UI 通过 |
+| inset | `inset_subplot/inset_subplot_panel` | 父子关系可信；bounds 与归属只读 | renderer 通过 |
+| secondary x/y | `secondary_xaxis/secondary_yaxis` | 安全轴文字样式可编辑；归属父 subplot | renderer 与 UI scope 通过 |
+| parasite | `parasite_subplot/parasite_axis` | host/child 均只读 | 固定 Matplotlib 3.7.2 直接回归通过 |
+| brokenaxes | `brokenaxes_group/brokenaxes_panel_group` | 只读降级 | synthetic 分类通过；真实包未安装、测试跳过 |
+| GeoAxes/Cartopy | `geo_subplot/geo_subplot_panel` | 只读降级 | 分类代码存在；Cartopy 未安装、测试跳过 |
+| 未知投影 | `unsupported_axes/unsupported_projection_panel` | unsupported/只读并记录原因 | 畸形投影安全降级通过 |
+
+所有特殊轴对象使用 `axesFamily/projection/parentSubplotId/ownerSubplotId` 关系身份。新导出快照 schema v3 缺失 relation 时拒绝恢复；standalone/project full render 对客户端新日志执行返回 manifest 预检和 renderer 冲突检查。数据库中已存在的旧日志只有在 stableKey 一致，且其已有 fingerprint/seriesKey 也分别一致时才受控兼容；gid-only 历史日志阻断，不允许新请求借 legacy 路径绕过关系检查。
 
 ## 3. 前端语义编辑意图角色
 

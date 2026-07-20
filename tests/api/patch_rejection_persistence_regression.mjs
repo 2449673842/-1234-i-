@@ -16,6 +16,10 @@ function parseJson(value, fallback) {
   }
 }
 
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function assertIsolatedEnvironment() {
   assert(process.env.SCIFIGURE_TEST_ISOLATED === '1', 'test must run under scripts/testing/run_with_isolated_server.mjs');
   const url = new URL(BASE_URL);
@@ -534,6 +538,53 @@ function downgradeStoredFingerprintToLegacy(projectId, gid) {
   }
 }
 
+function omitModernCapabilityButKeepLegacyEditable(projectId, gid, prop) {
+  const database = new Database(process.env.SCIFIGURE_DB_PATH);
+  try {
+    database.pragma('busy_timeout = 5000');
+    const row = database.prepare(
+      'SELECT manifest FROM project_figures WHERE project_id = ? AND figure_index = 0',
+    ).get(projectId);
+    const manifest = parseJson(row?.manifest, null);
+    const object = manifest?.objects?.find(item => item.id === gid);
+    assert(object, `modern omitted capability target missing from stored manifest: ${gid}`);
+    const original = {
+      editable: clone(object.editable || []),
+      propertyCapabilities: clone(object.propertyCapabilities || []),
+    };
+    object.editable = Array.from(new Set([...(object.editable || []), prop]));
+    object.propertyCapabilities = Array.isArray(object.propertyCapabilities)
+      ? object.propertyCapabilities.filter(item => item?.prop !== prop)
+      : [];
+    database.prepare(
+      'UPDATE project_figures SET manifest = ? WHERE project_id = ? AND figure_index = 0',
+    ).run(JSON.stringify(manifest), projectId);
+    return original;
+  } finally {
+    database.close();
+  }
+}
+
+function restoreStoredObjectCapabilityFields(projectId, gid, fields) {
+  const database = new Database(process.env.SCIFIGURE_DB_PATH);
+  try {
+    database.pragma('busy_timeout = 5000');
+    const row = database.prepare(
+      'SELECT manifest FROM project_figures WHERE project_id = ? AND figure_index = 0',
+    ).get(projectId);
+    const manifest = parseJson(row?.manifest, null);
+    const object = manifest?.objects?.find(item => item.id === gid);
+    assert(object, `capability restore target missing from stored manifest: ${gid}`);
+    object.editable = clone(fields.editable || []);
+    object.propertyCapabilities = clone(fields.propertyCapabilities || []);
+    database.prepare(
+      'UPDATE project_figures SET manifest = ? WHERE project_id = ? AND figure_index = 0',
+    ).run(JSON.stringify(manifest), projectId);
+  } finally {
+    database.close();
+  }
+}
+
 async function submitRejectedPatch(token, projectId, patch, label, baseRevision) {
   const result = await jsonRequest('/api/figure/patch', token, {
     method: 'POST',
@@ -903,6 +954,46 @@ async function main() {
       );
     }
 
+    const originalModernCapabilityFields = omitModernCapabilityButKeepLegacyEditable(projectId, lineIdentitySource.gid, 'linewidth');
+    const modernOmittedCapabilityPatch = {
+      op: 'set',
+      // Service must reject this before renderer replay: the stored manifest is
+      // modern because propertyCapabilities exists, and linewidth is omitted.
+      mode: 'backend_patch',
+      gid: lineIdentitySource.gid,
+      prop: 'linewidth',
+      value: 4.5,
+      stableKey: lineIdentitySource.stableKey,
+      fingerprint: lineIdentitySource.fingerprint,
+      fingerprintVersion: lineIdentitySource.fingerprintVersion,
+      identity: lineIdentitySource.identity,
+    };
+    const modernOmittedCapabilityResult = await submitRejectedPatch(
+      token,
+      projectId,
+      modernOmittedCapabilityPatch,
+      'modern-omitted-capability',
+      baselineRevision + 2,
+    );
+    assertConflictResponse(
+      'modern manifest omitted capability patch',
+      modernOmittedCapabilityResult,
+      modernOmittedCapabilityPatch,
+      baselineRevision + 2,
+    );
+    const afterModernOmittedCapability = readPersistedFigure(projectId, null);
+    assert(
+      Number(afterModernOmittedCapability.session?.revision) === baselineRevision + 2
+        && Number(afterModernOmittedCapability.figure?.revision) === baselineRevision + 2,
+      `modern omitted capability rejection changed revision: ${JSON.stringify(afterModernOmittedCapability)}`,
+    );
+    assert(
+      !afterModernOmittedCapability.session?.editLog?.some(entry => isRejectedPatch(entry, modernOmittedCapabilityPatch))
+        && !afterModernOmittedCapability.figure?.editLog?.some(entry => isRejectedPatch(entry, modernOmittedCapabilityPatch)),
+      `modern omitted capability patch leaked into DB: ${JSON.stringify(afterModernOmittedCapability)}`,
+    );
+    restoreStoredObjectCapabilityFields(projectId, lineIdentitySource.gid, originalModernCapabilityFields);
+
     downgradeStoredFingerprintToLegacy(projectId, lineIdentitySource.gid);
     const legacyManifestPatch = {
       op: 'set',
@@ -943,6 +1034,7 @@ async function main() {
         'stale project save was rejected without removing a newer server patch',
         'same-revision editLog mutation without a base hash was rejected without persistence',
         'same-revision stale editLog hash was rejected without persistence',
+        'modern manifest omitted capability did not fall back to legacy editable on the server',
         'legacy unversioned fingerprint accepted a stableKey/seriesKey-compatible first edit',
       ],
     }, null, 2));

@@ -82,6 +82,7 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          sessionId: session.sessionId,
           script: session.script,
           language: session.language || 'python',
           dataPayload: session.dataPayload,
@@ -132,6 +133,7 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          sessionId: session?.sessionId,
           script,
           language,
           dataPayload: effectiveDataPayload,

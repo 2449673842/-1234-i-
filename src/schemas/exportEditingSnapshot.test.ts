@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   LEGACY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
+  SCRIPTED_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   parseExportEditingSnapshot,
-  type ExportEditingSnapshotV2,
+  type ExportEditingSnapshotV3,
 } from './exportEditingSnapshot';
 
-const snapshot: ExportEditingSnapshotV2 = {
+const snapshot: ExportEditingSnapshotV3 = {
   schemaVersion: EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   capturedAt: '2026-07-16T10:00:00.000Z',
   projectId: 'project-12345678',
@@ -29,7 +30,7 @@ const snapshot: ExportEditingSnapshotV2 = {
 };
 
 describe('export editing snapshot schema', () => {
-  it('accepts a complete v2 snapshot', () => {
+  it('accepts a complete current snapshot', () => {
     expect(parseExportEditingSnapshot(snapshot)).toEqual(snapshot);
   });
 
@@ -45,5 +46,13 @@ describe('export editing snapshot schema', () => {
       figures: snapshot.figures.map(({ script: _script, scriptLanguage: _scriptLanguage, ...figure }) => figure),
     };
     expect(parseExportEditingSnapshot(legacy)).toEqual(legacy);
+  });
+
+  it('keeps scripted v2 snapshots readable', () => {
+    const scriptedV2 = {
+      ...snapshot,
+      schemaVersion: SCRIPTED_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
+    };
+    expect(parseExportEditingSnapshot(scriptedV2)).toEqual(scriptedV2);
   });
 });

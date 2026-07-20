@@ -184,10 +184,14 @@ function selectCandidates(manifest: Manifest, intent: EditingIntent): ManifestOb
 
 function resolveGroupedTickTargets(
   manifest: Manifest,
-  role: 'x_tick_label' | 'y_tick_label',
+  role: 'x_tick_label' | 'y_tick_label' | 'z_tick_label',
   candidates: ManifestObject[],
 ): ManifestObject[] {
-  const axisKind = role === 'x_tick_label' ? 'axis_x' : 'axis_y';
+  const axisKind = role === 'x_tick_label'
+    ? 'axis_x'
+    : role === 'y_tick_label'
+      ? 'axis_y'
+      : 'axis_z';
   const subplotIds = new Set(
     candidates.flatMap(strictSubplotIds),
   );
@@ -240,7 +244,7 @@ function resolveEditingTargets(
   let candidates = preferSeriesContainers(selectCandidates(manifest, intent), role);
 
   if (
-    (role === 'x_tick_label' || role === 'y_tick_label')
+    (role === 'x_tick_label' || role === 'y_tick_label' || role === 'z_tick_label')
     && intent.intent !== 'content.text'
     && intent.scope.selectionMode !== 'explicit_objects'
     && intent.scope.selectionMode !== 'selected_only'
@@ -328,7 +332,7 @@ function strictProtocolTargets(manifest: Manifest, intent: EditingIntent): Manif
   const role = intent.scope.targetRole;
   const initial = preferSeriesContainers(selectCandidatesBeforeSubplot(manifest, intent), role);
   if (
-    (role === 'x_tick_label' || role === 'y_tick_label')
+    (role === 'x_tick_label' || role === 'y_tick_label' || role === 'z_tick_label')
     && intent.intent !== 'content.text'
     && intent.scope.selectionMode !== 'explicit_objects'
     && intent.scope.selectionMode !== 'selected_only'

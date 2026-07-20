@@ -290,7 +290,7 @@ async function main() {
       `exported SVG does not include legacy contour child alpha state: ${JSON.stringify(exportedFigure?.warnings || [])}`,
     );
     const snapshot = readSnapshot(asset.assetId);
-    assert(snapshot?.schema_version === 2, `unexpected snapshot schema: ${JSON.stringify(snapshot)}`);
+    assert(snapshot?.schema_version === 3, `unexpected snapshot schema: ${JSON.stringify(snapshot)}`);
     assert(hasEdit(snapshot.snapshot?.figures?.[0]?.editLog, legacyEdit), 'export snapshot did not capture legacy child alpha edit');
     assert(hasEdit(snapshot.snapshot?.figures?.[0]?.editLog, identityLegacyEdit), 'export snapshot did not capture identity-bearing legacy child edit');
 

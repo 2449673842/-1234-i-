@@ -165,6 +165,12 @@ _DIAGRAM_RELATION_FIELDS = (
     "sourceNodeId",
     "targetNodeId",
 )
+_SPECIAL_AXES_RELATION_FIELDS = (
+    "axesFamily",
+    "projection",
+    "parentSubplotId",
+    "ownerSubplotId",
+)
 _DIAGRAM_PROTECTED_TEXT_ROLES = {
     "diagram_node_label",
     "diagram_coefficient_label",
@@ -353,6 +359,18 @@ def _diagram_relation_signature(identity: Any) -> Optional[dict]:
     return {
         field: _plain_value(relation.get(field)) if field in relation else None
         for field in _DIAGRAM_RELATION_FIELDS
+    }
+
+
+def _special_axes_relation_signature(identity: Any) -> Optional[dict]:
+    if not isinstance(identity, dict):
+        return None
+    relation = identity.get("relation")
+    if not isinstance(relation, dict) or "axesFamily" not in relation:
+        return None
+    return {
+        field: _plain_value(relation.get(field)) if field in relation else None
+        for field in _SPECIAL_AXES_RELATION_FIELDS
     }
 
 
@@ -836,6 +854,255 @@ def _guard_user_script_io(cwd: Optional[str] = None, uploaded_file_paths: Option
 # Single source of truth for gid → artist traversal
 # ---------------------------------------------------------------------------
 
+_SPECIAL_AXES_PANEL_KINDS = {
+    "polar_subplot",
+    "three_d_subplot",
+    "inset_subplot",
+    "geo_subplot",
+    "parasite_subplot",
+    "unsupported_axes",
+    "brokenaxes_group",
+}
+
+_DATA_PANEL_KINDS = {"subplot", *_SPECIAL_AXES_PANEL_KINDS}
+
+
+def _safe_axes_position_bounds(ax) -> Optional[tuple[float, float, float, float]]:
+    try:
+        bounds = ax.get_position().bounds
+        return tuple(float(value) for value in bounds)
+    except Exception:
+        pass
+
+    for attr_name in ("_position", "_originalPosition"):
+        bbox = getattr(ax, attr_name, None)
+        bounds = getattr(bbox, "bounds", None)
+        if bounds is None:
+            continue
+        try:
+            return tuple(float(value) for value in bounds)
+        except Exception:
+            continue
+    return None
+
+
+def _install_safe_position_fallback(ax, bounds) -> None:
+    if bounds is None or getattr(ax, "_scifigure_position_fallback", False):
+        return
+    try:
+        from matplotlib.transforms import Bbox
+
+        fallback_bbox = Bbox.from_bounds(*bounds)
+
+        def safe_get_position(original=False):
+            source = getattr(ax, "_originalPosition", None) if original else getattr(ax, "_position", None)
+            return source if getattr(source, "bounds", None) is not None else fallback_bbox
+
+        setattr(ax, "_scifigure_original_get_position", getattr(ax, "get_position", None))
+        setattr(ax, "_scifigure_position_fallback", True)
+        ax.get_position = safe_get_position
+    except Exception:
+        pass
+
+
+def _axes_projection_name(ax) -> str:
+    projection = getattr(ax, "name", None)
+    if isinstance(projection, str) and projection:
+        return projection
+    return type(ax).__name__
+
+
+def _axes_locator_module(ax) -> str:
+    try:
+        locator = ax.get_axes_locator()
+    except Exception:
+        locator = None
+    return type(locator).__module__.lower() if locator is not None else ""
+
+
+def _classify_axes_family(ax, parent_axes=None) -> str:
+    module = type(ax).__module__.lower()
+    class_name = type(ax).__name__.lower()
+    projection = _axes_projection_name(ax).lower()
+    locator_module = _axes_locator_module(ax)
+
+    if _is_colorbar_axes(ax):
+        return "colorbar"
+    if "secondaryaxis" in class_name or "_secondary_axes" in module:
+        orientation = str(getattr(ax, "_orientation", "")).lower()
+        return "secondary_x" if orientation == "x" else "secondary_y"
+    if parent_axes is not None and "parasite" not in class_name:
+        return "inset"
+    if "inset_locator" in locator_module:
+        return "inset"
+    if "geoaxes" in class_name or module.startswith("cartopy."):
+        return "geo"
+    if projection == "polar" or "polaraxes" in class_name:
+        return "polar"
+    if projection == "3d" or "axes3d" in class_name:
+        return "3d"
+    if "parasite" in module or "parasite" in class_name or "hostaxes" in class_name:
+        return "parasite" if parent_axes is not None or "axesparasite" in class_name else "parasite_host"
+    if "brokenaxes" in module or "brokenaxes" in class_name:
+        return "broken"
+    if projection not in {"rectilinear", ""}:
+        return "unsupported"
+    return "cartesian"
+
+
+def _axes_panel_contract(family: str, index: int) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    if family == "cartesian":
+        return f"subplot.{index}", "subplot", "subplot_panel"
+    contracts = {
+        "polar": ("polar_subplot", "polar_subplot", "polar_subplot_panel"),
+        "3d": ("three_d_subplot", "three_d_subplot", "three_d_subplot_panel"),
+        "inset": ("inset_subplot", "inset_subplot", "inset_subplot_panel"),
+        "geo": ("geo_subplot", "geo_subplot", "geo_subplot_panel"),
+        "parasite_host": ("parasite_subplot", "parasite_subplot", "parasite_host_panel"),
+        "unsupported": ("unsupported_axes", "unsupported_axes", "unsupported_projection_panel"),
+        "broken": ("brokenaxes_group", "brokenaxes_group", "brokenaxes_panel_group"),
+        "parasite": ("parasite_axis", "parasite_axis", "parasite_axis"),
+        "secondary_x": ("secondary_xaxis", "secondary_xaxis", "secondary_x_axis"),
+        "secondary_y": ("secondary_yaxis", "secondary_yaxis", "secondary_y_axis"),
+    }
+    contract = contracts.get(family)
+    if contract is None:
+        return None, None, None
+    prefix, kind, role = contract
+    return f"{prefix}.{index}", kind, role
+
+
+def _bounds_contains(parent_bounds, child_bounds, tolerance: float = 1e-6) -> bool:
+    if parent_bounds is None or child_bounds is None:
+        return False
+    px, py, pw, ph = parent_bounds
+    cx, cy, cw, ch = child_bounds
+    return (
+        cx >= px - tolerance
+        and cy >= py - tolerance
+        and cx + cw <= px + pw + tolerance
+        and cy + ch <= py + ph + tolerance
+        and pw * ph > cw * ch + tolerance
+    )
+
+
+def _build_axes_contexts(fig) -> list[dict[str, Any]]:
+    contexts: list[dict[str, Any]] = []
+    seen = set()
+
+    def add_context(ax, parent_axes=None, source_index=None):
+        if ax is None or id(ax) in seen:
+            return None
+        seen.add(id(ax))
+        if source_index is None:
+            source_index = len(contexts)
+        context = {
+            "axes": ax,
+            "axesIndex": int(source_index),
+            "parentAxes": parent_axes,
+            "family": _classify_axes_family(ax, parent_axes),
+            "projection": _axes_projection_name(ax),
+            "degradedReason": None,
+        }
+        try:
+            ax.get_position()
+        except Exception as exc:
+            fallback_bounds = _safe_axes_position_bounds(ax) or (0.125, 0.11, 0.775, 0.77)
+            _install_safe_position_fallback(ax, fallback_bounds)
+            context["family"] = "unsupported"
+            context["degradedReason"] = f"Axes position lookup failed: {type(exc).__name__}: {exc}"
+        contexts.append(context)
+        return context
+
+    for source_index, ax in enumerate(list(getattr(fig, "axes", []) or [])):
+        add_context(ax, source_index=source_index)
+
+    cursor = 0
+    while cursor < len(contexts):
+        context = contexts[cursor]
+        cursor += 1
+        ax = context["axes"]
+        children = list(getattr(ax, "child_axes", []) or [])
+        children.extend(list(getattr(ax, "parasites", []) or []))
+        for child in children:
+            add_context(child, parent_axes=ax)
+
+    # Toolkit-created inset axes can live in fig.axes without an explicit
+    # parent pointer. Infer only for objects already classified by their inset
+    # locator; ordinary manually positioned axes remain independent subplots.
+    for context in contexts:
+        if context["family"] != "inset" or context.get("parentAxes") is not None:
+            continue
+        child_bounds = _safe_axes_position_bounds(context["axes"])
+        candidates = []
+        for candidate in contexts:
+            if candidate is context or candidate["family"] in {"colorbar", "inset", "secondary_x", "secondary_y", "parasite"}:
+                continue
+            parent_bounds = _safe_axes_position_bounds(candidate["axes"])
+            if _bounds_contains(parent_bounds, child_bounds):
+                candidates.append((parent_bounds[2] * parent_bounds[3], candidate["axes"]))
+        if candidates:
+            context["parentAxes"] = min(candidates, key=lambda item: item[0])[1]
+
+    family_counts: dict[str, int] = {}
+    for context in contexts:
+        family = context["family"]
+        family_index = family_counts.get(family, 0)
+        family_counts[family] = family_index + 1
+        panel_index = context["axesIndex"] if family == "cartesian" else family_index
+        panel_gid, panel_kind, panel_role = _axes_panel_contract(family, panel_index)
+        context.update({
+            "panelGid": panel_gid,
+            "panelKind": panel_kind,
+            "panelRole": panel_role,
+        })
+
+    context_by_axes = {context["axes"]: context for context in contexts}
+    for context in contexts:
+        parent = context_by_axes.get(context.get("parentAxes"))
+        context["parentPanelGid"] = parent.get("panelGid") if parent else None
+        if context["family"] in {"secondary_x", "secondary_y", "parasite"}:
+            context["scopeSubplotId"] = context["parentPanelGid"]
+        else:
+            context["scopeSubplotId"] = context.get("panelGid")
+        try:
+            setattr(context["axes"], "_scifigure_axes_context", context)
+        except Exception:
+            pass
+    return contexts
+
+
+def _axes_context_for_artist(artist) -> Optional[dict[str, Any]]:
+    axes = artist if isinstance(artist, Axes) or hasattr(artist, "_scifigure_axes_context") else getattr(artist, "axes", None)
+    context = getattr(axes, "_scifigure_axes_context", None)
+    return context if isinstance(context, dict) else None
+
+
+def _bind_raw_element_axes_contexts(raw_elements) -> None:
+    contexts_by_index = {}
+    for gid, kind, artist in raw_elements:
+        if kind != "axes":
+            continue
+        context = _axes_context_for_artist(artist)
+        if context:
+            contexts_by_index[int(context["axesIndex"])] = context
+    for gid, _, artist in raw_elements:
+        direct_context = getattr(artist, "__dict__", {}).get("_scifigure_axes_context")
+        context = direct_context if isinstance(direct_context, dict) else contexts_by_index.get(_axes_index_from_gid(gid))
+        if not context:
+            continue
+        try:
+            setattr(artist, "_scifigure_axes_context", context)
+        except Exception:
+            pass
+
+
+def _ordered_spines(ax):
+    spines = getattr(ax, "spines", {})
+    ordered_names = [name for name in ("left", "right", "top", "bottom") if name in spines]
+    ordered_names.extend(name for name in spines if name not in ordered_names)
+    return [(name, spines[name]) for name in ordered_names]
+
 def iter_artists(fig):
     """Yield (gid, kind, artist) for all recognised artists.
 
@@ -848,22 +1115,27 @@ def iter_artists(fig):
     for i, text in enumerate(fig.texts):
         yield f"fig_text.{i}", "text", text
 
-    for ax_idx, ax in enumerate(fig.axes):
+    for axes_context in _build_axes_contexts(fig):
+        ax_idx = axes_context["axesIndex"]
+        ax = axes_context["axes"]
         # Freeze ticks so that their `gid` and properties are preserved during savefig
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            _freeze_ticklabels_preserving_style(ax)
+            try:
+                _freeze_ticklabels_preserving_style(ax)
+            except Exception:
+                pass
 
         yield f"axes.{ax_idx}", "axes", ax
         try:
             ax.patch.set_gid(f"axes.patch.{ax_idx}")
         except Exception:
             pass
-        if not _is_colorbar_axes(ax):
-            yield f"subplot.{ax_idx}", "subplot", ax
+        if axes_context.get("panelGid") and axes_context.get("panelKind"):
+            yield axes_context["panelGid"], axes_context["panelKind"], ax
         
         # Yield containers
-        for c_idx, container in enumerate(ax.containers):
+        for c_idx, container in enumerate(getattr(ax, "containers", []) or []):
             if isinstance(container, matplotlib.container.BarContainer):
                 kind = "bar_container"
             elif isinstance(container, matplotlib.container.ErrorbarContainer):
@@ -882,29 +1154,44 @@ def iter_artists(fig):
             yield f"container.{item['type']}.{ax_idx}.{c_idx}", kind, container_obj
 
         yield f"grid.{ax_idx}", "grid", ax
-        for i, line in enumerate(ax.xaxis.get_gridlines()):
-            yield f"grid.{ax_idx}.line.x.{i}", "grid_line", line
-        for i, line in enumerate(ax.yaxis.get_gridlines()):
-            yield f"grid.{ax_idx}.line.y.{i}", "grid_line", line
+        xaxis = getattr(ax, "xaxis", None)
+        yaxis = getattr(ax, "yaxis", None)
+        zaxis = getattr(ax, "zaxis", None)
+        if xaxis is not None:
+            for i, line in enumerate(xaxis.get_gridlines()):
+                yield f"grid.{ax_idx}.line.x.{i}", "grid_line", line
+        if yaxis is not None:
+            for i, line in enumerate(yaxis.get_gridlines()):
+                yield f"grid.{ax_idx}.line.y.{i}", "grid_line", line
         yield f"spine_group.{ax_idx}", "spine_group", ax
-        yield f"axis.x.{ax_idx}", "axis_x", ax.xaxis
-        yield f"axis.y.{ax_idx}", "axis_y", ax.yaxis
+        if xaxis is not None:
+            yield f"axis.x.{ax_idx}", "axis_x", xaxis
+        if yaxis is not None:
+            yield f"axis.y.{ax_idx}", "axis_y", yaxis
+        if zaxis is not None:
+            yield f"axis.z.{ax_idx}", "axis_z", zaxis
         if ax.title is not None and ax.title.get_text():
             yield f"title.{ax_idx}", "text", ax.title
         if hasattr(ax, '_left_title') and ax._left_title and ax._left_title.get_text():
             yield f"title.left.{ax_idx}", "text", ax._left_title
         if hasattr(ax, '_right_title') and ax._right_title and ax._right_title.get_text():
             yield f"title.right.{ax_idx}", "text", ax._right_title
-        yield f"xlabel.{ax_idx}", "text", ax.xaxis.label
-        yield f"ylabel.{ax_idx}", "text", ax.yaxis.label
+        if xaxis is not None:
+            yield f"xlabel.{ax_idx}", "text", xaxis.label
+        if yaxis is not None:
+            yield f"ylabel.{ax_idx}", "text", yaxis.label
+        if zaxis is not None:
+            yield f"zlabel.{ax_idx}", "text", zaxis.label
 
-        for side in ("left", "right", "top", "bottom"):
-            yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
+        for side, spine in _ordered_spines(ax):
+            yield f"spine.{side}.{ax_idx}", "spine", spine
 
-        for i, label in enumerate(ax.get_xticklabels()):
+        for i, label in enumerate(getattr(ax, "get_xticklabels", lambda: [])()):
             yield f"xtick.{ax_idx}.{i}", "text", label
-        for i, label in enumerate(ax.get_yticklabels()):
+        for i, label in enumerate(getattr(ax, "get_yticklabels", lambda: [])()):
             yield f"ytick.{ax_idx}.{i}", "text", label
+        for i, label in enumerate(getattr(ax, "get_zticklabels", lambda: [])()):
+            yield f"ztick.{ax_idx}.{i}", "text", label
 
         legend = ax.get_legend()
         if legend is not None:
@@ -951,7 +1238,7 @@ def iter_artists(fig):
             except Exception:
                 pass
 
-        for i, line in enumerate(ax.lines):
+        for i, line in enumerate(getattr(ax, "lines", []) or []):
             yield f"line.{ax_idx}.{i}", "line", line
 
         contour_counts = {"contour": 0, "contourf": 0}
@@ -978,7 +1265,7 @@ def iter_artists(fig):
             )
             streamplot_idx += 1
 
-        for i, coll in enumerate(ax.collections):
+        for i, coll in enumerate(getattr(ax, "collections", []) or []):
             import matplotlib.collections as mcoll
             if isinstance(coll, mcoll.QuadMesh):
                 yield f"heatmap.mesh.{ax_idx}.{i}", "heatmap", coll
@@ -994,7 +1281,7 @@ def iter_artists(fig):
                 yield f"collection.{ax_idx}.{i}", "collection", coll
 
         import matplotlib.image as mimage
-        for i, img in enumerate(ax.images):
+        for i, img in enumerate(getattr(ax, "images", []) or []):
             if isinstance(img, mimage.AxesImage):
                 yield f"heatmap.image.{ax_idx}.{i}", "heatmap", img
 
@@ -1004,7 +1291,7 @@ def iter_artists(fig):
 
         # Build patch-to-container-label map
         patch_labels = {}
-        for container in ax.containers:
+        for container in getattr(ax, "containers", []) or []:
             label = container.get_label()
             if label and not label.startswith('_nolegend_'):
                 for child in getattr(container, 'patches', []):
@@ -1015,7 +1302,7 @@ def iter_artists(fig):
                 except TypeError:
                     pass
 
-        for i, patch in enumerate(ax.patches):
+        for i, patch in enumerate(getattr(ax, "patches", []) or []):
             if patch in annotation_arrow_patches:
                 continue
             if patch in patch_labels:
@@ -1697,8 +1984,14 @@ def _read_patch_props(artist) -> dict:
 
 
 def _read_axes_props(artist) -> dict:
-    xlim = list(artist.get_xlim())
-    ylim = list(artist.get_ylim())
+    try:
+        xlim = list(artist.get_xlim())
+    except Exception:
+        xlim = []
+    try:
+        ylim = list(artist.get_ylim())
+    except Exception:
+        ylim = []
     
     from matplotlib.ticker import NullLocator
     show_minor_ticks = not isinstance(artist.xaxis.get_minor_locator(), NullLocator)
@@ -1727,7 +2020,11 @@ def _is_colorbar_axes(ax) -> bool:
 
 
 def _read_subplot_props(artist) -> dict:
-    bounds = artist.get_position().bounds
+    bounds = _safe_axes_position_bounds(artist)
+    if bounds is None:
+        return {
+            "specialAxesUnsupportedReason": "Axes bounds are unavailable; layout editing is disabled.",
+        }
     try:
         aspect = artist.get_aspect()
     except Exception:
@@ -1743,12 +2040,41 @@ def _read_subplot_props(artist) -> dict:
     }
 
 
+def _read_special_axes_props(artist) -> dict:
+    context = _axes_context_for_artist(artist) or {}
+    family = str(context.get("family") or "unsupported")
+    projection = str(context.get("projection") or _axes_projection_name(artist))
+    reason = context.get("degradedReason") or (
+        "Special axes layout, projection, and cross-axis geometry are read-only until their replay contract is proven."
+    )
+    props = {
+        "axesFamily": family,
+        "projection": projection,
+        "axesClass": type(artist).__name__,
+        "layoutEditable": False,
+        "projectionEditable": False,
+        "specialAxesUnsupportedReason": reason,
+    }
+    if family == "3d":
+        props.update({
+            "cameraEditable": False,
+            "azim": _plain_value(getattr(artist, "azim", None)),
+            "elev": _plain_value(getattr(artist, "elev", None)),
+            "roll": _plain_value(getattr(artist, "roll", None)),
+        })
+    if family == "unsupported":
+        props["degradedReason"] = reason
+    return props
+
+
 def _build_subplot_layout_meta(raw_elements: list[tuple[str, str, Any]]) -> dict[str, dict[str, Any]]:
     subplot_items = []
     for gid, kind, ax in raw_elements:
         if kind != "subplot":
             continue
-        bounds = ax.get_position().bounds
+        bounds = _safe_axes_position_bounds(ax)
+        if bounds is None:
+            continue
         subplot_items.append({
             "gid": gid,
             "left": float(bounds[0]),
@@ -1848,8 +2174,19 @@ def _read_axis_props(axis, axis_name: str) -> dict:
     except Exception:
         pass
 
+    if axis_name == "x":
+        get_limits = getattr(axis.axes, "get_xlim", None)
+    elif axis_name == "y":
+        get_limits = getattr(axis.axes, "get_ylim", None)
+    else:
+        get_limits = getattr(axis.axes, "get_zlim", None)
+    try:
+        limits = list(get_limits()) if callable(get_limits) else []
+    except Exception:
+        limits = []
+
     return {
-        "limits": list(axis.axes.get_xlim() if axis_name == "x" else axis.axes.get_ylim()),
+        "limits": limits,
         "label": label_obj.get_text() if label_obj is not None else "",
         "label_fontsize": label_obj.get_fontsize() if label_obj is not None else 12,
         "label_color": label_color,
@@ -1879,9 +2216,16 @@ def _read_axis_props(axis, axis_name: str) -> dict:
 
 
 def _read_spine_group_props(ax) -> dict:
-    sample = ax.spines["left"]
+    spines = list(getattr(ax, "spines", {}).values())
+    if not spines:
+        return {
+            "visible": False,
+            "color": "#000000",
+            "linewidth": 0.0,
+        }
+    sample = spines[0]
     return {
-        "visible": all(spine.get_visible() for spine in ax.spines.values()),
+        "visible": all(spine.get_visible() for spine in spines),
         "color": _read_spine_props(sample)["color"],
         "linewidth": sample.get_linewidth(),
     }
@@ -2333,6 +2677,16 @@ def _read_colorbar_props(cbar) -> dict:
 _READERS = {
     "text": _read_text_props,
     "subplot": _read_subplot_props,
+    "polar_subplot": _read_special_axes_props,
+    "three_d_subplot": _read_special_axes_props,
+    "inset_subplot": _read_special_axes_props,
+    "geo_subplot": _read_special_axes_props,
+    "parasite_subplot": _read_special_axes_props,
+    "parasite_axis": _read_special_axes_props,
+    "secondary_xaxis": _read_special_axes_props,
+    "secondary_yaxis": _read_special_axes_props,
+    "unsupported_axes": _read_special_axes_props,
+    "brokenaxes_group": _read_special_axes_props,
     "spine": _read_spine_props,
     "spine_group": _read_spine_group_props,
     "legend": _read_legend_props,
@@ -2348,6 +2702,7 @@ _READERS = {
     "grid": _read_grid_props,
     "axis_x": lambda artist: _read_axis_props(artist, "x"),
     "axis_y": lambda artist: _read_axis_props(artist, "y"),
+    "axis_z": lambda artist: _read_axis_props(artist, "z"),
     "bar_container": _read_bar_container_props,
     "errorbar_container": _read_errorbar_container_props,
     "stem_container": _read_stem_container_props,
@@ -2416,6 +2771,7 @@ _EDITABLE = {
     "grid": ["visible", "color", "linewidth", "linestyle", "alpha", "zorder"],
     "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "tick_label_dx", "tick_label_dy", "sci_notation", "use_math_text", "offset_text_size"],
     "axis_y": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "tick_label_dx", "tick_label_dy", "sci_notation", "use_math_text", "offset_text_size"],
+    "axis_z": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "tick_label_dx", "tick_label_dy", "sci_notation", "use_math_text", "offset_text_size"],
     "bar_container": ["color", "facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
     "errorbar_container": ["color", "linewidth", "elinewidth", "capsize", "capthick", "alpha", "marker", "markersize", "zorder"],
     "stem_container": ["color", "stem_color", "stem_linewidth", "marker", "marker_color", "markersize", "baseline_color", "baseline_linewidth", "baseline_visible", "alpha"],
@@ -2428,6 +2784,87 @@ _EDITABLE = {
 
 def _get_editable(kind: str) -> list:
     return _EDITABLE.get(kind, [])
+
+
+_SPECIAL_AXES_SAFE_AXIS_PROPS = {
+    "label",
+    "label_fontsize",
+    "label_color",
+    "tick_labelsize",
+    "tick_labelcolor",
+    "tick_labelfamily",
+    "tick_fontweight",
+    "tick_fontstyle",
+}
+
+_SPECIAL_AXES_FULLY_READONLY_FAMILIES = {
+    "unsupported",
+    "geo",
+    "broken",
+    "parasite",
+    "parasite_host",
+}
+
+
+def _special_axes_edit_contract(kind: str, artist: Any, current_props: dict, editable: list[str]):
+    context = _axes_context_for_artist(artist)
+    if not context or context.get("family") in {None, "cartesian", "colorbar"}:
+        return current_props, editable
+
+    family = str(context.get("family"))
+    projection = str(context.get("projection") or _axes_projection_name(context.get("axes")))
+    reason = context.get("degradedReason") or (
+        "Special axes geometry is protected; use source code for projection, bounds, limits, camera, or cross-axis layout changes."
+    )
+    current_props = {
+        **current_props,
+        "axesFamily": family,
+        "projection": projection,
+        "axesClass": type(context.get("axes")).__name__,
+        "specialAxes": True,
+        "specialAxesUnsupportedReason": reason,
+    }
+
+    if family in _SPECIAL_AXES_FULLY_READONLY_FAMILIES:
+        current_props["editingUnsupportedReason"] = reason
+        return current_props, []
+
+    if kind in _DATA_PANEL_KINDS or kind in {
+        "axes",
+        "secondary_xaxis",
+        "secondary_yaxis",
+        "parasite_axis",
+        "brokenaxes_group",
+    }:
+        return current_props, []
+    if kind in {"axis_x", "axis_y", "axis_z"}:
+        return current_props, [prop for prop in editable if prop in _SPECIAL_AXES_SAFE_AXIS_PROPS]
+    if kind in {"text", "legend"}:
+        return current_props, [prop for prop in editable if prop != "position"]
+    return current_props, editable
+
+
+def _apply_axes_relation_metadata(obj: dict, artist: Any) -> None:
+    context = _axes_context_for_artist(artist)
+    if not context:
+        return
+    scope_subplot_id = context.get("scopeSubplotId")
+    if scope_subplot_id and not _is_figure_level_object(obj):
+        obj["subplotId"] = scope_subplot_id
+
+    family = context.get("family")
+    if family in {None, "cartesian", "colorbar"}:
+        return
+    obj["axesFamily"] = str(family)
+    obj["projection"] = str(context.get("projection") or "")
+    owner_subplot_id = context.get("panelGid")
+    parent_subplot_id = context.get("parentPanelGid") or owner_subplot_id
+    if parent_subplot_id:
+        obj["parentSubplotId"] = parent_subplot_id
+    if owner_subplot_id:
+        obj["ownerSubplotId"] = owner_subplot_id
+    if context.get("parentPanelGid") and obj.get("id") == owner_subplot_id:
+        obj["parentId"] = context["parentPanelGid"]
 
 
 def _determine_role(
@@ -2451,6 +2888,20 @@ def _determine_role(
         return "quiver_field"
     if family == "streamplot" and kind == "streamplot":
         return "streamplot_field"
+    special_panel_roles = {
+        "polar_subplot": "polar_subplot_panel",
+        "three_d_subplot": "three_d_subplot_panel",
+        "inset_subplot": "inset_subplot_panel",
+        "geo_subplot": "geo_subplot_panel",
+        "parasite_subplot": "parasite_host_panel",
+        "parasite_axis": "parasite_axis",
+        "secondary_xaxis": "secondary_x_axis",
+        "secondary_yaxis": "secondary_y_axis",
+        "unsupported_axes": "unsupported_projection_panel",
+        "brokenaxes_group": "brokenaxes_panel_group",
+    }
+    if kind in special_panel_roles:
+        return special_panel_roles[kind]
     if gid.startswith("subplot."):
         return "subplot_panel"
     if gid.startswith("fig_text."):
@@ -2461,10 +2912,14 @@ def _determine_role(
         return "x_axis_label"
     if gid.startswith("ylabel."):
         return "y_axis_label"
+    if gid.startswith("zlabel."):
+        return "z_axis_label"
     if gid.startswith("xtick."):
         return "x_tick_label"
     if gid.startswith("ytick."):
         return "y_tick_label"
+    if gid.startswith("ztick."):
+        return "z_tick_label"
     if gid.startswith("legend."):
         return "legend"
     if gid.startswith("legend_title.") or gid.startswith("legend_text."):
@@ -2763,7 +3218,13 @@ def _identity_coordinate_space(obj: dict) -> str:
         "legend_patch.", "legend_collection."
     )):
         return "container"
-    if kind in {"subplot", "colorbar"}:
+    if kind in _DATA_PANEL_KINDS or kind in {
+        "colorbar",
+        "secondary_xaxis",
+        "secondary_yaxis",
+        "parasite_axis",
+        "brokenaxes_group",
+    }:
         return "figure"
     if kind in {"line", "collection", "quiver", "streamplot", "fill_between", "contour", "contourf", "patch", "heatmap"}:
         return "data"
@@ -2825,6 +3286,9 @@ def _build_object_identity(obj: dict) -> dict:
         relation["sharedXSubplotIds"] = list(obj["sharedXSubplotIds"])
     if obj.get("sharedYSubplotIds"):
         relation["sharedYSubplotIds"] = list(obj["sharedYSubplotIds"])
+    for relation_name in ("axesFamily", "projection", "parentSubplotId", "ownerSubplotId"):
+        if obj.get(relation_name) is not None:
+            relation[relation_name] = obj[relation_name]
     for relation_name in ("pieId", "pieSliceId", "pieLabelId", "pieValueLabelId"):
         if obj.get(relation_name) is not None:
             relation[relation_name] = obj[relation_name]
@@ -3019,6 +3483,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         raw_elements.append((gid, kind, artist))
 
     _normalise_runtime_fonts(raw_elements)
+    _bind_raw_element_axes_contexts(raw_elements)
 
     # Matplotlib 3.8 also exposes QuadContourSet through ax.collections. The
     # semantic parent must remain the authoritative mappable for colorbars,
@@ -3035,7 +3500,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
     axes_to_subplot_gid = {
         artist: gid
         for gid, kind, artist in raw_elements
-        if kind == "subplot"
+        if kind in _DATA_PANEL_KINDS
     }
     subplot_relationships = {}
     for axes, subplot_gid in axes_to_subplot_gid.items():
@@ -3048,10 +3513,18 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
 
         twinned_group = getattr(axes, "_twinned_axes", None)
         twin_axes = twinned_group.get_siblings(axes) if twinned_group is not None else []
+        try:
+            shared_x_axes = axes.get_shared_x_axes().get_siblings(axes)
+        except Exception:
+            shared_x_axes = []
+        try:
+            shared_y_axes = axes.get_shared_y_axes().get_siblings(axes)
+        except Exception:
+            shared_y_axes = []
         subplot_relationships[subplot_gid] = {
             "twinSubplotIds": related_subplot_ids(twin_axes),
-            "sharedXSubplotIds": related_subplot_ids(axes.get_shared_x_axes().get_siblings(axes)),
-            "sharedYSubplotIds": related_subplot_ids(axes.get_shared_y_axes().get_siblings(axes)),
+            "sharedXSubplotIds": related_subplot_ids(shared_x_axes),
+            "sharedYSubplotIds": related_subplot_ids(shared_y_axes),
         }
     colorbar_links = {}
     mappable_to_colorbars = {}
@@ -3314,6 +3787,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 "label": label,
             }
         editable = _get_editable(kind)
+        current_props, editable = _special_axes_edit_contract(kind, artist, current_props, editable)
         diagram_role = provenance.get("semanticRole") if provenance.get("family") == "diagram" else None
         if diagram_role in _DIAGRAM_PROTECTED_TEXT_ROLES:
             editable = [prop for prop in editable if prop != "text"]
@@ -3472,6 +3946,10 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 except ValueError:
                     pass
 
+        object_axes_context = _axes_context_for_artist(artist_obj)
+        if object_axes_context and isinstance(object_axes_context.get("axesIndex"), int):
+            ax_idx = object_axes_context["axesIndex"]
+
         artist_axes = artist_obj if isinstance(artist_obj, Axes) else getattr(artist_obj, "axes", None)
         container_colorbar_gid = colorbar_axes_to_gid.get(artist_axes)
         colorbar_link = colorbar_links.get(gid)
@@ -3495,8 +3973,12 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         elif kind != "figure" and not gid.startswith("fig_text."):
             obj["subplotId"] = f"subplot.{ax_idx}"
 
-        if kind in {"subplot", "axes", "axis_x", "axis_y"}:
-            for relation_name, related_ids in subplot_relationships.get(f"subplot.{ax_idx}", {}).items():
+        _apply_axes_relation_metadata(obj, artist_obj)
+
+        axes_context = _axes_context_for_artist(artist_obj) or {}
+        relationship_panel_id = axes_context.get("scopeSubplotId") or f"subplot.{ax_idx}"
+        if kind in _DATA_PANEL_KINDS or kind in {"axes", "axis_x", "axis_y", "axis_z"}:
+            for relation_name, related_ids in subplot_relationships.get(relationship_panel_id, {}).items():
                 if related_ids:
                     obj[relation_name] = related_ids
 
@@ -3554,6 +4036,10 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         obj.pop("twinSubplotIds", None)
         obj.pop("sharedXSubplotIds", None)
         obj.pop("sharedYSubplotIds", None)
+        obj.pop("axesFamily", None)
+        obj.pop("projection", None)
+        obj.pop("parentSubplotId", None)
+        obj.pop("ownerSubplotId", None)
         obj.pop("pieId", None)
         obj.pop("pieSliceId", None)
         obj.pop("pieLabelId", None)
@@ -4510,16 +4996,18 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
             _apply_single(spine, prop, value, "")
         return
 
-    if gid.startswith("axis.x.") or gid.startswith("axis.y."):
-        axis_name = "x" if gid.startswith("axis.x.") else "y"
+    if gid.startswith("axis.x.") or gid.startswith("axis.y.") or gid.startswith("axis.z."):
+        axis_name = "x" if gid.startswith("axis.x.") else "y" if gid.startswith("axis.y.") else "z"
         parent_ax = artist.axes
         if prop == "limits":
             low = float(value[0])
             high = float(value[1])
             if axis_name == "x":
                 parent_ax.set_xlim(low, high)
-            else:
+            elif axis_name == "y":
                 parent_ax.set_ylim(low, high)
+            else:
+                parent_ax.set_zlim(low, high)
             return
         if prop == "label":
             artist.label.set_text(str(value))
@@ -4811,6 +5299,7 @@ def _build_gid_index(fig) -> dict:
             continue
         _register_explicit_diagram_artist(artist)
         raw_elements.append((gid, kind, artist))
+    _bind_raw_element_axes_contexts(raw_elements)
     artist_to_gid = {artist: gid for gid, kind, artist in raw_elements}
     for gid, kind, artist in raw_elements:
         if kind in {"contour", "contourf"}:
@@ -4860,6 +5349,9 @@ def _entry_identity_metadata(entry: dict) -> dict:
     diagram_relation = _diagram_relation_signature(identity)
     if diagram_relation is not None:
         expected["diagramRelationSignature"] = diagram_relation
+    special_axes_relation = _special_axes_relation_signature(identity)
+    if special_axes_relation is not None:
+        expected["specialAxesRelationSignature"] = special_axes_relation
 
     return {
         key: value
@@ -4903,11 +5395,12 @@ def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=No
     if role:
         obj["role"] = role
     _apply_diagram_metadata_to_object(obj, artist)
+    _apply_axes_relation_metadata(obj, artist)
 
     stable_key, fingerprint = _generate_stable_key_and_fingerprint(
         obj,
         artist,
-        _axes_index_from_gid(gid),
+        int((_axes_context_for_artist(artist) or {}).get("axesIndex", _axes_index_from_gid(gid))),
     )
     obj["stableKey"] = stable_key
     obj["fingerprint"] = fingerprint
@@ -4920,6 +5413,9 @@ def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=No
     diagram_relation = _diagram_relation_signature(identity)
     if diagram_relation is not None:
         signature["diagramRelationSignature"] = diagram_relation
+    special_axes_relation = _special_axes_relation_signature(identity)
+    if special_axes_relation is not None:
+        signature["specialAxesRelationSignature"] = special_axes_relation
     return signature
 
 
@@ -4943,6 +5439,22 @@ def _identity_mismatch_warning(gid: str, prop: str, mode: str, value: Any, expec
         ]
         mismatches = [
             *[key for key in mismatches if key != "diagramRelationSignature"],
+            *(relation_mismatches or ["identity.relation"]),
+        ]
+    if "specialAxesRelationSignature" in mismatches:
+        expected_relation = expected.get("specialAxesRelationSignature")
+        actual_relation = actual.get("specialAxesRelationSignature")
+        relation_mismatches = [
+            f"identity.relation.{field}"
+            for field in _SPECIAL_AXES_RELATION_FIELDS
+            if (
+                expected_relation.get(field) if isinstance(expected_relation, dict) else None
+            ) != (
+                actual_relation.get(field) if isinstance(actual_relation, dict) else None
+            )
+        ]
+        mismatches = [
+            *[key for key in mismatches if key != "specialAxesRelationSignature"],
             *(relation_mismatches or ["identity.relation"]),
         ]
     return {

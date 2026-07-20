@@ -217,6 +217,12 @@ export function propertyCapabilityFor(
   return object?.propertyCapabilities?.find(capability => capability.prop === prop);
 }
 
+export function hasAuthoritativePropertyCapabilities(
+  object: ManifestObject | null | undefined,
+): boolean {
+  return Array.isArray(object?.propertyCapabilities);
+}
+
 export function resolveCrossFigurePolicy(
   objects: Array<ManifestObject | null | undefined>,
   prop: string,
@@ -265,7 +271,9 @@ export function resolvePatchMode(
       : 'backend_patch';
   }
 
-  if (Array.isArray(object.propertyCapabilities)) return 'backend_patch';
+  // Once an object advertises the v2 capability protocol, an omitted property
+  // is intentionally not editable through the local compatibility path.
+  if (hasAuthoritativePropertyCapabilities(object)) return 'backend_patch';
   return legacyLocalPatchAllowed(object, prop) ? 'local_patch' : 'backend_patch';
 }
 

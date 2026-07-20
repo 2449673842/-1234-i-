@@ -2817,3 +2817,225 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 - 结构 fingerprint 不得包含图例布局等派生样式坐标；颜色子集编辑不得走无法表达子集语义的 local 路径。
 - 缺失文件只能作为可审计 warning 被排除，真实新增或内容变化仍必须阻断精确恢复。
 - 测试不得把完整状态接口当成增量接口；撤销必须能够通过省略已撤销项生成新的完整 editLog。
+
+---
+
+## 2026-07-20 08:41:21 +08:00 特殊轴关系缺失可经全渲染入口持久化
+
+**状态与级别**
+
+- 状态：已修复并通过失败回归与共享路由回归；修复后的最终独立复审因 sub2api 上游 503 尚未完成，尚未提交、推送或部署。
+- 级别：P0 编辑状态正确性。不会删除源数据，但可能保存 renderer 未可靠确认的 editLog，或在拒绝项目重放时提前修改项目脚本。
+
+**现象**
+
+- `/api/figure/patch` 已对特殊轴 relation fail-closed，但 `/api/figure/render` 可以接收缺失 relation 的新 editLog，并在 renderer 返回 `success` 后直接写 session。
+- renderer 为兼容历史日志，会允许 stableKey 可识别但缺失新 relation 的旧形态；因此只检查 renderer warnings 仍不足以区分客户端新日志和数据库已知旧日志。
+- `/api/projects/:id/figures/render` 在重放全部 Figure editLog 前先更新项目脚本，且未用返回 manifest/warnings 阻断 rejected mixed batch，可能同时写入脚本、Figure、session 和 preview。
+- 初版严格预检会误拒绝历史 contour child 的受限 alpha/zorder 重放，说明新门禁如果不复用既有兼容协议也会破坏旧项目。
+
+**根因**
+
+- patch 路由已有 manifest 权威预检，但 full render 路由仍把 `result.status === success` 当成可持久化证明。
+- 特殊轴 relation 是 WP7 新增身份字段，旧 editLog 没有独立版本号；兼容与新请求不能仅靠字段是否缺失区分。
+- 项目脚本更新与 Figure/session 替换不在同一后验证事务中。
+- contour child 的历史兼容白名单此前只用于快照恢复，没有复用到 full render 返回 manifest 预检。
+
+**修复**
+
+- standalone full render 对压缩后的新 editLog 执行返回 manifest 权威预检，并对应检查 renderer conflict warning；冲突时返回 `RENDERER_EDIT_REPLAY_REJECTED`，不创建或修改 session。
+- 只有与现有 session/project 数据库 editLog 语义相同且 stableKey 一致的条目才可走旧日志兼容；旧条目若已有 fingerprint 或 seriesKey，也必须分别一致。gid-only 历史日志继续阻断，客户端新增缺 relation 日志必须携带完整特殊轴身份。
+- standalone 重渲染复用请求中的已归属 session，避免成功重放后生成重复 session。
+- 项目 full render 在任何写入前按 Figure 检查返回 manifest 和 warnings；任一新条目冲突时脚本、Figure、session、history 和 preview 全部保持不变。
+- `replaceProjectFiguresAndSessions` 增加可选项目更新参数，在同一 SQLite 事务提交项目脚本与 Figure/session。
+- full render 预检复用既有 contour child 兼容白名单和 stableKey/seriesKey 约束，避免误伤已证明安全的旧 alpha/zorder 日志。
+
+**验证**
+
+- `test:special-axes-api`：standalone/project full render mixed batch 拒绝零持久化，旧 standalone editLog 可继续重放且不创建重复 session。
+- `test:patch-rejection-persistence`：missing/unsupported/renderer rejected 和 mixed batch 门禁通过。
+- `test:legacy-contour-project-compatibility`：旧 contour child 加载、PUT、history、导出和快照恢复通过。
+- `test:project-history-persistence` 与 `test:r-semantic-smoke` 通过，证明共享事务和 R 项目渲染未回退。
+- `test:special-axes-python`：10 项中 8 通过；Cartopy/brokenaxes 因固定环境未安装跳过并保持未验证状态。
+- `npm run lint`、`npm run build`、`git diff --check` 通过；仅保留既有 bundle 体积和 CJS `import.meta` 警告。
+- 修复后的 gpt-5.5 high 独立只读复审已多次发起，但 sub2api 返回 503；该门禁必须在本工作包提交前重新完成。
+
+**防复发规则**
+
+- full render 的 `success` 只表示脚本执行完成，不等于所有 editLog 已被当前 manifest 认可；任何写入前必须同时检查 manifest 和 renderer warning。
+- 旧日志兼容必须以数据库已知记录或明确版本化协议为依据，并继续核验 stableKey 及条目已经携带的 fingerprint/seriesKey；gid-only 或客户端缺字段不能自动解释为 legacy。
+- 项目脚本与其 Figure/session 重渲染结果必须原子提交；验证失败前不得更新项目行。
+- 新身份字段必须覆盖 patch、full render、cache、history、导出和快照恢复全部入口，并新增旁路失败测试。
+- 可选第三方包未安装时只能声明分类占位或只读降级，不能把 skipped test 写成支持证据。
+
+---
+
+## 2026-07-20 09:42:45 +08:00 RightSidebar 现代 capability 省略属性仍走 legacy fallback
+
+**状态与级别**
+
+- 状态：已修复并通过针对性单测、TypeScript 和数据审计；尚未提交、推送或部署。
+- 级别：P1 编辑入口一致性。不会删除数据，但可能让现代 manifest 未声明的属性在组件/批量入口继续显示，并生成随后会被后端拒绝或需要 backend 验证的 patch，造成“控件看起来能改但应用失败”的体验。
+
+**现象**
+
+- `resolvePatchMode` 已经规定：现代对象只要存在 `propertyCapabilities` 数组，未声明属性就不再使用旧版 `editable` 猜测。
+- `RightSidebar` 的 `supportsBatchProp` 在未找到声明 capability 后，仍用 `obj.editable.includes(prop)` 和按 kind 的启发式规则放行。
+- 这会让前端控件可见性与 renderer 权威能力声明不一致，尤其影响组件中心/批量属性入口。
+
+**根因**
+
+- WP3 之前主要收敛 patch mode 生成路径，但右侧面板仍保留一处用于“控件是否显示”的旧启发式判断。
+- 该判断没有区分现代 capability protocol 与旧 manifest 兼容路径。
+
+**修复**
+
+- 新增 `hasAuthoritativePropertyCapabilities`，把“对象是否进入现代 capability 协议”作为统一边界。
+- `RightSidebar.supportsBatchProp` 在现代对象未声明目标属性时直接返回 false；只有旧 manifest 没有 `propertyCapabilities` 字段时才继续使用 legacy fallback。
+- 旧项目兼容不变；R SVG 仍按既有 backend 路径处理。
+
+**线上诊断备注**
+
+- 用户提供的网页诊断 `3_render_diagnostic_2026-07-20T01-00-19-837Z.md` 中，项目 ID `d794390a-7be7-42c4-91ba-e3a0ea9d07a0` 的当前脚本是从 `fig, ax = plt.subplots(...)` 开始的代码片段，缺少导入、常量和数据加载，因此 `name 'plt' is not defined` 只是首个表面错误。
+- 2026-07-20 只读 SSH 核验当前线上库 `/srv/scifigure/data/scifigure.db`：该旧项目 ID 不存在，项目目录也不存在；同名数据文件当前属于 `ad6c9cce-f007-43a0-bb98-e31cb6ae48b8`（`figure5（3）`），其 `projects.script` 和 session script 均包含 `import matplotlib.pyplot as plt`、`load_data()` 和完整 `build_figure(df)` 尾部。
+- 因此旧诊断不能作为当前线上项目仍缺 `plt` 的证据；若再次出现同类错误，应先以当前项目 ID 只读核验数据库中的 `projects.script/spec.custom_script/project_figures.session_id/sessions.script`。
+
+**验证**
+
+- `npm test -- propertyPatchMode targetResolver editingIntentCompiler semanticPatchMapping`：25 个测试文件、437 项通过。
+- `npm run lint`：通过。
+- `npm run data:audit`：25 用户、121 项目、263 项目文件、101 导出资产，issue 0；23 条既有测试账号 warning 保持不变。
+
+**防复发规则**
+
+- 新协议对象存在 `propertyCapabilities` 数组时，前端控件显示、批量编辑、语义 resolver 和 patch mode 生成都必须以该数组为权威；未声明属性不得由 `editable` 或 kind 启发式放行。
+- legacy fallback 只能用于没有 `propertyCapabilities` 字段的旧 manifest。
+- 诊断文件中的项目 ID 必须与当前线上数据库和项目目录核对后再判断线上真实状态，不能用旧诊断覆盖当前事实。
+
+---
+
+## 2026-07-20 10:08:30 +08:00 线上 polar 雷达图因固定二维 spine 遍历崩溃
+
+**状态与级别**
+
+- 状态：线上已做最小热修并重建当前 renderer 镜像 `scifigure-renderer:e35f4a4-jd22`；本地当前分支已覆盖同类修复并通过隔离回归。
+- 级别：P0 线上渲染可用性。不会删除数据，但会让极坐标/雷达图项目在 renderer 内省阶段失败，导致用户无法进入编辑上下文。
+
+**现象**
+
+- 用户线上项目 `未命名项目2`，项目 ID `f6e86a96-ba7b-4766-a175-5ab1150bafb7`，脚本为完整 Python polar radar 图。
+- 线上 Docker renderer 报错：
+
+```text
+KeyError: 'left'
+File "/opt/scifigure/renderer/introspector.py", line 330, in iter_artists
+yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
+```
+
+**根因**
+
+- 极坐标轴的 `ax.spines` 通常只有 `polar`，没有普通二维轴的 `left/right/top/bottom`。
+- 线上部署包仍按固定二维 spine 名称访问 `ax.spines['left']`，而不是按实际存在的 spine key 遍历。
+- 第一处修复 `iter_artists` 后，线上继续暴露第二处同类入口：`_read_spine_group_props` 仍硬取 `ax.spines["left"]`，在 `_read_props(..., "spine_group")` 阶段再次崩溃。
+
+**修复**
+
+- 本地当前 `renderer/introspector.py` 已使用 `_ordered_spines(ax)`：先按 `left/right/top/bottom` 输出实际存在的二维 spine，再追加其他实际存在的 spine，例如 `polar`。
+- 该修复属于 WP7 special axes 范围，避免把 polar 图当普通二维 subplot 处理。
+- 本轮还补充项目级 patch 对完整 merged editLog 的返回 manifest 校验，防止同类 special-axes 不安全旧日志随新 patch 推进 revision/cache。
+- 线上当前 release `/opt/scifigure/current` 以最小热修方式同步两处兼容：
+  - `iter_artists` 不再固定访问 `ax.spines[side]`，改为先输出实际存在的普通二维 spine，再输出其他实际存在的 spine。
+  - `_read_spine_group_props` 不再使用 `ax.spines["left"]` 作为样本，改为使用实际存在的第一个 spine；无 spine 时返回安全默认。
+- 线上保留备份：
+  - `/opt/scifigure/current/renderer/introspector.py.bak-20260720100106`
+  - `/opt/scifigure/current/renderer/introspector.py.spinegroup-bak-20260720100641`
+
+**验证**
+
+- `npm run test:special-axes-api` 通过，包含 `polar_subplot.0` 完整 relation、polar line 可编辑、unsafe special-axes editLog 拒绝零持久化、snapshot restore 兼容等检查。
+- `npm run lint` 通过。
+- `npm run test:patch-rejection-persistence` 通过。
+- 线上 rootless Docker 重建 `scifigure-renderer:e35f4a4-jd22` 后，真实 `introspector.py --payload-file` polar smoke 返回 `status=success`，manifest object count 为 29。
+- 线上 `scifigure.service` 保持 `active`，HTTP 本地端口 `127.0.0.1:3101` 可返回首页；本轮未重启 Web 服务，未修改 `/srv/scifigure/data`。
+
+**防复发规则**
+
+- renderer 遍历 Matplotlib 容器时不能假定所有 axes 都有普通二维对象；spine、axis、projection、layout 均必须按实际对象存在性检查。
+- 线上诊断中的 renderer traceback 必须先判断是用户脚本执行失败还是平台 introspection 失败；发生在 `introspect_figure/iter_artists` 的异常优先视为平台兼容缺口。
+- special axes 修复必须覆盖 artist 遍历和属性读取两个阶段，不能只修第一个 traceback。
+
+---
+
+## 2026-07-20 10:14:45 +08:00 服务端项目 patch 预检仍对现代 manifest 使用 legacy editable fallback
+
+**状态与级别**
+
+- 状态：已修复并通过隔离 API 回归、特殊 axes API 和 TypeScript；尚未提交、推送或完整部署。
+- 级别：P0 编辑状态正确性。不会删除源数据，但可能让现代 manifest 未声明的属性通过服务端预检，并由 renderer 成功应用后写入 revision、session、project_figure、history 或导出锚点。
+
+**现象**
+
+- WP3 已规定：对象只要存在 `propertyCapabilities` 数组，未声明属性就不得再使用旧 `editable` 字段猜测可编辑性。
+- 前端 `RightSidebar` 已修复该规则，但服务端 `precheckProjectFigurePatches` 仍在 `capability` 缺失时回退 `editable.includes(prop)`。
+- 导出快照恢复 dry-run 的属性可重放检查也存在同类 fallback。
+
+**根因**
+
+- 早期兼容逻辑把 `editable` 作为旧 manifest 的兜底能力来源，但没有把“存在 `propertyCapabilities` 数组”作为现代协议边界。
+- 前端控件显示和服务端持久化预检没有同时收敛，导致只修 UI 仍可能留下 API 侧绕过。
+
+**修复**
+
+- `precheckProjectFigurePatches` 增加 `hasAuthoritativeCapabilities = Array.isArray(object.propertyCapabilities)`；现代对象缺失目标 capability 时直接拒绝，只有旧 manifest 没有该字段时才使用 `editable.includes(prop)`。
+- 导出快照恢复预检同步使用同一规则，避免恢复旧资产时把现代 manifest 未声明属性解释为 legacy 可重放。
+- 新增回归：将存储 manifest 人为改成 `propertyCapabilities` 省略 `linewidth`、但旧 `editable` 仍包含 `linewidth`；提交 `linewidth` patch 必须返回 conflict，且 revision、session editLog 和 project_figure editLog 不变。
+
+**验证**
+
+- `npm run test:patch-rejection-persistence`：通过，新增检查项 `modern manifest omitted capability did not fall back to legacy editable on the server`。
+- `npm run test:special-axes-api`：通过，确认 WP7/WP8 特殊轴和快照恢复门禁未被误伤。
+- `npm run lint`：通过。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+**防复发规则**
+
+- `propertyCapabilities` 的存在本身就是现代能力协议标志；属性省略代表未声明/不可编辑，不是“回退旧猜测”。
+- 任何新增前端 capability 规则，必须同步检查服务端 patch 预检、full render 预检、导出快照 dry-run 和历史恢复入口。
+- `editable` fallback 只能用于没有 `propertyCapabilities` 字段的旧 manifest；不能用于现代对象、空 capability 数组或 capability 被 renderer 有意省略的属性。
+
+---
+
+## 2026-07-20 10:17:38 +08:00 配色中心 legacy binding fallback 可绕过现代 capability 省略
+
+**状态与级别**
+
+- 状态：已修复并通过配色/target/property 相关单元回归和 TypeScript；尚未提交、推送或部署。
+- 级别：P1 配色入口一致性。不会删除数据，但可能让现代 manifest 中 renderer 未声明的颜色属性通过配色中心生成对象 patch，造成“显示能改但后端拒绝”或错误 patch mode。
+
+**现象**
+
+- `paletteTargetResolver` 在 binding 协议不完整或进入 legacy strategy 时，会用 `binding.props` 与 `object.editable`、`kind === "line"`、`facecolor/color` 猜测配色属性。
+- 现代对象即使存在 `propertyCapabilities: []` 或省略某个颜色属性，也可能被旧 `editable` 或 kind 启发式选为配色目标。
+
+**根因**
+
+- 配色中心的 fallback 早于 WP3 capability 协议，只区分 binding 是否完整，没有把“对象已进入现代 propertyCapabilities 协议”作为属性选择边界。
+- 严格路径已使用 binding target 的显式 prop，但 legacy binding fallback 仍可能在组合图、旧 binding 或颜色扫描不完整时被调用。
+
+**修复**
+
+- 新增 `colorPropSupportedByObject`：现代对象只接受 `propertyCapabilities` 中声明且 `replay !== "unsupported"` 的颜色属性；旧 manifest 才使用 `editable` 兜底。
+- `fallbackProp` 找不到可证明颜色属性时返回 `null`。
+- `legacyResolution` 对无可证明 prop 的目标跳过，并记录 `unsupported_prop`，不再生成对象 patch。
+
+**验证**
+
+- `npm test -- paletteTargetResolver propertyPatchMode targetResolver semanticPatchMapping editingIntentCompiler`：25 文件、438 项通过。
+- 新增测试：现代 line 对象保留 `editable: ["color"]` 但 `propertyCapabilities: []` 时，legacy palette binding 不产生 target，也不生成 object patch。
+- `npm run lint`：通过。
+
+**防复发规则**
+
+- 配色中心不能把颜色相似、对象 kind 或旧 `editable` 当作现代能力证明。
+- binding 协议不完整时可以降级为 legacy strategy，但每个对象属性仍必须遵守对象自己的 capability 边界。
+- 组合图和旧 binding 的便利 fallback 只能跳过不可信对象，不能为了“尽量改上”而生成不可证明 patch。

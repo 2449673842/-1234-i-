@@ -1,6 +1,10 @@
 import type { Manifest, ManifestObject } from '../schemas/manifest';
 import type { DraftPatch } from '../schemas/draftPatchBatch';
 import { propertyCapabilityFor, resolvePatchMode } from './propertyPatchMode';
+import {
+  requiresSpecialAxesRelationIdentity,
+  specialAxesRelationSignature,
+} from './specialAxesIdentity';
 
 type PatchLike = DraftPatch | {
   gid?: string;
@@ -152,13 +156,24 @@ function isPieRelationCompatible(source: ManifestObject, target: ManifestObject)
     && sourceRelation.sliceIndex === targetRelation.sliceIndex;
 }
 
+function isSpecialAxesRelationCompatible(source: ManifestObject, target: ManifestObject): boolean {
+  const sourceRequires = requiresSpecialAxesRelationIdentity(source);
+  const targetRequires = requiresSpecialAxesRelationIdentity(target);
+  if (!sourceRequires && !targetRequires) return true;
+  if (!sourceRequires || !targetRequires) return false;
+  const sourceSignature = specialAxesRelationSignature(source.identity);
+  const targetSignature = specialAxesRelationSignature(target.identity);
+  return sourceSignature !== null && sourceSignature === targetSignature;
+}
+
 function isExactTargetCompatible(source: ManifestObject, target: ManifestObject): boolean {
   if (source.role && target.role && source.role !== target.role) return false;
   if (source.subplotId && target.subplotId && source.subplotId !== target.subplotId) return false;
   if (source.kind !== target.kind && (!source.role || source.role !== target.role)) return false;
   return isPieRelationCompatible(source, target)
     && isVectorFieldRelationCompatible(source, target)
-    && isDiagramRelationCompatible(source, target);
+    && isDiagramRelationCompatible(source, target)
+    && isSpecialAxesRelationCompatible(source, target);
 }
 
 function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop: string | undefined): number {
@@ -167,6 +182,7 @@ function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop
   if (!isPieRelationCompatible(source, target)) return -1;
   if (!isVectorFieldRelationCompatible(source, target)) return -1;
   if (!isDiagramRelationCompatible(source, target)) return -1;
+  if (!isSpecialAxesRelationCompatible(source, target)) return -1;
 
   let score = 0;
   if (source.identity?.instanceKey && source.identity.instanceKey === target.identity?.instanceKey) score += 140;

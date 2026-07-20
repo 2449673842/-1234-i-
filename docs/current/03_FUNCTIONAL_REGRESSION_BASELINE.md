@@ -1,9 +1,9 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-19 22:52:22 +08:00
-> 证据截止时间：2026-07-19 22:52:22 +08:00
-> 代码范围：`feature/standard-figure-model-v1`，网络图/路径图/SEM 显式语义、身份隔离和回归保护实现提交 `b20b103`
+> 最后修改时间：2026-07-20 08:41:21 +08:00
+> 证据截止时间：2026-07-20 08:41:21 +08:00
+> 代码范围：`feature/standard-figure-model-v1`，Python WP7 特殊 axes、全渲染零错误持久化和旧 editLog 兼容；尚未形成提交
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -25,12 +25,12 @@
 
 ## 2. 当前证据快照
 
-2026-07-19 本轮已经获得的最新证据：
+2026-07-20 本轮已经获得的最新证据：
 
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
 | TypeScript | 通过 | `npm run lint` |
-| 前端单元测试 | 145 文件、1078/1078 | 包含图示专用 resolver、能力、映射、组件分组、identity 捕获和 fail-closed 关系回归 |
+| 前端单元测试 | 146 文件、1098/1098 | 包含特殊 axes relation、schema v3、图示 resolver、能力、映射、组件分组、identity 捕获和 fail-closed 回归 |
 | Python renderer/身份/复杂覆盖 | complex artist 26/26、结构身份漂移 7/7 | 本地既有 renderer 基线；本工作包未修改 Python 或 Matplotlib 版本，也未新增兼容版本声明 |
 | 组件中心真实浏览器 | 41/41；向量场专用分组直接回归通过 | 网格、图例、容器、五个 WP6 家族、父层重定向、保存刷新和拖拽模式多选保护 |
 | Python 完整用户链路 | 通过 | 选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和快照恢复 |
@@ -40,8 +40,9 @@
 | `pie/wedge` 专用语义 | 通过 | 扇区/标签/百分比/图例/Wedge 独立 role，`pieId + sliceIndex` 身份隔离，结构只读、跨 Figure、导出和恢复均通过 |
 | `quiver/streamplot` 专用语义 | 通过 | 专用父对象/role、旧 GID 兼容、内部 child 只读、可信关系映射、图例联动、结构只读、跨 Figure、导出和恢复均通过 |
 | 网络图/路径图/SEM 显式语义 | 通过 | 七类专用 role、完整关系签名、科学结构只读、组件/配色隔离、Draft/backend replay、跨 Figure、导出和恢复均通过 |
+| Python 特殊 axes | 通过当前固定运行时门禁 | polar、3D、inset、secondary、parasite 和自定义投影分类；Python 10 项中 8 通过，Cartopy/brokenaxes 因未安装跳过且不得宣称支持 |
 | R 共享协议回归 | 通过 | R renderer 31/31、R 浏览器 5/5、Python/R capability matrix 2/2 |
-| patch 事务保护 | 通过 | standalone 与项目 Figure 均由服务端按可信 manifest/renderer 决定 mode；拒绝批次不改变 revision、session、history、cache 或导出锚点 |
+| patch/全渲染事务保护 | 通过 | standalone patch、standalone full render 与项目 full render 均由服务端按返回 manifest/renderer 决定；拒绝批次不改变 revision、session、项目脚本、Figure、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |
 | 项目 PUT 保存预检 | 通过 | editLog/history 先预检；revision/hash CAS 阻止旧保存覆盖；GET/PUT 统一旧项目恢复源；排队保存与新 Draft 不丢失 |
@@ -54,7 +55,7 @@
 
 本轮还重新运行了编辑、R、跨 Figure、历史、导出、页面、组合、安全和隔离 smoke。所有请求均使用随机 `127.0.0.1` 端口和临时数据库；未访问 3000，未修改 Docker/WSL。
 
-三轮独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包和旧项目 GET/PUT 恢复源不一致均已修复。当前项目保存接口同时执行可信 manifest 预检与 revision/hash CAS；新增 PUT、history、无 manifest、旧 contour 项目和跨 Figure 回归均通过。WP8 的恢复/导出事务证据已补齐，WP6 六个复杂对象家族已完成当前计划范围的专用适配；后续仍需对特殊 axes、性能、默认启用和剩余 legacy 审计补齐证据。
+先前独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包、旧项目 GET/PUT 恢复源不一致，以及 standalone/project full render 在 renderer 拒绝 editLog 后仍可能写入的问题均已修复。当前保存与全渲染入口同时执行可信 manifest 预检、renderer warning 检查和必要的 revision/hash CAS；项目脚本与 Figure/session 在同一事务提交。新增 full render mixed batch、旧 contour、项目 history 和 R 共享路由回归均通过。修复后的最终独立复审因 sub2api 上游 503 尚未完成，必须在形成提交前重试并清零 HIGH/MEDIUM。WP7 已完成当前固定运行时范围的实现与定向门禁；后续仍需 WP3/WP4 剩余 legacy 审计、WP5 用户可见能力报告、WP9 性能与碰撞和 WP10 默认启用门禁。
 
 第一轮隔离浏览器基线补充结果：
 

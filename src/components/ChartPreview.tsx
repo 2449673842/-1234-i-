@@ -9,8 +9,8 @@ import { compileEditingIntentWithControlledResolver } from '../utils/targetResol
 import { recordLegacyRetireObservation } from '../utils/legacyRetireObservationClient';
 import { isParentOwnedManifestObject } from '../utils/propertyPatchMode';
 
-const TEXT_GID_RE = /^(r\.text|text|title|xlabel|ylabel|legend_text|legend_title|fig_text)\./;
-const TICK_LABEL_GID_RE = /^(xtick|ytick)\./;
+const TEXT_GID_RE = /^(r\.text|text|title|xlabel|ylabel|zlabel|legend_text|legend_title|fig_text)\./;
+const TICK_LABEL_GID_RE = /^(xtick|ytick|ztick)\./;
 const LEGEND_CHILD_GID_RE = /^legend_(?:text|title|line|patch|collection)\.(?:(figure)\.(\d+)|(\d+))(?:\.\d+)?$/;
 let chartPreviewSanitizeCount = 0;
 let lastChartPreviewSvg: string | null = null;
@@ -42,8 +42,10 @@ function inferTextTargetRole(gid: string): SemanticTargetRole | undefined {
   if (gid.startsWith('title.') || gid.startsWith('suptitle.')) return 'title';
   if (gid.startsWith('xlabel.') || gid.startsWith('supxlabel.')) return 'x_axis_label';
   if (gid.startsWith('ylabel.') || gid.startsWith('supylabel.')) return 'y_axis_label';
+  if (gid.startsWith('zlabel.')) return 'z_axis_label';
   if (gid.startsWith('xtick.')) return 'x_tick_label';
   if (gid.startsWith('ytick.')) return 'y_tick_label';
+  if (gid.startsWith('ztick.')) return 'z_tick_label';
   if (gid.startsWith('legend_text.') || gid.startsWith('legend_title.')) return 'legend_text';
   return undefined;
 }
@@ -227,6 +229,20 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       return querySvgElementById(svgEl, `axes.${subplotMatch[1]}`);
     }
 
+    const specialPanelKinds = new Set([
+      'polar_subplot',
+      'three_d_subplot',
+      'inset_subplot',
+      'geo_subplot',
+      'parasite_subplot',
+      'unsupported_axes',
+      'brokenaxes_group',
+    ]);
+    if (specialPanelKinds.has(String(object?.kind)) && typeof object?.source?.axesIndex === 'number') {
+      return querySvgElementById(svgEl, `axes.patch.${object.source.axesIndex}`)
+        || querySvgElementById(svgEl, `axes.${object.source.axesIndex}`);
+    }
+
     // R layer/group/text gids: the id is stamped as data-fig-id on individual SVG elements.
     // When no single element owns the id, query all elements with that data-fig-id and return the first.
     if (svgEl) {
@@ -241,7 +257,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     const obj = manifestObjectMap.get(gid);
     const props = obj?.currentProps || {};
     if (!obj) return false;
-    if (TICK_LABEL_GID_RE.test(gid) || obj?.role === 'x_tick_label' || obj?.role === 'y_tick_label') {
+    if (TICK_LABEL_GID_RE.test(gid) || obj.role === 'x_tick_label' || obj.role === 'y_tick_label' || obj.role === 'z_tick_label') {
       return false;
     }
     if (LEGEND_CHILD_GID_RE.test(gid) || obj?.role === 'legend_text' || obj?.role === 'legend_marker') {
@@ -331,6 +347,24 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     while (current) {
       if (current.id) {
         if (validGids.has(current.id)) return resolveParentOwnedHitGid(current.id);
+        const axesPatchMatch = current.id.match(/^axes\.patch\.(\d+)$/);
+        if (axesPatchMatch) {
+          const axesIndex = Number(axesPatchMatch[1]);
+          const panel = (Array.from(manifestObjectMap.values()) as any[]).find((object: any) => (
+            typeof object?.source?.axesIndex === 'number'
+            && object.source.axesIndex === axesIndex
+            && [
+              'polar_subplot',
+              'three_d_subplot',
+              'inset_subplot',
+              'geo_subplot',
+              'parasite_subplot',
+              'unsupported_axes',
+              'brokenaxes_group',
+            ].includes(String(object?.kind))
+          ));
+          if (panel?.id && validGids.has(panel.id)) return panel.id;
+        }
         const gridMatch = current.id.match(/^grid\.(\d+)\.line\./);
         if (gridMatch && validGids.has(`grid.${gridMatch[1]}`)) {
           return `grid.${gridMatch[1]}`;

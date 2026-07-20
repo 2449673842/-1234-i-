@@ -112,7 +112,7 @@ P3：管理员后台剩余页面/受控操作、更多编辑能力和 AI 接入
 
 组合代码项目选择器 C1-C5 已于 2026-07-12 完成实现和阶段验收。当前支持来源项目搜索、项目类型与最近使用筛选、更新时间、Figure 缩略图和语义摘要、已选队列排序、`auto` 明确布局、物理尺寸预览、panel 位置映射以及重复、嵌套、版面和数据依赖检查。30 Figure fixture 已验证仅清洗可见区附近 SVG；Python/R 组合提示词按目标语言分别生成。详细状态和限制见能力架构文档第 13.1 节。
 
-### 3.4 Python 编辑正确性保护（2026-07-19 21:57:22 +08:00）
+### 3.4 Python 编辑正确性保护（2026-07-20 08:41:21 +08:00）
 
 本轮在保留既有编辑中心交互的前提下，补齐对象身份、三个复杂对象家族和 patch 持久化边界：
 
@@ -138,9 +138,15 @@ WP8 已完成首轮收敛：导出快照先经 renderer dry-run，再在数据�
 
 WP6 已完成 `fill_between`、`contour/contourf`、`hist/stairs/step`、`pie/wedge`、`quiver/streamplot` 与网络图/路径图/SEM 六个复杂对象家族。前五个家族沿用已验证的专用父对象与关系模型；图示对象新增 `diagram_node`、`diagram_edge`、`diagram_arrow`、`diagram_node_label`、`diagram_coefficient_label`、`diagram_fit_annotation` 和 `diagram_group`，以 `diagramId/diagramObjectId/nodeId/edgeId/sourceNodeId/targetNodeId` 建立显式关系。平台只开放可证明的视觉样式；路径系数、p 值、显著性、拟合指标、边方向、节点身份和模型拓扑保持只读。
 
-contour 的 `cmap/vmin/vmax` 按属性能力留在当前对象/Figure；只有属性在全部目标上明确声明 `cross_figure` 才允许 fanout。pie/wedge、向量场和显式图示语义均具备专用 identity/relation、组件分组、Draft/backend replay、跨 Figure 映射、导出和快照恢复；关系缺失、冲突或重复候选均 fail-closed。图示文本的初始 manifest 与重放身份统一使用真实文本标签，关系另由完整 signature 保护，已有部分 identity 不从新 manifest 回填。当前集成分支已重新通过向量场和网络/路径/SEM 的协议、renderer、API 与真实浏览器针对性门禁；完整 release gate、特殊 axes、性能、默认启用和剩余 legacy 审计仍待完成，不能据此宣布 Python 计划全部完成。
+contour 的 `cmap/vmin/vmax` 按属性能力留在当前对象/Figure；只有属性在全部目标上明确声明 `cross_figure` 才允许 fanout。pie/wedge、向量场和显式图示语义均具备专用 identity/relation、组件分组、Draft/backend replay、跨 Figure 映射、导出和快照恢复；关系缺失、冲突或重复候选均 fail-closed。图示文本的初始 manifest 与重放身份统一使用真实文本标签，关系另由完整 signature 保护，已有部分 identity 不从新 manifest 回填。当前集成分支已重新通过向量场和网络/路径/SEM 的协议、renderer、API 与真实浏览器针对性门禁；WP7 特殊 axes 正在本分支集成，完整 release gate、性能、默认启用和剩余 legacy 审计仍待完成，不能据此宣布 Python 计划全部完成。
 
-生产部署只运行一套内容固定的 renderer 镜像，并锁定 Python、R、绘图库、字体和系统依赖。Python 运行时版本与 Matplotlib 包版本必须分栏记录，不能互相替代：当前仓库 `Dockerfile.renderer` 声明 `python:3.12-slim`，`requirements.txt` 声明 `matplotlib>=3.8`；本地测试证据中的 Matplotlib 3.7.2 是既有基线，3.8.4 是显式兼容门禁。此前“网页 Matplotlib 3.11.0”没有对应包版本证据，现已撤销；`3.11.0` 只能在有运行时证据时作为 Python 版本记录。本工作包不修改依赖文件、运行服务或部署版本。
+WP7 已完成当前固定运行时范围的特殊 axes 收敛。polar、3D、inset、secondary x/y axis 不再被当成普通二维 subplot；对象身份增加 `axesFamily/projection/parentSubplotId/ownerSubplotId`。polar 的可证明数据样式、标题和轴文字可继续编辑；3D 已接入 Z 轴标签和刻度字体；inset 与 secondary axis 保留可信父轴关系。parasite host/child、brokenaxes 占位分类、GeoAxes/Cartopy 和未知自定义投影默认只读或 unsupported，不开放相机、投影、布局和跨轴几何。当前固定测试环境未安装 Cartopy/brokenaxes，因此只能声明分类与只读降级代码存在，不能声明真实第三方包已完成支持。
+
+导出编辑快照升级为 schema v3：新快照中的特殊轴 editLog 必须携带完整 relation；v1/v2 仅在 stableKey 与 v2 structural fingerprint 同时一致时兼容历史缺失 relation。`/api/figure/render` 和 `/api/projects/:id/figures/render` 现在同时核对返回 manifest 与 renderer warnings；任一新 editLog 目标缺失、属性不支持或关系身份不匹配时，不写 session、项目脚本、Figure、history 或 preview。只有数据库中已持久化且 stableKey 一致的旧 editLog 才能受控兼容；旧条目若已保存 fingerprint 或 seriesKey，对应字段也必须一致，gid-only 历史日志继续阻断。standalone 重渲染复用原 session；项目脚本与 figures/sessions 在同一数据库事务提交。
+
+最新完整 Vitest 证据为 146 文件、1098/1098；本轮新增后续定向证据包括特殊轴 Python 10 项中 8 通过、2 项因依赖缺失跳过，特殊轴 API、patch 拒绝、旧 contour 项目、项目历史事务、R semantic 5/5、TypeScript、生产构建和 `git diff --check` 均通过。数据审计仍为 25 用户、121 项目、263 项目文件、101 导出资产、0 错误。Python 仍需完成 WP3/WP4 的剩余 legacy 审计、WP5 用户可见能力报告、WP9 性能与碰撞和 WP10 默认启用门禁，不能据此宣布 Python 计划全部完成。
+
+生产部署只运行一套内容固定的 renderer 镜像，并锁定 Python、R、绘图库、字体和系统依赖。WP7 的固定测试启动器明确校验 Python `3.8.19` 与 Matplotlib `3.7.2`；本轮没有迁移到 Python 3.11，也没有把历史临时 Matplotlib 3.8.4 容器改成目标版本。当前仓库 `Dockerfile.renderer` 与依赖声明仍需在部署工作包中另行核对，本轮未修改运行服务或线上版本。
 
 ## 4. 用户数据红线
 

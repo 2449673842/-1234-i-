@@ -38,4 +38,58 @@ describe('subplot selection scope', () => {
     expect(resolveSelectionSubplotScope(objects, ['missing'], 'missing')).toBe('all');
     expect(resolveSelectionSubplotScope(objects, [], 'Figure')).toBe('all');
   });
+
+  it.each([
+    ['polar', 'polar'],
+    ['3d', '3d'],
+    ['inset', 'rectilinear'],
+  ])('resolves a %s panel from its own trusted relation subplot id', (axesFamily, projection) => {
+    const panel = object({
+      id: `subplot.${axesFamily}.0`,
+      kind: 'axes',
+      source: { axesIndex: 0 } as any,
+      identity: {
+        relation: {
+          subplotId: `subplot.${axesFamily}.0`,
+          axesFamily,
+          projection,
+          parentSubplotId: 'subplot.0',
+          ownerSubplotId: `subplot.${axesFamily}.0`,
+        },
+      } as any,
+    });
+
+    expect(getObjectSubplotId(panel)).toBe(`subplot.${axesFamily}.0`);
+    expect(resolveSelectionSubplotScope([panel], [panel.id], panel.id)).toBe(`subplot.${axesFamily}.0`);
+  });
+
+  it('resolves secondary axes to the trusted parent subplot', () => {
+    const secondaryAxis = object({
+      id: 'axis.y.secondary.0',
+      kind: 'axis_y',
+      source: { axesIndex: 3, ownerAxesIndex: 3 } as any,
+      identity: {
+        relation: {
+          axesFamily: 'secondary_y',
+          projection: 'rectilinear',
+          parentSubplotId: 'subplot.0',
+          ownerSubplotId: 'subplot.secondary_y.0',
+        },
+      } as any,
+    });
+
+    expect(getObjectSubplotId(secondaryAxis)).toBe('subplot.0');
+    expect(resolveSelectionSubplotScope([secondaryAxis], [secondaryAxis.id], secondaryAxis.id)).toBe('subplot.0');
+  });
+
+  it('does not infer an ordinary subplot for unsupported axes without a trusted relation', () => {
+    const unsupportedAxes = object({
+      id: 'axes.unsupported.0',
+      kind: 'unsupported',
+      source: { axesIndex: 1, artistClass: 'mpl_toolkits.axes_grid1.parasite_axes.AxesHostAxes' } as any,
+    });
+
+    expect(getObjectSubplotId(unsupportedAxes)).toBeNull();
+    expect(resolveSelectionSubplotScope([unsupportedAxes], [unsupportedAxes.id], unsupportedAxes.id)).toBe('all');
+  });
 });

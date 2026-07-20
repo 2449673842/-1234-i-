@@ -692,6 +692,35 @@ diagram group    -> diagram_group
 
 兼容范围不是支持任意历史版本：新 manifest 使用 v2 结构 fingerprint；旧 contour child 只在 stableKey/seriesKey 一致且差异仅为已知 fingerprint 漂移时兼容。quiver 保留原 `collection.*` GID/stableKey，streamplot 内部 line/arrow 保留历史 GID，但由新的语义父对象拥有。图示语义只接受脚本通过 `_scifigure_semantic_gid(...)` 提供的显式声明；该 marker 是声明协议，不是认证或科学真实性证明。renderer、项目 patch 预检和快照 dry-run 逐字段比较完整 diagram relation signature，已有部分 identity 不从新 manifest 回填。普通 `LineCollection`、`FancyArrowPatch`、bar、手工 `StepPatch`、drawstyle line、scatter、line、arrow 和 text 保持原分类。项目加载、PUT、history、四格式导出、子图导出和快照恢复均有隔离测试。
 
+### 13.4 Python 特殊 axes 与全渲染提交边界（2026-07-20 08:41:21 +08:00）
+
+特殊坐标轴先建立类型和父子关系，再决定可编辑能力。普通二维轴继续使用原 GID 和能力；特殊轴及其 artist 在 identity relation 中携带 `axesFamily/projection/parentSubplotId/ownerSubplotId`，跨 Figure 映射必须完整匹配该关系。
+
+| 家族 | 当前分类与编辑策略 | 当前证据边界 |
+|---|---|---|
+| polar | `polar_subplot`；数据线、文字、图例和安全轴文字样式可编辑，布局/投影只读 | renderer、API 持久化、浏览器选择/Draft、导出快照通过 |
+| 3D | `three_d_subplot`；Z 轴标签和刻度字体可编辑，相机、投影和 box aspect 只读 | 固定 Python renderer 与浏览器控件通过 |
+| inset | `inset_subplot`；保留 parent relation，内容样式按能力开放，bounds/归属只读 | renderer 关系测试通过 |
+| secondary x/y | `secondary_xaxis/secondary_yaxis`；归属父 subplot，安全轴文字样式可编辑 | renderer 与 UI scope 测试通过 |
+| parasite | `parasite_subplot/parasite_axis`；host/child 关系完整，整族只读 | 固定 Matplotlib 3.7.2 直接回归通过 |
+| brokenaxes | `brokenaxes_group` 只读降级协议 | 无依赖 synthetic 分类通过；真实 brokenaxes 包未安装、未验证 |
+| GeoAxes/Cartopy | `geo_subplot` 只读降级协议 | 分类代码存在；Cartopy 未安装、真实包测试跳过 |
+| 未知自定义投影 | `unsupported_axes`，记录原因并禁止布局/投影编辑 | 畸形投影安全降级通过 |
+
+特殊轴 editLog 的持久化不是由客户端 mode 或 renderer 是否返回 `success` 单独决定。standalone 与项目全渲染都会在任何写入前执行：
+
+```text
+返回 manifest 权威预检
+-> renderer warning 与 editLog 对应检查
+-> 新日志 relation / stableKey / v2 fingerprint 核验
+-> 冲突时返回 conflict 且零持久化
+-> 全部通过后提交 session 或项目事务
+```
+
+项目全渲染把项目脚本与 Figure/session 替换放入同一 SQLite 事务。数据库中已经存在且 stableKey 一致的旧 editLog 才可按受控规则继续重放；旧条目若已有 fingerprint 或 seriesKey，也必须与当前目标一致，只有 GID 的历史日志保持阻断。客户端新提交的缺失 relation 日志不能借兼容路径进入。导出快照 schema v3 强制完整特殊轴 relation；v1/v2 只在 stableKey 与 v2 fingerprint 同时一致时兼容。
+
+专项验证：`test:special-axes-python` 10 项中 8 通过、Cartopy/brokenaxes 2 项因依赖缺失跳过；`test:special-axes-api`、`test:special-axes-ui`、`test:patch-rejection-persistence`、`test:legacy-contour-project-compatibility`、`test:project-history-persistence`、`test:r-semantic-smoke`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。
+
 ## 14. Python/R 对齐表
 
 | 能力 | Python | R | 当前判断 |
@@ -722,7 +751,7 @@ R 未知 geom 会只读显示并记录 unsupported；没有显式数据键的 te
 浏览器端仍保留 xlsx 用于本地预览
 AI 自动改图尚未接入
 annotation/箭头仍只达到部分覆盖；tick line 与 tick label 的样式隔离已通过当前 Python fixture
-twinx/twiny、复杂共享轴和超大 scatter 的真实项目验证不足
+secondary/parasite 代表链路已覆盖；更复杂的 twinx/twiny 共享轴组合和超大 scatter 真实项目验证仍不足
 未使用显式语义声明的任意第三方网络图、路径图和 SEM 不会按外观自动推断关系
 生产构建仍有主 bundle 大于 500 kB 和 CJS import.meta warning
 ```

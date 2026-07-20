@@ -548,6 +548,52 @@ describe('editing intent compiler', () => {
     ]);
   });
 
+  it('routes grouped 3D Z tick fonts through the stable axis.z object', () => {
+    const manifest = baseManifest([{
+      id: 'axis.z.0',
+      kind: 'axis_z',
+      label: 'Z axis',
+      editable: ['tick_labelsize'],
+      currentProps: { tick_labelsize: 9 },
+      subplotId: 'three_d_subplot.0',
+      identity: {
+        semanticKey: 'z_tick_label:three_d_subplot.0',
+        instanceKey: 'subplot:axis.z.0',
+        scope: 'subplot',
+        coordinateSpace: 'axes',
+        relation: {
+          subplotId: 'three_d_subplot.0',
+          axesFamily: '3d',
+          projection: '3d',
+          parentSubplotId: 'three_d_subplot.0',
+          ownerSubplotId: 'three_d_subplot.0',
+        },
+      },
+      propertyCapabilities: [{
+        prop: 'tick_labelsize',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'subplot', 'figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    }]);
+
+    const result = compileEditingIntent(manifest, {
+      intent: 'style.text.tick_label',
+      scope: {
+        selectionMode: 'role_in_figure',
+        objectIds: ['axis.z.0'],
+        targetRole: 'z_tick_label',
+      },
+      operation: { prop: 'fontsize', value: 13 },
+    });
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toEqual([{
+      op: 'set', mode: 'backend_patch', gid: 'axis.z.0', prop: 'tick_labelsize', value: 13,
+    }]);
+  });
+
   it('keeps legend title, legend text, and legend marker roles separate', () => {
     const manifest = baseManifest([
       {

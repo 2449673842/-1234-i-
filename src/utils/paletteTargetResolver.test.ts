@@ -299,6 +299,28 @@ describe('palette target resolver', () => {
     expect(buildPaletteObjectPatches(result, '#abcdef')).toEqual([]);
   });
 
+  it('does not use legacy editable fallback for modern palette objects with omitted capabilities', () => {
+    const line = object('line.0.0', 'color', 'line-series');
+    line.editable = ['color'];
+    line.propertyCapabilities = [];
+    const legacy: Binding = {
+      paletteId: 'SERIES',
+      groupId: 'group_SERIES',
+      gids: [line.id],
+      props: ['color'],
+    };
+
+    const result = resolvePaletteTargets(manifest([line], [legacy]), 'SERIES', true);
+
+    expect(result.strategy).toBe('legacy');
+    expect(result.targets).toEqual([]);
+    expect(result.skipped[0]).toEqual(expect.objectContaining({
+      objectId: line.id,
+      reason: 'unsupported_prop',
+    }));
+    expect(buildPaletteObjectPatches(result, '#118833')).toEqual([]);
+  });
+
   it('rejects stale series identity instead of patching a reused gid', () => {
     const line = object('line.0.0', 'color', 'new-series');
     const stale = binding('SERIES', [target(line.id, 'color', 'old-series')]);

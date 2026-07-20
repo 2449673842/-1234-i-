@@ -74,6 +74,8 @@ function relationTargetIds(object: ManifestObject): string[] {
     ...(relation.twinSubplotIds ?? []),
     ...(relation.sharedXSubplotIds ?? []),
     ...(relation.sharedYSubplotIds ?? []),
+    relation.parentSubplotId,
+    relation.ownerSubplotId,
   ].filter((value): value is string => Boolean(value));
 }
 
