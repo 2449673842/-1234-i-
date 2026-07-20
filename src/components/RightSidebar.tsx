@@ -1805,6 +1805,58 @@ export function RightSidebar({
     </div>
   );
 
+  const renderCapabilitySummaryPanel = () => {
+    const summary = debugModel?.capabilitySummary;
+    if (!summary) return null;
+    const stateLabels = {
+      editable: '可编辑',
+      partial: '部分可编辑',
+      readonly: '只读',
+      unsupported: '暂不支持',
+    } as const;
+    const stateClasses = {
+      editable: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+      partial: 'border-amber-200 bg-amber-50 text-amber-800',
+      readonly: 'border-slate-200 bg-slate-50 text-slate-700',
+      unsupported: 'border-rose-200 bg-rose-50 text-rose-800',
+    } as const;
+    const topKinds = summary.byKind
+      .filter(item => item.count > 0)
+      .slice(0, 4)
+      .map(item => `${item.kind} ${item.count}`)
+      .join(' · ');
+
+    return (
+      <div
+        data-testid="figure-capability-summary"
+        className={`mb-4 rounded-xl border px-3 py-2.5 text-xs leading-relaxed ${stateClasses[summary.state]}`}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="font-semibold">当前 Figure：{stateLabels[summary.state]}</div>
+          <div className="font-mono text-[11px] opacity-75">
+            {summary.editableObjects}/{summary.totalObjects} objects
+          </div>
+        </div>
+        <div className="mt-1 opacity-85">
+          可编辑 {summary.editableObjects} · 只读 {summary.readonlyObjects} · 不支持 {summary.unsupportedObjects}
+          {summary.flattenedObjects + summary.ambiguousObjects > 0
+            ? ` · 降级 ${summary.flattenedObjects + summary.ambiguousObjects}`
+            : ''}
+        </div>
+        {topKinds && (
+          <div className="mt-1 truncate opacity-75" title={topKinds}>
+            类型：{topKinds}
+          </div>
+        )}
+        {summary.notes.length > 0 && (
+          <div className="mt-1 line-clamp-2 opacity-80" title={summary.notes.join('\n')}>
+            限制：{summary.notes[0]}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderNumberInput = (
     gid: string,
     label: string,
@@ -6525,6 +6577,8 @@ export function RightSidebar({
             <span>当前对象已被锁定。请在左侧图层大纲中解锁后编辑。</span>
           </div>
         )}
+
+        {renderCapabilitySummaryPanel()}
 
         <div className={isLocked && activeTab === 'properties' ? 'opacity-55 pointer-events-none' : ''}>
           {activeTab === 'properties' && (

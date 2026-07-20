@@ -3,7 +3,7 @@
 > 状态：当前有效  
 > 更新时间：2026-07-30 07:03:06 +08:00
 > 证据截止时间：2026-07-30 07:03:06 +08:00
-> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；候选尚未部署
+> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`，含 Python WP5 用户可见能力摘要；候选尚未部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
 
@@ -144,7 +144,7 @@ WP7 已完成当前固定运行时范围的特殊 axes 收敛。polar、3D、ins
 
 导出编辑快照升级为 schema v3：新快照中的特殊轴 editLog 必须携带完整 relation；v1/v2 仅在 stableKey 与 v2 structural fingerprint 同时一致时兼容历史缺失 relation。`/api/figure/render` 和 `/api/projects/:id/figures/render` 现在同时核对返回 manifest 与 renderer warnings；任一新 editLog 目标缺失、属性不支持或关系身份不匹配时，不写 session、项目脚本、Figure、history 或 preview。只有数据库中已持久化且 stableKey 一致的旧 editLog 才能受控兼容；旧条目若已保存 fingerprint 或 seriesKey，对应字段也必须一致，gid-only 历史日志继续阻断。standalone 重渲染复用原 session；项目脚本与 figures/sessions 在同一数据库事务提交。
 
-最新完整 Vitest 证据为 146 文件、1098/1098；本轮新增后续定向证据包括特殊轴 Python 10 项中 8 通过、2 项因依赖缺失跳过，特殊轴 API、patch 拒绝、旧 contour 项目、项目历史事务、R semantic 5/5、TypeScript、生产构建和 `git diff --check` 均通过。数据审计仍为 25 用户、121 项目、263 项目文件、101 导出资产、0 错误。Python 仍需完成 WP3/WP4 的剩余 legacy 审计、WP5 用户可见能力报告、WP9 性能与碰撞和 WP10 默认启用门禁，不能据此宣布 Python 计划全部完成。
+最新完整 Vitest 证据为 146 文件、1098/1098；本轮新增后续定向证据包括特殊轴 Python 10 项中 8 通过、2 项因依赖缺失跳过，特殊轴 API、patch 拒绝、旧 contour 项目、项目历史事务、R semantic 5/5、TypeScript、生产构建和 `git diff --check` 均通过。2026-07-20 10:42 已新增首个用户可见能力摘要：`StandardFigureModel.capabilitySummary` 消费 renderer coverage contract，在右侧栏显示当前 Figure 的可编辑、部分可编辑、只读或暂不支持状态；该摘要不扫描 SVG，也不扩大能力宣传。本轮定向验证包括 22 个相关单元文件/397 项、TypeScript、生产构建、diff-check 和数据审计。数据审计仍为 25 用户、121 项目、263 项目文件、101 导出资产、0 错误。Python 仍需完成 WP3/WP4 的剩余 legacy 审计、WP5 完整能力报告、WP9 性能与碰撞和 WP10 默认启用门禁，不能据此宣布 Python 计划全部完成。
 
 生产部署只运行一套内容固定的 renderer 镜像，并锁定 Python、R、绘图库、字体和系统依赖。WP7 的固定测试启动器明确校验 Python `3.8.19` 与 Matplotlib `3.7.2`；本轮没有迁移到 Python 3.11，也没有把历史临时 Matplotlib 3.8.4 容器改成目标版本。当前仓库 `Dockerfile.renderer` 与依赖声明仍需在部署工作包中另行核对，本轮未修改运行服务或线上版本。
 

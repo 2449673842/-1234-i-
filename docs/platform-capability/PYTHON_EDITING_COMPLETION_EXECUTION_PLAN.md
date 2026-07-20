@@ -1,7 +1,7 @@
 # Python 图元编辑与分组识别收敛执行计划
 
-> 状态：WP3/WP4 核心边界、WP6、WP7 和 WP8 已完成当前计划范围；WP3 剩余 legacy 审计已修复前端 RightSidebar 批量/详情入口、ChartPreview 拖拽入口、配色中心 fallback、项目 patch 预检和导出快照 dry-run fallback 缺口；下一主工作包为 WP3/WP4 剩余 legacy 审计，随后完成 WP5
-> 最后修改时间：2026-07-20 10:37:13 +08:00
+> 状态：WP3/WP4 核心边界、WP6、WP7 和 WP8 已完成当前计划范围；WP3 剩余 legacy 审计已修复前端 RightSidebar 批量/详情入口、ChartPreview 拖拽入口、配色中心 fallback、项目 patch 预检和导出快照 dry-run fallback 缺口；WP5 已完成首个用户可见能力摘要 contract 和右侧栏展示，仍需完整矩阵和 release gate
+> 最后修改时间：2026-07-20 10:42:40 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
 > 当前部署状态：未推送、未部署；本计划不改变线上版本
@@ -77,7 +77,9 @@
 
 2026-07-20 10:37 WP3 剩余审计继续发现：`RightSidebar.renderSubplotPanel` 的 bounds 区块外层已使用 capability 门禁，但内部四个输入框仍只看 `unsupportedProps`。当 modern manifest 只声明部分 bounds 属性时，未声明的 `left/bottom/width/height` 仍可能显示。已新增 `supportsSubplotBoundProp` 并逐项检查四个输入框；旧 manifest 继续兼容。验证：`npm test -- RightSidebar propertyPatchMode targetResolver` 18 文件/310 项通过；`npm run lint` 通过；`git diff --check` 通过；`npm run data:audit` 仍为 25 用户、121 项目、263 文件、101 导出资产、0 issue、23 条既有测试账号 warning。
 
-仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 用户可见能力报告、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP6、WP7 和 WP8 已完成当前计划范围；Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。
+2026-07-20 10:42 WP5 首个增量完成：`StandardFigureModel` 新增 `capabilitySummary`，只消费 renderer 的 `coverageReport`、对象 `propertyCapabilities`、`semanticCoverage` 和 `unsupportedNotes`，不扫描 SVG、不自行猜测对象能力。右侧栏顶部显示当前 Figure 的“可编辑 / 部分可编辑 / 只读 / 暂不支持”摘要、对象计数、类型概览和首条限制说明。验证：`npm test -- standardFigureModel RightSidebar propertyPatchMode targetResolver` 22 文件/397 项通过；`npm run lint` 通过；`git diff --check` 通过；`npm run data:audit` 仍为 25 用户、121 项目、263 文件、101 导出资产、0 issue、23 条既有测试账号 warning；`npm run build` 通过，仅有既有 chunk size 和 `import.meta` CJS 警告。该增量不代表 WP5 完成，后续仍需更完整的能力矩阵、用户说明和 release gate。
+
+仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP4 无标签 collection 的结构身份矩阵、WP5 完整用户可见能力报告、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP6、WP7 和 WP8 已完成当前计划范围；Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。
 
 ### 2.5 2026-07-18 WP8 执行结果
 

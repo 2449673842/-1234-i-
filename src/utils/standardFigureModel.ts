@@ -3,6 +3,8 @@ import type { EditEntry, Manifest, ManifestObject, RenderResponse } from '../sch
 import type {
   FigureEngine,
   FigureLanguage,
+  StandardFigureCapabilityState,
+  StandardFigureCapabilitySummary,
   StandardFigureInput,
   StandardFigureModel,
   StandardFigureObject,
@@ -43,6 +45,100 @@ export function normalizeFigureObject(object: ManifestObject): StandardFigureObj
   };
 }
 
+function objectHasEditableCapability(object: ManifestObject): boolean {
+  if (Array.isArray(object.propertyCapabilities)) {
+    return object.propertyCapabilities.some(capability => capability.replay !== 'unsupported');
+  }
+  return Array.isArray(object.editable) && object.editable.length > 0;
+}
+
+function objectIsUnsupported(object: ManifestObject): boolean {
+  return object.kind === 'unsupported'
+    || object.kind === 'unsupported_axes'
+    || Boolean(object.currentProps?.unsupportedReason);
+}
+
+function sumUnsupportedArtists(manifest: Manifest): number {
+  return (manifest.coverageReport?.unsupportedArtists ?? [])
+    .reduce((total, item) => total + (Number(item.count) || 0), 0);
+}
+
+function deriveCapabilityState(summary: Omit<StandardFigureCapabilitySummary, 'state'>): StandardFigureCapabilityState {
+  if (summary.totalObjects === 0) return 'unsupported';
+  if (summary.editableObjects === 0) {
+    return summary.unsupportedObjects > 0 || summary.unsupportedArtistCount > 0
+      ? 'unsupported'
+      : 'readonly';
+  }
+  if (
+    summary.readonlyObjects > 0
+    || summary.unsupportedObjects > 0
+    || summary.unsupportedArtistCount > 0
+    || summary.flattenedObjects > 0
+    || summary.ambiguousObjects > 0
+  ) {
+    return 'partial';
+  }
+  return 'editable';
+}
+
+export function buildCapabilitySummary(manifest: Manifest): StandardFigureCapabilitySummary {
+  const objects = manifest.objects ?? [];
+  const editableObjects = objects.filter(objectHasEditableCapability).length;
+  const unsupportedObjects = objects.filter(objectIsUnsupported).length;
+  const readonlyObjects = Math.max(0, objects.length - editableObjects - unsupportedObjects);
+  const complexRows = manifest.coverageReport?.complexArtists ?? [];
+  const dedicatedObjects = Math.max(
+    objects.filter(object => object.semanticCoverage?.status === 'dedicated').length,
+    complexRows.filter(row => row.status === 'dedicated').length,
+    Number(manifest.coverageReport?.summary.dedicated) || 0,
+  );
+  const flattenedObjects = Math.max(
+    objects.filter(object => object.semanticCoverage?.status === 'flattened').length,
+    complexRows.filter(row => row.status === 'flattened').length,
+    Number(manifest.coverageReport?.summary.flattened) || 0,
+  );
+  const ambiguousObjects = Math.max(
+    objects.filter(object => object.semanticCoverage?.status === 'ambiguous').length,
+    complexRows.filter(row => row.status === 'ambiguous').length,
+    Number(manifest.coverageReport?.summary.ambiguous) || 0,
+  );
+  const unsupportedArtistCount = sumUnsupportedArtists(manifest);
+  const byKind = Object.entries(manifest.coverageReport?.byKind ?? {})
+    .map(([kind, detail]) => ({
+      kind,
+      count: Number(detail.count) || 0,
+      editableProps: [...(detail.editableProps ?? [])].sort(),
+      commonEditableProps: [...(detail.editablePropsIntersection ?? [])].sort(),
+      variants: detail.editablePropVariants?.length ?? 0,
+    }))
+    .sort((a, b) => a.kind.localeCompare(b.kind));
+  const notes = [
+    ...(manifest.unsupportedNotes ?? []),
+    ...complexRows
+      .filter(row => row.status !== 'dedicated')
+      .map(row => `${row.family}: ${row.reason}`),
+  ].filter(Boolean);
+
+  const partialSummary = {
+    totalObjects: objects.length,
+    editableObjects,
+    readonlyObjects,
+    unsupportedObjects,
+    dedicatedObjects,
+    flattenedObjects,
+    ambiguousObjects,
+    unsupportedArtistCount,
+    byKind,
+    notes,
+  };
+
+  return {
+    state: deriveCapabilityState(partialSummary),
+    ...partialSummary,
+  };
+}
+
 export function normalizeFigureModel(input: StandardFigureInput): StandardFigureModel {
   const manifest = input.manifest;
   return {
@@ -64,6 +160,7 @@ export function normalizeFigureModel(input: StandardFigureInput): StandardFigure
       backendPatch: false,
       codePatch: false,
     },
+    capabilitySummary: buildCapabilitySummary(manifest),
     coverageReport: manifest.coverageReport,
     unsupportedNotes: manifest.unsupportedNotes ?? [],
     editLog: input.editLog ?? [],

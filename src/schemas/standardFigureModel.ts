@@ -44,6 +44,34 @@ export interface StandardFigureCapabilities {
   codePatch: boolean;
 }
 
+export type StandardFigureCapabilityState =
+  | 'editable'
+  | 'partial'
+  | 'readonly'
+  | 'unsupported';
+
+export interface StandardFigureKindCapabilitySummary {
+  kind: string;
+  count: number;
+  editableProps: string[];
+  commonEditableProps: string[];
+  variants: number;
+}
+
+export interface StandardFigureCapabilitySummary {
+  state: StandardFigureCapabilityState;
+  totalObjects: number;
+  editableObjects: number;
+  readonlyObjects: number;
+  unsupportedObjects: number;
+  dedicatedObjects: number;
+  flattenedObjects: number;
+  ambiguousObjects: number;
+  unsupportedArtistCount: number;
+  byKind: StandardFigureKindCapabilitySummary[];
+  notes: string[];
+}
+
 export interface StandardFigureModel {
   schemaVersion: '1.0';
   figureId: string;
@@ -59,6 +87,7 @@ export interface StandardFigureModel {
   groups: SemanticGroup[];
   bindings: Binding[];
   capabilities: StandardFigureCapabilities;
+  capabilitySummary: StandardFigureCapabilitySummary;
   coverageReport?: CoverageReport;
   unsupportedNotes: string[];
   editLog: EditEntry[];

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildCapabilitySummary,
   inferFigureEngine,
   normalizeFigureModel,
   normalizeFigureObject,
@@ -61,9 +62,29 @@ function makePythonManifest(overrides?: Partial<Manifest>): Manifest {
       { paletteId: 'pal_0', groupId: 'grp_0', gids: ['line.0'], props: ['color'] },
     ],
     coverageReport: {
-      summary: { recognized: 10, editable: 8, readonly: 1, unsupported: 1 },
-      byKind: { text: { count: 3, editableProps: ['text', 'fontsize', 'color'] } },
+      summary: { recognized: 10, editable: 8, readonly: 1, unsupported: 1, dedicated: 1 },
+      byKind: {
+        text: {
+          count: 3,
+          editableProps: ['text', 'fontsize', 'color'],
+          editablePropsIntersection: ['fontsize'],
+          editablePropVariants: [
+            { editableProps: ['fontsize'], count: 1 },
+            { editableProps: ['text', 'fontsize', 'color'], count: 2 },
+          ],
+        },
+      },
       unsupportedArtists: [],
+      complexArtists: [{
+        id: 'complex.0',
+        class: 'FancyArtist',
+        family: 'fancy',
+        status: 'flattened',
+        attribution: 'class',
+        preservedKind: 'collection',
+        preservedEditable: ['color'],
+        reason: 'No dedicated adapter yet.',
+      }],
     },
     unsupportedNotes: ['FancyArrowPatch not supported'],
     ...overrides,
@@ -249,6 +270,15 @@ describe('normalizeFigureModel', () => {
     expect(model.capabilities.localPatch).toBe(true);
     expect(model.capabilities.backendPatch).toBe(true);
     expect(model.capabilities.codePatch).toBe(true);
+    expect(model.capabilitySummary.state).toBe('partial');
+    expect(model.capabilitySummary.byKind[0]).toMatchObject({
+      kind: 'text',
+      count: 3,
+      commonEditableProps: ['fontsize'],
+      variants: 2,
+    });
+    expect(model.capabilitySummary.notes).toContain('FancyArrowPatch not supported');
+    expect(model.capabilitySummary.notes).toContain('fancy: No dedicated adapter yet.');
     expect(model.editLog).toHaveLength(1);
     expect(model.fingerprint).toBe('fp_123');
     expect(model.codeSlice?.figureId).toBe('fig_1');
@@ -333,6 +363,93 @@ describe('normalizeRenderResponse', () => {
     };
     const model = normalizeRenderResponse(response);
     expect(model.figureId).toBe('fig_1');
+  });
+});
+
+describe('buildCapabilitySummary', () => {
+  it('reports editable when all objects expose editable capabilities and no coverage gaps exist', () => {
+    const manifest = makePythonManifest({
+      objects: [{
+        id: 'line.0',
+        kind: 'line',
+        label: 'Line',
+        editable: ['color'],
+        currentProps: { color: '#123456' },
+        propertyCapabilities: [{
+          prop: 'color',
+          patchMode: 'local_patch',
+          scopes: ['object'],
+          preview: 'exact',
+          replay: 'stable',
+        }],
+      }],
+      coverageReport: {
+        summary: { recognized: 1, editable: 1, readonly: 0, unsupported: 0 },
+        byKind: { line: { count: 1, editableProps: ['color'], editablePropsIntersection: ['color'] } },
+        unsupportedArtists: [],
+      },
+      unsupportedNotes: [],
+    });
+
+    expect(buildCapabilitySummary(manifest)).toMatchObject({
+      state: 'editable',
+      totalObjects: 1,
+      editableObjects: 1,
+      readonlyObjects: 0,
+      unsupportedObjects: 0,
+      unsupportedArtistCount: 0,
+    });
+  });
+
+  it('reports readonly when recognized objects have no editable capabilities', () => {
+    const manifest = makePythonManifest({
+      objects: [{
+        id: 'subplot.polar.0',
+        kind: 'polar_subplot',
+        label: 'Polar panel',
+        editable: [],
+        currentProps: { projection: 'polar' },
+        propertyCapabilities: [],
+      }],
+      coverageReport: {
+        summary: { recognized: 1, editable: 0, readonly: 1, unsupported: 0 },
+        byKind: { polar_subplot: { count: 1, editableProps: [], editablePropsIntersection: [] } },
+        unsupportedArtists: [],
+      },
+      unsupportedNotes: [],
+    });
+
+    expect(buildCapabilitySummary(manifest)).toMatchObject({
+      state: 'readonly',
+      editableObjects: 0,
+      readonlyObjects: 1,
+    });
+  });
+
+  it('reports unsupported when nothing editable exists and unsupported artists are present', () => {
+    const manifest = makePythonManifest({
+      objects: [{
+        id: 'unsupported.0',
+        kind: 'unsupported',
+        label: 'Unsupported artist',
+        editable: [],
+        currentProps: { unsupportedReason: 'No adapter.' },
+        propertyCapabilities: [],
+      }],
+      coverageReport: {
+        summary: { recognized: 0, editable: 0, readonly: 0, unsupported: 1 },
+        byKind: {},
+        unsupportedArtists: [{ class: 'ThirdPartyArtist', count: 2, reason: 'No adapter.' }],
+      },
+      unsupportedNotes: ['ThirdPartyArtist not supported'],
+    });
+
+    expect(buildCapabilitySummary(manifest)).toMatchObject({
+      state: 'unsupported',
+      editableObjects: 0,
+      unsupportedObjects: 1,
+      unsupportedArtistCount: 2,
+    });
   });
 });
 
