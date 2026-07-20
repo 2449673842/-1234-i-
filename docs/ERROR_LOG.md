@@ -3076,6 +3076,7 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `npm run test:patch-rejection-persistence` 通过。
 - 线上 rootless Docker 重建 `scifigure-renderer:e35f4a4-jd22` 后，真实 `introspector.py --payload-file` polar smoke 返回 `status=success`，manifest object count 为 29。
 - 线上 `scifigure.service` 保持 `active`，HTTP 本地端口 `127.0.0.1:3101` 可返回首页；本轮未重启 Web 服务，未修改 `/srv/scifigure/data`。
+- 2026-07-20 10:50:47 +08:00 复核：线上 `/opt/scifigure/current` 指向 `/opt/scifigure/releases/e35f4a4-jd22`；`SCIFIGURE_RENDERER_IMAGE=scifigure-renderer:e35f4a4-jd22`；rootless Docker 镜像内部 `_read_spine_group_props` 第 1117 行为 `spines = list(getattr(ax, "spines", {}).values())`，不再硬取 `ax.spines["left"]`；10:00 后 `journalctl -u scifigure` 未再出现 `KeyError: left` 或 `Docker renderer exited 1`，仅出现用户脚本安全预检 `Forbidden function call: globals`。
 
 **防复发规则**
 
