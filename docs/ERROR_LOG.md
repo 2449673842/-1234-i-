@@ -3159,3 +3159,47 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - 配色中心不能把颜色相似、对象 kind 或旧 `editable` 当作现代能力证明。
 - binding 协议不完整时可以降级为 legacy strategy，但每个对象属性仍必须遵守对象自己的 capability 边界。
 - 组合图和旧 binding 的便利 fallback 只能跳过不可信对象，不能为了“尽量改上”而生成不可证明 patch。
+
+---
+
+## 2026-07-20 11:02:23 +08:00 无标签 collection 交换顺序后可静默改错散点组
+
+**状态与级别**
+
+- 状态：已修复并通过 renderer 结构身份、复杂对象、特殊轴、patch 拒绝持久化和数据审计回归；尚未推送或部署。
+- 级别：P0 编辑状态正确性。不会删除源数据，但可能让带身份 metadata 的旧 `collection.*` 补丁在两个无标签 scatter/PathCollection 交换顺序后打到另一组点上。
+
+**现象**
+
+- 两个无标签 `ax.scatter(...)` 生成 `collection.0.0` 和 `collection.0.1`。
+- 用户保存针对 `collection.0.1` 的 size/color 等样式 editLog 后，如果脚本把两个 scatter 调用顺序交换，旧 `collection.0.1` GID 会指向另一组点。
+- 修复前 `stableKey=ax0.collection.idx.1` 和 fingerprint 都仍按索引通过，renderer 无 warning，并把补丁静默应用到错误散点组。
+
+**根因**
+
+- 无标签 collection 的 `stableKey` 为兼容旧项目保留了 `idx.N`。
+- v2 fingerprint 只包含 `stableKey` 和 artist class，没有纳入 collection 的数据 offsets 结构，因此无法区分两个无标签 scatter 的数据身份。
+- 旧弱 fingerprint 在同一 axes 存在多个 collection 时没有歧义门禁。
+
+**修复**
+
+- `renderer/introspector.py` 的 collection v2 fingerprint 增加 offsets 结构签名：shape、有限值 mean/min/max 和前若干 offsets 预览。
+- 颜色、size、linewidth、alpha 等可编辑样式不进入 fingerprint，避免正常样式修改导致身份漂移。
+- 保留旧 `stableKey`，避免破坏 GID/seriesKey 基础兼容。
+- 旧弱 collection fingerprint 只在当前 axes 没有多个 collection sibling 时兼容；存在多个 sibling 时拒绝，返回 `identity_mismatch`，不再冒险按索引应用。
+
+**验证**
+
+- `python -m unittest tests.test_structural_identity_drift -v`：10/10 通过，新增无标签 collection reorder 拒绝、style edit fingerprint 稳定、单 collection 旧弱 fingerprint 可读三项。
+- `python -m unittest tests.test_complex_artist_coverage -v`：26/26 通过。
+- `python -m unittest tests.test_special_axes_coverage -v`：10 项中 8 通过、2 项因未安装 `brokenaxes`/`cartopy` 跳过。
+- `python -m py_compile renderer/introspector.py tests/test_structural_identity_drift.py`：通过。
+- `npm run test:patch-rejection-persistence`：通过，确认 renderer 拒绝不会写 revision、session、project figure、history、cache、export anchor 或 snapshot。
+- `npm run data:audit`：25 用户、121 项目、263 项目文件、101 导出资产、0 issue，23 条既有测试账号 warning。
+- `git diff --check`：通过，仅有既有 LF/CRLF 提示。
+
+**防复发规则**
+
+- 无标签对象不能只靠数组索引证明身份；collection 必须包含数据结构指纹或明确语义关系。
+- 可编辑样式不得进入结构 fingerprint；数据 offsets、artist class 和受保护关系可以进入。
+- 旧弱身份只能在没有同类 sibling 歧义时兼容；存在多个候选时必须 fail-closed，而不是按旧索引继续应用。

@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import hashlib
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -13,6 +14,7 @@ from introspector import _generate_stable_key_and_fingerprint, replay_render
 
 
 DRIFT_COLOR = "#cc00cc"
+DRIFT_SIZE = 80
 
 
 BASE_SCRIPT = """
@@ -51,6 +53,22 @@ ax.plot([0, 1, 2], [2, 3, 4], label="beta", color="#ff7f0e")
 """
 
 
+COLLECTION_BASE_SCRIPT = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.scatter([0, 1, 2], [1, 2, 3], c="#1f77b4", s=20)
+ax.scatter([0, 1, 2], [8, 9, 10], c="#ff7f0e", s=40)
+"""
+
+
+COLLECTION_REORDERED_SCRIPT = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.scatter([0, 1, 2], [8, 9, 10], c="#ff7f0e", s=40)
+ax.scatter([0, 1, 2], [1, 2, 3], c="#1f77b4", s=20)
+"""
+
+
 class TestStructuralIdentityDrift(unittest.TestCase):
     def _line_objects(self, result):
         self.assertEqual(result.get("status"), "success", result.get("message"))
@@ -68,6 +86,35 @@ class TestStructuralIdentityDrift(unittest.TestCase):
 
     def _color(self, obj):
         return mcolors.to_hex(obj["currentProps"]["color"], keep_alpha=False).lower()
+
+    def _collection_objects(self, result):
+        self.assertEqual(result.get("status"), "success", result.get("message"))
+        return [
+            obj
+            for obj in result["figures"][0]["manifest"]["objects"]
+            if obj["id"].startswith("collection.0.")
+        ]
+
+    def _collection_by_id(self, result, gid):
+        return next(obj for obj in self._collection_objects(result) if obj["id"] == gid)
+
+    def _collection_facecolor(self, obj):
+        color = obj["currentProps"]["facecolor"][0]
+        return mcolors.to_hex(color, keep_alpha=False).lower()
+
+    def _baseline_second_collection_edit(self):
+        baseline = replay_render(COLLECTION_BASE_SCRIPT)
+        target = self._collection_by_id(baseline, "collection.0.1")
+        return {
+            "gid": target["id"],
+            "prop": "size",
+            "value": DRIFT_SIZE,
+            "mode": "backend_patch",
+            "identity": target["identity"],
+            "stableKey": target["stableKey"],
+            "fingerprint": target["fingerprint"],
+            "fingerprintVersion": target["fingerprintVersion"],
+        }
 
     def _baseline_beta_edit(self):
         baseline = replay_render(BASE_SCRIPT)
@@ -213,6 +260,67 @@ class TestStructuralIdentityDrift(unittest.TestCase):
 
     def test_stale_gid_is_not_silently_reused_after_same_kind_reorder(self):
         self._assert_no_silent_wrong_gid_patch(REORDERED_SCRIPT, "gamma")
+
+    def test_unlabeled_collection_reorder_is_rejected_instead_of_silent_wrong_patch(self):
+        edit = self._baseline_second_collection_edit()
+        result = replay_render(COLLECTION_REORDERED_SCRIPT, edit_log=[edit])
+        old_gid_object = self._collection_by_id(result, edit["gid"])
+
+        self.assertEqual(
+            self._collection_facecolor(old_gid_object),
+            "#1f77b4",
+            "fixture no longer leaves old collection.0.1 pointing at the first scatter series",
+        )
+        self.assertNotEqual(
+            old_gid_object["currentProps"]["size"],
+            DRIFT_SIZE,
+            "stale collection gid silently patched a different unlabeled scatter series",
+        )
+        self.assertTrue(
+            self._has_identity_mismatch_warning(result, edit["gid"]),
+            "collection reorder was not reported as an identity mismatch",
+        )
+
+    def test_unlabeled_collection_style_change_keeps_structural_fingerprint(self):
+        baseline = replay_render(COLLECTION_BASE_SCRIPT)
+        target = self._collection_by_id(baseline, "collection.0.1")
+        edit = self._baseline_second_collection_edit()
+        patched = replay_render(COLLECTION_BASE_SCRIPT, edit_log=[edit])
+        patched_target = self._collection_by_id(patched, "collection.0.1")
+
+        self.assertEqual(patched.get("warnings", []), [], patched)
+        self.assertEqual(patched_target["currentProps"]["size"], DRIFT_SIZE)
+        self.assertEqual(patched_target["fingerprint"], target["fingerprint"])
+        self.assertEqual(patched_target["identity"]["seriesKey"], target["identity"]["seriesKey"])
+
+    def test_single_legacy_weak_collection_fingerprint_remains_readable(self):
+        baseline = replay_render("""
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.scatter([0, 1, 2], [1, 2, 3], c="#1f77b4", s=20)
+""")
+        target = self._collection_by_id(baseline, "collection.0.0")
+        legacy_fingerprint = hashlib.sha256(
+            f"{target['stableKey']}|PathCollection".encode("utf-8")
+        ).hexdigest()
+        patched = replay_render("""
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.scatter([0, 1, 2], [1, 2, 3], c="#1f77b4", s=20)
+""", edit_log=[{
+            "gid": target["id"],
+            "prop": "size",
+            "value": DRIFT_SIZE,
+            "mode": "backend_patch",
+            "identity": target["identity"],
+            "stableKey": target["stableKey"],
+            "fingerprint": legacy_fingerprint,
+            "fingerprintVersion": 2,
+        }])
+        patched_target = self._collection_by_id(patched, "collection.0.0")
+
+        self.assertEqual(patched.get("warnings", []), [], patched)
+        self.assertEqual(patched_target["currentProps"]["size"], DRIFT_SIZE)
 
     def test_gid_only_edit_without_identity_proof_keeps_legacy_replay_behavior(self):
         edit = {

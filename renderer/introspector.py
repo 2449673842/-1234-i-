@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, urlencode
 import matplotlib
 import matplotlib.colors as mcolors
 matplotlib.use("Agg")
+import numpy as np
 
 
 _figure_registry = []
@@ -2988,6 +2989,44 @@ def _determine_role(
     return None
 
 
+def _collection_structural_fingerprint_parts(artist: Any) -> list[str]:
+    if not hasattr(artist, "get_offsets"):
+        return []
+    try:
+        offsets = artist.get_offsets()
+        if offsets is None:
+            return []
+        arr = np.ma.asarray(offsets)
+        if arr.size == 0:
+            return ["offsets.empty"]
+        filled = np.ma.filled(arr.astype(float), np.nan)
+        flat = filled.reshape(-1)
+        finite = flat[np.isfinite(flat)]
+        parts = [f"offsets_shape.{tuple(filled.shape)}"]
+        if finite.size:
+            parts.append(f"offsets_mean.{float(finite.mean()):.6f}")
+            parts.append(f"offsets_min.{float(finite.min()):.6f}")
+            parts.append(f"offsets_max.{float(finite.max()):.6f}")
+            preview = ",".join(f"{float(value):.6f}" for value in finite[:8])
+            parts.append(f"offsets_preview.{preview}")
+        else:
+            parts.append("offsets_all_nan")
+        return parts
+    except Exception:
+        return []
+
+
+def _legacy_weak_collection_fingerprint(stable_key: str, artist: Any) -> str:
+    fp_str = "|".join([stable_key, type(artist).__name__])
+    return hashlib.sha256(fp_str.encode("utf-8")).hexdigest()
+
+
+def _collection_sibling_count(artist: Any) -> int:
+    axes = getattr(artist, "axes", None)
+    collections = list(getattr(axes, "collections", []) or []) if axes is not None else []
+    return len(collections)
+
+
 def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) -> tuple[str, str]:
     kind = obj["kind"]
     gid = obj["id"]
@@ -3021,7 +3060,10 @@ def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) ->
     
     fp_parts = [stable_key]
     is_legend_proxy = obj.get("role") == "legend_marker" or gid.startswith(("legend_", "legend."))
-    if not is_legend_proxy and hasattr(artist, "get_xydata"):
+    collection_parts = [] if is_legend_proxy else _collection_structural_fingerprint_parts(artist)
+    if collection_parts:
+        fp_parts.extend(collection_parts)
+    elif not is_legend_proxy and hasattr(artist, "get_xydata"):
         try:
             xy = artist.get_xydata()
             if xy is not None and xy.size > 0:
@@ -5410,6 +5452,9 @@ def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=No
         "fingerprint": fingerprint,
         "seriesKey": identity.get("seriesKey"),
     }
+    if kind == "collection":
+        signature["legacyWeakFingerprint"] = _legacy_weak_collection_fingerprint(stable_key, artist)
+        signature["collectionSiblingCount"] = _collection_sibling_count(artist)
     diagram_relation = _diagram_relation_signature(identity)
     if diagram_relation is not None:
         signature["diagramRelationSignature"] = diagram_relation
@@ -5486,6 +5531,21 @@ def _is_compatible_contour_child_fingerprint_drift(
         and "seriesKey" in expected
         and expected["stableKey"] == actual.get("stableKey")
         and expected["seriesKey"] == actual.get("seriesKey")
+    )
+
+
+def _is_compatible_legacy_weak_collection_fingerprint(
+    expected: dict,
+    actual: dict,
+    mismatches: list[str],
+) -> bool:
+    """Allow old collection fingerprints only when no sibling can be confused."""
+    return (
+        set(mismatches) == {"fingerprint"}
+        and "stableKey" in expected
+        and expected.get("stableKey") == actual.get("stableKey")
+        and expected.get("fingerprint") == actual.get("legacyWeakFingerprint")
+        and int(actual.get("collectionSiblingCount") or 0) <= 1
     )
 
 
@@ -5601,6 +5661,10 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
             ]
             if identity_mismatches and not _is_compatible_contour_child_fingerprint_drift(
                 gid_info,
+                expected_identity,
+                actual_identity,
+                identity_mismatches,
+            ) and not _is_compatible_legacy_weak_collection_fingerprint(
                 expected_identity,
                 actual_identity,
                 identity_mismatches,
