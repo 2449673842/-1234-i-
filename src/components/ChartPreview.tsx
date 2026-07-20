@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { Minus, Plus, ScanSearch, Move } from 'lucide-react';
 import { FigureSpec } from '../types';
 import { sanitizeSvg } from '../utils/svgEditor';
-import { PatchEntry, FigureSession } from '../schemas/manifest';
+import type { PatchEntry, FigureSession, ManifestObject } from '../schemas/manifest';
 import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent';
 import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
 import { compileEditingIntentWithControlledResolver } from '../utils/targetResolver';
@@ -58,6 +58,41 @@ function inferObjectTextTargetRole(
     return 'annotation_text';
   }
   return inferTextTargetRole(gid);
+}
+
+export function supportsInlineTextEditing(
+  object: ManifestObject | null | undefined,
+): object is ManifestObject {
+  return supportsObjectProp(object, 'text');
+}
+
+export function buildInlineTextPatch(
+  gid: string,
+  object: ManifestObject | null | undefined,
+  nextText: string,
+): PatchEntry | null {
+  if (!supportsInlineTextEditing(object)) return null;
+  return {
+    op: 'set',
+    mode: 'backend_patch',
+    gid,
+    prop: 'text',
+    value: nextText,
+    intent: {
+      intent: 'content.text',
+      scope: {
+        selectionMode: 'explicit_objects',
+        objectIds: [gid],
+        targetKinds: object.kind ? [object.kind] : undefined,
+        targetRole: inferObjectTextTargetRole(gid, object.role),
+        subplotIds: object.subplotId ? [object.subplotId] : undefined,
+        crossFigure: 'deny',
+      },
+      operation: { prop: 'text', value: nextText },
+      commit: { mode: 'draft', applyAsOneHistoryStep: true },
+      fallback: { onUnsupported: 'skip_with_warning' },
+    },
+  };
 }
 
 interface ChartPreviewProps {
@@ -951,6 +986,9 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     }
     if (!foundGid) return;
 
+    const obj = manifestObjectMap.get(foundGid);
+    if (!supportsInlineTextEditing(obj)) return;
+
     event.preventDefault();
     event.stopPropagation();
     onSelectGids?.([foundGid]);
@@ -959,28 +997,9 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     const currentText = (current?.textContent || '').trim();
     const nextText = window.prompt('编辑文本内容', currentText);
     if (nextText == null || nextText === currentText) return;
-    const obj = manifestObjectMap.get(foundGid);
-    void onPatch?.([{
-      op: 'set',
-      mode: 'backend_patch',
-      gid: foundGid,
-      prop: 'text',
-      value: nextText,
-      intent: {
-        intent: 'content.text',
-        scope: {
-          selectionMode: 'explicit_objects',
-          objectIds: [foundGid],
-          targetKinds: obj?.kind ? [obj.kind] : undefined,
-          targetRole: inferObjectTextTargetRole(foundGid, obj?.role),
-          subplotIds: obj?.subplotId ? [obj.subplotId] : undefined,
-          crossFigure: 'deny',
-        },
-        operation: { prop: 'text', value: nextText },
-        commit: { mode: 'draft', applyAsOneHistoryStep: true },
-        fallback: { onUnsupported: 'skip_with_warning' },
-      },
-    }]);
+    const patch = buildInlineTextPatch(foundGid, obj, nextText);
+    if (!patch) return;
+    void onPatch?.([patch]);
   }, [manifestObjectMap, validGids, onSelectGids, onSelectObject, onPatch]);
 
   const handleSvgPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {

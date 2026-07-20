@@ -1,9 +1,9 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-20 08:41:21 +08:00
-> 证据截止时间：2026-07-20 08:41:21 +08:00
-> 代码范围：`feature/standard-figure-model-v1`，Python WP7 特殊 axes、全渲染零错误持久化和旧 editLog 兼容；尚未形成提交
+> 最后修改时间：2026-07-20 16:24:34 +08:00
+> 证据截止时间：2026-07-20 16:24:34 +08:00
+> 代码范围：`feature/standard-figure-model-v1`，Python WP3 全入口 capability 权威、旧 editLog 精确兼容和导出快照 v4；尚未形成提交
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -30,7 +30,15 @@
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
 | TypeScript | 通过 | `npm run lint` |
-| 前端单元测试 | 146 文件、1098/1098 | 包含特殊 axes relation、schema v3、图示 resolver、能力、映射、组件分组、identity 捕获和 fail-closed 回归 |
+| 前端单元测试 | 148 文件、1127/1127 | 包含 schema v1-v4、特殊 axes relation、图示 resolver、能力、映射、组件分组、identity 捕获和 fail-closed 回归 |
+| WP3 定向单元 | 最高一轮 13 文件、210/210 | RightSidebar、ChartPreview、配色、property scope、session 对账和 snapshot v4 |
+| 旧 contour 与快照 v4 | 通过 | 现代 child/未签名 v4 拒绝且零写入；真实旧 editLog 可保存、导出和恢复 |
+| 导出恢复事务 | 通过 | snapshot DB、恢复、并发、v1 兼容和完整 SVG/PNG/PDF/TIFF 导出矩阵 |
+| 本轮直接浏览器回归 | 组件 41/41；轴样式 8/8 | global 画布比例、组件布局、网格、图例、刻度和边框未回退 |
+| Python 完整语义链路 | 通过 | 组件中心 set 全部由 backend renderer 验证；饼图切片与图例联动、Draft 失败保留、导出快照恢复通过，并检查响应业务 `status` |
+| 保存/拖拽/缓存/跨 Figure | 通过 | project save preflight、drag extended、render cache、cross Figure 18/18；均使用隔离随机端口和临时数据目录 |
+| 无 left spine introspection | 50/50 | polar axes 回归通过；线上旧镜像仍需部署当前 renderer 才能消除 `KeyError: 'left'` |
+| 独立发布审查 | APPROVE | 5.5 high 复审：0 HIGH、0 MEDIUM；请求模式与 authoritative response 模式已分别验证 |
 | Python renderer/身份/复杂覆盖 | complex artist 26/26、结构身份漂移 7/7 | 本地既有 renderer 基线；本工作包未修改 Python 或 Matplotlib 版本，也未新增兼容版本声明 |
 | 组件中心真实浏览器 | 41/41；向量场专用分组直接回归通过 | 网格、图例、容器、五个 WP6 家族、父层重定向、保存刷新和拖拽模式多选保护 |
 | Python 完整用户链路 | 通过 | 选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和快照恢复 |

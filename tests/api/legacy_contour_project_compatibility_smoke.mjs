@@ -101,6 +101,30 @@ function readSnapshot(assetId) {
   }
 }
 
+function replaceSnapshotEditLog(assetId, editLog) {
+  const db = getDb();
+  try {
+    const row = db.prepare(`
+      SELECT snapshot_json
+      FROM export_asset_snapshots
+      WHERE asset_id = ?
+    `).get(assetId);
+    assert(row?.snapshot_json, `snapshot is missing: ${assetId}`);
+    const snapshot = parseJson(row.snapshot_json, {});
+    assert(Array.isArray(snapshot.figures) && snapshot.figures[0], 'snapshot has no Figure state');
+    snapshot.figures[0].editLog = editLog;
+    const snapshotJson = JSON.stringify(snapshot);
+    const snapshotHash = createHash('sha256').update(snapshotJson).digest('hex');
+    db.prepare(`
+      UPDATE export_asset_snapshots
+      SET snapshot_json = ?, snapshot_hash = ?
+      WHERE asset_id = ?
+    `).run(snapshotJson, snapshotHash, assetId);
+  } finally {
+    db.close();
+  }
+}
+
 function downgradeStoredManifestForLegacyContourChild(projectId, legacyChildGid) {
   const db = getDb();
   try {
@@ -121,7 +145,7 @@ function downgradeStoredManifestForLegacyContourChild(projectId, legacyChildGid)
     }
     const legacyChild = objects.find(object => object.id === legacyChildGid);
     assert(legacyChild, `downgrade target child is missing: ${legacyChildGid}`);
-    legacyChild.editable = Array.from(new Set([...(legacyChild.editable || []), 'alpha']));
+    legacyChild.editable = Array.from(new Set([...(legacyChild.editable || []), 'alpha', 'zorder']));
     delete legacyChild.propertyCapabilities;
     assert(!Object.prototype.hasOwnProperty.call(legacyChild, 'propertyCapabilities'), 'legacy child still declares propertyCapabilities');
     db.prepare(`
@@ -206,18 +230,83 @@ async function main() {
       identity: { seriesKey: modernChild.identity?.seriesKey },
     };
     const legacyEdits = [legacyEdit, identityLegacyEdit];
-    const legacyRender = await jsonRequest(`/api/projects/${projectId}/figures/render`, token, {
+    const beforeModernRejection = readStoredFigure(projectId);
+    const modernRejected = await jsonRequest(`/api/projects/${projectId}/figures/render`, token, {
       method: 'POST',
       body: JSON.stringify({ script, editLogs: { fig_1: legacyEdits }, language: 'python' }),
     });
-    assert(legacyRender.response.ok && legacyRender.data?.status === 'success', `legacy child alpha render failed: ${JSON.stringify(legacyRender.data)}`);
-    assert((legacyRender.data.warnings || []).length === 0, `legacy child alpha render emitted warnings: ${JSON.stringify(legacyRender.data.warnings)}`);
+    assert(
+      modernRejected.response.ok && modernRejected.data?.status === 'conflict',
+      `modern contour child edit bypassed propertyCapabilities: ${JSON.stringify(modernRejected.data)}`,
+    );
+    assert(
+      modernRejected.data?.warnings?.some(warning => warning?.type === 'unsupported_prop' && warning?.gid === legacyChildGid),
+      `modern contour child rejection did not report unsupported_prop: ${JSON.stringify(modernRejected.data)}`,
+    );
+    assert(
+      JSON.stringify(readStoredFigure(projectId)) === JSON.stringify(beforeModernRejection),
+      'rejected modern contour child edit changed persisted Figure state',
+    );
+
+    const modernExport = await jsonRequest(`/api/projects/${projectId}/export`, token, {
+      method: 'POST',
+      body: JSON.stringify({ figureId: 'fig_1', format: 'svg', dpi: 200, saveToLibrary: true }),
+    });
+    assert(modernExport.response.ok && modernExport.data?.status === 'success', `modern export failed: ${JSON.stringify(modernExport.data)}`);
+    const modernAsset = modernExport.data.figures?.[0]?.asset;
+    assert(modernAsset?.assetId, `modern export did not create an asset: ${JSON.stringify(modernExport.data)}`);
+    const modernSnapshot = readSnapshot(modernAsset.assetId);
+    assert(modernSnapshot?.schema_version === 4, `unexpected modern snapshot schema: ${JSON.stringify(modernSnapshot)}`);
+    assert(
+      Array.isArray(modernSnapshot.snapshot?.figures?.[0]?.legacyReplaySignatures)
+        && modernSnapshot.snapshot.figures[0].legacyReplaySignatures.length === 0,
+      `modern snapshot unexpectedly authorized legacy replay: ${JSON.stringify(modernSnapshot.snapshot)}`,
+    );
+    replaceSnapshotEditLog(modernAsset.assetId, legacyEdits);
+    const beforeForgedRestore = readStoredFigure(projectId);
+    const forgedRestore = await jsonRequest(`/api/projects/${projectId}/export-assets/${modernAsset.assetId}/restore`, token, {
+      method: 'POST',
+    });
+    assert(
+      forgedRestore.response.status === 409 && forgedRestore.data?.code === 'EXPORT_SNAPSHOT_REPLAY_REJECTED',
+      `modern snapshot bypassed capability authority: ${JSON.stringify(forgedRestore.data)}`,
+    );
+    assert(
+      forgedRestore.data?.issues?.some(issue => issue?.type === 'unsupported_prop' && issue?.gid === legacyChildGid),
+      `modern snapshot rejection did not report unsupported_prop: ${JSON.stringify(forgedRestore.data)}`,
+    );
+    assert(
+      JSON.stringify(readStoredFigure(projectId)) === JSON.stringify(beforeForgedRestore),
+      'rejected modern snapshot restore changed persisted Figure state',
+    );
 
     const legacyManifest = downgradeStoredManifestForLegacyContourChild(projectId, legacyChildGid);
     const legacyChild = legacyManifest.objects.find(object => object.id === legacyChildGid);
     assert(legacyChild.editable.includes('alpha'), 'downgraded legacy child does not expose alpha through editable');
+    assert(legacyChild.editable.includes('zorder'), 'downgraded legacy child does not expose zorder through editable');
     assert(!legacyManifest.objects.some(object => Object.prototype.hasOwnProperty.call(object, 'propertyCapabilities')), 'downgraded legacy manifest still contains propertyCapabilities');
     assert(legacyManifest.objects.filter(object => object.kind === 'contourf' || object.kind === 'contour').every(object => (object.editable || []).length === 0), 'downgraded contour parent still declares modern abilities');
+
+    const legacyBaseline = await jsonRequest(`/api/projects/${projectId}`, token);
+    const legacyBaselineFigure = findFigure(legacyBaseline.data?.project);
+    const seededLegacySave = await jsonRequest(`/api/projects/${projectId}`, token, {
+      method: 'PUT',
+      body: JSON.stringify({
+        name: 'Legacy contour compatibility seeded',
+        spec: { plot_type: 'custom', custom_script: script, script_language: 'python' },
+        figures: [{
+          figureId: 'fig_1',
+          ...projectFigureSaveBase(legacyBaselineFigure),
+          revision: legacyBaselineFigure.revision,
+          editLog: legacyEdits,
+          history: legacyBaselineFigure.history,
+        }],
+      }),
+    });
+    assert(
+      seededLegacySave.response.ok && seededLegacySave.data?.status === 'success',
+      `legacy contour fixture could not preserve historical child edits: ${JSON.stringify(seededLegacySave.data)}`,
+    );
 
     const loaded = await jsonRequest(`/api/projects/${projectId}`, token);
     assert(loaded.response.ok && loaded.data?.status === 'success', `legacy project load failed: ${JSON.stringify(loaded.data)}`);
@@ -290,9 +379,14 @@ async function main() {
       `exported SVG does not include legacy contour child alpha state: ${JSON.stringify(exportedFigure?.warnings || [])}`,
     );
     const snapshot = readSnapshot(asset.assetId);
-    assert(snapshot?.schema_version === 3, `unexpected snapshot schema: ${JSON.stringify(snapshot)}`);
+    assert(snapshot?.schema_version === 4, `unexpected snapshot schema: ${JSON.stringify(snapshot)}`);
     assert(hasEdit(snapshot.snapshot?.figures?.[0]?.editLog, legacyEdit), 'export snapshot did not capture legacy child alpha edit');
     assert(hasEdit(snapshot.snapshot?.figures?.[0]?.editLog, identityLegacyEdit), 'export snapshot did not capture identity-bearing legacy child edit');
+    assert(
+      Array.isArray(snapshot.snapshot?.figures?.[0]?.legacyReplaySignatures)
+        && snapshot.snapshot.figures[0].legacyReplaySignatures.length === legacyEdits.length,
+      `legacy export snapshot did not capture exact replay signatures: ${JSON.stringify(snapshot.snapshot)}`,
+    );
 
     const laterEdit = { ...legacyEdit, value: 0.82, timestamp: 202 };
     const laterSave = await jsonRequest(`/api/projects/${projectId}`, token, {
@@ -334,6 +428,8 @@ async function main() {
       assetId: asset.assetId,
       checks: [
         'isolated runner and temp DB were enforced',
+        'modern contour child edit was rejected by authoritative propertyCapabilities without persistence',
+        'modern v4 snapshot could not replay an unlisted legacy contour child edit',
         'legacy contour child alpha edit loaded from downgraded manifest without propertyCapabilities',
         'identity-bearing contour child edit tolerated fingerprint-only Matplotlib class drift',
         'unchanged PUT preserved the legacy edit and stored it in history',

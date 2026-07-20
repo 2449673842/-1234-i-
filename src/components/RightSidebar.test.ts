@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { ManifestObject } from '../schemas/manifest';
+import type { Manifest, ManifestObject } from '../schemas/manifest';
 import {
+  buildSupportedSidebarPatchEntry,
+  buildSupportedObjectPatchEntries,
   buildDiagramComponentGroups,
   isDedicatedDiagramComponentObject,
   supportsComponentBatchProp,
@@ -118,6 +120,133 @@ describe('RightSidebar subplot bound capability gates', () => {
 });
 
 describe('RightSidebar component center capability gates', () => {
+  it('keeps declared global fields editable while rejecting unknown globals', () => {
+    const manifest: Manifest = {
+      generatedBy: 'introspection',
+      globals: {
+        'figure.width_in': { type: 'number', value: 6, min: 1, max: 20, step: 0.1 },
+      },
+      objects: [],
+      capabilities: { localPatch: true, backendPatch: true, codePatch: true },
+    };
+
+    expect(buildSupportedSidebarPatchEntry(manifest, 'global', 'figure.width_in', 7)).toEqual({
+      op: 'set',
+      gid: 'global',
+      prop: 'figure.width_in',
+      value: 7,
+      mode: 'backend_patch',
+    });
+    expect(buildSupportedSidebarPatchEntry(manifest, 'global', 'figure.unknown', 7)).toBeNull();
+  });
+
+  it('blocks direct and immediate object patches omitted from modern capabilities', () => {
+    const line = {
+      id: 'line.0',
+      kind: 'line',
+      label: 'line.0',
+      editable: ['color', 'linewidth'],
+      currentProps: { color: '#000000', linewidth: 1 },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    } as ManifestObject;
+    const manifest: Manifest = {
+      generatedBy: 'introspection',
+      globals: {},
+      objects: [line],
+      capabilities: { localPatch: true, backendPatch: true, codePatch: true },
+    };
+
+    expect(buildSupportedSidebarPatchEntry(manifest, line.id, 'color', '#ff0000')).toMatchObject({
+      gid: line.id,
+      prop: 'color',
+      mode: 'backend_patch',
+    });
+    expect(buildSupportedSidebarPatchEntry(manifest, line.id, 'linewidth', 2)).toBeNull();
+  });
+
+  it('filters axis and spine preset properties through the same target gate', () => {
+    const axis = {
+      id: 'axis.x.0',
+      kind: 'axis_x',
+      label: 'axis.x.0',
+      editable: ['tick_direction', 'tick_length'],
+      currentProps: {},
+      propertyCapabilities: [{
+        prop: 'tick_direction',
+        patchMode: 'backend_patch',
+        scopes: ['object'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    } as ManifestObject;
+    const spine = {
+      id: 'spine_group.0',
+      kind: 'spine_group',
+      label: 'spine_group.0',
+      editable: ['color', 'linewidth'],
+      currentProps: {},
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    } as ManifestObject;
+    const manifest: Manifest = {
+      generatedBy: 'introspection',
+      globals: {},
+      objects: [axis, spine],
+      capabilities: { localPatch: true, backendPatch: true, codePatch: true },
+    };
+
+    expect(buildSupportedSidebarPatchEntry(manifest, axis.id, 'tick_direction', 'in')).not.toBeNull();
+    expect(buildSupportedSidebarPatchEntry(manifest, axis.id, 'tick_length', 5)).toBeNull();
+    expect(buildSupportedSidebarPatchEntry(manifest, spine.id, 'color', '#112233')).not.toBeNull();
+    expect(buildSupportedSidebarPatchEntry(manifest, spine.id, 'linewidth', 2)).toBeNull();
+  });
+
+  it('filters batch patch candidates through modern property capabilities', () => {
+    const subplot = {
+      id: 'subplot.0',
+      kind: 'subplot',
+      label: 'subplot.0',
+      editable: ['left', 'width'],
+      currentProps: { left: 0.1, width: 0.8 },
+      propertyCapabilities: [{
+        prop: 'width',
+        patchMode: 'backend_patch',
+        scopes: ['object'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    } as ManifestObject;
+
+    const patches = buildSupportedObjectPatchEntries({
+      generatedBy: 'introspection',
+      globals: {},
+      objects: [subplot],
+      capabilities: { localPatch: true, backendPatch: true, codePatch: true },
+    }, subplot, [
+      { prop: 'left', value: 0.2 },
+      { prop: 'width', value: 0.7 },
+    ]);
+
+    expect(patches).toEqual([{
+      op: 'set',
+      gid: subplot.id,
+      prop: 'width',
+      value: 0.7,
+      mode: 'backend_patch',
+    }]);
+  });
+
   it('uses propertyCapabilities as the modern per-prop authority for subplot batch controls', () => {
     const subplot = {
       id: 'subplot.0',

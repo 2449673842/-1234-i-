@@ -15,6 +15,22 @@ from semantic_scanner import scan_source
 from binding_engine import build_bindings
 
 class TestArtistIntrospection(unittest.TestCase):
+    def test_spine_group_supports_axes_without_left_spine(self):
+        result = replay_render("""
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
+ax.plot([0, 1, 2], [1, 2, 1])
+""")
+
+        spine_group = next(
+            obj for obj in result["figures"][0]["manifest"]["objects"]
+            if obj["id"] == "spine_group.0"
+        )
+
+        self.assertIn("visible", spine_group["currentProps"])
+        self.assertIn("color", spine_group["currentProps"])
+        self.assertIn("linewidth", spine_group["currentProps"])
+
     def test_grid_visibility_capability_requires_backend_render(self):
         result = replay_render("""
 import matplotlib.pyplot as plt

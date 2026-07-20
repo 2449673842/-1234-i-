@@ -233,7 +233,10 @@ export function supportsObjectProp(
   if (isPythonStructuralSeriesProp(object, prop)) return false;
 
   const capability = propertyCapabilityFor(object, prop);
-  if (capability) return capability.replay !== 'unsupported';
+  if (capability) {
+    return capability.replay !== 'unsupported'
+      && capability.scopes.includes('object');
+  }
 
   // Modern manifests are authoritative: omitted props are intentionally hidden.
   if (hasAuthoritativePropertyCapabilities(object)) return false;

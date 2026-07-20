@@ -5,6 +5,77 @@
 
 ---
 
+## 2026-07-20 16:10:50 +08:00 local 修改后 backend 编辑冲突与线上 spine 旧镜像崩溃
+
+**状态与级别**
+
+- 状态：本地候选已修复并通过定向回归；尚未推送、尚未部署，线上旧 renderer 仍会出现对应 `KeyError`。
+- 级别：P0/P1。前者会让一次合法 local 修改后的 backend 修改被误判为冲突；后者会让不包含 `left` spine 的 axes 在 introspection 阶段直接退出。
+
+**现象与根因**
+
+- 纯 local patch 成功后会按既有设计清空项目 preview manifest，等待下一次权威 renderer 结果。后续 backend patch 的服务端预检此前把“存储 manifest 缺失”直接判为 `manifest_unavailable`，没有进入 renderer 验证。
+- 线上诊断 `KeyError: 'left'` 来自旧 renderer 镜像中的 `_read_spine_group_props` 固定访问 `ax.spines['left']`。当前仓库已按实际可用 spine 通用读取，因此线上代码与本地候选不一致。
+- Python 完整语义链路首次复跑还暴露一条旧测试假设：组件中心已统一把 set 修改交给 backend renderer 验证，但饼图测试仍要求 facecolor 为 `local_patch`。
+
+**修复与验证**
+
+- 存储 manifest 存在时继续执行严格服务端预检；缺失时不信任客户端 mode，而是交给 backend renderer 验证，并在持久化前核验返回 manifest。
+- `tests/api/patch_rejection_persistence_regression.mjs` 覆盖 local 后 backend 成功和 renderer 拒绝零持久化；`test:patch-rejection-persistence` 通过。
+- `tests/test_introspection.py` 新增无 left spine 的 polar axes 回归；introspection 50/50 通过。
+- Python 完整语义测试要求饼图及关联图例的请求 set patch 全部走 `backend_patch`，并检查响应 JSON `status`；同时验证服务端按可信 manifest 将可精确本地重放的 facecolor 归一为 `local_patch`、linewidth 保持 `backend_patch`，防止 HTTP 200 掩盖业务冲突；`test:python-semantic-workflow` 通过。
+- 本轮直接相关门禁通过：`test:semantic-smoke` 14/14、`test:project-save-preflight`、`test:drag-extended-smoke`、`test:cache-smoke`、`test:cross-figure-smoke` 18/18。
+
+**防复发规则**
+
+- preview manifest 缺失不是客户端 mode 的授权依据；只能转入权威 renderer 验证，失败时 revision、editLog、history、session、cache、export anchor 和 snapshot 必须零变化。
+- introspector 不得假设所有 axes 都存在 left/right/top/bottom 四条 spine，必须按实际容器成员读取。
+- 浏览器/API smoke 必须同时检查 HTTP 状态和业务响应 `status`，不能只以 2xx 判定编辑成功。
+
+---
+
+## 2026-07-20 15:21:44 +08:00 现代 capability 仍存在旧 contour、专用控件和快照恢复旁路
+
+**状态与级别**
+
+- 状态：已修复并通过定向单元、旧项目、快照、导出、组件中心和轴样式隔离回归；未推送、未部署。
+- 级别：P0/P1 编辑权威与错误持久化边界。不会直接删除数据，但可能把 renderer 未声明的属性送入 patch，或让新快照按旧 contour 兼容规则重放未授权编辑。
+
+**现象与根因**
+
+- 项目全渲染曾以 `allowLegacyContourChild` 按对象形态放行 contour child，现代对象即使声明空 `propertyCapabilities` 也可能被旧规则绕过。
+- 导出快照恢复同样只判断“是否像旧 contour child”，没有证明该编辑确实来自旧 manifest。
+- `RightSidebar` 的轴、网格、边框、图例、批量刻度和风格预设仍有直接构造 patch 的入口；配色 legacy resolver 也未检查 `object` scope。
+- 初次给 `handlePatch` 加对象门禁时未单独处理 `gid=global`，短暂导致画布尺寸和 DPI 等全局控件被静默拦截；该问题由独立审查发现后在同一工作包内修复。
+- standalone local patch 的服务端回传若被提升为 backend，前端曾只更新 editLog/revision，没有接收权威 SVG/manifest。
+
+**修复**
+
+- 现代 manifest 的属性存在性、`replay` 和 `scopes` 共同作为服务端与前端事实；直接对象编辑必须包含 `object` scope。
+- 旧 contour child 只在目标 patch 与已持久化旧 editLog 的 `gid/prop/value` 完全一致时兼容；新的未持久化 child patch 一律冲突且零写入。
+- 新导出快照升级为 schema v4，每个 Figure 保存服务端生成的 `legacyReplaySignatures`；v4 只重放签名内旧编辑，v1-v3 继续可读。
+- `RightSidebar` 统一使用 capability-aware helper；声明过的 global 字段继续生成 backend patch，未知 global 和现代对象未声明属性被前端拦截。
+- 专用轴/网格/边框/图例控件、文字立即应用、图例字号联动、批量刻度、轴/边框风格预设和配色 legacy fallback 全部接入同一能力边界。
+- `ChartPreview` 双击文字只对声明 `text` 能力的对象开放；standalone local 响应被服务端提升为 backend 时采用权威 SVG/manifest。
+
+**验证**
+
+- 定向 Vitest：快照、属性作用域、RightSidebar、ChartPreview、配色和 session 对账最高一轮 13 文件、210 项通过；最终旁路补充 9 文件、199 项通过。
+- `npm run test:legacy-contour-project-compatibility`：现代 child 拒绝且零持久化、v4 未签名旁路拒绝、真实旧 editLog 保存/导出/恢复通过。
+- `test:export-snapshot-db`、`test:export-snapshot-restore`、`test:export-snapshot-concurrency`：全部通过，包含 v1、contour、hist/stairs/step、pie 和多 Figure 恢复。
+- `test:export-matrix-smoke`：全局画布比例与 SVG/PNG/PDF/TIFF/子图导出通过。
+- `test:component-container-smoke`：41/41；`test:axis-style-semantics-smoke`：8/8。
+- `npm run lint` 与 `git diff --check`：通过。
+
+**防复发规则**
+
+- 任何 legacy 兼容都必须有可验证来源，不得只按 kind/role/GID 形态放行。
+- 新快照若需要兼容旧编辑，必须记录服务端生成的精确 allowlist；客户端字段或对象外观不能成为授权依据。
+- 所有 UI patch 出口，包括立即应用、预设、批量和 fallback，都必须复用统一 capability helper；global 必须有独立声明检查。
+- 新增属性必须同时验证属性存在、`replay` 和作用域；现代 capability 省略即拒绝，只有完全缺失 capability 数组的旧 manifest 才允许受控 fallback。
+
+---
+
 ## 2026-07-20 11:36:50 +08:00 组件中心批量入口仍可能显示未声明属性并残留已应用 Draft
 
 **状态与级别**

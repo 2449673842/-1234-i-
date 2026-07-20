@@ -33,13 +33,15 @@ import { sanitizeLegacyRetireObservationBatch } from './src/utils/legacyRetireOb
 import { KeyedMutationGate } from './src/utils/keyedMutationGate';
 import {
   EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
+  PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   SCRIPTED_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   parseExportEditingSnapshot,
   type ExportDatasetSnapshotV1,
   type ExportEditingSnapshot,
-  type ExportEditingSnapshotV3,
+  type ExportEditingSnapshotV4,
   type ExportFigureSnapshotV1,
   type ExportFigureSnapshotV2,
+  type ExportFigureSnapshotV4,
 } from './src/schemas/exportEditingSnapshot';
 import {
   AbortableWorkQueue,
@@ -3118,7 +3120,6 @@ ${inner}
   function precheckManifestPatches(
     manifestValue: unknown,
     patches: any[],
-    options: { allowLegacyContourChild?: boolean } = {},
   ) {
     const manifest = parseManifestValue(manifestValue);
     if (!manifest) {
@@ -3165,14 +3166,14 @@ ${inner}
       const editable = Array.isArray(object.editable) ? object.editable : [];
       const hasAuthoritativeCapabilities = Array.isArray(object.propertyCapabilities);
       const replay = typeof capability?.replay === 'string' ? capability.replay : undefined;
-      const legacyContourChildReplay = options.allowLegacyContourChild === true
-        && isLegacyContourChildSnapshotEdit(object, prop);
-      const supported = legacyContourChildReplay || (capability
-        ? replay !== 'unsupported'
-        : !hasAuthoritativeCapabilities && editable.includes(prop));
+      const scopes = Array.isArray(capability?.scopes) ? capability.scopes.map(String) : [];
+      const supported = capability
+        ? replay !== 'unsupported' && scopes.includes('object')
+        : !hasAuthoritativeCapabilities && editable.includes(prop);
       if (!supported) {
         reject('unsupported_prop', `${gid}.${prop} is not editable or replayable on the current manifest object.`, {
           replay: replay || null,
+          scopes,
         });
         continue;
       }
@@ -3221,16 +3222,14 @@ ${inner}
   function precheckProjectFigurePatches(
     figRow: any,
     patches: any[],
-    options: { allowLegacyContourChild?: boolean } = {},
   ) {
     const manifest = parseManifestValue(figRow?.manifest);
-    return manifest ? precheckManifestPatches(manifest, patches, options) : { ok: true, warnings: [] as any[] };
+    return manifest ? precheckManifestPatches(manifest, patches) : { ok: true, warnings: [] as any[] };
   }
 
   function precheckRenderedPythonPatches(
     manifest: unknown,
     patches: any[],
-    options: { allowLegacyContourChild?: boolean } = {},
   ) {
     const parsedManifest = parseManifestValue(manifest);
     if (!parsedManifest) {
@@ -3245,13 +3244,24 @@ ${inner}
         })),
       };
     }
-    return precheckManifestPatches(parsedManifest, patches, options);
+    return precheckProjectFigurePatches({ manifest: parsedManifest }, patches);
   }
 
   function sameProjectEditValue(left: any, right: any): boolean {
     return left?.gid === right?.gid
       && left?.prop === right?.prop
       && stableStringifyForExport(left?.value) === stableStringifyForExport(right?.value);
+  }
+
+  function isCompatibleKnownLegacyContourChildEdit(
+    manifestValue: unknown,
+    patch: any,
+    knownEditLog: any[],
+  ): boolean {
+    const manifest = parseManifestValue(manifestValue);
+    const object = manifest?.objects?.find((candidate: any) => candidate?.id === patch?.gid);
+    return isLegacyContourChildSnapshotEdit(object, String(patch?.prop || ''))
+      && knownEditLog.some((knownPatch: any) => sameProjectEditValue(knownPatch, patch));
   }
 
   function isCompatibleKnownLegacySpecialAxesEdit(
@@ -3395,9 +3405,7 @@ ${inner}
     knownEditLog: any[] = [],
     figureId?: string,
   ) {
-    const precheck = precheckRenderedPythonPatches(manifest, patches, {
-      allowLegacyContourChild: true,
-    });
+    const precheck = precheckRenderedPythonPatches(manifest, patches);
     const warnings: any[] = [];
     precheck.warnings.forEach((warning: any) => {
       const patch = typeof warning?.patchIndex === 'number'
@@ -3406,7 +3414,9 @@ ${inner}
       const compatibleLegacySpecialAxesEdit = warning?.type === 'identity_mismatch'
         && warning?.field === 'identity.relation'
         && isCompatibleKnownLegacySpecialAxesEdit(manifest, patch, knownEditLog);
-      if (!compatibleLegacySpecialAxesEdit) {
+      const compatibleLegacyContourChildEdit = warning?.type === 'unsupported_prop'
+        && isCompatibleKnownLegacyContourChildEdit(manifest, patch, knownEditLog);
+      if (!compatibleLegacySpecialAxesEdit && !compatibleLegacyContourChildEdit) {
         warnings.push(figureId ? { ...warning, figureId } : warning);
       }
     });
@@ -3786,6 +3796,31 @@ ${inner}
     return { snapshots, warnings };
   }
 
+  function legacyReplaySignature(entry: any): string {
+    return crypto.createHash('sha256').update(stableStringifyForExport({
+      gid: String(entry?.gid || ''),
+      prop: String(entry?.prop || ''),
+      value: entry?.value,
+    })).digest('hex');
+  }
+
+  function captureLegacyReplaySignatures(manifestValue: unknown, editLog: EditEntry[]): string[] {
+    const manifest = parseManifestValue(manifestValue);
+    if (!manifest) return [];
+    const objectById = new Map<string, any>(
+      manifest.objects.map((object: any) => [String(object?.id || ''), object] as const),
+    );
+    return Array.from(new Set(editLog.flatMap((entry: any) => {
+      const object = objectById.get(String(entry?.gid || ''));
+      const prop = String(entry?.prop || '');
+      const editable = Array.isArray(object?.editable) ? object.editable.map(String) : [];
+      const isVerifiedLegacyEdit = !Array.isArray(object?.propertyCapabilities)
+        && editable.includes(prop)
+        && isLegacyContourChildSnapshotEdit(object, prop);
+      return isVerifiedLegacyEdit ? [legacyReplaySignature(entry)] : [];
+    })));
+  }
+
   function buildExportEditingSnapshot(args: {
     project: NonNullable<ReturnType<typeof getProject>>;
     userId: string;
@@ -3795,7 +3830,7 @@ ${inner}
     requestedFormat: string;
     effectiveFormat: string;
     dpi: number | null;
-  }): ExportEditingSnapshotV3 {
+  }): ExportEditingSnapshotV4 {
     const figureRows = listProjectFigures(args.project.id);
     const targetRow = figureRows.find(row => `fig_${row.figure_index + 1}` === args.targetFigureId);
     const targetSession = targetRow ? loadSession(targetRow.session_id, args.userId) : null;
@@ -3810,10 +3845,13 @@ ${inner}
     }
     projectSpec = { ...projectSpec, custom_script: targetSession.script, script_language: scriptLanguage };
 
-    const figures = figureRows.map((row): ExportFigureSnapshotV2 => {
+    const figures = figureRows.map((row): ExportFigureSnapshotV4 => {
       const figureId = `fig_${row.figure_index + 1}`;
       const session = loadSession(row.session_id, args.userId);
       if (!session) throw new Error(`无法记录 ${figureId} 的导出编辑状态`);
+      const editLog = compressEditLog(
+        figureId === args.targetFigureId ? args.targetEditLog : session.editLog,
+      );
       return {
         figureId,
         index: row.figure_index,
@@ -3821,7 +3859,8 @@ ${inner}
         revision: session.revision || row.revision || 1,
         script: session.script,
         scriptLanguage: inferScriptLanguage(session.script),
-        editLog: compressEditLog(figureId === args.targetFigureId ? args.targetEditLog : session.editLog),
+        editLog,
+        legacyReplaySignatures: captureLegacyReplaySignatures(row.manifest, editLog),
       };
     });
     if (!figures.some(figure => figure.figureId === args.targetFigureId)) {
@@ -3946,6 +3985,7 @@ ${inner}
     manifest: any,
     editLog: unknown,
     snapshotSchemaVersion: number,
+    legacyReplaySignatures: readonly string[] = [],
   ): ExportSnapshotReplayIssue[] {
     const issues: ExportSnapshotReplayIssue[] = [];
     if (!Array.isArray(editLog)) {
@@ -4036,10 +4076,18 @@ ${inner}
         : undefined;
       const editable = Array.isArray(object.editable) ? object.editable : [];
       const hasAuthoritativeCapabilities = Array.isArray(object.propertyCapabilities);
-      const legacyContourChildReplay = isLegacyContourChildSnapshotEdit(object, prop);
+      const capabilityScopes = Array.isArray(capability?.scopes) ? capability.scopes.map(String) : [];
+      const legacyContourChildReplay = isLegacyContourChildSnapshotEdit(object, prop)
+        && (
+          snapshotSchemaVersion <= PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+          || legacyReplaySignatures.includes(legacyReplaySignature(entry))
+        );
       if (
         !legacyContourChildReplay
-        && ((capability && capability.replay === 'unsupported') || (!capability && (hasAuthoritativeCapabilities || !editable.includes(prop))))
+        && (
+          (capability && (capability.replay === 'unsupported' || !capabilityScopes.includes('object')))
+          || (!capability && (hasAuthoritativeCapabilities || !editable.includes(prop)))
+        )
       ) {
         issues.push({
           type: 'unsupported_prop',
@@ -4256,6 +4304,9 @@ ${inner}
           rendered.manifest,
           figure.editLog,
           args.snapshot.schemaVersion,
+          Array.isArray((figure as any).legacyReplaySignatures)
+            ? (figure as any).legacyReplaySignatures
+            : [],
         ));
 
         const figureWarnings = (Array.isArray(result.warnings) ? result.warnings : [])
@@ -5066,26 +5117,32 @@ ${inner}
       const mergedEditLog = [...session.editLog, ...newEdits];
 
       if (projectContext && codePatches.length === 0) {
-        const fullPrecheck = precheckRenderedProjectFigureEditLog(
-          projectContext.figRow?.manifest,
-          compressEditLog(mergedEditLog),
-          sessionBeforePatch.editLog,
-          projectContext.figureId,
-        );
-        if (!fullPrecheck.ok) {
-          const response = buildPatchConflictResponse(
-            sessionBeforePatch,
-            requestId,
-            fullPrecheck.rejected,
-            [
-              ...fullPrecheck.warnings,
-              ...(revisionWarning ? [revisionWarning] : []),
-            ],
+        const storedManifest = parseManifestValue(projectContext.figRow?.manifest);
+        if (storedManifest) {
+          const fullPrecheck = precheckRenderedProjectFigureEditLog(
+            storedManifest,
+            compressEditLog(mergedEditLog),
+            sessionBeforePatch.editLog,
+            projectContext.figureId,
           );
-          processedIds.add(requestId);
-          cache.set(requestId, response);
-          return res.json(response);
+          if (!fullPrecheck.ok) {
+            const response = buildPatchConflictResponse(
+              sessionBeforePatch,
+              requestId,
+              fullPrecheck.rejected,
+              [
+                ...fullPrecheck.warnings,
+                ...(revisionWarning ? [revisionWarning] : []),
+              ],
+            );
+            processedIds.add(requestId);
+            cache.set(requestId, response);
+            return res.json(response);
+          }
         }
+        // A pure local patch intentionally invalidates the stored preview.
+        // With no trusted manifest, defer identity/capability confirmation to
+        // the backend renderer and validate its returned manifest before write.
       }
 
       if (backendPatches.length === 0 && codePatches.length === 0) {
@@ -6441,9 +6498,7 @@ ${inner}
             const patches = compressedEditLogs[figureId] || [];
             if (patches.length === 0) continue;
             const knownEditLog = oldEditLogMap[figureId] || [];
-            const precheck = precheckRenderedPythonPatches(fig.manifest, patches, {
-              allowLegacyContourChild: true,
-            });
+            const precheck = precheckRenderedPythonPatches(fig.manifest, patches);
             precheck.warnings.forEach((warning: any) => {
               const patch = typeof warning?.patchIndex === 'number'
                 ? patches[warning.patchIndex]
@@ -6451,7 +6506,9 @@ ${inner}
               const compatibleLegacySpecialAxesEdit = warning?.type === 'identity_mismatch'
                 && warning?.field === 'identity.relation'
                 && isCompatibleKnownLegacySpecialAxesEdit(fig.manifest, patch, knownEditLog);
-              if (!compatibleLegacySpecialAxesEdit) {
+              const compatibleLegacyContourChildEdit = warning?.type === 'unsupported_prop'
+                && isCompatibleKnownLegacyContourChildEdit(fig.manifest, patch, knownEditLog);
+              if (!compatibleLegacySpecialAxesEdit && !compatibleLegacyContourChildEdit) {
                 manifestPrecheckWarnings.push({ ...warning, figureId });
               }
             });

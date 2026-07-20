@@ -215,9 +215,18 @@ function replayModeForTarget(
 
 function colorPropSupportedByObject(object: ManifestObject, prop: string): boolean {
   const capability = object.propertyCapabilities?.find(item => item.prop === prop);
-  if (capability) return capability.replay !== 'unsupported';
+  if (capability) {
+    return capability.replay !== 'unsupported'
+      && capability.scopes.includes('object');
+  }
   if (Array.isArray(object.propertyCapabilities)) return false;
   return object.editable.includes(prop);
+}
+
+function colorFallbackPropSupportedByObject(object: ManifestObject, prop: string): boolean {
+  const capability = propertyCapabilityFor(object, prop);
+  if (capability) return capability.replay !== 'unsupported' && capability.scopes.includes('object');
+  return !Array.isArray(object.propertyCapabilities);
 }
 
 function fallbackProp(binding: Binding, object: ManifestObject): string | null {
@@ -756,7 +765,8 @@ export function resolvePaletteColorFallbackTargets(
   const matchingPieSlices = selectedObjects.filter(object => (
     object.role === 'pie_slice'
     && COLOR_FALLBACK_PROPS.some(prop => (
-      Object.prototype.hasOwnProperty.call(object.currentProps ?? {}, prop)
+      colorFallbackPropSupportedByObject(object, prop)
+      && Object.prototype.hasOwnProperty.call(object.currentProps ?? {}, prop)
       && colorValueContains(object.currentProps?.[prop], targetHex)
     ))
   ));
@@ -780,6 +790,7 @@ export function resolvePaletteColorFallbackTargets(
       if (!insidePieBoundary) return;
     }
     COLOR_FALLBACK_PROPS.forEach((prop) => {
+      if (!colorFallbackPropSupportedByObject(object, prop)) return;
       if (!Object.prototype.hasOwnProperty.call(object.currentProps ?? {}, prop)) return;
       if (!colorValueContains(object.currentProps?.[prop], targetHex)) return;
       const useColorSubsetPatch = shouldUseColorSubsetPatch(object.currentProps?.[prop], targetHex);

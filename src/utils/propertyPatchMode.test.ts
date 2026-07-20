@@ -312,6 +312,20 @@ describe('supportsObjectProp', () => {
     expect(supportsObjectProp(target, 'position')).toBe(false);
   });
 
+  it('requires the object scope for direct modern object controls', () => {
+    const target = legacyObject({
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['group'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+
+    expect(supportsObjectProp(target, 'color')).toBe(false);
+  });
+
   it('preserves legacy editable fallback when no capability list exists', () => {
     const target = legacyObject({
       editable: ['position'],

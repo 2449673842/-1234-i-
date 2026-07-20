@@ -50,6 +50,37 @@ function buildPatchedSession(
   };
 }
 
+export function responsePromotesLocalPatchToBackend(data: PatchResponse, submittedPatchCount: number): boolean {
+  if (Array.isArray(data.applied) && data.applied.some((patchItem) => (
+    'mode' in patchItem && patchItem.mode === 'backend_patch'
+  ))) {
+    return true;
+  }
+
+  if (submittedPatchCount > 0 && Array.isArray(data.editLog)) {
+    return data.editLog.slice(-submittedPatchCount).some((entry) => entry.mode === 'backend_patch');
+  }
+
+  return false;
+}
+
+export function reconcileLocalPatchSuccess(
+  prev: FigureSession,
+  data: PatchResponse,
+  authoritativeEditLog: EditEntry[],
+  submittedPatchCount: number,
+): FigureSession {
+  const promotedToBackend = responsePromotesLocalPatchToBackend(data, submittedPatchCount);
+  return {
+    ...prev,
+    editLog: authoritativeEditLog,
+    revision: data.revision || prev.revision,
+    manifest: promotedToBackend ? data.manifest || prev.manifest : prev.manifest,
+    svg: promotedToBackend ? data.svg || prev.svg : prev.svg,
+    updatedAt: Date.now(),
+  };
+}
+
 export function useFigureSession(initialSession?: FigureSession | null): UseFigureSessionReturn {
   const [session, setSession] = useState<FigureSession | null>(initialSession ?? null);
   const [isRendering, setIsRendering] = useState(false);
@@ -274,12 +305,7 @@ export function useFigureSession(initialSession?: FigureSession | null): UseFigu
           setSession((prev) => {
             if (!prev) return prev;
             if (data.revision !== undefined && data.revision < prev.revision) return prev;
-            return {
-              ...prev,
-              editLog: authoritativeEditLog,
-              revision: data.revision || prev.revision,
-              updatedAt: Date.now(),
-            };
+            return reconcileLocalPatchSuccess(prev, data, authoritativeEditLog, localPatches.length);
           });
           setHistory((prev) => {
             if (prev.past.length === 0) {

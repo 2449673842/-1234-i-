@@ -321,6 +321,31 @@ describe('palette target resolver', () => {
     expect(buildPaletteObjectPatches(result, '#118833')).toEqual([]);
   });
 
+  it('does not use legacy palette resolution for a group-only modern color capability', () => {
+    const line = object('line.0.0', 'color', 'line-series');
+    line.propertyCapabilities = [{
+      prop: 'color',
+      patchMode: 'backend_patch',
+      scopes: ['group'],
+      preview: 'none',
+      replay: 'stable',
+    }];
+    const legacy: Binding = {
+      paletteId: 'SERIES',
+      groupId: 'group_SERIES',
+      gids: [line.id],
+      props: ['color'],
+    };
+
+    const result = resolvePaletteTargets(manifest([line], [legacy]), 'SERIES', false);
+
+    expect(result.targets).toEqual([]);
+    expect(result.skipped[0]).toEqual(expect.objectContaining({
+      objectId: line.id,
+      reason: 'unsupported_prop',
+    }));
+  });
+
   it('rejects stale series identity instead of patching a reused gid', () => {
     const line = object('line.0.0', 'color', 'new-series');
     const stale = binding('SERIES', [target(line.id, 'color', 'old-series')]);
@@ -403,6 +428,38 @@ describe('palette target resolver', () => {
       gid: panelC.id,
       prop: 'color',
       value: '#aa0000',
+    }]);
+  });
+
+  it('does not emit rendered-color fallback targets for omitted modern color capabilities', () => {
+    const line = object('line.0.0', 'color', 'line-series', 'backend_patch');
+    line.currentProps.color = '#000000';
+    line.currentProps.edgecolor = '#4477aa';
+
+    const fallback = resolvePaletteColorFallbackTargets(manifest([line], []), 'BLUE', '#4477aa', [line.id]);
+
+    expect(fallback.targets).toEqual([]);
+    expect(buildPaletteObjectPatches(fallback, '#1188ff')).toEqual([]);
+  });
+
+  it('retains rendered-color fallback for legacy manifests without capabilities', () => {
+    const line = object('line.0.0', 'color', 'line-series', 'backend_patch');
+    delete line.propertyCapabilities;
+    line.currentProps.color = '#000000';
+    line.currentProps.edgecolor = '#4477aa';
+
+    const fallback = resolvePaletteColorFallbackTargets(manifest([line], []), 'BLUE', '#4477aa', [line.id]);
+
+    expect(fallback.targets).toEqual([expect.objectContaining({
+      objectId: line.id,
+      prop: 'edgecolor',
+    })]);
+    expect(buildPaletteObjectPatches(fallback, '#1188ff')).toEqual([{
+      op: 'set',
+      mode: 'backend_patch',
+      gid: line.id,
+      prop: 'edgecolor',
+      value: '#1188ff',
     }]);
   });
 
@@ -664,6 +721,33 @@ describe('palette target resolver', () => {
     );
 
     expect(result.targets.map(item => item.objectId)).toEqual([pieSlice.id, relatedLegend.id]);
+  });
+
+  it('does not emit rendered-color fallback for a pie slice color omitted from modern capabilities', () => {
+    const color = [0.2666666667, 0.4666666667, 0.6666666667, 1];
+    const pieSlice = object('patch.0.0', 'edgecolor', 'pie-a', 'local_patch');
+    pieSlice.role = 'pie_slice';
+    pieSlice.currentProps.facecolor = color;
+    pieSlice.currentProps.edgecolor = '#000000';
+    pieSlice.identity!.relation = {
+      subplotId: 'subplot.0', legendMarkerIds: ['legend_patch.0.0'], pieId: 'pie.0.0', sliceIndex: 0,
+    } as any;
+    const relatedLegend = object('legend_patch.0.0', 'facecolor', 'pie-a', 'local_patch');
+    relatedLegend.kind = 'patch';
+    relatedLegend.role = 'legend_marker';
+    relatedLegend.currentProps.facecolor = color;
+    relatedLegend.identity!.relation = { subplotId: 'subplot.0', parentId: pieSlice.id, legendId: 'legend.0' };
+    const figure = manifest([pieSlice, relatedLegend], []);
+
+    const result = resolvePaletteColorFallbackTargets(
+      figure,
+      'PIE_A',
+      '#4477aa',
+      [pieSlice.id, relatedLegend.id],
+    );
+
+    expect(result.targets.map(item => `${item.objectId}:${item.prop}`)).toEqual([`${relatedLegend.id}:facecolor`]);
+    expect(result.targets.some(item => item.objectId === pieSlice.id && item.prop === 'facecolor')).toBe(false);
   });
 
   it('fails closed for unscoped diagram palette bindings that span another diagram object or ordinary artist', () => {

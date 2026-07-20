@@ -400,6 +400,11 @@ async function applyCurrentDraft(page, expectedPatchCount = 2, options = {}) {
   await page.getByRole('button', { name: '应用当前图', exact: true }).click();
   const patchResponse = await patchResponsePromise;
   assert(patchResponse.ok(), `patch request failed: ${patchResponse.status()}`);
+  const patchResponseBody = await patchResponse.json();
+  assert(
+    patchResponseBody?.status === 'success',
+    `patch request returned a non-success application status: ${JSON.stringify(patchResponseBody)}`,
+  );
   await waitForWorkspaceReady(page);
 
   const patchRequests = apiRequests.slice(start).filter((request) => new URL(request.url).pathname === '/api/figure/patch');
@@ -410,7 +415,7 @@ async function applyCurrentDraft(page, expectedPatchCount = 2, options = {}) {
   if (requireBackendOnly) {
     assert(patchBody.patches.every((patch) => patch.mode === 'backend_patch'), `patch batch was not backend-only: ${JSON.stringify(patchBody.patches)}`);
   }
-  return patchBody;
+  return { ...patchBody, response: patchResponseBody };
 }
 
 async function applyCurrentDraftExpectFailure(page, expectedPatchCount) {
@@ -752,17 +757,25 @@ async function main() {
     assert(bodyAfterPieDraft.includes('已暂存'), 'pie draft indicator did not appear after editing');
     assert(countPatchRequests(piePatchStart) === 0, 'pie draft emitted a backend patch before apply');
 
-    const piePatchBody = await applyCurrentDraft(page, pieStyleTargetIds.length * 2, { requireBackendOnly: false });
+    const piePatchBody = await applyCurrentDraft(page, pieStyleTargetIds.length * 2);
     const piePatchCorrect = pieStyleTargetIds.every((gid) => (
-      piePatchBody.patches.some((patch) => patch.gid === gid && patch.prop === 'facecolor' && patch.mode === 'local_patch' && String(patch.value).toLowerCase() === pieFacecolor)
+      piePatchBody.patches.some((patch) => patch.gid === gid && patch.prop === 'facecolor' && patch.mode === 'backend_patch' && String(patch.value).toLowerCase() === pieFacecolor)
       && piePatchBody.patches.some((patch) => patch.gid === gid && patch.prop === 'linewidth' && patch.mode === 'backend_patch' && Number(patch.value) === pieLinewidth)
+    ));
+    const authoritativePieModesCorrect = pieStyleTargetIds.every((gid) => (
+      editLogHasEntry(piePatchBody.response?.applied || [], { gid, prop: 'facecolor', value: pieFacecolor, mode: 'local_patch' })
+      && editLogHasEntry(piePatchBody.response?.applied || [], { gid, prop: 'linewidth', value: pieLinewidth, mode: 'backend_patch' })
     ));
     record(
       'B0C-pie-slice-apply-batch',
-      piePatchCorrect ? 'PASS' : 'FAIL',
-      `pieSlices=${pieSliceIds.join(',')}, patches=${JSON.stringify(piePatchBody.patches)}`,
+      piePatchCorrect && authoritativePieModesCorrect ? 'PASS' : 'FAIL',
+      `pieSlices=${pieSliceIds.join(',')}, requestPatches=${JSON.stringify(piePatchBody.patches)}, authoritativeApplied=${JSON.stringify(piePatchBody.response?.applied || [])}`,
     );
     assert(piePatchCorrect, `pie slice batch did not target every slice: ${JSON.stringify(piePatchBody.patches)}`);
+    assert(
+      authoritativePieModesCorrect,
+      `server did not derive authoritative persisted pie modes: ${JSON.stringify(piePatchBody.response?.applied || [])}`,
+    );
 
     const persistedAfterPie = await requestJson(`/api/projects/${fixture.projectId}`);
     const persistedPieFigure = persistedAfterPie.project?.figures?.find((figure) => figure.figureId === 'fig_1');

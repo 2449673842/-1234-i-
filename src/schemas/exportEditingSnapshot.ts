@@ -2,7 +2,8 @@ import type { EditEntry } from './manifest';
 
 export const LEGACY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 1 as const;
 export const SCRIPTED_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 2 as const;
-export const EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 3 as const;
+export const PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 3 as const;
+export const EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 4 as const;
 
 export interface ExportDatasetSnapshotV1 {
   datasetId: string;
@@ -24,6 +25,10 @@ export interface ExportFigureSnapshotV1 {
 export interface ExportFigureSnapshotV2 extends ExportFigureSnapshotV1 {
   script: string;
   scriptLanguage: 'python' | 'r';
+}
+
+export interface ExportFigureSnapshotV4 extends ExportFigureSnapshotV2 {
+  legacyReplaySignatures: string[];
 }
 
 interface ExportEditingSnapshotBase {
@@ -49,14 +54,20 @@ export interface ExportEditingSnapshotV2 extends ExportEditingSnapshotBase {
 }
 
 export interface ExportEditingSnapshotV3 extends ExportEditingSnapshotBase {
-  schemaVersion: typeof EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION;
+  schemaVersion: typeof PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION;
   figures: ExportFigureSnapshotV2[];
+}
+
+export interface ExportEditingSnapshotV4 extends ExportEditingSnapshotBase {
+  schemaVersion: typeof EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION;
+  figures: ExportFigureSnapshotV4[];
 }
 
 export type ExportEditingSnapshot =
   | ExportEditingSnapshotV1
   | ExportEditingSnapshotV2
-  | ExportEditingSnapshotV3;
+  | ExportEditingSnapshotV3
+  | ExportEditingSnapshotV4;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -68,6 +79,7 @@ export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapsho
   if (
     schemaVersion !== LEGACY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
     && schemaVersion !== SCRIPTED_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+    && schemaVersion !== PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
     && schemaVersion !== EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
   ) return null;
   if (
@@ -84,7 +96,7 @@ export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapsho
     || !isRecord(value.exportOptions)
   ) return null;
 
-  const figures: Array<ExportFigureSnapshotV1 | ExportFigureSnapshotV2> = [];
+  const figures: Array<ExportFigureSnapshotV1 | ExportFigureSnapshotV2 | ExportFigureSnapshotV4> = [];
   for (const rawFigure of value.figures) {
     if (
       !isRecord(rawFigure)
@@ -103,8 +115,21 @@ export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapsho
         typeof rawFigure.script !== 'string'
         || (rawFigure.scriptLanguage !== 'python' && rawFigure.scriptLanguage !== 'r')
       )
-    ) return null;
-    figures.push(rawFigure as unknown as ExportFigureSnapshotV1 | ExportFigureSnapshotV2);
+    ) {
+      return null;
+    }
+    if (
+      schemaVersion === EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+      && (
+        !Array.isArray(rawFigure.legacyReplaySignatures)
+        || rawFigure.legacyReplaySignatures.some(signature => (
+          typeof signature !== 'string' || !/^[a-f0-9]{64}$/.test(signature)
+        ))
+      )
+    ) {
+      return null;
+    }
+    figures.push(rawFigure as unknown as ExportFigureSnapshotV1 | ExportFigureSnapshotV2 | ExportFigureSnapshotV4);
   }
 
   const datasets: ExportDatasetSnapshotV1[] = [];
@@ -148,6 +173,13 @@ export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapsho
         schemaVersion,
         figures: figures as ExportFigureSnapshotV1[],
       };
+  }
+  if (schemaVersion === EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION) {
+    return {
+      ...base,
+      schemaVersion,
+      figures: figures as ExportFigureSnapshotV4[],
+    };
   }
   return {
     ...base,

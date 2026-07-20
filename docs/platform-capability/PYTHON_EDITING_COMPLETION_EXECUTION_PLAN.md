@@ -1,7 +1,7 @@
 # Python 图元编辑与分组识别收敛执行计划
 
-> 状态：WP3/WP4 核心边界、WP6、WP7 和 WP8 已完成当前计划范围；WP3 剩余 legacy 审计已修复前端 RightSidebar 批量/详情入口、ChartPreview 拖拽入口、配色中心 fallback、组件中心批量入口、Draft 应用清理、项目 patch 预检和导出快照 dry-run fallback 缺口；WP4 已补齐无标签 collection 交换顺序的首轮关键结构身份缺口；WP5 已完成首个用户可见能力摘要 contract、右侧栏展示和真实浏览器 smoke，仍需完整矩阵和 release gate
-> 最后修改时间：2026-07-20 11:36:50 +08:00
+> 状态：WP3 当前全入口清单已收敛，现代 `propertyCapabilities` 的属性、replay 和 object scope 已覆盖服务端、RightSidebar、ChartPreview、配色 fallback、批量/预设、standalone 对账与导出快照；旧 contour 兼容改为已持久化 editLog/v4 签名白名单。WP4 核心边界、WP6、WP7 和 WP8 已完成当前计划范围；WP5 已完成首个用户可见能力摘要，仍需完整矩阵和 release gate
+> 最后修改时间：2026-07-20 16:24:34 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
 > 当前部署状态：未推送、未部署；本计划不改变线上版本
@@ -85,7 +85,11 @@
 
 2026-07-20 11:36 WP3 组件中心批量入口继续收敛：批量属性支持判断导出为 `supportsComponentBatchProp`，现代 manifest 只按 `propertyCapabilities` 显示属性，旧 manifest 继续 legacy fallback；子图批量 bounds 控件按 `left/bottom/width/height/aspect` 逐项显示；组件中心 set patch 保守走 `backend_patch`，避免语义组件编辑被未验证 local Draft 持久化。Draft 应用链路新增 `projectDraftsRef` 和 `isSameDraftPatch`，成功应用当前 Figure 后只清除与执行快照完全一致的 Draft，不误删保存期间新改动，也不保留已确认成功的同内容 Draft。验证：`npm test -- RightSidebar` 8 项通过，`npm test -- draftTransaction` 4 文件/32 项通过，`npm run lint` 通过，`npm run test:component-container-smoke` PASS=41/FAIL=0，`git diff --check` 通过。
 
-仍未完成：WP3 全入口的剩余 legacy 兼容审计、WP5 完整用户可见能力报告、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP4 无标签 collection 首轮关键矩阵已完成，但后续新增 collection 家族仍必须按同一结构身份规则验证。WP6、WP7 和 WP8 已完成当前计划范围；Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。
+2026-07-20 15:21 WP3 当前全入口清单完成收敛：现代对象必须同时声明目标属性、可重放状态和 `object` scope；旧 contour child 只允许与已持久化 editLog 完全一致的历史 patch。导出快照升级为 v4，以服务端生成的逐值签名保存合法旧兼容来源，v1-v3 继续可读，新 v4 未列入签名的 child patch 在任何写入前拒绝。RightSidebar 专用轴/网格/边框/图例、文字立即应用、批量刻度、风格预设和 global 字段统一接入能力 helper；配色 legacy resolver、ChartPreview 双击文本和 standalone local->backend 对账同步收敛。验证：定向单测最高一轮 13 文件/210 项，旧 contour 项目、三条快照事务门禁、完整导出矩阵、组件中心 41/41、轴样式 8/8、lint 和 diff-check 均通过；独立复审初次发现的 global 回归和两处 MEDIUM 旁路已在本工作包修复。
+
+2026-07-20 16:10 WP3 发布候选补充：纯 local patch 清空存储 preview manifest 后，下一次 backend patch 不再因 `manifest_unavailable` 提前失败；服务端仅在有可信 manifest 时预检，缺失时进入 renderer 权威验证，返回 manifest 通过核验后才持久化。线上 `KeyError: 'left'` 已确认是旧 renderer 固定读取 left spine，当前仓库通用读取实际 spine，polar 回归 50/50 通过。直接适用发布门禁 `python-semantic-workflow`、`semantic-smoke`、`project-save-preflight`、`drag-extended-smoke`、`cache-smoke`、`cross-figure-smoke` 全部通过；完整语义测试同时检查 HTTP 与业务响应 `status`。独立 5.5 high 复审 APPROVE，0 HIGH/MEDIUM。
+
+仍未完成：WP5 完整用户可见能力报告、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP4 无标签 collection 首轮关键矩阵已完成，但后续新增 collection 家族仍必须按同一结构身份规则验证。WP6、WP7 和 WP8 已完成当前计划范围；Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。
 
 ### 2.5 2026-07-18 WP8 执行结果
 

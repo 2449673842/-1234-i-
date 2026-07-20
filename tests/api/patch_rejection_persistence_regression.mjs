@@ -230,6 +230,9 @@ async function createProject(token) {
   const lineTarget = figure.manifest.objects.find(object => (
     object.kind === 'line' && object.role !== 'step_series' && object.editable?.includes('linewidth')
   ));
+  const axisTarget = figure.manifest.objects.find(object => (
+    object.kind === 'axis_x' && object.editable?.includes('tick_labelsize')
+  ));
   const histogramTarget = figure.manifest.objects.find(object => (
     object.kind === 'bar_container' && object.role === 'histogram_series'
   ));
@@ -247,6 +250,7 @@ async function createProject(token) {
       && object.propertyCapabilities.some(capability => capability?.prop === 'color' && capability?.patchMode === 'local_patch')
   ));
   assert(lineTarget?.id, 'initial render has no editable line target for mixed batch regression');
+  assert(axisTarget?.id, 'initial render has no backend axis target for local-to-backend transition regression');
   assertStructuralTarget(histogramTarget, 'histogram_series', 'bar_container', 'bins');
   assertStructuralTarget(stairsTarget, 'stairs_series', 'patch', 'edges');
   assertStructuralTarget(stepTarget, 'step_series', 'line', 'where');
@@ -316,6 +320,14 @@ async function createProject(token) {
       prop: 'color',
       value: '#4d7c0f',
       ...identityFields(localTarget),
+    },
+    backendAfterLocalPatch: {
+      op: 'set',
+      mode: 'backend_patch',
+      gid: axisTarget.id,
+      prop: 'tick_labelsize',
+      value: 13,
+      ...identityFields(axisTarget),
     },
     initialRevision: Number(figure.revision || 1),
   };
@@ -935,13 +947,34 @@ async function main() {
       invalidatedPreview.preview_svg === null && invalidatedPreview.manifest === null,
       `pure local patch retained stale preview cache: ${JSON.stringify(invalidatedPreview)}`,
     );
+    const backendAfterLocalResult = await submitPatchBatch(
+      token,
+      projectId,
+      [created.backendAfterLocalPatch],
+      'backend-after-local-preview-invalidation',
+      baselineRevision + 2,
+    );
+    assert(
+      backendAfterLocalResult?.status === 'success',
+      `backend patch did not defer missing-manifest validation to renderer: ${JSON.stringify(backendAfterLocalResult)}`,
+    );
+    assert(
+      Number(backendAfterLocalResult?.revision) === baselineRevision + 3,
+      `backend-after-local revision mismatch: ${JSON.stringify(backendAfterLocalResult)}`,
+    );
+    assert(
+      backendAfterLocalResult.editLog?.some(entry => isRejectedPatch(entry, created.pureLocalPatch))
+        && backendAfterLocalResult.editLog?.some(entry => isRejectedPatch(entry, created.backendAfterLocalPatch)),
+      `backend-after-local replay lost an accepted edit: ${JSON.stringify(backendAfterLocalResult)}`,
+    );
     const refreshedListing = await jsonRequest(`/api/projects/${projectId}/figures?includePreview=1`, token);
     assert(refreshedListing.response.ok && refreshedListing.data?.status === 'success', `pure local preview refresh failed: ${JSON.stringify(refreshedListing.data)}`);
     const refreshedFigure = refreshedListing.data.figures?.find(item => item.figureId === 'fig_1');
     assert(refreshedFigure, 'pure local preview refresh did not return fig_1');
-    assert(Number(refreshedFigure.revision) === baselineRevision + 2, `pure local preview refresh revision mismatch: ${JSON.stringify(refreshedFigure)}`);
+    assert(Number(refreshedFigure.revision) === baselineRevision + 3, `pure local preview refresh revision mismatch: ${JSON.stringify(refreshedFigure)}`);
     assertManifestPatchValue(refreshedFigure.manifest, created.pureLocalPatch, 'pure local refreshed preview');
-    await assertProjectPreviewCacheFresh(token, projectId, created.pureLocalPatch, baselineRevision + 2);
+    assertManifestPatchValue(refreshedFigure.manifest, created.backendAfterLocalPatch, 'backend-after-local refreshed preview');
+    await assertProjectPreviewCacheFresh(token, projectId, created.backendAfterLocalPatch, baselineRevision + 3);
     const mixedPersisted = readPersistedFigure(projectId, null);
     for (const patch of created.validMixedPatches) {
       assert(
@@ -973,18 +1006,18 @@ async function main() {
       projectId,
       modernOmittedCapabilityPatch,
       'modern-omitted-capability',
-      baselineRevision + 2,
+      baselineRevision + 3,
     );
     assertConflictResponse(
       'modern manifest omitted capability patch',
       modernOmittedCapabilityResult,
       modernOmittedCapabilityPatch,
-      baselineRevision + 2,
+      baselineRevision + 3,
     );
     const afterModernOmittedCapability = readPersistedFigure(projectId, null);
     assert(
-      Number(afterModernOmittedCapability.session?.revision) === baselineRevision + 2
-        && Number(afterModernOmittedCapability.figure?.revision) === baselineRevision + 2,
+      Number(afterModernOmittedCapability.session?.revision) === baselineRevision + 3
+        && Number(afterModernOmittedCapability.figure?.revision) === baselineRevision + 3,
       `modern omitted capability rejection changed revision: ${JSON.stringify(afterModernOmittedCapability)}`,
     );
     assert(
@@ -1009,10 +1042,10 @@ async function main() {
       projectId,
       [legacyManifestPatch],
       'legacy-unversioned-fingerprint',
-      baselineRevision + 2,
+      baselineRevision + 3,
     );
     assert(legacyResult?.status === 'success', `legacy manifest first edit was rejected: ${JSON.stringify(legacyResult)}`);
-    assert(Number(legacyResult?.revision) === baselineRevision + 3, `legacy manifest edit revision mismatch: ${JSON.stringify(legacyResult)}`);
+    assert(Number(legacyResult?.revision) === baselineRevision + 4, `legacy manifest edit revision mismatch: ${JSON.stringify(legacyResult)}`);
     assert(
       legacyResult.editLog?.some(entry => isRejectedPatch(entry, legacyManifestPatch)),
       `legacy manifest edit did not persist: ${JSON.stringify(legacyResult)}`,
@@ -1031,6 +1064,7 @@ async function main() {
         'session editLog, project figure edit_log/history, and export anchors stayed clean',
         'valid mixed local/backend batch persisted both edits in one revision',
         'pure local project patch invalidated stale preview and refreshed from latest editLog',
+        'backend patch after local preview invalidation deferred to renderer and preserved both edits',
         'stale project save was rejected without removing a newer server patch',
         'same-revision editLog mutation without a base hash was rejected without persistence',
         'same-revision stale editLog hash was rejected without persistence',

@@ -490,11 +490,15 @@ async function applyAllAndReadPatches(page) {
   await waitForPreviewReady(page);
   const patchRequests = apiRequests.slice(start).filter((request) => request.url.includes('/api/figure/patch'));
   const patchBodies = patchRequests.map((request) => parseJson(request.postData));
-  const successful = patchRequests.length > 0 &&
-    apiResponses.slice(start)
-      .filter((response) => response.url.includes('/api/figure/patch'))
-      .every((response) => response.status >= 200 && response.status < 300);
-  return { clicked, patchRequests, patchBodies, successful, start };
+  const patchResponses = apiResponses.slice(start).filter((response) => response.url.includes('/api/figure/patch'));
+  const successful = patchRequests.length > 0
+    && patchResponses.length === patchRequests.length
+    && patchResponses.every((response) => (
+      response.status >= 200
+      && response.status < 300
+      && response.body?.status === 'success'
+    ));
+  return { clicked, patchRequests, patchBodies, patchResponses, successful, start };
 }
 
 async function applySelectedAndReadPatches(page) {
@@ -505,11 +509,15 @@ async function applySelectedAndReadPatches(page) {
   await waitForPreviewReady(page);
   const patchRequests = apiRequests.slice(start).filter((request) => request.url.includes('/api/figure/patch'));
   const patchBodies = patchRequests.map((request) => parseJson(request.postData));
-  const successful = patchRequests.length > 0 &&
-    apiResponses.slice(start)
-      .filter((response) => response.url.includes('/api/figure/patch'))
-      .every((response) => response.status >= 200 && response.status < 300);
-  return { clicked, patchRequests, patchBodies, successful, start };
+  const patchResponses = apiResponses.slice(start).filter((response) => response.url.includes('/api/figure/patch'));
+  const successful = patchRequests.length > 0
+    && patchResponses.length === patchRequests.length
+    && patchResponses.every((response) => (
+      response.status >= 200
+      && response.status < 300
+      && response.body?.status === 'success'
+    ));
+  return { clicked, patchRequests, patchBodies, patchResponses, successful, start };
 }
 
 async function seedContentTextDraft(page, figId, gid, nextText) {
@@ -615,9 +623,16 @@ async function run() {
       apiRequests.push({ method: request.method(), url: request.url(), postData: request.postData() });
     }
   });
-  page.on('response', (response) => {
+  page.on('response', async (response) => {
     if (interestingApi(response.request())) {
-      apiResponses.push({ method: response.request().method(), url: response.url(), status: response.status(), postData: response.request().postData() });
+      const body = parseJson(await response.text().catch(() => null));
+      apiResponses.push({
+        method: response.request().method(),
+        url: response.url(),
+        status: response.status(),
+        postData: response.request().postData(),
+        body,
+      });
     }
   });
 
@@ -1171,6 +1186,44 @@ async function run() {
     } else {
       record('N1', 'PASS', '无 console error / pageerror');
     }
+
+    diagnostics.patchResponses = apiResponses
+      .filter((response) => response.url.includes('/api/figure/patch'))
+      .map((response) => {
+        const requestBody = parseJson(response.postData);
+        return {
+          figureId: requestBody?.figureId || null,
+          requestPatches: patchList(requestBody).map((patch) => ({
+            gid: patch.gid || patch.target_id || null,
+            prop: patch.prop || null,
+            requestedMode: patch.mode || patch.type || null,
+          })),
+          httpStatus: response.status,
+          applicationStatus: response.body?.status || null,
+          message: response.body?.message || null,
+          rejected: Array.isArray(response.body?.rejected)
+            ? response.body.rejected.map((item) => ({
+              gid: item?.gid || item?.target_id || null,
+              prop: item?.prop || null,
+              reason: item?.reason || null,
+              detail: item?.detail || null,
+            }))
+            : [],
+          warnings: Array.isArray(response.body?.warnings)
+            ? response.body.warnings.map((warning) => ({
+              type: warning?.type || null,
+              gid: warning?.gid || null,
+              prop: warning?.prop || null,
+              field: warning?.field || null,
+              expected: warning?.expected ?? null,
+              actual: warning?.actual ?? null,
+              replay: warning?.replay ?? null,
+              scopes: warning?.scopes ?? null,
+              message: warning?.message || null,
+            }))
+            : [],
+        };
+      });
   } finally {
     await browser.close();
     if (projectId) {

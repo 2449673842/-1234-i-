@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Baseline, Lock, Layout, Paintbrush, Palette, Sliders, X } from 'lucide-react';
-import { FigureSession, PatchEntry, ManifestObject, ManifestField, Binding, ManifestEditScope, ManifestObjectKind } from '../schemas/manifest';
+import { FigureSession, PatchEntry, ManifestObject, ManifestField, Binding, LocalPatchEntry, ManifestEditScope, ManifestObjectKind } from '../schemas/manifest';
 import { normalizeFigureModel } from '../utils/standardFigureModel';
 import { resolveFigureId } from '../utils/figureIdentity';
 import { compileEditingIntent } from '../utils/editingIntentCompiler';
@@ -13,6 +13,7 @@ import {
   isPythonStructuralSeriesProp,
   isParentOwnedManifestObject,
   resolveCrossFigurePolicy,
+  resolvePatchMode,
   resolvePatchModeById,
   supportsObjectProp,
 } from '../utils/propertyPatchMode';
@@ -403,6 +404,51 @@ export function supportsComponentBatchProp(
     return ['axis_x', 'axis_y', 'axes'].includes(obj.kind);
   }
   return false;
+}
+
+export type SupportedPatchCandidate = {
+  prop: string;
+  value: unknown;
+};
+
+export function buildSupportedObjectPatchEntries(
+  manifest: FigureSession['manifest'] | null | undefined,
+  obj: ManifestObject | undefined,
+  candidates: SupportedPatchCandidate[],
+  supportsProp: (obj: ManifestObject | undefined, prop: string) => boolean = supportsObjectProp,
+): LocalPatchEntry[] {
+  if (!obj) return [];
+  return candidates
+    .filter(candidate => supportsProp(obj, candidate.prop))
+    .map(candidate => ({
+      op: 'set' as const,
+      gid: obj.id,
+      prop: candidate.prop,
+      value: candidate.value,
+      mode: resolvePatchMode(manifest, obj, candidate.prop),
+    }));
+}
+
+export function buildSupportedSidebarPatchEntry(
+  manifest: FigureSession['manifest'] | null | undefined,
+  gid: string,
+  prop: string,
+  value: unknown,
+): LocalPatchEntry | null {
+  if (!manifest) return null;
+  if (gid === 'global') {
+    if (!Object.prototype.hasOwnProperty.call(manifest.globals ?? {}, prop)) return null;
+    return { op: 'set', gid, prop, value, mode: 'backend_patch' };
+  }
+  const object = manifest.objects.find(item => item.id === gid);
+  if (!supportsObjectProp(object, prop)) return null;
+  return {
+    op: 'set',
+    gid,
+    prop,
+    value,
+    mode: resolvePatchModeById(manifest, gid, prop),
+  };
 }
 
 const DEFAULT_PHYSICAL_AXES_LAYOUT: PhysicalAxesLayoutSettings = {
@@ -1190,15 +1236,33 @@ export function RightSidebar({
   const handlePatch = (gid: string, prop: string, value: unknown) => {
     const currentObject = manifest.objects.find((item) => item.id === gid);
     const figureId = currentFigureId;
-    if (isPythonStructuralSeriesProp(currentObject, prop)) return;
-    const mode = resolvePatchModeById(manifest, gid, prop);
-    onUpdateDraft(figureId, { gid, prop, value, mode });
+    const patch = buildSupportedSidebarPatchEntry(manifest, gid, prop, value);
+    if (!patch) return;
+    onUpdateDraft(figureId, {
+      gid: patch.gid,
+      prop: patch.prop,
+      value: patch.value,
+      mode: patch.mode,
+    });
   };
 
   const buildPatchEntry = (gid: string, prop: string, value: unknown): PatchEntry => {
     const mode = resolvePatchModeById(manifest, gid, prop);
     return { op: 'set', gid, prop, value, mode };
   };
+  const buildObjectPatchEntries = (
+    obj: ManifestObject | undefined,
+    candidates: SupportedPatchCandidate[],
+  ): PatchEntry[] => buildSupportedObjectPatchEntries(manifest, obj, candidates);
+  const buildComponentPatchEntries = (
+    obj: ManifestObject | undefined,
+    candidates: SupportedPatchCandidate[],
+  ): PatchEntry[] => buildSupportedObjectPatchEntries(
+    manifest,
+    obj,
+    candidates,
+    (target, prop) => supportsComponentBatchProp(target, prop, manifest.generatedBy),
+  );
 
   const compileIntentPatches = (intent: EditingIntent): PatchEntry[] => {
     const result = compileEditingIntent(manifest, intent);
@@ -1320,12 +1384,12 @@ export function RightSidebar({
       const col = index % cols;
       const left = margin.left + col * (cellWidth + gapX);
       const bottom = 1 - margin.top - (row + 1) * cellHeight - row * gapY;
-      patches.push(
-        buildPatchEntry(subplot.id, 'left', Number(left.toFixed(4))),
-        buildPatchEntry(subplot.id, 'bottom', Number(bottom.toFixed(4))),
-        buildPatchEntry(subplot.id, 'width', Number(cellWidth.toFixed(4))),
-        buildPatchEntry(subplot.id, 'height', Number(cellHeight.toFixed(4))),
-      );
+      patches.push(...buildComponentPatchEntries(subplot as ManifestObject, [
+        { prop: 'left', value: Number(left.toFixed(4)) },
+        { prop: 'bottom', value: Number(bottom.toFixed(4)) },
+        { prop: 'width', value: Number(cellWidth.toFixed(4)) },
+        { prop: 'height', value: Number(cellHeight.toFixed(4)) },
+      ]));
     });
     return patches;
   };
@@ -1358,12 +1422,12 @@ export function RightSidebar({
     ordered.forEach((subplot, index) => {
       const bounds = layout.bounds[index];
       if (!bounds) return;
-      patches.push(
-        buildPatchEntry(subplot.id, 'left', bounds.left),
-        buildPatchEntry(subplot.id, 'bottom', bounds.bottom),
-        buildPatchEntry(subplot.id, 'width', bounds.width),
-        buildPatchEntry(subplot.id, 'height', bounds.height),
-      );
+      patches.push(...buildComponentPatchEntries(subplot as ManifestObject, [
+        { prop: 'left', value: bounds.left },
+        { prop: 'bottom', value: bounds.bottom },
+        { prop: 'width', value: bounds.width },
+        { prop: 'height', value: bounds.height },
+      ]));
     });
     return patches;
   };
@@ -1386,7 +1450,12 @@ export function RightSidebar({
     const shiftsBySubplotId = new Map(plan.shifts.map(shift => [shift.id, shift]));
     const patches = plan.shifts
       .filter(shift => Math.abs(shift.deltaBottom) > 0.00005)
-      .map(shift => buildPatchEntry(shift.id, 'bottom', Number(shift.nextBottom.toFixed(4))));
+      .flatMap((shift) => {
+        const subplot = subplotOptions.find(item => item.id === shift.id);
+        return buildComponentPatchEntries(subplot as ManifestObject | undefined, [
+          { prop: 'bottom', value: Number(shift.nextBottom.toFixed(4)) },
+        ]);
+      });
 
     colorbarOptions.forEach((colorbar) => {
       const colorbarBounds = readNormalizedBounds(colorbar);
@@ -1399,11 +1468,9 @@ export function RightSidebar({
       const firstDelta = ownerDeltas[0];
       if (Math.abs(firstDelta) <= 0.00005) return;
       if (!ownerDeltas.every(delta => Math.abs(delta - firstDelta) <= 0.00005)) return;
-      patches.push(buildPatchEntry(
-        colorbar.id,
-        'bottom',
-        Number((colorbarBounds.bottom + firstDelta).toFixed(4)),
-      ));
+      patches.push(...buildComponentPatchEntries(colorbar as ManifestObject, [
+        { prop: 'bottom', value: Number((colorbarBounds.bottom + firstDelta).toFixed(4)) },
+      ]));
     });
 
     return patches;
@@ -1479,15 +1546,19 @@ export function RightSidebar({
       const colorbarBounds = readNormalizedBounds(colorbar);
       if (!colorbarBounds) return;
       const nextLeft = clampNumber(ownerBounds.right + settings.pad, 0, Math.max(0, 1 - width));
-      patches.push(
-        buildPatchEntry(colorbar.id, 'left', Number(nextLeft.toFixed(4))),
-        buildPatchEntry(colorbar.id, 'width', Number(width.toFixed(4))),
-      );
+      patches.push(...buildComponentPatchEntries(colorbar as ManifestObject, [
+        { prop: 'left', value: Number(nextLeft.toFixed(4)) },
+        { prop: 'width', value: Number(width.toFixed(4)) },
+      ]));
       if (settings.alignBottom) {
-        patches.push(buildPatchEntry(colorbar.id, 'bottom', Number(ownerBounds.bottom.toFixed(4))));
+        patches.push(...buildComponentPatchEntries(colorbar as ManifestObject, [
+          { prop: 'bottom', value: Number(ownerBounds.bottom.toFixed(4)) },
+        ]));
       }
       if (settings.matchHeight) {
-        patches.push(buildPatchEntry(colorbar.id, 'height', Number(ownerBounds.height.toFixed(4))));
+        patches.push(...buildComponentPatchEntries(colorbar as ManifestObject, [
+          { prop: 'height', value: Number(ownerBounds.height.toFixed(4)) },
+        ]));
       }
     });
     return patches;
@@ -1549,10 +1620,14 @@ export function RightSidebar({
 
     const patches: PatchEntry[] = [];
     if (Math.abs(nextLeft - targetBounds.left) > 0.00005) {
-      patches.push(buildPatchEntry(target.id, 'left', Number(nextLeft.toFixed(4))));
+      patches.push(...buildComponentPatchEntries(target as ManifestObject, [
+        { prop: 'left', value: Number(nextLeft.toFixed(4)) },
+      ]));
     }
     if (Math.abs(nextWidth - targetBounds.width) > 0.00005) {
-      patches.push(buildPatchEntry(target.id, 'width', Number(nextWidth.toFixed(4))));
+      patches.push(...buildComponentPatchEntries(target as ManifestObject, [
+        { prop: 'width', value: Number(nextWidth.toFixed(4)) },
+      ]));
     }
     return patches;
   };
@@ -1573,11 +1648,11 @@ export function RightSidebar({
       (['left', 'bottom', 'width', 'height'] as const).forEach((prop) => {
         const value = Number(props[prop]);
         if (Number.isFinite(value)) {
-          patches.push(buildPatchEntry(subplot.id, prop, value));
+          patches.push(...buildComponentPatchEntries(subplot as ManifestObject, [{ prop, value }]));
         }
       });
       if (typeof props.aspect === 'string' || typeof props.aspect === 'number') {
-        patches.push(buildPatchEntry(subplot.id, 'aspect', props.aspect));
+        patches.push(...buildComponentPatchEntries(subplot as ManifestObject, [{ prop: 'aspect', value: props.aspect }]));
       }
     });
     colorbarOptions.forEach((colorbar) => {
@@ -1585,7 +1660,7 @@ export function RightSidebar({
       (['left', 'bottom', 'width', 'height'] as const).forEach((prop) => {
         const value = Number(props[prop]);
         if (Number.isFinite(value)) {
-          patches.push(buildPatchEntry(colorbar.id, prop, value));
+          patches.push(...buildComponentPatchEntries(colorbar as ManifestObject, [{ prop, value }]));
         }
       });
     });
@@ -1648,10 +1723,14 @@ export function RightSidebar({
     if (!firstBounds || !secondBounds) return [];
 
     const patches: PatchEntry[] = [
-      buildPatchEntry(first.id, 'left', Number(secondBounds.left.toFixed(4))),
-      buildPatchEntry(first.id, 'bottom', Number(secondBounds.bottom.toFixed(4))),
-      buildPatchEntry(second.id, 'left', Number(firstBounds.left.toFixed(4))),
-      buildPatchEntry(second.id, 'bottom', Number(firstBounds.bottom.toFixed(4))),
+      ...buildComponentPatchEntries(first as ManifestObject, [
+        { prop: 'left', value: Number(secondBounds.left.toFixed(4)) },
+        { prop: 'bottom', value: Number(secondBounds.bottom.toFixed(4)) },
+      ]),
+      ...buildComponentPatchEntries(second as ManifestObject, [
+        { prop: 'left', value: Number(firstBounds.left.toFixed(4)) },
+        { prop: 'bottom', value: Number(firstBounds.bottom.toFixed(4)) },
+      ]),
     ];
 
     colorbarOptions.forEach((colorbar) => {
@@ -1660,16 +1739,16 @@ export function RightSidebar({
       const colorbarBounds = readNormalizedBounds(colorbar);
       if (!owner || !colorbarBounds) return;
       if (owner.id === first.id) {
-        patches.push(
-          buildPatchEntry(colorbar.id, 'left', Number((colorbarBounds.left + secondBounds.left - firstBounds.left).toFixed(4))),
-          buildPatchEntry(colorbar.id, 'bottom', Number((colorbarBounds.bottom + secondBounds.bottom - firstBounds.bottom).toFixed(4))),
-        );
+        patches.push(...buildComponentPatchEntries(colorbar as ManifestObject, [
+          { prop: 'left', value: Number((colorbarBounds.left + secondBounds.left - firstBounds.left).toFixed(4)) },
+          { prop: 'bottom', value: Number((colorbarBounds.bottom + secondBounds.bottom - firstBounds.bottom).toFixed(4)) },
+        ]));
       }
       if (owner.id === second.id) {
-        patches.push(
-          buildPatchEntry(colorbar.id, 'left', Number((colorbarBounds.left + firstBounds.left - secondBounds.left).toFixed(4))),
-          buildPatchEntry(colorbar.id, 'bottom', Number((colorbarBounds.bottom + firstBounds.bottom - secondBounds.bottom).toFixed(4))),
-        );
+        patches.push(...buildComponentPatchEntries(colorbar as ManifestObject, [
+          { prop: 'left', value: Number((colorbarBounds.left + firstBounds.left - secondBounds.left).toFixed(4)) },
+          { prop: 'bottom', value: Number((colorbarBounds.bottom + firstBounds.bottom - secondBounds.bottom).toFixed(4)) },
+        ]));
       }
     });
 
@@ -2045,13 +2124,15 @@ export function RightSidebar({
         clearDraft(gid, label);
         return;
       }
+      const patch = buildSupportedSidebarPatchEntry(manifest, gid, label, nextVal);
+      if (!patch) return;
       if (onImmediatePatch) {
-        const result = await onImmediatePatch([buildPatchEntry(gid, label, nextVal)]);
+        const result = await onImmediatePatch([patch]);
         if (result && typeof result === 'object' && 'status' in result && result.status === 'error') {
           return;
         }
       } else {
-        await onPatch([buildPatchEntry(gid, label, nextVal)]);
+        await onPatch([patch]);
       }
       clearDraft(gid, label);
     };
@@ -3399,14 +3480,14 @@ export function RightSidebar({
       <div className="space-y-6">
         {renderPanelTitle('坐标轴微调 (Axis)')}
         <div className="space-y-4">
-          {renderRangePair(obj.id, 'X 轴范围 (Limits)', xlim, 'xlim')}
-          {renderRangePair(obj.id, 'Y 轴范围 (Limits)', ylim, 'ylim')}
+          {supportsObjectProp(obj, 'xlim') && renderRangePair(obj.id, 'X 轴范围 (Limits)', xlim, 'xlim')}
+          {supportsObjectProp(obj, 'ylim') && renderRangePair(obj.id, 'Y 轴范围 (Limits)', ylim, 'ylim')}
 
-          {renderNumberInput(obj.id, 'x_tick_rotation', props.x_tick_rotation, (v) => handlePatch(obj.id, 'x_tick_rotation', v), { min: 0, max: 90 })}
+          {supportsObjectProp(obj, 'x_tick_rotation') && renderNumberInput(obj.id, 'x_tick_rotation', props.x_tick_rotation, (v) => handlePatch(obj.id, 'x_tick_rotation', v), { min: 0, max: 90 })}
           
-          {renderSelectInput('刻度方向', props.tick_direction || 'out', ['out', 'in', 'inout'], (v) => handlePatch(obj.id, 'tick_direction', v))}
+          {supportsObjectProp(obj, 'tick_direction') && renderSelectInput('刻度方向', props.tick_direction || 'out', ['out', 'in', 'inout'], (v) => handlePatch(obj.id, 'tick_direction', v))}
           
-          {renderBoolInput('显示副刻度', Boolean(props.show_minor_ticks), (v) => handlePatch(obj.id, 'show_minor_ticks', v))}
+          {supportsObjectProp(obj, 'show_minor_ticks') && renderBoolInput('显示副刻度', Boolean(props.show_minor_ticks), (v) => handlePatch(obj.id, 'show_minor_ticks', v))}
         </div>
       </div>
     );
@@ -3418,13 +3499,13 @@ export function RightSidebar({
       <div className="space-y-6">
         {renderPanelTitle('网格线微调 (Grid)')}
         <div className="space-y-4">
-          {renderBoolInput('开启网格', Boolean(props.visible), (v) => handlePatch(obj.id, 'visible', v))}
+          {supportsObjectProp(obj, 'visible') && renderBoolInput('开启网格', Boolean(props.visible), (v) => handlePatch(obj.id, 'visible', v))}
           {props.visible !== false && (
             <>
-              {renderColorInput('网格线颜色', props.color || '#cccccc', (v) => handlePatch(obj.id, 'color', v), `${obj.id}:color`)}
-              {renderNumberInput(obj.id, 'linewidth', props.linewidth || 0.5, (v) => handlePatch(obj.id, 'linewidth', v), { min: 0.1, max: 5, step: 0.1 })}
-              {renderSelectInput('线型', props.linestyle || '-', ['-', '--', '-.', ':'], (v) => handlePatch(obj.id, 'linestyle', v))}
-              {renderNumberInput(obj.id, 'alpha', props.alpha || 1.0, (v) => handlePatch(obj.id, 'alpha', v), { min: 0.0, max: 1.0, step: 0.1 })}
+              {supportsObjectProp(obj, 'color') && renderColorInput('网格线颜色', props.color || '#cccccc', (v) => handlePatch(obj.id, 'color', v), `${obj.id}:color`)}
+              {supportsObjectProp(obj, 'linewidth') && renderNumberInput(obj.id, 'linewidth', props.linewidth || 0.5, (v) => handlePatch(obj.id, 'linewidth', v), { min: 0.1, max: 5, step: 0.1 })}
+              {supportsObjectProp(obj, 'linestyle') && renderSelectInput('线型', props.linestyle || '-', ['-', '--', '-.', ':'], (v) => handlePatch(obj.id, 'linestyle', v))}
+              {supportsObjectProp(obj, 'alpha') && renderNumberInput(obj.id, 'alpha', props.alpha || 1.0, (v) => handlePatch(obj.id, 'alpha', v), { min: 0.0, max: 1.0, step: 0.1 })}
             </>
           )}
         </div>
@@ -3438,9 +3519,9 @@ export function RightSidebar({
       <div className="space-y-6">
         {renderPanelTitle('统一边框 (Spine Group)')}
         <div className="space-y-4">
-          {renderBoolInput('显示四边框', Boolean(props.visible), (v) => handlePatch(obj.id, 'visible', v))}
-          {renderColorInput('边框颜色', props.color || '#000000', (v) => handlePatch(obj.id, 'color', v), `${obj.id}:color`)}
-          {renderNumberInput(obj.id, 'linewidth', props.linewidth || 1, (v) => handlePatch(obj.id, 'linewidth', v), { min: 0, max: 8, step: 0.1 })}
+          {supportsObjectProp(obj, 'visible') && renderBoolInput('显示四边框', Boolean(props.visible), (v) => handlePatch(obj.id, 'visible', v))}
+          {supportsObjectProp(obj, 'color') && renderColorInput('边框颜色', props.color || '#000000', (v) => handlePatch(obj.id, 'color', v), `${obj.id}:color`)}
+          {supportsObjectProp(obj, 'linewidth') && renderNumberInput(obj.id, 'linewidth', props.linewidth || 1, (v) => handlePatch(obj.id, 'linewidth', v), { min: 0, max: 8, step: 0.1 })}
         </div>
       </div>
     );
@@ -3453,28 +3534,28 @@ export function RightSidebar({
       <div className="space-y-6">
         {renderPanelTitle(`${axisName} 轴详细控制`)}
         <div className="space-y-4">
-          {renderRangePair(obj.id, `${axisName} 范围`, limits, 'limits')}
-          {renderTextInput(obj.id, 'label', props.label || '', (v) => handlePatch(obj.id, 'label', v))}
-          {renderNumberInput(obj.id, 'label_fontsize', props.label_fontsize || 12, (v) => handlePatch(obj.id, 'label_fontsize', v), { min: 4, max: 40, step: 0.5 })}
-          {renderColorInput(`${axisName} 轴标题颜色`, props.label_color || '#000000', (v) => handlePatch(obj.id, 'label_color', v), `${obj.id}:label_color`)}
-          {renderNumberInput(obj.id, 'tick_rotation', props.tick_rotation || 0, (v) => handlePatch(obj.id, 'tick_rotation', v), { min: -180, max: 180, step: 1 })}
-          {renderSelectInput('tick_direction', props.tick_direction || 'out', TICK_DIRECTIONS, (v) => handlePatch(obj.id, 'tick_direction', v))}
-          {renderNumberInput(obj.id, 'tick_length', props.tick_length || 3.5, (v) => handlePatch(obj.id, 'tick_length', v), { min: 0, max: 20, step: 0.5 })}
-          {renderNumberInput(obj.id, 'tick_width', props.tick_width || 0.8, (v) => handlePatch(obj.id, 'tick_width', v), { min: 0, max: 10, step: 0.1 })}
-          {renderColorInput(`${axisName} 刻度线颜色`, props.tick_color || '#000000', (v) => handlePatch(obj.id, 'tick_color', v), `${obj.id}:tick_color`)}
-          {renderNumberInput(obj.id, 'tick_pad', props.tick_pad || 3.5, (v) => handlePatch(obj.id, 'tick_pad', v), { min: 0, max: 20, step: 0.5 })}
-          {renderBoolInput('show_minor_ticks', Boolean(props.show_minor_ticks), (v) => handlePatch(obj.id, 'show_minor_ticks', v))}
-          {renderNumberInput(obj.id, 'minor_tick_length', props.minor_tick_length || 2, (v) => handlePatch(obj.id, 'minor_tick_length', v), { min: 0, max: 20, step: 0.5 })}
-          {renderNumberInput(obj.id, 'minor_tick_width', props.minor_tick_width || 0.6, (v) => handlePatch(obj.id, 'minor_tick_width', v), { min: 0, max: 10, step: 0.1 })}
-          {renderColorInput(`${axisName} 副刻度线颜色`, props.minor_tick_color || '#000000', (v) => handlePatch(obj.id, 'minor_tick_color', v), `${obj.id}:minor_tick_color`)}
-          {renderNumberInput(obj.id, 'tick_labelsize', props.tick_labelsize || 10, (v) => handlePatch(obj.id, 'tick_labelsize', v), { min: 4, max: 30, step: 0.5 })}
-          {renderColorInput(`${axisName} 刻度文字颜色`, props.tick_labelcolor || '#000000', (v) => handlePatch(obj.id, 'tick_labelcolor', v), `${obj.id}:tick_labelcolor`)}
-          {renderFontSelect(obj.id, 'tick_labelfamily', props.tick_labelfamily || 'Arial', (v) => handlePatch(obj.id, 'tick_labelfamily', v))}
+          {supportsObjectProp(obj, 'limits') && renderRangePair(obj.id, `${axisName} 范围`, limits, 'limits')}
+          {supportsObjectProp(obj, 'label') && renderTextInput(obj.id, 'label', props.label || '', (v) => handlePatch(obj.id, 'label', v))}
+          {supportsObjectProp(obj, 'label_fontsize') && renderNumberInput(obj.id, 'label_fontsize', props.label_fontsize || 12, (v) => handlePatch(obj.id, 'label_fontsize', v), { min: 4, max: 40, step: 0.5 })}
+          {supportsObjectProp(obj, 'label_color') && renderColorInput(`${axisName} 轴标题颜色`, props.label_color || '#000000', (v) => handlePatch(obj.id, 'label_color', v), `${obj.id}:label_color`)}
+          {supportsObjectProp(obj, 'tick_rotation') && renderNumberInput(obj.id, 'tick_rotation', props.tick_rotation || 0, (v) => handlePatch(obj.id, 'tick_rotation', v), { min: -180, max: 180, step: 1 })}
+          {supportsObjectProp(obj, 'tick_direction') && renderSelectInput('tick_direction', props.tick_direction || 'out', TICK_DIRECTIONS, (v) => handlePatch(obj.id, 'tick_direction', v))}
+          {supportsObjectProp(obj, 'tick_length') && renderNumberInput(obj.id, 'tick_length', props.tick_length ?? 3.5, (v) => handlePatch(obj.id, 'tick_length', v), { min: 0, max: 20, step: 0.5 })}
+          {supportsObjectProp(obj, 'tick_width') && renderNumberInput(obj.id, 'tick_width', props.tick_width ?? 0.8, (v) => handlePatch(obj.id, 'tick_width', v), { min: 0, max: 10, step: 0.1 })}
+          {supportsObjectProp(obj, 'tick_color') && renderColorInput(`${axisName} 刻度线颜色`, props.tick_color || '#000000', (v) => handlePatch(obj.id, 'tick_color', v), `${obj.id}:tick_color`)}
+          {supportsObjectProp(obj, 'tick_pad') && renderNumberInput(obj.id, 'tick_pad', props.tick_pad ?? 3.5, (v) => handlePatch(obj.id, 'tick_pad', v), { min: 0, max: 20, step: 0.5, commitOnChange: true })}
+          {supportsObjectProp(obj, 'show_minor_ticks') && renderBoolInput('show_minor_ticks', Boolean(props.show_minor_ticks), (v) => handlePatch(obj.id, 'show_minor_ticks', v))}
+          {supportsObjectProp(obj, 'minor_tick_length') && renderNumberInput(obj.id, 'minor_tick_length', props.minor_tick_length ?? 2, (v) => handlePatch(obj.id, 'minor_tick_length', v), { min: 0, max: 20, step: 0.5 })}
+          {supportsObjectProp(obj, 'minor_tick_width') && renderNumberInput(obj.id, 'minor_tick_width', props.minor_tick_width ?? 0.6, (v) => handlePatch(obj.id, 'minor_tick_width', v), { min: 0, max: 10, step: 0.1 })}
+          {supportsObjectProp(obj, 'minor_tick_color') && renderColorInput(`${axisName} 副刻度线颜色`, props.minor_tick_color || '#000000', (v) => handlePatch(obj.id, 'minor_tick_color', v), `${obj.id}:minor_tick_color`)}
+          {supportsObjectProp(obj, 'tick_labelsize') && renderNumberInput(obj.id, 'tick_labelsize', props.tick_labelsize || 10, (v) => handlePatch(obj.id, 'tick_labelsize', v), { min: 4, max: 30, step: 0.5 })}
+          {supportsObjectProp(obj, 'tick_labelcolor') && renderColorInput(`${axisName} 刻度文字颜色`, props.tick_labelcolor || '#000000', (v) => handlePatch(obj.id, 'tick_labelcolor', v), `${obj.id}:tick_labelcolor`)}
+          {supportsObjectProp(obj, 'tick_labelfamily') && renderFontSelect(obj.id, 'tick_labelfamily', props.tick_labelfamily || 'Arial', (v) => handlePatch(obj.id, 'tick_labelfamily', v))}
           {supportsObjectProp(obj, 'tick_label_dx') && renderNumberInput(obj.id, 'tick_label_dx', props.tick_label_dx ?? 0, (v) => handlePatch(obj.id, 'tick_label_dx', v), { min: -80, max: 80, step: 0.5, commitOnChange: true })}
           {supportsObjectProp(obj, 'tick_label_dy') && renderNumberInput(obj.id, 'tick_label_dy', props.tick_label_dy ?? 0, (v) => handlePatch(obj.id, 'tick_label_dy', v), { min: -80, max: 80, step: 0.5, commitOnChange: true })}
-          {renderBoolInput('sci_notation', Boolean(props.sci_notation), (v) => handlePatch(obj.id, 'sci_notation', v))}
-          {renderBoolInput('use_math_text', Boolean(props.use_math_text), (v) => handlePatch(obj.id, 'use_math_text', v))}
-          {renderNumberInput(obj.id, 'offset_text_size', props.offset_text_size || 10, (v) => handlePatch(obj.id, 'offset_text_size', v), { min: 4, max: 30, step: 0.5 })}
+          {supportsObjectProp(obj, 'sci_notation') && renderBoolInput('sci_notation', Boolean(props.sci_notation), (v) => handlePatch(obj.id, 'sci_notation', v))}
+          {supportsObjectProp(obj, 'use_math_text') && renderBoolInput('use_math_text', Boolean(props.use_math_text), (v) => handlePatch(obj.id, 'use_math_text', v))}
+          {supportsObjectProp(obj, 'offset_text_size') && renderNumberInput(obj.id, 'offset_text_size', props.offset_text_size || 10, (v) => handlePatch(obj.id, 'offset_text_size', v), { min: 4, max: 30, step: 0.5 })}
         </div>
       </div>
     );
@@ -3486,30 +3567,36 @@ export function RightSidebar({
       <div className="space-y-6">
         {renderPanelTitle('图例容器微调 (Legend)')}
         <div className="space-y-4">
-          {renderBoolInput('显示图例', Boolean(props.visible), (v) => handlePatch(obj.id, 'visible', v))}
+          {supportsObjectProp(obj, 'visible') && renderBoolInput('显示图例', Boolean(props.visible), (v) => handlePatch(obj.id, 'visible', v))}
           {props.visible !== false && (
             <>
-              {renderNumberInput(obj.id, 'fontsize', props.fontsize || 10, (v) => handlePatch(obj.id, 'fontsize', v), { min: 4, max: 30 })}
-              {renderFontSelect(obj.id, 'fontfamily', props.fontfamily || 'sans-serif', (v) => handlePatch(obj.id, 'fontfamily', v))}
-              {renderTextInput(obj.id, 'title', props.title || '', (v) => handlePatch(obj.id, 'title', v))}
-              {renderSelectInput('loc', props.loc || 'best', LEGEND_LOCATIONS, (v) => handlePatch(obj.id, 'loc', v))}
-              {renderNumberInput(obj.id, 'ncol', props.ncol || 1, (v) => handlePatch(obj.id, 'ncol', v), { min: 1, max: 8, step: 1 })}
-              {renderNumberInput(obj.id, 'markerscale', props.markerscale || 1, (v) => handlePatch(obj.id, 'markerscale', v), { min: 0.1, max: 5, step: 0.1 })}
-              {renderNumberInput(obj.id, 'marker_yoffset', props.marker_yoffset || 0, (v) => handlePatch(obj.id, 'marker_yoffset', v), { min: -20, max: 20, step: 0.25, displayLabel: '图例符号垂直偏移' })}
-              {renderNumberInput(obj.id, 'handletextpad', props.handletextpad ?? 0.8, (v) => handlePatch(obj.id, 'handletextpad', v), { min: 0, max: 5, step: 0.1, displayLabel: '符号文字间距' })}
-              {renderNumberInput(obj.id, 'labelspacing', props.labelspacing ?? 0.5, (v) => handlePatch(obj.id, 'labelspacing', v), { min: 0, max: 5, step: 0.1, displayLabel: '图例行距' })}
+              {supportsObjectProp(obj, 'fontsize') && renderNumberInput(obj.id, 'fontsize', props.fontsize || 10, (v) => {
+                const patches = [
+                  ...buildObjectPatchEntries(obj, [{ prop: 'fontsize', value: v }]),
+                  ...buildLegendMarkerScalePatches([obj], v),
+                ];
+                if (patches.length > 0) void onPatch(patches);
+              }, { min: 4, max: 30 })}
+              {supportsObjectProp(obj, 'fontfamily') && renderFontSelect(obj.id, 'fontfamily', props.fontfamily || 'sans-serif', (v) => handlePatch(obj.id, 'fontfamily', v))}
+              {supportsObjectProp(obj, 'title') && renderTextInput(obj.id, 'title', props.title || '', (v) => handlePatch(obj.id, 'title', v))}
+              {supportsObjectProp(obj, 'loc') && renderSelectInput('loc', props.loc || 'best', LEGEND_LOCATIONS, (v) => handlePatch(obj.id, 'loc', v))}
+              {supportsObjectProp(obj, 'ncol') && renderNumberInput(obj.id, 'ncol', props.ncol || 1, (v) => handlePatch(obj.id, 'ncol', v), { min: 1, max: 8, step: 1 })}
+              {supportsObjectProp(obj, 'markerscale') && renderNumberInput(obj.id, 'markerscale', props.markerscale || 1, (v) => handlePatch(obj.id, 'markerscale', v), { min: 0.1, max: 5, step: 0.1 })}
+              {supportsObjectProp(obj, 'marker_yoffset') && renderNumberInput(obj.id, 'marker_yoffset', props.marker_yoffset || 0, (v) => handlePatch(obj.id, 'marker_yoffset', v), { min: -20, max: 20, step: 0.25, displayLabel: '图例符号垂直偏移' })}
+              {supportsObjectProp(obj, 'handletextpad') && renderNumberInput(obj.id, 'handletextpad', props.handletextpad ?? 0.8, (v) => handlePatch(obj.id, 'handletextpad', v), { min: 0, max: 5, step: 0.1, displayLabel: '符号文字间距' })}
+              {supportsObjectProp(obj, 'labelspacing') && renderNumberInput(obj.id, 'labelspacing', props.labelspacing ?? 0.5, (v) => handlePatch(obj.id, 'labelspacing', v), { min: 0, max: 5, step: 0.1, displayLabel: '图例行距' })}
               {supportsObjectProp(obj, 'handlelength') && renderNumberInput(obj.id, 'handlelength', props.handlelength ?? 2, (v) => handlePatch(obj.id, 'handlelength', v), { min: 0.1, max: 8, step: 0.1, displayLabel: '符号区域宽度' })}
               {supportsObjectProp(obj, 'handleheight') && renderNumberInput(obj.id, 'handleheight', props.handleheight ?? 0.7, (v) => handlePatch(obj.id, 'handleheight', v), { min: 0.1, max: 5, step: 0.1, displayLabel: '符号区域高度' })}
               {supportsObjectProp(obj, 'columnspacing') && renderNumberInput(obj.id, 'columnspacing', props.columnspacing ?? 2, (v) => handlePatch(obj.id, 'columnspacing', v), { min: 0, max: 8, step: 0.1, displayLabel: '图例列间距' })}
               {supportsObjectProp(obj, 'borderpad') && renderNumberInput(obj.id, 'borderpad', props.borderpad ?? 0.4, (v) => handlePatch(obj.id, 'borderpad', v), { min: 0, max: 5, step: 0.1, displayLabel: '图例内部边距' })}
               {supportsObjectProp(obj, 'borderaxespad') && renderNumberInput(obj.id, 'borderaxespad', props.borderaxespad ?? 0.5, (v) => handlePatch(obj.id, 'borderaxespad', v), { min: 0, max: 5, step: 0.1, displayLabel: '图例与主图间距' })}
-              {renderBoolInput('显示背景框 (Border)', Boolean(props.frameon), (v) => handlePatch(obj.id, 'frameon', v))}
+              {supportsObjectProp(obj, 'frameon') && renderBoolInput('显示背景框 (Border)', Boolean(props.frameon), (v) => handlePatch(obj.id, 'frameon', v))}
               {props.frameon !== false && (
                 <>
-                  {renderColorInput('背景填充色', props.facecolor || '#ffffff', (v) => handlePatch(obj.id, 'facecolor', v), `${obj.id}:facecolor`)}
-                  {renderColorInput('边框颜色', props.edgecolor || '#000000', (v) => handlePatch(obj.id, 'edgecolor', v), `${obj.id}:edgecolor`)}
-                  {renderNumberInput(obj.id, 'linewidth', props.linewidth || 1.0, (v) => handlePatch(obj.id, 'linewidth', v), { min: 0.0, max: 5.0, step: 0.1 })}
-                  {renderNumberInput(obj.id, 'alpha', props.alpha || 1.0, (v) => handlePatch(obj.id, 'alpha', v), { min: 0.0, max: 1.0, step: 0.1 })}
+                  {supportsObjectProp(obj, 'facecolor') && renderColorInput('背景填充色', props.facecolor || '#ffffff', (v) => handlePatch(obj.id, 'facecolor', v), `${obj.id}:facecolor`)}
+                  {supportsObjectProp(obj, 'edgecolor') && renderColorInput('边框颜色', props.edgecolor || '#000000', (v) => handlePatch(obj.id, 'edgecolor', v), `${obj.id}:edgecolor`)}
+                  {supportsObjectProp(obj, 'linewidth') && renderNumberInput(obj.id, 'linewidth', props.linewidth || 1.0, (v) => handlePatch(obj.id, 'linewidth', v), { min: 0.0, max: 5.0, step: 0.1 })}
+                  {supportsObjectProp(obj, 'alpha') && renderNumberInput(obj.id, 'alpha', props.alpha || 1.0, (v) => handlePatch(obj.id, 'alpha', v), { min: 0.0, max: 1.0, step: 0.1 })}
                 </>
               )}
             </>
@@ -5217,14 +5304,14 @@ export function RightSidebar({
             new Map(tickPatches.map(patch => [`${patch.gid}:${patch.prop}`, patch])).values()
           );
           if (deduped.length === selectedObjects.length || selectedObjects.every(obj => Boolean(normalizeTickTextPatch(obj.id, prop)))) {
-            void onPatch(deduped.map(patch => ({
-              op: 'set' as const,
-              mode: 'backend_patch' as const,
-              gid: patch.gid,
-              prop: patch.prop,
-              value,
-            })));
-            return;
+            const supportedPatches = deduped.flatMap((patch) => {
+              const supported = buildSupportedSidebarPatchEntry(manifest, patch.gid, patch.prop, value);
+              return supported ? [supported] : [];
+            });
+            if (supportedPatches.length > 0) {
+              void onPatch(supportedPatches);
+              return;
+            }
           }
         }
       }
@@ -5240,13 +5327,15 @@ export function RightSidebar({
             ? 'tick_labelfamily'
             : 'tick_labelcolor';
         const axisIndexes = Array.from(new Set(selectedObjects.map(obj => obj.id.match(regex)?.[1]).filter(Boolean))) as string[];
-        const patches = axisIndexes.map(index => ({
-          op: 'set' as const,
-          mode: 'backend_patch' as const,
-          gid: `${axisPrefix}${index}`,
-          prop: axisProp,
-          value,
-        }));
+        const patches = axisIndexes.flatMap(index => {
+          const patch = buildSupportedSidebarPatchEntry(
+            manifest,
+            `${axisPrefix}${index}`,
+            axisProp,
+            value,
+          );
+          return patch ? [patch] : [];
+        });
         if (patches.length > 0) void onPatch(patches);
         return;
       }
@@ -5262,8 +5351,14 @@ export function RightSidebar({
           selectedObjects.filter(o => o.id.startsWith('ytick.')).map(o => o.id.match(yTickRegex)?.[1]).filter(Boolean)
         )) as string[];
         const axisPatches = [
-          ...xIndexes.map(i => ({ op: 'set' as const, mode: 'backend_patch' as const, gid: `axis.x.${i}`, prop: axisProp, value })),
-          ...yIndexes.map(i => ({ op: 'set' as const, mode: 'backend_patch' as const, gid: `axis.y.${i}`, prop: axisProp, value })),
+          ...xIndexes.flatMap(i => {
+            const patch = buildSupportedSidebarPatchEntry(manifest, `axis.x.${i}`, axisProp, value);
+            return patch ? [patch] : [];
+          }),
+          ...yIndexes.flatMap(i => {
+            const patch = buildSupportedSidebarPatchEntry(manifest, `axis.y.${i}`, axisProp, value);
+            return patch ? [patch] : [];
+          }),
         ];
         if (axisPatches.length > 0) void onPatch(axisPatches);
         // fall through: non-tick objects handled by the loop below
@@ -5761,18 +5856,24 @@ export function RightSidebar({
         patches.push(...buildFontGroupPatches(group.id, group.objects, 'color', preset.textColor));
       });
       axisObjects.forEach(axis => {
-        patches.push(
-          { op: 'set', mode: 'backend_patch', gid: axis.id, prop: 'tick_direction', value: preset.tickDirection },
-          { op: 'set', mode: 'backend_patch', gid: axis.id, prop: 'tick_length', value: preset.tickLength },
-          { op: 'set', mode: 'backend_patch', gid: axis.id, prop: 'tick_width', value: preset.tickWidth },
-          { op: 'set', mode: 'backend_patch', gid: axis.id, prop: 'tick_color', value: preset.tickColor },
-        );
+        [
+          ['tick_direction', preset.tickDirection],
+          ['tick_length', preset.tickLength],
+          ['tick_width', preset.tickWidth],
+          ['tick_color', preset.tickColor],
+        ].forEach(([prop, value]) => {
+          const patch = buildSupportedSidebarPatchEntry(manifest, axis.id, String(prop), value);
+          if (patch) patches.push(patch);
+        });
       });
       spineObjects.forEach(spine => {
-        patches.push(
-          { op: 'set', mode: 'backend_patch', gid: spine.id, prop: 'linewidth', value: preset.spineWidth },
-          { op: 'set', mode: 'backend_patch', gid: spine.id, prop: 'color', value: preset.spineColor },
-        );
+        [
+          ['linewidth', preset.spineWidth],
+          ['color', preset.spineColor],
+        ].forEach(([prop, value]) => {
+          const patch = buildSupportedSidebarPatchEntry(manifest, spine.id, String(prop), value);
+          if (patch) patches.push(patch);
+        });
       });
       return patches;
     };
