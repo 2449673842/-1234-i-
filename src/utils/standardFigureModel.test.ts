@@ -277,8 +277,10 @@ describe('normalizeFigureModel', () => {
       commonEditableProps: ['fontsize'],
       variants: 2,
     });
-    expect(model.capabilitySummary.notes).toContain('FancyArrowPatch not supported');
-    expect(model.capabilitySummary.notes).toContain('fancy: No dedicated adapter yet.');
+    expect(model.capabilitySummary.notes).toEqual([
+      '部分对象存在额外限制；未通过稳定重放验证的属性不会开放编辑。',
+    ]);
+    expect(model.capabilitySummary.notes.join(' ')).not.toMatch(/FancyArrowPatch|dedicated adapter/i);
     expect(model.editLog).toHaveLength(1);
     expect(model.fingerprint).toBe('fp_123');
     expect(model.codeSlice?.figureId).toBe('fig_1');
@@ -426,6 +428,52 @@ describe('buildCapabilitySummary', () => {
     });
   });
 
+  it('derives the object-type matrix for older manifests without coverageReport.byKind', () => {
+    const manifest = makePythonManifest({
+      objects: [
+        {
+          id: 'line.0',
+          kind: 'line',
+          label: 'Line A',
+          editable: ['color', 'linewidth'],
+          currentProps: { color: '#123456', linewidth: 1 },
+        },
+        {
+          id: 'line.1',
+          kind: 'line',
+          label: 'Line B',
+          editable: ['color'],
+          currentProps: { color: '#654321' },
+        },
+        {
+          id: 'text.0',
+          kind: 'text',
+          label: 'Readonly label',
+          editable: [],
+          currentProps: { text: 'Readonly' },
+        },
+      ],
+      coverageReport: undefined,
+    });
+
+    expect(buildCapabilitySummary(manifest).byKind).toEqual([
+      {
+        kind: 'line',
+        count: 2,
+        editableProps: ['color', 'linewidth'],
+        commonEditableProps: ['color'],
+        variants: 2,
+      },
+      {
+        kind: 'text',
+        count: 1,
+        editableProps: [],
+        commonEditableProps: [],
+        variants: 1,
+      },
+    ]);
+  });
+
   it('reports unsupported when nothing editable exists and unsupported artists are present', () => {
     const manifest = makePythonManifest({
       objects: [{
@@ -450,6 +498,84 @@ describe('buildCapabilitySummary', () => {
       unsupportedObjects: 1,
       unsupportedArtistCount: 2,
     });
+  });
+
+  it('builds user-facing degradation details and scientific-impact markers from renderer facts', () => {
+    const manifest = makePythonManifest({
+      objects: [{
+        id: 'container.contourf.0.0',
+        kind: 'contourf',
+        label: 'Contour fill',
+        editable: ['vmin', 'vmax'],
+        currentProps: { vmin: 0, vmax: 1 },
+        propertyCapabilities: [
+          { prop: 'vmin', patchMode: 'backend_patch', scopes: ['object'], preview: 'none', replay: 'stable' },
+          { prop: 'vmax', patchMode: 'backend_patch', scopes: ['object'], preview: 'none', replay: 'stable' },
+        ],
+        semanticCoverage: {
+          family: 'contourf',
+          status: 'flattened',
+          attribution: 'class',
+          preservedKind: 'contourf',
+          preservedRole: 'contourf_series',
+          preservedEditable: ['vmin', 'vmax'],
+          reason: 'internal resolver fallback details must not reach users',
+        },
+        source: { artistClass: 'QuadContourSet', axesIndex: 0, callName: 'Axes.contourf' },
+      }],
+      coverageReport: {
+        summary: { recognized: 1, semantic: 0, editable: 1, readonly: 0, unsupported: 1, dedicated: 0, flattened: 1 },
+        byKind: {
+          contourf: {
+            count: 1,
+            editableProps: ['vmax', 'vmin'],
+            editablePropsIntersection: ['vmax', 'vmin'],
+            editablePropVariants: [{ editableProps: ['vmax', 'vmin'], count: 1 }],
+          },
+        },
+        complexArtists: [{
+          id: 'container.contourf.0.0',
+          class: 'QuadContourSet',
+          sourceCall: 'Axes.contourf',
+          family: 'contourf',
+          status: 'flattened',
+          attribution: 'class',
+          preservedKind: 'contourf',
+          preservedRole: 'contourf_series',
+          preservedEditable: ['vmin', 'vmax'],
+          reason: 'internal resolver fallback details must not reach users',
+        }],
+        unsupportedArtists: [{
+          class: 'ThirdPartyArtist',
+          count: 1,
+          reason: 'sandbox implementation detail must not reach users',
+        }],
+      },
+      unsupportedNotes: ['internal capability scope mismatch'],
+    });
+
+    const summary = buildCapabilitySummary(manifest);
+    expect(summary.semanticObjects).toBe(0);
+    expect(summary.details).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        status: 'flattened',
+        sourceClass: 'QuadContourSet',
+        sourceCall: 'Axes.contourf',
+        suggestion: expect.stringContaining('代码面板'),
+      }),
+      expect.objectContaining({
+        status: 'unsupported',
+        sourceClass: 'ThirdPartyArtist',
+        count: 1,
+      }),
+    ]));
+    expect(summary.details.map(detail => `${detail.reason} ${detail.suggestion}`).join(' ')).not.toMatch(/sandbox|scope|resolver/i);
+    expect(summary.notes).toEqual(['部分对象存在额外限制；未通过稳定重放验证的属性不会开放编辑。']);
+    expect(summary.notes.join(' ')).not.toMatch(/internal|scope|resolver|sandbox/i);
+    expect(summary.scientificImpactProps).toEqual([
+      { prop: 'vmax', label: '色阶上限', objectCount: 1 },
+      { prop: 'vmin', label: '色阶下限', objectCount: 1 },
+    ]);
   });
 });
 

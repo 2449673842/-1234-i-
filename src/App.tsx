@@ -23,7 +23,15 @@ import { useFigureSession } from './hooks/useFigureSession';
 import { buildReproduciblePython } from './utils/reproduciblePython';
 import { applyRuntimePatchesToManifest, applyRuntimePatchesToSvg } from './utils/svgEditor';
 import { mapPatchesToTargetFigure } from './utils/semanticPatchMapping';
-import { compileEditingIntent, retargetEditingIntentForFigure } from './utils/editingIntentCompiler';
+import {
+  isExplicitlyDeniedCrossFigure,
+  isContentIntent,
+  isLayoutIntent,
+  isPositionIntent,
+  retargetEditingIntentForFigure,
+} from './utils/editingIntentCompiler';
+import { compileEditingIntentWithControlledResolver } from './utils/targetResolver';
+import { EDITING_FEATURE_FLAGS } from './utils/editingFeatureFlags';
 import {
   draftAppliesToFigure,
   draftsEligibleForDirectPersistence,
@@ -1296,6 +1304,9 @@ export default function App() {
       if (draft.intent && targetManifest) {
         const explicitSelection = draft.intent.scope.selectionMode === 'explicit_objects'
           || draft.intent.scope.selectionMode === 'selected_only';
+        const crossFigureDenied = isContentIntent(draft.intent.intent)
+          || isPositionIntent(draft.intent.intent)
+          || isLayoutIntent(draft.intent.intent);
         const identityRelation = draft.identity?.relation;
         const targetRole = String(draft.intent.scope.targetRole);
         const diagramTargetRoles = [
@@ -1336,7 +1347,26 @@ export default function App() {
             skipped: mapped.skipped.map(normalizeSkippedTarget),
           };
         }
-        const compiled = compileEditingIntent(targetManifest, retargetEditingIntentForFigure(draft.intent));
+        if (
+          explicitSelection
+          && !isExplicitlyDeniedCrossFigure(draft.intent)
+          && draft.intent.scope.crossFigure !== 'allow'
+          && !crossFigureDenied
+        ) {
+          const mapped = mapPatchesToTargetFigure([plainPatch], sourceManifest, targetManifest);
+          return {
+            patches: mapped.patches as PatchEntry[],
+            skipped: mapped.skipped.map(normalizeSkippedTarget),
+          };
+        }
+        const compiled = compileEditingIntentWithControlledResolver(
+          targetManifest,
+          retargetEditingIntentForFigure(draft.intent),
+          {
+            enabled: EDITING_FEATURE_FLAGS.generalTargetResolverV2,
+            legacyAdapterEnabled: EDITING_FEATURE_FLAGS.targetResolverLegacyAdapter,
+          },
+        );
         return { patches: compiled.patches, skipped: compiled.skipped };
       }
       const mapped = mapPatchesToTargetFigure([plainPatch], sourceManifest, targetManifest);

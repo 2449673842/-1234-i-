@@ -5,6 +5,23 @@ import {
   requiresSpecialAxesRelationIdentity,
   specialAxesRelationSignature,
 } from './specialAxesIdentity';
+import { EDITING_FEATURE_FLAGS } from './editingFeatureFlags';
+
+export interface CrossFigureMappingOptions {
+  identityV2Enabled?: boolean;
+  legacyScoreAdapterEnabled?: boolean;
+}
+
+interface ResolvedCrossFigureMappingOptions {
+  identityV2Enabled: boolean;
+  legacyScoreAdapterEnabled: boolean;
+}
+
+type IdentityTargetResolution =
+  | { status: 'matched'; object: ManifestObject }
+  | { status: 'ambiguous' }
+  | { status: 'conflict' }
+  | { status: 'not_found' };
 
 type PatchLike = DraftPatch | {
   gid?: string;
@@ -171,6 +188,140 @@ function isExactTargetCompatible(source: ManifestObject, target: ManifestObject)
     && isSpecialAxesRelationCompatible(source, target);
 }
 
+function hasAuthoritativeRelationIdentity(object: ManifestObject): boolean {
+  const relation = object.identity?.relation;
+  const hasPieIdentity = PIE_RELATION_ROLES.has(String(object.role))
+    && typeof relation?.pieId === 'string'
+    && typeof relation?.sliceIndex === 'number';
+  return hasPieIdentity
+    || vectorFieldRelation(object) !== null
+    || DIAGRAM_RELATION_ROLES.has(String(object.role))
+    || (
+      requiresSpecialAxesRelationIdentity(object)
+      && specialAxesRelationSignature(object.identity) !== null
+    );
+}
+
+function hasModernIdentity(object: ManifestObject): boolean {
+  return object.fingerprintVersion === 2 && Boolean(object.identity);
+}
+
+function hasMatchingStableIdentity(source: ManifestObject, target: ManifestObject): boolean {
+  const credentials = [
+    [source.identity?.instanceKey, target.identity?.instanceKey],
+    [source.stableKey, target.stableKey],
+    [source.identity?.seriesKey, target.identity?.seriesKey],
+    [source.identity?.semanticKey, target.identity?.semanticKey],
+  ] as const;
+  let matched = false;
+  for (const [sourceValue, targetValue] of credentials) {
+    if (!sourceValue) continue;
+    if (!targetValue || sourceValue !== targetValue) return false;
+    matched = true;
+  }
+  return matched;
+}
+
+function hasMatchingRemapIdentity(source: ManifestObject, target: ManifestObject): boolean {
+  const stableCredentials = [
+    [source.stableKey, target.stableKey],
+    [source.identity?.seriesKey, target.identity?.seriesKey],
+    [source.identity?.semanticKey, target.identity?.semanticKey],
+  ] as const;
+  let matched = Boolean(
+    source.identity?.instanceKey
+    && source.identity.instanceKey === target.identity?.instanceKey,
+  );
+  for (const [sourceValue, targetValue] of stableCredentials) {
+    if (!sourceValue) continue;
+    if (!targetValue || sourceValue !== targetValue) return false;
+    matched = true;
+  }
+  return matched;
+}
+
+function hasAnyIdentityCredentialMatch(source: ManifestObject, target: ManifestObject): boolean {
+  return Boolean(
+    (source.identity?.instanceKey && source.identity.instanceKey === target.identity?.instanceKey)
+    || (source.stableKey && source.stableKey === target.stableKey)
+    || (source.identity?.seriesKey && source.identity.seriesKey === target.identity?.seriesKey)
+    || (source.identity?.semanticKey && source.identity.semanticKey === target.identity?.semanticKey),
+  );
+}
+
+function isModernExactTargetCompatible(source: ManifestObject, target: ManifestObject): boolean {
+  if (!hasModernIdentity(source) || !hasModernIdentity(target)) return true;
+  if (hasAuthoritativeRelationIdentity(source) || hasAuthoritativeRelationIdentity(target)) {
+    return isExactTargetCompatible(source, target);
+  }
+  return hasMatchingStableIdentity(source, target);
+}
+
+function isModernIdentityRemapCompatible(source: ManifestObject, target: ManifestObject): boolean {
+  if (!hasModernIdentity(source) || !hasModernIdentity(target)) return true;
+  if (hasAuthoritativeRelationIdentity(source) || hasAuthoritativeRelationIdentity(target)) {
+    return isExactTargetCompatible(source, target);
+  }
+  return hasMatchingRemapIdentity(source, target);
+}
+
+function resolveCrossFigureMappingOptions(
+  options: CrossFigureMappingOptions = {},
+): ResolvedCrossFigureMappingOptions {
+  return {
+    identityV2Enabled: options.identityV2Enabled
+      ?? EDITING_FEATURE_FLAGS.crossFigureIdentityV2,
+    legacyScoreAdapterEnabled: options.legacyScoreAdapterEnabled
+      ?? EDITING_FEATURE_FLAGS.crossFigureLegacyScoreAdapter,
+  };
+}
+
+function resolveIdentityTarget(
+  source: ManifestObject,
+  targets: ManifestObject[],
+  prop: string | undefined,
+): IdentityTargetResolution {
+  const relationCompatible = targets.filter(target => (
+    supportsProp(target, prop)
+    && isExactTargetCompatible(source, target)
+  ));
+  const conflictingModernTarget = relationCompatible.some(target => (
+    hasModernIdentity(source)
+    && hasModernIdentity(target)
+    && hasAnyIdentityCredentialMatch(source, target)
+    && !isModernIdentityRemapCompatible(source, target)
+  ));
+  const compatible = relationCompatible.filter(target => (
+    isModernIdentityRemapCompatible(source, target)
+  ));
+  if (hasAuthoritativeRelationIdentity(source)) {
+    if (compatible.length === 1) return { status: 'matched', object: compatible[0] };
+    if (compatible.length > 1) return { status: 'ambiguous' };
+  }
+  const matchers: Array<(target: ManifestObject) => boolean> = [];
+
+  if (source.identity?.instanceKey) {
+    matchers.push(target => target.identity?.instanceKey === source.identity?.instanceKey);
+  }
+  if (source.stableKey) {
+    matchers.push(target => target.stableKey === source.stableKey);
+  }
+  if (source.identity?.seriesKey) {
+    matchers.push(target => target.identity?.seriesKey === source.identity?.seriesKey);
+  }
+  if (source.identity?.semanticKey) {
+    matchers.push(target => target.identity?.semanticKey === source.identity?.semanticKey);
+  }
+
+  for (const matches of matchers) {
+    const candidates = compatible.filter(matches);
+    if (candidates.length === 1) return { status: 'matched', object: candidates[0] };
+    if (candidates.length > 1) return { status: 'ambiguous' };
+  }
+  if (conflictingModernTarget) return { status: 'conflict' };
+  return { status: 'not_found' };
+}
+
 function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop: string | undefined): number {
   if (!supportsProp(target, prop)) return -1;
   if (source.role && target.role && source.role !== target.role) return -1;
@@ -245,6 +396,7 @@ export function mapPatchToTargetFigure(
   patch: PatchLike,
   sourceManifest: Manifest | null | undefined,
   targetManifest: Manifest | null | undefined,
+  options: CrossFigureMappingOptions = {},
 ): PatchLike | null {
   if (patch.type === 'code_patch' || patch.gid === 'code_patch') {
     return null;
@@ -255,13 +407,34 @@ export function mapPatchToTargetFigure(
 
   const targetObjects = objectList(targetManifest);
   if (!hasUniqueDiagramRelationTarget(sourceObject, targetObjects, patch.prop)) return null;
+  const resolvedOptions = resolveCrossFigureMappingOptions(options);
   const exactTarget = targetObjects.find(object => (
     object.id === patch.gid
     && supportsProp(object, patch.prop)
     && isExactTargetCompatible(sourceObject, object)
   ));
   if (exactTarget) {
+    if (
+      resolvedOptions.identityV2Enabled
+      && !isModernExactTargetCompatible(sourceObject, exactTarget)
+    ) {
+      return null;
+    }
     return mapPatchToObject(patch, targetManifest, exactTarget);
+  }
+
+  if (resolvedOptions.identityV2Enabled) {
+    const identityTarget = resolveIdentityTarget(sourceObject, targetObjects, patch.prop);
+    if (identityTarget.status === 'matched') {
+      return mapPatchToObject(patch, targetManifest, identityTarget.object);
+    }
+    if (
+      identityTarget.status === 'ambiguous'
+      || identityTarget.status === 'conflict'
+      || !resolvedOptions.legacyScoreAdapterEnabled
+    ) {
+      return null;
+    }
   }
 
   const candidates = targetObjects
@@ -279,6 +452,7 @@ export function mapPatchToTargetFigureMany(
   patch: PatchLike,
   sourceManifest: Manifest | null | undefined,
   targetManifest: Manifest | null | undefined,
+  options: CrossFigureMappingOptions = {},
 ): PatchLike[] {
   if (patch.type === 'code_patch' || patch.gid === 'code_patch') {
     return [];
@@ -287,7 +461,7 @@ export function mapPatchToTargetFigureMany(
   const sourceObject = findSourceObject(sourceManifest, patch.gid);
   if (!sourceObject) return [];
 
-  const mapped = mapPatchToTargetFigure(patch, sourceManifest, targetManifest);
+  const mapped = mapPatchToTargetFigure(patch, sourceManifest, targetManifest, options);
   return mapped ? [mapped] : [];
 }
 
@@ -295,12 +469,13 @@ export function mapPatchesToTargetFigure(
   patches: PatchLike[],
   sourceManifest: Manifest | null | undefined,
   targetManifest: Manifest | null | undefined,
+  options: CrossFigureMappingOptions = {},
 ): { patches: PatchLike[]; skipped: PatchLike[] } {
   const mapped: PatchLike[] = [];
   const skipped: PatchLike[] = [];
 
   for (const patch of patches) {
-    const next = mapPatchToTargetFigureMany(patch, sourceManifest, targetManifest);
+    const next = mapPatchToTargetFigureMany(patch, sourceManifest, targetManifest, options);
     if (next.length > 0) {
       mapped.push(...next);
     } else {

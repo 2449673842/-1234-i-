@@ -54,6 +54,222 @@ Figure.__init__ = patched_fig_init
 _intercepted_containers = []
 _intercepted_complex_artists = {}
 
+
+def _ast_call_chain(node: Any) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _ast_call_chain(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""
+
+
+def _scan_determinism_warnings(source: str) -> list[dict[str, Any]]:
+    """Report non-replayable source hints without blocking execution."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+
+    seeded_numpy = False
+    seeded_random = False
+    warnings: list[dict[str, Any]] = []
+
+    def add(symbol: str, node: ast.AST, message: str) -> None:
+        warnings.append({
+            "type": "non_deterministic_source",
+            "symbol": symbol,
+            "line": int(getattr(node, "lineno", 0) or 0),
+            "message": message,
+            "suggestion": "为随机数或时间来源提供固定输入，便于重复渲染和恢复历史状态。",
+        })
+
+    def is_fixed_seed_value(value: ast.AST) -> bool:
+        if isinstance(value, ast.Constant):
+            return value.value is not None
+        if isinstance(value, (ast.List, ast.Tuple)):
+            return bool(value.elts) and all(is_fixed_seed_value(item) for item in value.elts)
+        if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.UAdd, ast.USub)):
+            return is_fixed_seed_value(value.operand)
+        return False
+
+    def has_fixed_seed(node: ast.Call) -> bool:
+        values = list(node.args) + [keyword.value for keyword in node.keywords]
+        return bool(values) and all(is_fixed_seed_value(value) for value in values)
+
+    parents = {
+        id(child): parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+    def is_unconditionally_executed(node: ast.AST) -> bool:
+        """Accept only module-level calls; branches and deferred scopes are uncertain."""
+        current = node
+        while (parent := parents.get(id(current))) is not None:
+            if isinstance(parent, ast.Module):
+                return True
+            if isinstance(
+                parent,
+                (ast.AsyncFunctionDef, ast.ClassDef, ast.For, ast.FunctionDef, ast.If,
+                 ast.Try, ast.While, ast.With, ast.AsyncFor, ast.AsyncWith),
+            ):
+                return False
+            current = parent
+        return False
+
+    numpy_module_aliases = {"np", "numpy"}
+    random_module_aliases = {"random"}
+    random_seed_aliases: set[str] = set()
+    random_api_aliases: set[str] = set()
+    for import_node in ast.walk(tree):
+        if isinstance(import_node, ast.Import):
+            for imported in import_node.names:
+                if imported.name == "numpy":
+                    numpy_module_aliases.add(imported.asname or imported.name)
+                elif imported.name == "random":
+                    random_module_aliases.add(imported.asname or imported.name)
+        elif isinstance(import_node, ast.ImportFrom) and import_node.module == "random":
+            for imported in import_node.names:
+                alias = imported.asname or imported.name
+                if imported.name == "seed":
+                    random_seed_aliases.add(alias)
+                elif imported.name != "*":
+                    random_api_aliases.add(alias)
+
+    calls = sorted(
+        (node for node in ast.walk(tree) if isinstance(node, ast.Call)),
+        key=lambda node: (int(getattr(node, "lineno", 0) or 0), int(getattr(node, "col_offset", 0) or 0)),
+    )
+    for node in calls:
+        chain = _ast_call_chain(node.func)
+        if chain in {f"{alias}.random.seed" for alias in numpy_module_aliases}:
+            if is_unconditionally_executed(node):
+                seeded_numpy = has_fixed_seed(node)
+            continue
+        if chain in random_seed_aliases or chain in {f"{alias}.seed" for alias in random_module_aliases}:
+            if is_unconditionally_executed(node):
+                seeded_random = has_fixed_seed(node)
+            continue
+        if chain in {f"{alias}.random.default_rng" for alias in numpy_module_aliases}:
+            if not has_fixed_seed(node):
+                add("numpy.random", node, "default_rng 未提供固定 seed。")
+            continue
+        if any(chain.startswith(f"{alias}.random.") for alias in numpy_module_aliases) and not seeded_numpy:
+            add("numpy.random", node, "numpy.random 调用未发现固定 seed。")
+            continue
+        if (
+            (any(chain.startswith(f"{alias}.") for alias in random_module_aliases) or chain in random_api_aliases)
+            and not seeded_random
+        ):
+            add("random", node, "random 调用未发现固定 seed。")
+            continue
+        if chain in {"time.time", "time.time_ns", "datetime.datetime.now", "datetime.now", "datetime.date.today", "date.today"}:
+            add(chain, node, "当前时间会随渲染变化。")
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in warnings:
+        key = (str(item.get("symbol")), int(item.get("line") or 0))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _window_bbox(artist: Any, renderer: Any) -> Any:
+    try:
+        return artist.get_window_extent(renderer)
+    except (AttributeError, RuntimeError, ValueError):
+        return None
+
+
+def _bbox_outside(inner: Any, outer: Any, tolerance: float = 1.0) -> bool:
+    if inner is None or outer is None:
+        return False
+    return (
+        inner.x0 < outer.x0 - tolerance
+        or inner.y0 < outer.y0 - tolerance
+        or inner.x1 > outer.x1 + tolerance
+        or inner.y1 > outer.y1 + tolerance
+    )
+
+
+def _bbox_overlaps(first: Any, second: Any, tolerance: float = 0.5) -> bool:
+    if first is None or second is None:
+        return False
+    return (
+        min(first.x1, second.x1) - max(first.x0, second.x0) > tolerance
+        and min(first.y1, second.y1) - max(first.y0, second.y0) > tolerance
+    )
+
+
+def _collect_layout_warnings(fig: Any) -> list[dict[str, Any]]:
+    """Collect conservative clipping/overlap diagnostics for user-facing layout objects."""
+    try:
+        canvas = fig.canvas
+        renderer = getattr(canvas, "renderer", None) or canvas.get_renderer()
+        figure_bbox = fig.bbox
+        candidates: list[tuple[str, Any]] = []
+        for index, legend in enumerate(getattr(fig, "legends", []) or []):
+            bbox = _window_bbox(legend, renderer)
+            if bbox is not None:
+                candidates.append((f"figure.legend.{index}", bbox))
+
+        for axes_index, ax in enumerate(getattr(fig, "axes", []) or []):
+            title = getattr(ax, "title", None)
+            if title is not None and title.get_text():
+                bbox = _window_bbox(title, renderer)
+                if bbox is not None:
+                    candidates.append((f"axes.{axes_index}.title", bbox))
+            for label_name, label in (
+                ("xlabel", getattr(ax, "xaxis", None).get_label() if getattr(ax, "xaxis", None) else None),
+                ("ylabel", getattr(ax, "yaxis", None).get_label() if getattr(ax, "yaxis", None) else None),
+            ):
+                if label is not None and label.get_text():
+                    bbox = _window_bbox(label, renderer)
+                    if bbox is not None:
+                        candidates.append((f"axes.{axes_index}.{label_name}", bbox))
+            for axis_name, labels in (
+                ("x_tick", ax.get_xticklabels()),
+                ("y_tick", ax.get_yticklabels()),
+            ):
+                for label_index, label in enumerate(labels):
+                    if not label.get_visible() or not label.get_text():
+                        continue
+                    bbox = _window_bbox(label, renderer)
+                    if bbox is not None:
+                        candidates.append((f"axes.{axes_index}.{axis_name}.{label_index}", bbox))
+
+        warnings: list[dict[str, Any]] = []
+        for name, bbox in candidates:
+            if _bbox_outside(bbox, figure_bbox):
+                warnings.append({
+                    "type": "layout_clip",
+                    "element": name,
+                    "message": "文字或图例超出画布边界，导出时可能被裁切。",
+                    "suggestion": "调整边距、字号、旋转角度或图例位置后重新渲染。",
+                })
+
+        major_candidates = [
+            (name, bbox)
+            for name, bbox in candidates
+            if ".title" in name or name.startswith("figure.legend") or ".xlabel" in name or ".ylabel" in name
+        ]
+        for index, (first_name, first_bbox) in enumerate(major_candidates):
+            for second_name, second_bbox in major_candidates[index + 1:]:
+                if _bbox_overlaps(first_bbox, second_bbox):
+                    warnings.append({
+                        "type": "layout_overlap",
+                        "elements": [first_name, second_name],
+                        "message": "标题、图例或轴标签的显示区域发生重叠。",
+                        "suggestion": "调整布局间距、位置或字号后重新渲染。",
+                    })
+        return warnings
+    except Exception:
+        return []
+
 class BoxplotContainer:
     def __init__(self, bp_dict, label=""):
         self.bp_dict = bp_dict
@@ -4233,7 +4449,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 flattened_count += 1
             elif status == "ambiguous":
                 ambiguous_count += 1
-            complex_artists.append({
+            complex_row = {
                 "id": obj.get("id"),
                 "class": obj.get("source", {}).get("artistClass"),
                 "family": semantic_coverage.get("family"),
@@ -4243,7 +4459,11 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 "preservedRole": semantic_coverage.get("preservedRole"),
                 "preservedEditable": list(semantic_coverage.get("preservedEditable") or []),
                 "reason": semantic_coverage.get("reason"),
-            })
+            }
+            source_call = obj.get("source", {}).get("callName")
+            if isinstance(source_call, str) and source_call:
+                complex_row["sourceCall"] = source_call
+            complex_artists.append(complex_row)
 
     for kind, detail in by_kind.items():
         kind_meta = by_kind_meta[kind]
@@ -4268,6 +4488,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             "editable": editable_count,
             "readonly": readonly_count,
             "unsupported": sum(unsupported_map.values()),
+            "semantic": dedicated_count,
             "dedicated": dedicated_count,
             "flattened": flattened_count,
             "ambiguous": ambiguous_count,
@@ -5984,8 +6205,11 @@ def replay_render(
         "editApplyMs": 0,
         "introspectionMs": 0,
         "svgSerializeMs": 0,
+        "layoutDiagnosticsMs": 0,
         "binaryExportMs": 0,
     }
+    determinism_warnings = _scan_determinism_warnings(script)
+    layout_warnings: list[dict[str, Any]] = []
 
     def elapsed_ms(since: float) -> int:
         return max(0, round((time.perf_counter() - since) * 1000))
@@ -6033,6 +6257,7 @@ def replay_render(
             "traceback": traceback.format_exc(),
             "timingMs": total_ms,
             "timingBreakdown": {**timing_breakdown, "totalMs": total_ms},
+            "determinismWarnings": determinism_warnings,
         }
     timing_breakdown["scriptExecutionMs"] = elapsed_ms(script_execution_started)
 
@@ -6075,6 +6300,7 @@ def replay_render(
             "message": "脚本未创建任何 matplotlib Figure",
             "timingMs": total_ms,
             "timingBreakdown": {**timing_breakdown, "totalMs": total_ms},
+            "determinismWarnings": determinism_warnings,
         }
 
     # --- 4. Process each Figure ---
@@ -6106,6 +6332,15 @@ def replay_render(
         figure_timing = result.get("timingBreakdown", {})
         timing_breakdown["introspectionMs"] += int(figure_timing.get("introspectionMs", 0) or 0)
         timing_breakdown["svgSerializeMs"] += int(figure_timing.get("svgSerializeMs", 0) or 0)
+        layout_diagnostics_started = time.perf_counter()
+        try:
+            figure_layout_warnings = _collect_layout_warnings(fig)
+        except Exception:
+            figure_layout_warnings = []
+        timing_breakdown["layoutDiagnosticsMs"] += elapsed_ms(layout_diagnostics_started)
+        for warning in figure_layout_warnings:
+            warning["figureId"] = fig_id
+        layout_warnings.extend(figure_layout_warnings)
 
         # Compute figure fingerprint for identity tracking
         manifest = result.get("manifest", {})
@@ -6162,6 +6397,7 @@ def replay_render(
             "objectCount": len(objects),
             "kindCounts": kind_counts,
             "codeSlice": code_slices[idx] if idx < len(code_slices) else None,
+            "layoutWarnings": figure_layout_warnings,
         }
         if binary_b64:
             fig_entry["binary_b64"] = binary_b64
@@ -6193,6 +6429,8 @@ def replay_render(
     # Expose figures list
     ret["figures"] = figures_data
     ret["codeSlices"] = code_slices
+    ret["determinismWarnings"] = determinism_warnings
+    ret["layoutWarnings"] = layout_warnings
     # Expose patch warnings
     if all_warnings:
         ret["warnings"] = all_warnings

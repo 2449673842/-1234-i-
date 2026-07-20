@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Baseline, Lock, Layout, Paintbrush, Palette, Sliders, X } from 'lucide-react';
+import { Baseline, ChevronDown, ChevronUp, Lock, Layout, Paintbrush, Palette, Sliders, X } from 'lucide-react';
 import { FigureSession, PatchEntry, ManifestObject, ManifestField, Binding, LocalPatchEntry, ManifestEditScope, ManifestObjectKind } from '../schemas/manifest';
 import { normalizeFigureModel } from '../utils/standardFigureModel';
 import { resolveFigureId } from '../utils/figureIdentity';
-import { compileEditingIntent } from '../utils/editingIntentCompiler';
 import { compileEditingIntentWithControlledResolver } from '../utils/targetResolver';
 import { recordTargetResolverShadowDiagnostic } from '../utils/targetResolverDiagnostics';
 import { recordPropertyProjectionShadowDiagnostic } from '../utils/propertyProjectionDiagnostics';
 import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
+import { EDITING_FEATURE_FLAGS } from '../utils/editingFeatureFlags';
 import {
   hasAuthoritativePropertyCapabilities,
   isPythonStructuralSeriesProp,
@@ -80,15 +80,11 @@ const STEM_PROPS = new Set([
   'markersize',
   'alpha',
 ]);
-const FONT_TARGET_RESOLVER_V2_ENABLED = (
-  import.meta as ImportMeta & { env?: Record<string, string | undefined> }
-).env?.VITE_SCIFIGURE_FONT_TARGET_RESOLVER_V2 !== '0';
-const COMPONENT_TARGET_RESOLVER_V2_ENABLED = (
-  import.meta as ImportMeta & { env?: Record<string, string | undefined> }
-).env?.VITE_SCIFIGURE_COMPONENT_TARGET_RESOLVER_V2 !== '0';
-const PALETTE_TARGET_RESOLVER_V2_ENABLED = (
-  import.meta as ImportMeta & { env?: Record<string, string | undefined> }
-).env?.VITE_SCIFIGURE_PALETTE_TARGET_RESOLVER_V2 !== '0';
+const FONT_TARGET_RESOLVER_V2_ENABLED = EDITING_FEATURE_FLAGS.fontTargetResolverV2;
+const COMPONENT_TARGET_RESOLVER_V2_ENABLED = EDITING_FEATURE_FLAGS.componentTargetResolverV2;
+const PALETTE_TARGET_RESOLVER_V2_ENABLED = EDITING_FEATURE_FLAGS.paletteTargetResolverV2;
+const GENERAL_TARGET_RESOLVER_V2_ENABLED = EDITING_FEATURE_FLAGS.generalTargetResolverV2;
+const TARGET_RESOLVER_LEGACY_ADAPTER_ENABLED = EDITING_FEATURE_FLAGS.targetResolverLegacyAdapter;
 const PALETTE_CONTROLS_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
 ).env?.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 !== '0';
@@ -768,6 +764,7 @@ export function RightSidebar({
   const [layoutSnapshotAvailable, setLayoutSnapshotAvailable] = useState(false);
   const originalLayoutSnapshotRef = useRef<PatchEntry[] | null>(null);
   const [showDraftDetails, setShowDraftDetails] = useState(false);
+  const [showCapabilityDetails, setShowCapabilityDetails] = useState(false);
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
   const [colorDraftValues, setColorDraftValues] = useState<Record<string, string>>({});
   const [customPresets, setCustomPresets] = useState<Record<string, string[]>>({});
@@ -797,6 +794,7 @@ export function RightSidebar({
     setLastSelectedGroupId(null);
     setComponentPatchNotice(null);
     setPreservedVerticalGap(null);
+    setShowCapabilityDetails(false);
   }, [figSession?.revision]);
 
   useEffect(() => {
@@ -1265,7 +1263,10 @@ export function RightSidebar({
   );
 
   const compileIntentPatches = (intent: EditingIntent): PatchEntry[] => {
-    const result = compileEditingIntent(manifest, intent);
+    const result = compileEditingIntentWithControlledResolver(manifest, intent, {
+      enabled: GENERAL_TARGET_RESOLVER_V2_ENABLED,
+      legacyAdapterEnabled: TARGET_RESOLVER_LEGACY_ADAPTER_ENABLED,
+    });
     recordTargetResolverShadowDiagnostic(manifest, intent, 'right-sidebar');
     if (result.skipped.length > 0) {
       console.warn('[EditingIntent] skipped targets', result.skipped);
@@ -1277,7 +1278,10 @@ export function RightSidebar({
     const result = compileEditingIntentWithControlledResolver(
       manifest,
       intent,
-      FONT_STRICT_RESOLVER_ACTIVE,
+      {
+        enabled: FONT_STRICT_RESOLVER_ACTIVE,
+        legacyAdapterEnabled: TARGET_RESOLVER_LEGACY_ADAPTER_ENABLED,
+      },
     );
     recordResolverObservation(result, 'font-center', 'fonts', intent);
     recordTargetResolverShadowDiagnostic(manifest, intent, 'font-center');
@@ -1298,7 +1302,10 @@ export function RightSidebar({
     const result = compileEditingIntentWithControlledResolver(
       manifest,
       intent,
-      COMPONENT_STRICT_RESOLVER_ACTIVE,
+      {
+        enabled: COMPONENT_STRICT_RESOLVER_ACTIVE,
+        legacyAdapterEnabled: TARGET_RESOLVER_LEGACY_ADAPTER_ENABLED,
+      },
     );
     recordResolverObservation(result, 'component-center', 'components', intent);
     recordTargetResolverShadowDiagnostic(manifest, intent, 'component-center');
@@ -1963,6 +1970,30 @@ export function RightSidebar({
       .slice(0, 4)
       .map(item => `${item.kind} ${item.count}`)
       .join(' · ');
+    const hasNoObjects = summary.totalObjects === 0;
+    const hasOnlyReadonlyObjects = !hasNoObjects
+      && summary.editableObjects === 0
+      && summary.readonlyObjects === summary.totalObjects;
+    const hasDetails = summary.details.length > 0
+      || summary.notes.length > 0
+      || summary.byKind.length > 0
+      || summary.scientificImpactProps.length > 0;
+    const kindCapabilityStatus = (kind: string): 'editable' | 'readonly' | 'unsupported' => {
+      const kindObjects = debugModel?.objects.filter(object => object.kind === kind) ?? [];
+      if (kindObjects.length === 0) return 'readonly';
+      const allUnsupported = kindObjects.every(object => (
+        object.kind === 'unsupported'
+        || object.kind === 'unsupported_axes'
+        || Boolean(object.currentProps?.unsupportedReason)
+      ));
+      if (allUnsupported) return 'unsupported';
+      const hasEditableObject = kindObjects.some(object => (
+        Array.isArray(object.propertyCapabilities)
+          ? object.propertyCapabilities.some(capability => capability.replay !== 'unsupported')
+          : object.editable.length > 0
+      ));
+      return hasEditableObject ? 'editable' : 'readonly';
+    };
 
     return (
       <div
@@ -1970,25 +2001,118 @@ export function RightSidebar({
         className={`mb-4 rounded-xl border px-3 py-2.5 text-xs leading-relaxed ${stateClasses[summary.state]}`}
       >
         <div className="flex items-center justify-between gap-3">
-          <div className="font-semibold">当前 Figure：{stateLabels[summary.state]}</div>
+          <div className="font-semibold">当前 Figure：{hasNoObjects ? '未识别到对象' : stateLabels[summary.state]}</div>
           <div className="font-mono text-[11px] opacity-75">
             {summary.editableObjects}/{summary.totalObjects} objects
           </div>
         </div>
-        <div className="mt-1 opacity-85">
-          可编辑 {summary.editableObjects} · 只读 {summary.readonlyObjects} · 不支持 {summary.unsupportedObjects}
-          {summary.flattenedObjects + summary.ambiguousObjects > 0
-            ? ` · 降级 ${summary.flattenedObjects + summary.ambiguousObjects}`
-            : ''}
-        </div>
+        {hasNoObjects ? (
+          <div
+            data-testid="figure-capability-empty-panel"
+            data-capability-empty-reason="no-objects"
+            className="mt-1 opacity-85"
+          >
+            当前 Figure 没有可识别对象，因此没有可编辑属性。
+          </div>
+        ) : (
+          <div className="mt-1 opacity-85">
+            可编辑 {summary.editableObjects} · 只读 {summary.readonlyObjects} · 不支持 {summary.unsupportedObjects}
+            {summary.flattenedObjects + summary.ambiguousObjects > 0
+              ? ` · 降级 ${summary.flattenedObjects + summary.ambiguousObjects}`
+              : ''}
+          </div>
+        )}
         {topKinds && (
           <div className="mt-1 truncate opacity-75" title={topKinds}>
             类型：{topKinds}
           </div>
         )}
-        {summary.notes.length > 0 && (
-          <div className="mt-1 line-clamp-2 opacity-80" title={summary.notes.join('\n')}>
-            限制：{summary.notes[0]}
+        {hasOnlyReadonlyObjects && (
+          <div
+            data-testid="figure-capability-empty-panel"
+            data-capability-empty-reason="readonly-selection"
+            className="mt-1 opacity-80"
+          >
+            已识别到对象，但当前对象为只读或暂不支持编辑。
+          </div>
+        )}
+        {!hasNoObjects && summary.editableObjects === 0 && !hasOnlyReadonlyObjects && (
+          <div className="mt-1 opacity-80">
+            已识别到对象，但当前对象为只读或暂不支持编辑。
+          </div>
+        )}
+        {hasDetails && (
+          <button
+            type="button"
+            data-testid="figure-capability-details-toggle"
+            onClick={() => setShowCapabilityDetails(value => !value)}
+            className="mt-2 inline-flex items-center gap-1 font-semibold opacity-90 transition-opacity hover:opacity-100"
+            aria-expanded={showCapabilityDetails}
+          >
+            {showCapabilityDetails ? '收起详情' : '查看详情'}
+            {showCapabilityDetails ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          </button>
+        )}
+        {showCapabilityDetails && hasDetails && (
+          <div data-testid="figure-capability-details" className="mt-2 space-y-2 border-t border-current/15 pt-2 text-[11px]">
+            {summary.byKind.length > 0 && (
+              <div>
+                <div className="font-semibold">对象类型</div>
+                <div className="mt-0.5 space-y-0.5 opacity-85">
+                  {summary.byKind.map(item => (
+                    <div
+                      key={item.kind}
+                      data-testid={`figure-capability-kind-${item.kind}`}
+                      data-capability-status={kindCapabilityStatus(item.kind)}
+                    >
+                      {item.kind} {item.count}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {summary.byKind.some(item => item.editableProps.length > 0) && (
+              <div>
+                <div className="font-semibold">编辑能力</div>
+                <div className="mt-0.5 space-y-0.5 opacity-85">
+                  {summary.byKind.filter(item => item.editableProps.length > 0).map(item => (
+                    <div key={item.kind}>{item.kind}：{item.editableProps.join('、')}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {summary.scientificImpactProps.length > 0 && (
+              <div data-testid="figure-capability-scientific-impact">
+                <div className="font-semibold">科学影响属性</div>
+                <div className="mt-0.5 opacity-85">
+                  {summary.scientificImpactProps.map(item => `${item.label} ${item.objectCount}`).join(' · ')}
+                </div>
+              </div>
+            )}
+            {summary.details.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="font-semibold">限制说明</div>
+                {summary.details.map((detail, index) => (
+                  <div key={`${detail.status}:${detail.sourceClass ?? detail.family ?? index}`} className="border-l-2 border-current/25 pl-2 opacity-90">
+                    <div className="font-medium">
+                      {detail.status === 'flattened' ? '简化识别' : detail.status === 'ambiguous' ? '归属不明确' : '暂不支持'}
+                      {detail.sourceClass ? ` · ${detail.sourceClass}` : detail.family ? ` · ${detail.family}` : ''}
+                      {detail.count > 1 ? ` (${detail.count})` : ''}
+                    </div>
+                    <div>{detail.reason}</div>
+                    <div>{detail.suggestion}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {summary.notes.length > 0 && (
+              <div data-testid="figure-capability-notes">
+                <div className="font-semibold">补充说明</div>
+                <div className="mt-0.5 space-y-0.5 opacity-85">
+                  {summary.notes.map(note => <div key={note}>{note}</div>)}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

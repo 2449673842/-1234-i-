@@ -3317,3 +3317,128 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - 无标签对象不能只靠数组索引证明身份；collection 必须包含数据结构指纹或明确语义关系。
 - 可编辑样式不得进入结构 fingerprint；数据 offsets、artist class 和受保护关系可以进入。
 - 旧弱身份只能在没有同类 sibling 歧义时兼容；存在多个候选时必须 fail-closed，而不是按旧索引继续应用。
+
+---
+
+## 2026-07-20 18:19:18 +08:00 RightSidebar 直接读取 sessionStorage 绕过 Figure 状态边界
+
+**状态与级别**
+
+- 状态：当前工作区已移除该读取边界；静态检查和 WP5 隔离浏览器 smoke 通过。相关工作区变更尚未提交、推送或部署。
+- 级别：P1 编辑状态一致性。该问题可能让 RightSidebar 绕过 App 提供的当前 Figure、选择和 Draft，上下文在 Figure 切换、恢复或异步保存时可能与页面状态不一致。
+
+**现象**
+
+- RightSidebar 曾直接从 `sessionStorage` 取得 Figure/编辑上下文，组件可以在不经过其 props 的情况下决定当前状态。
+- 这种读取把浏览器持久化实现当成组件输入，无法保证与当前 `figSession`、`activeFigureId`、选择和 `projectDrafts` 同步。
+
+**修复**
+
+- 当前 RightSidebar 只从 `figSession`、`activeFigureId`、选择和 Draft props 获取 Figure/编辑状态，并由 `normalizeFigureModel()` 生成当前能力模型。
+- 2026-07-20 静态检查确认 `src/components/RightSidebar.tsx` 不含 `sessionStorage` 调用；组件中保留的 `localStorage` 仅用于用户预设，不参与 Figure、选择或 Draft 的状态判定。
+
+**验证**
+
+- `rg -n 'sessionStorage|localStorage' src/components/RightSidebar.tsx`：未发现 `sessionStorage`；仅命中预设读写的 `localStorage`。
+- `npm run test:capability-report-smoke`：通过，真实 UI 覆盖部分可编辑、无可识别对象和已识别但只读状态。该 smoke 在页面初始化前写入隔离 fixture，但不把此测试辅助写入当作 RightSidebar 的状态读取路径。
+
+**防复发规则**
+
+- RightSidebar 不得直接读取 `sessionStorage` 来决定当前 Figure、选择、Draft 或编辑能力；新增状态必须通过 props 或现有状态容器显式注入。
+- 浏览器测试可在启动前写入隔离 `sessionStorage` fixture，但验证用户操作时必须走实际控件和 props 驱动更新，不能用存储注入伪造已完成的交互。
+- 修改 RightSidebar 状态来源时，必须复查组件内 `sessionStorage` 使用并覆盖 Figure 切换、Draft 和能力摘要的隔离回归。
+
+---
+
+## 2026-07-20 20:03:22 +08:00 渲染诊断在缓存命中和项目重开后丢失
+
+**状态与级别**
+
+- 状态：当前工作区已修复，定向 API smoke 通过；尚未提交、推送或部署。
+- 级别：P1 可诊断性与恢复一致性。图形本身仍可显示，但缓存命中或项目重开后丢失确定性/布局警告，会让同一 revision 在不同入口展示不同风险信息。
+
+**现象与首次失败**
+
+- renderer 实时响应包含 `determinismWarnings`、`layoutWarnings` 和 `layoutDiagnosticsMs`。
+- 首版实现只在当前响应中归一化这些字段；写入 render cache 和 `project_figures.manifest` 时仍保存未附加诊断的 manifest。
+- 新增 smoke 首次运行暴露：重复 backend patch 可以命中 cache，但 cache hit 响应没有重放 `random` 警告；随后读取项目 preview 时也可能找不到 `manifest.renderDiagnostics`。
+
+**根因与修复**
+
+- cache、session/project Figure 持久化和 HTTP 响应此前分别组装 manifest，没有共享同一个诊断归一化边界。
+- 新增 `renderDiagnosticsFrom()` 与 `withRenderDiagnostics()`，在响应、cache 写入和项目 Figure 持久化前统一附加经过结构过滤的诊断。
+- StandardFigureModel、manifest schema 和项目重开归一化继续读取同一个 `renderDiagnostics`，诊断异常保持非阻断，不影响成功渲染或编辑提交。
+
+**验证与防复发**
+
+- `npm run test:render-diagnostics-cache`：首次 patch 为 cache miss；重置后相同 patch 为 cache hit，仍包含 `random` 确定性警告和布局诊断耗时；项目 preview 重开继续保留相同诊断。
+- cache 命中不能只证明 SVG/manifest 可复用，还必须证明当前用户可见诊断随同缓存值传播。
+- 新增 renderer 响应字段时，必须同时检查实时响应、cache hit、session/project 持久化和项目重开四条路径。
+
+---
+
+## 2026-07-20 20:03:22 +08:00 编辑 V2 默认启用缺少统一开关合同
+
+**状态与级别**
+
+- 状态：当前工作区已收敛为统一开关模块并完成定向及阶段回归；尚未提交、推送或部署。
+- 级别：P1 发布与回滚风险。多个入口各自读取环境变量时，可能出现字体中心走 V2、配色或跨 Figure 仍走旧规则的混合版本，也难以在重大回归时只回退受影响能力域。
+
+**修复**
+
+- 新增 `editingFeatureFlags.ts`，统一普通编辑、字体、组件、配色、跨 Figure identity、旧 manifest compiler adapter、弱 score adapter 和 Shadow 证据的默认值。
+- 五个 V2 能力域默认启用并可独立设为 `0`；旧 manifest compiler adapter 默认保留，弱跨 Figure score adapter 默认关闭。
+- 关闭旧 manifest adapter 后，协议不完整的目标保守跳过并给出 warning，不回退到猜测编译器。
+- Shadow 证据使用独立、版本化 localStorage envelope，最多 500 条，只记录目标 metadata 和补丁键，不保存用户操作值。
+
+**验证与防复发**
+
+- `npm run test:wp10-default-enable`：覆盖默认值、逐域回退、旧 manifest adapter、弱 score adapter、严格跳过和 Shadow 持久化。
+- 语义中心 14/14、组件中心 41/41、跨 Figure 18/18 以及完整 Python/R 共享门禁通过。
+- 后续新增编辑入口不得直接读取 `import.meta.env` 决定 resolver 路径，必须复用统一开关合同。
+- 重大错误优先回退对应能力域；整版 release 回退只用于共享主链路、构建或数据协议级故障。
+
+---
+
+## 2026-07-20 20:36:26 +08:00 Python WP9/WP10 最终审查发现 same-GID 绕过与多 Figure 诊断串写
+
+**状态与级别**
+
+- 状态：首轮及修复后复审发现的问题已全部关闭；完整候选门禁通过，最终独立复审 APPROVE、0 HIGH/MEDIUM，尚未提交、推送或部署。
+- 级别：P0/P1。same-GID 绕过可能把跨 Figure 修改静默应用到不同系列；诊断串写不会改图，但会让 Figure A 显示 Figure B 的裁切风险；构建时开关若被描述为即时开关，会造成错误回退预期。
+
+**问题与修复**
+
+- 跨 Figure 映射原先先接受同 GID、同 role/kind/subplot，再执行 V2 identity resolver。现在现代非专用 relation 对象要求 source 的 `instanceKey/stableKey/seriesKey/semanticKey` 全部在 target 中存在且一致；任一缺失或冲突直接 skip，即使 weak score adapter 开启也不继续猜测。旧 manifest 仍走受控兼容路径。
+- 多 Figure renderer 结果缺少单 Figure `layoutWarnings` 时，原实现会回退 aggregate `result.layoutWarnings`。现在三条项目持久化/预览路径只取目标 Figure 自身警告、其 manifest 已存诊断或空数组；两 Figure smoke 覆盖 cache hit、缓存重开和强制预览重开。
+- `VITE_*` 开关由 Vite 在构建时固化。逐域回退明确为“同一提交 + 修改构建变量 + 重建 + 新 release”；紧急重大故障使用上一不可变 release 整版回退，不再宣称修改运行环境变量即可即时切换。
+- NumPy 模块别名和死分支 seed 已加入确定性诊断；用户能力报告不再直接显示 renderer 内部 `unsupportedNotes/reason`，统一转换为用户级限制说明。
+
+**验证与防复发**
+
+- `npm run test:wp10-default-enable`：167/167。
+- `npm test -- src/utils/semanticPatchMapping.test.ts src/utils/standardFigureModel.test.ts`：138/138。
+- `npm run test:cross-figure-smoke`：18/18。
+- `npm run test:wp9-release-gate`：11/11。
+- `npm run test:render-diagnostics-cache`、`npm run test:capability-report-smoke`、`npm run lint`：通过。
+- 同 GID 不能作为现代跨 Figure 身份证明；稳定凭据冲突必须优先于 weak score fail-closed。
+- 新增聚合 renderer 字段时必须证明单 Figure 响应、缓存和项目重开不会跨 Figure 污染。
+- 文档中的 feature flag 必须标明 build-time 或 runtime，不能把构建时变量描述为无需重建的即时开关。
+
+**修复后独立审查补充（2026-07-20 21:53:58 +08:00）**
+
+- 首轮修复后复审继续发现：非同 GID identity remap 会先按单个 `instanceKey` 命中，其他稳定凭据冲突时仍可能错改；严格过滤后还可能被 legacy score 再次猜回。
+- 当前 remap 允许 `instanceKey` 随 GID 改变，但 source 声明的 `stableKey/seriesKey/semanticKey` 必须在 target 中存在且一致；任一冲突返回显式 `conflict`，禁止进入 weak score。
+- Shadow diagnostics 现在只加载和报告当前 `releaseCandidateId` 的记录，回退、重建或新候选不会把旧 release 证据计入当前总数。
+- 新增失败回归覆盖“instanceKey 相同但 stableKey/seriesKey 冲突”“非同 GID 稳定凭据一致仍可合法映射”和“旧 release Shadow 记录不被加载”。
+- 第二次复审继续发现 `App.tsx` 的跨 Figure Draft role 编译仍直接调用 legacy compiler；当前已改用与 RightSidebar 相同的受控 resolver 和 general/legacy-adapter 开关合同，并增加 WP10 源码守卫。
+- 修复后 `npm test` 为 150 文件、1144/1144，WP10 167/167、跨 Figure 18/18、lint、build、diff-check 和数据审计全部通过。
+- 最终独立 gpt-5.5 high 只读复审：APPROVE，0 HIGH/MEDIUM；审查代理未独立重跑测试，其结论与本地新鲜测试证据共同构成候选门禁。
+
+**补充验证（2026-07-20 21:12:16 +08:00）**
+
+- `test:component-container-smoke`：PASS=41，FAIL=0；覆盖组件父子关系、网格、图例边框、容器颜色、colorbar、保存刷新和多选撤销。
+- `test:drag-extended-smoke`：10/10；覆盖真实 Ctrl 多选、累计拖拽、取消、只读命中、annotation 和 R native 坐标保护。
+- `test:cache-smoke`、`test:project-history-persistence`、`test:export-snapshot-restore`、`test:export-file-transaction`、`test:security-baseline`、`test:user-isolation`、`test:renderer-sandbox`：全部通过。
+- `npm run build`、`git diff --check` 和 `npm run data:audit`：通过；构建仅保留既有 bundle/CJS `import.meta` 警告，数据审计为 25 用户、121 项目、263 文件、101 导出资产、0 issue、23 条既有测试账号 warning。
+- 防复发回归：以后发布前必须先固定候选提交，再执行不可变 release；重大故障整版切回上一 release，不从脏工作区或单独修改运行时变量回退。

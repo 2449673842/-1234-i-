@@ -1,9 +1,9 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-20 16:24:34 +08:00
-> 证据截止时间：2026-07-20 16:24:34 +08:00
-> 代码范围：`feature/standard-figure-model-v1`，Python WP3 全入口 capability 权威、旧 editLog 精确兼容和导出快照 v4；尚未形成提交
+> 最后修改时间：2026-07-20 22:12:50 +08:00
+> 证据截止时间：2026-07-20 22:11:53 +08:00
+> 代码范围：`feature/standard-figure-model-v1`，Python WP3-WP10 本地候选、旧 editLog 精确兼容、导出快照 v4、能力报告、渲染诊断与逐域默认启用；尚未形成提交
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -30,15 +30,19 @@
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
 | TypeScript | 通过 | `npm run lint` |
-| 前端单元测试 | 148 文件、1127/1127 | 包含 schema v1-v4、特殊 axes relation、图示 resolver、能力、映射、组件分组、identity 捕获和 fail-closed 回归 |
+| 前端单元测试 | 150 文件、1144/1144 | 包含 schema v1-v4、特殊 axes relation、图示 resolver、能力、映射、组件分组、identity 捕获、诊断归一化和 fail-closed 回归 |
 | WP3 定向单元 | 最高一轮 13 文件、210/210 | RightSidebar、ChartPreview、配色、property scope、session 对账和 snapshot v4 |
+| WP5 能力报告 | 通过 | `npm run test:capability-report-smoke`：真实 UI 覆盖部分可编辑、无可识别对象和已识别但只读三种状态，并展示 renderer `unsupportedNotes`；不把 fixture 覆盖扩大解释为任意脚本支持 |
+| WP9 发布门禁 | 11/11 通过 | `npm run test:wp9-release-gate`：固定/动态 seed、`random`/NumPy 模块别名、`default_rng(None)`、死分支 seed、非阻断诊断、布局风险与大 scatter 分段预算 |
+| WP10 默认启用 | 167/167 通过 | 普通编辑、字体、组件、配色和跨 Figure 使用统一构建时开关；V2 默认开启，App Draft 入口使用受控 resolver，身份冲突 fail-closed，Shadow 证据按 release candidate 隔离 |
+| 渲染诊断缓存/重开 | 通过 | `npm run test:render-diagnostics-cache`：两 Figure 的首次 miss、重复 hit、缓存重开和强制预览重开均保留各自诊断且不串写 |
 | 旧 contour 与快照 v4 | 通过 | 现代 child/未签名 v4 拒绝且零写入；真实旧 editLog 可保存、导出和恢复 |
 | 导出恢复事务 | 通过 | snapshot DB、恢复、并发、v1 兼容和完整 SVG/PNG/PDF/TIFF 导出矩阵 |
 | 本轮直接浏览器回归 | 组件 41/41；轴样式 8/8 | global 画布比例、组件布局、网格、图例、刻度和边框未回退 |
 | Python 完整语义链路 | 通过 | 组件中心 set 全部由 backend renderer 验证；饼图切片与图例联动、Draft 失败保留、导出快照恢复通过，并检查响应业务 `status` |
 | 保存/拖拽/缓存/跨 Figure | 通过 | project save preflight、drag extended、render cache、cross Figure 18/18；均使用隔离随机端口和临时数据目录 |
 | 无 left spine introspection | 50/50 | polar axes 回归通过；线上旧镜像仍需部署当前 renderer 才能消除 `KeyError: 'left'` |
-| 独立发布审查 | APPROVE | 5.5 high 复审：0 HIGH、0 MEDIUM；请求模式与 authoritative response 模式已分别验证 |
+| 独立发布审查 | APPROVE，0 HIGH/MEDIUM | 修复后复审继续发现并关闭非同 GID remap、跨 release Shadow 污染和 App 跨 Figure Draft 编译旁路；最终只读复审无剩余高中风险 |
 | Python renderer/身份/复杂覆盖 | complex artist 26/26、结构身份漂移 7/7 | 本地既有 renderer 基线；本工作包未修改 Python 或 Matplotlib 版本，也未新增兼容版本声明 |
 | 组件中心真实浏览器 | 41/41；向量场专用分组直接回归通过 | 网格、图例、容器、五个 WP6 家族、父层重定向、保存刷新和拖拽模式多选保护 |
 | Python 完整用户链路 | 通过 | 选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和快照恢复 |
@@ -63,7 +67,11 @@
 
 本轮还重新运行了编辑、R、跨 Figure、历史、导出、页面、组合、安全和隔离 smoke。所有请求均使用随机 `127.0.0.1` 端口和临时数据库；未访问 3000，未修改 Docker/WSL。
 
-先前独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包、旧项目 GET/PUT 恢复源不一致，以及 standalone/project full render 在 renderer 拒绝 editLog 后仍可能写入的问题均已修复。当前保存与全渲染入口同时执行可信 manifest 预检、renderer warning 检查和必要的 revision/hash CAS；项目脚本与 Figure/session 在同一事务提交。新增 full render mixed batch、旧 contour、项目 history 和 R 共享路由回归均通过。修复后的最终独立复审因 sub2api 上游 503 尚未完成，必须在形成提交前重试并清零 HIGH/MEDIUM。WP7 已完成当前固定运行时范围的实现与定向门禁；后续仍需 WP3/WP4 剩余 legacy 审计、WP5 用户可见能力报告、WP9 性能与碰撞和 WP10 默认启用门禁。
+先前独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包、旧项目 GET/PUT 恢复源不一致，以及 standalone/project full render 在 renderer 拒绝 editLog 后仍可能写入的问题均已修复。当前保存与全渲染入口同时执行可信 manifest 预检、renderer warning 检查和必要的 revision/hash CAS；项目脚本与 Figure/session 在同一事务提交。新增 full render mixed batch、旧 contour、项目 history、R 共享路由、组件容器、扩展拖拽、缓存、导出文件事务、用户隔离和 renderer 沙箱回归均通过。WP5、WP9 和 WP10 已达到当前计划范围的本地候选条件，最终独立复审为 APPROVE、0 HIGH/MEDIUM；但这不构成任意第三方 Matplotlib artist、全部真实科研脚本或性能 SLO 的支持承诺。旧 compiler、palette legacy resolution 和 cross-Figure score mapper 在一个稳定发布周期内继续作为显式适配器保留；必须先形成固定候选提交，才能作为不可变部署输入。
+
+默认启用采用逐域回退，而不是一个总开关：`VITE_SCIFIGURE_GENERAL_TARGET_RESOLVER_V2`、`VITE_SCIFIGURE_FONT_TARGET_RESOLVER_V2`、`VITE_SCIFIGURE_COMPONENT_TARGET_RESOLVER_V2`、`VITE_SCIFIGURE_PALETTE_TARGET_RESOLVER_V2` 和 `VITE_SCIFIGURE_CROSS_FIGURE_IDENTITY_V2` 可分别设为 `0`。这些 `VITE_*` 值在前端构建时固化，逐域回退需要从同一代码提交重建并部署新的不可变 release；紧急回退直接切回上一整版。旧 manifest 兼容由 `VITE_SCIFIGURE_TARGET_RESOLVER_LEGACY_ADAPTER` 控制；弱跨 Figure score mapper 默认关闭，只能通过 `VITE_SCIFIGURE_CROSS_FIGURE_LEGACY_SCORE_ADAPTER=1` 显式启用。
+
+RightSidebar 的 Figure/编辑上下文必须来自 `figSession`、`activeFigureId`、选择和 Draft props，再由 `normalizeFigureModel()` 生成当前模型；组件不得直接读取 `sessionStorage` 决定当前 Figure 或 Draft。2026-07-20 静态检查确认 `src/components/RightSidebar.tsx` 不含 `sessionStorage`，其中保留的 `localStorage` 仅用于用户预设。浏览器 fixture 可以在启动前写入存储以构造隔离状态，但这不构成组件状态读取路径的例外，也不能代替真实控件或 props 驱动的回归。
 
 第一轮隔离浏览器基线补充结果：
 

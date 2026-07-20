@@ -1,11 +1,13 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EditingIntent } from '../schemas/editingIntent';
 import type { Manifest } from '../schemas/manifest';
 import {
   clearTargetResolverShadowDiagnostics,
   getTargetResolverShadowDiagnostics,
   recordTargetResolverShadowDiagnostic,
+  TARGET_RESOLVER_SHADOW_STORAGE_KEY,
 } from './targetResolverDiagnostics';
+import { EDITING_FEATURE_FLAGS } from './editingFeatureFlags';
 
 const manifest: Manifest = {
   generatedBy: 'introspection',
@@ -74,5 +76,65 @@ describe('target resolver shadow diagnostics', () => {
     firstRead[0]?.currentPatchKeys.push('mutated');
 
     expect(getTargetResolverShadowDiagnostics()[0]?.currentPatchKeys).toEqual(['ylabel.0:color']);
+  });
+
+  it('does not hydrate diagnostics from another release candidate', async () => {
+    const values = new Map<string, string>();
+    const storage: Storage = {
+      get length() { return values.size; },
+      clear: () => values.clear(),
+      getItem: key => values.get(key) ?? null,
+      key: index => [...values.keys()][index] ?? null,
+      removeItem: key => { values.delete(key); },
+      setItem: (key, value) => { values.set(key, value); },
+    };
+    const storedDiagnostic = (releaseCandidateId: string) => ({
+      schemaVersion: 1,
+      resolverVersion: 'v2',
+      releaseCandidateId,
+      id: `diagnostic:${releaseCandidateId}`,
+      createdAt: 1,
+      source: 'test',
+      generatedBy: 'introspection',
+      intent: 'style.text.axis_label',
+      prop: 'color',
+      selectionMode: 'explicit_objects',
+      requestedObjectIds: ['ylabel.0'],
+      equivalent: true,
+      currentPatchKeys: ['ylabel.0:color'],
+      shadowPatchKeys: ['ylabel.0:color'],
+      currentOnlyPatchKeys: [],
+      shadowOnlyPatchKeys: [],
+      ambiguousCount: 0,
+      skippedCount: 0,
+    });
+    storage.setItem(TARGET_RESOLVER_SHADOW_STORAGE_KEY, JSON.stringify({
+      diagnostics: [
+        storedDiagnostic('previous-release'),
+        storedDiagnostic(EDITING_FEATURE_FLAGS.releaseCandidateId),
+      ],
+    }));
+    const previousDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+
+    try {
+      vi.resetModules();
+      const diagnosticsModule = await import('./targetResolverDiagnostics');
+      const items = diagnosticsModule.getTargetResolverShadowDiagnostics();
+      const evidence = diagnosticsModule.getTargetResolverShadowEvidence();
+
+      expect(items.map(item => item.releaseCandidateId)).toEqual([
+        EDITING_FEATURE_FLAGS.releaseCandidateId,
+      ]);
+      expect(evidence.releaseCandidateId).toBe(EDITING_FEATURE_FLAGS.releaseCandidateId);
+      expect(evidence.total).toBe(1);
+    } finally {
+      vi.resetModules();
+      if (previousDescriptor) {
+        Object.defineProperty(globalThis, 'localStorage', previousDescriptor);
+      } else {
+        delete (globalThis as { localStorage?: Storage }).localStorage;
+      }
+    }
   });
 });

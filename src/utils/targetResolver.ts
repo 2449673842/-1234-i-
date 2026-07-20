@@ -60,7 +60,13 @@ export type ControlledTargetCompilerStrategy = 'legacy' | 'strict';
 export type StrictProtocolFallbackReason =
   | 'feature_disabled'
   | 'missing_identity'
-  | 'missing_property_capabilities';
+  | 'missing_property_capabilities'
+  | 'legacy_adapter_disabled';
+
+export interface ControlledTargetResolverOptions {
+  enabled: boolean;
+  legacyAdapterEnabled?: boolean;
+}
 
 export interface StrictProtocolReadiness {
   ready: boolean;
@@ -73,6 +79,44 @@ export interface ControlledTargetCompileResult extends EditingIntentCompileResul
   fallbackReason?: StrictProtocolFallbackReason;
   readiness: StrictProtocolReadiness;
   resolution?: ShadowTargetResolution;
+}
+
+function normalizeControlledResolverOptions(
+  control: boolean | ControlledTargetResolverOptions,
+): Required<ControlledTargetResolverOptions> {
+  if (typeof control === 'boolean') {
+    return { enabled: control, legacyAdapterEnabled: true };
+  }
+  return {
+    enabled: control.enabled,
+    legacyAdapterEnabled: control.legacyAdapterEnabled ?? true,
+  };
+}
+
+function skippedForUnavailableStrictProtocol(
+  intent: EditingIntent,
+  readiness: StrictProtocolReadiness,
+): EditingIntentSkippedTarget[] {
+  const requestedIds = intent.scope.objectIds ?? [];
+  const affectedIds = Array.from(new Set([
+    ...requestedIds,
+    ...readiness.missingIdentityObjectIds,
+    ...readiness.missingPropertyCapabilityObjectIds,
+  ]));
+  const detail = '严格目标协议不完整，且兼容编译器已关闭；为避免误改，本次未生成补丁。';
+  if (affectedIds.length === 0) {
+    return [{
+      role: intent.scope.targetRole,
+      reason: 'unsupported_scope',
+      detail,
+    }];
+  }
+  return affectedIds.map(gid => ({
+    gid,
+    role: intent.scope.targetRole,
+    reason: 'unsupported_scope',
+    detail,
+  }));
 }
 
 const TICK_PROP_MAP: Record<string, string> = {
@@ -396,36 +440,39 @@ function patchesFromResolution(
 export function compileEditingIntentStrict(
   manifest: Manifest,
   intent: EditingIntent,
+  options: Pick<ControlledTargetResolverOptions, 'legacyAdapterEnabled'> = {},
 ): ControlledTargetCompileResult {
   const readiness = getStrictProtocolReadiness(manifest, intent);
   if (!readiness.ready) {
+    if (options.legacyAdapterEnabled === false) {
+      return {
+        strategy: 'strict',
+        fallbackReason: 'legacy_adapter_disabled',
+        readiness,
+        patches: [],
+        skipped: skippedForUnavailableStrictProtocol(intent, readiness),
+        diagnostics: [{
+          level: 'warning',
+          message: '严格目标协议不完整，兼容编译器已关闭；本次操作已保守跳过。',
+        }],
+      };
+    }
+    const legacy = compileEditingIntent(manifest, intent);
     const fallbackReason: StrictProtocolFallbackReason = readiness.missingIdentityObjectIds.length > 0
       ? 'missing_identity'
       : 'missing_property_capabilities';
-    const blockedObjectIds = Array.from(new Set([
-      ...(intent.scope.objectIds ?? []),
-      ...readiness.missingIdentityObjectIds,
-      ...readiness.missingPropertyCapabilityObjectIds,
-    ])).filter(Boolean);
-    const skipped: EditingIntentSkippedTarget[] = (blockedObjectIds.length > 0 ? blockedObjectIds : [undefined])
-      .map(gid => ({
-        gid,
-        role: intent.scope.targetRole,
-        reason: 'unsupported_engine',
-        detail: fallbackReason === 'missing_identity'
-          ? '目标缺少稳定 identity，严格目标解析已阻止写回。'
-          : '目标缺少 property capability，严格目标解析已阻止写回。',
-      }));
     return {
-      strategy: 'strict',
+      ...legacy,
+      strategy: 'legacy',
       fallbackReason,
       readiness,
-      patches: [],
-      skipped,
-      diagnostics: [{
-        level: 'warning',
-        message: '严格目标协议不完整，本次操作已阻止；可重新渲染刷新 manifest，或显式关闭对应 V2 resolver 回滚。',
-      }],
+      diagnostics: [
+        ...legacy.diagnostics,
+        {
+          level: 'info',
+          message: '严格目标协议不完整，本次操作已使用兼容编译器。',
+        },
+      ],
     };
   }
 
@@ -451,9 +498,14 @@ export function compileEditingIntentStrict(
 export function compileEditingIntentWithControlledResolver(
   manifest: Manifest,
   intent: EditingIntent,
-  enabled: boolean,
+  control: boolean | ControlledTargetResolverOptions,
 ): ControlledTargetCompileResult {
-  if (enabled) return compileEditingIntentStrict(manifest, intent);
+  const options = normalizeControlledResolverOptions(control);
+  if (options.enabled) {
+    return compileEditingIntentStrict(manifest, intent, {
+      legacyAdapterEnabled: options.legacyAdapterEnabled,
+    });
+  }
   const legacy = compileEditingIntent(manifest, intent);
   return {
     ...legacy,

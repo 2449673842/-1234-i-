@@ -55,6 +55,8 @@ class TestComplexArtistCoverage(unittest.TestCase):
                 count,
                 f"summary.{status} must match complexArtists rows; report={report}",
             )
+        self.assertEqual(summary.get("semantic"), counts["dedicated"], report)
+        self.assertEqual(summary.get("semantic"), summary.get("dedicated"), report)
         self.assertEqual(sum(counts.values()), len(rows), report)
 
     def _assert_details_match_object_shadow(self, manifest, report):
@@ -78,6 +80,7 @@ class TestComplexArtistCoverage(unittest.TestCase):
             self.assertEqual(row.get("preservedKind"), obj.get("kind"), obj)
             self.assertEqual(row.get("preservedRole"), obj.get("role"), obj)
             self.assertEqual(row.get("preservedEditable"), obj.get("editable") or [], obj)
+            self.assertEqual(row.get("sourceCall"), obj.get("source", {}).get("callName"), obj)
 
     def _assert_flattened_editable_reported(self, manifest, artist_class, family):
         rows = self._complex_rows(manifest, {artist_class})

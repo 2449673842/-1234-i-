@@ -9,6 +9,7 @@ import type {
   ManifestObjectIdentity,
   ManifestPropertyCapability,
   Palette,
+  RenderDiagnostics,
   SemanticGroup,
 } from './manifest';
 import type { FigureCodeSlice } from '../types';
@@ -58,6 +59,25 @@ export interface StandardFigureKindCapabilitySummary {
   variants: number;
 }
 
+export type StandardFigureCapabilityDetailStatus = 'flattened' | 'ambiguous' | 'unsupported';
+
+export interface StandardFigureCapabilityDetail {
+  status: StandardFigureCapabilityDetailStatus;
+  family?: string;
+  sourceClass?: string;
+  sourceCall?: string;
+  count: number;
+  editableProps: string[];
+  reason: string;
+  suggestion: string;
+}
+
+export interface StandardFigureScientificImpactProp {
+  prop: string;
+  label: string;
+  objectCount: number;
+}
+
 export interface StandardFigureCapabilitySummary {
   state: StandardFigureCapabilityState;
   totalObjects: number;
@@ -70,6 +90,9 @@ export interface StandardFigureCapabilitySummary {
   unsupportedArtistCount: number;
   byKind: StandardFigureKindCapabilitySummary[];
   notes: string[];
+  semanticObjects: number;
+  details: StandardFigureCapabilityDetail[];
+  scientificImpactProps: StandardFigureScientificImpactProp[];
 }
 
 export interface StandardFigureModel {
@@ -94,6 +117,7 @@ export interface StandardFigureModel {
   fingerprint?: string;
   codeSlice?: FigureCodeSlice | null;
   warnings: string[];
+  diagnostics: RenderDiagnostics;
 }
 
 export interface StandardFigureProjectModel {
@@ -112,4 +136,5 @@ export interface StandardFigureInput {
   fingerprint?: string;
   codeSlice?: FigureCodeSlice | null;
   warnings?: string[];
+  diagnostics?: RenderDiagnostics;
 }

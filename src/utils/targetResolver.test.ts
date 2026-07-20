@@ -522,7 +522,7 @@ describe('controlled strict target compiler', () => {
     }]);
   });
 
-  it('blocks missing v1.1 protocol by default and only falls back when explicitly disabled', () => {
+  it('uses the legacy adapter for missing v1.1 protocol unless it is explicitly disabled', () => {
     const legacy = manifest([{
       id: 'title.0',
       kind: 'text',
@@ -536,12 +536,23 @@ describe('controlled strict target compiler', () => {
       operation: { prop: 'fontsize', value: 14 },
     }, true);
 
-    expect(result.strategy).toBe('strict');
+    expect(result.strategy).toBe('legacy');
     expect(result.fallbackReason).toBe('missing_identity');
-    expect(result.patches).toEqual([]);
-    expect(result.skipped).toEqual([expect.objectContaining({
+    expect(result.patches).toEqual([{
+      op: 'set', mode: 'backend_patch', gid: 'title.0', prop: 'fontsize', value: 14,
+    }]);
+
+    const conservative = compileEditingIntentWithControlledResolver(legacy, {
+      intent: 'style.text.title',
+      scope: { selectionMode: 'role_in_figure', objectIds: ['title.0'], targetRole: 'title' },
+      operation: { prop: 'fontsize', value: 14 },
+    }, { enabled: true, legacyAdapterEnabled: false });
+    expect(conservative.strategy).toBe('strict');
+    expect(conservative.fallbackReason).toBe('legacy_adapter_disabled');
+    expect(conservative.patches).toEqual([]);
+    expect(conservative.skipped).toEqual([expect.objectContaining({
       gid: 'title.0',
-      reason: 'unsupported_engine',
+      reason: 'unsupported_scope',
     })]);
 
     const rollback = compileEditingIntentWithControlledResolver(legacy, {
@@ -1111,7 +1122,7 @@ describe('controlled strict target compiler', () => {
     }]);
   });
 
-  it('restores legacy drag-confirmed position patches when the layout resolver is disabled', () => {
+  it('restores legacy drag-confirmed position patches through the compatibility adapter', () => {
     const figure = manifest([{
       id: 'text.legacy',
       kind: 'text',
@@ -1137,10 +1148,21 @@ describe('controlled strict target compiler', () => {
     };
 
     const strict = compileEditingIntentWithControlledResolver(figure, intent, true);
+    const conservative = compileEditingIntentWithControlledResolver(
+      figure,
+      intent,
+      { enabled: true, legacyAdapterEnabled: false },
+    );
     const rollback = compileEditingIntentWithControlledResolver(figure, intent, false);
 
-    expect(strict.strategy).toBe('strict');
-    expect(strict.patches).toEqual([]);
+    expect(strict.strategy).toBe('legacy');
+    expect(strict.fallbackReason).toBe('missing_identity');
+    expect(strict.patches).toEqual([{
+      op: 'set', mode: 'backend_patch', gid: 'text.legacy', prop: 'position', value,
+    }]);
+    expect(conservative.strategy).toBe('strict');
+    expect(conservative.fallbackReason).toBe('legacy_adapter_disabled');
+    expect(conservative.patches).toEqual([]);
     expect(rollback.strategy).toBe('legacy');
     expect(rollback.fallbackReason).toBe('feature_disabled');
     expect(rollback.patches).toEqual([{

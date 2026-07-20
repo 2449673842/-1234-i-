@@ -63,6 +63,164 @@ describe('semantic patch mapping', () => {
     expect(result.skipped).toHaveLength(1);
   });
 
+  it('fails closed for a same-GID modern target when one stable credential agrees but others conflict', () => {
+    const modernLine = (identitySuffix: string): ManifestObject => ({
+      id: 'line.shared',
+      kind: 'line',
+      label: 'Series',
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      role: 'line_series',
+      subplotId: 'subplot.0',
+      stableKey: `series:${identitySuffix}`,
+      fingerprint: `fingerprint:${identitySuffix}`,
+      fingerprintVersion: 2,
+      identity: {
+        instanceKey: 'instance:shared-gid',
+        seriesKey: `series:${identitySuffix}`,
+        semanticKey: `semantic:${identitySuffix}`,
+        scope: 'subplot',
+        coordinateSpace: 'data',
+      },
+    });
+    const input = { gid: 'line.shared', prop: 'color', value: '#abcdef', mode: 'backend_patch' };
+    const result = mapPatchesToTargetFigure(
+      [input],
+      baseManifest([modernLine('source')]),
+      baseManifest([modernLine('target')]),
+      { identityV2Enabled: true, legacyScoreAdapterEnabled: true },
+    );
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([input]);
+  });
+
+  it('maps a same-GID modern target when its stable identity agrees', () => {
+    const identity = {
+      instanceKey: 'instance:series-a',
+      seriesKey: 'series:series-a',
+      semanticKey: 'semantic:series-a',
+      scope: 'subplot' as const,
+      coordinateSpace: 'data' as const,
+    };
+    const source = baseManifest([{
+      id: 'line.shared',
+      kind: 'line',
+      label: 'Series',
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      role: 'line_series',
+      subplotId: 'subplot.0',
+      stableKey: 'series:series-a',
+      fingerprint: 'fingerprint:source',
+      fingerprintVersion: 2,
+      identity,
+    }]);
+    const target = baseManifest([{
+      ...source.objects[0],
+      fingerprint: 'fingerprint:target',
+    }]);
+
+    const result = mapPatchesToTargetFigure(
+      [{ gid: 'line.shared', prop: 'color', value: '#abcdef', mode: 'backend_patch' }],
+      source,
+      target,
+      { identityV2Enabled: true, legacyScoreAdapterEnabled: true },
+    );
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toHaveLength(1);
+    expect(result.patches[0]).toMatchObject({
+      gid: 'line.shared',
+      stableKey: 'series:series-a',
+      fingerprint: 'fingerprint:target',
+      fingerprintVersion: 2,
+      identity,
+    });
+  });
+
+  it('fails closed for a non-same-GID modern target when stable credentials conflict', () => {
+    const modernLine = (id: string, suffix: string): ManifestObject => ({
+      id,
+      kind: 'line',
+      label: 'Series',
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      role: 'line_series',
+      subplotId: 'subplot.0',
+      stableKey: `series:${suffix}`,
+      fingerprint: `fingerprint:${suffix}`,
+      fingerprintVersion: 2,
+      identity: {
+        instanceKey: 'instance:colliding-key',
+        seriesKey: `series:${suffix}`,
+        semanticKey: `semantic:${suffix}`,
+        scope: 'subplot',
+        coordinateSpace: 'data',
+      },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+    const input = { gid: 'line.source', prop: 'color', value: '#abcdef', mode: 'backend_patch' };
+    const result = mapPatchesToTargetFigure(
+      [input],
+      baseManifest([modernLine('line.source', 'source')]),
+      baseManifest([modernLine('line.target', 'target')]),
+      { identityV2Enabled: true, legacyScoreAdapterEnabled: true },
+    );
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([input]);
+  });
+
+  it('maps a non-same-GID modern target when stable credentials agree', () => {
+    const modernLine = (id: string): ManifestObject => ({
+      id,
+      kind: 'line',
+      label: 'Series',
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      role: 'line_series',
+      subplotId: 'subplot.0',
+      stableKey: 'series:shared',
+      fingerprint: `fingerprint:${id}`,
+      fingerprintVersion: 2,
+      identity: {
+        instanceKey: `subplot:${id}`,
+        seriesKey: 'series:shared',
+        semanticKey: 'semantic:shared',
+        scope: 'subplot',
+        coordinateSpace: 'data',
+      },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+    const result = mapPatchesToTargetFigure(
+      [{ gid: 'line.source', prop: 'color', value: '#abcdef', mode: 'backend_patch' }],
+      baseManifest([modernLine('line.source')]),
+      baseManifest([modernLine('line.target')]),
+      { identityV2Enabled: true, legacyScoreAdapterEnabled: false },
+    );
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toHaveLength(1);
+    expect(result.patches[0]).toMatchObject({
+      gid: 'line.target',
+      stableKey: 'series:shared',
+      fingerprint: 'fingerprint:line.target',
+    });
+  });
+
   it('keeps an explicit single-object style patch scoped to one target object', () => {
     const source = baseManifest([
       {

@@ -3,7 +3,7 @@
 > 状态：当前有效  
 > 更新时间：2026-07-30 07:03:06 +08:00
 > 证据截止时间：2026-07-30 07:03:06 +08:00
-> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3 全入口 capability 权威、组件能力/Draft 收敛、旧 contour 精确兼容、导出快照 v4、local->backend 缺失 manifest 对账、WP4 无标签 collection 身份及 WP5 能力摘要浏览器验证；候选尚未部署
+> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 capability 权威、组件能力/Draft 收敛、旧 contour 精确兼容、导出快照 v4、local->backend 缺失 manifest 对账、无标签 collection 身份、统一能力报告、性能诊断、默认启用与逐域回滚，以及语义/拖拽/缓存/保存/历史/导出/恢复/安全/跨 Figure/R 隔离回归；候选尚未部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
 
@@ -144,11 +144,13 @@ WP7 已完成当前固定运行时范围的特殊 axes 收敛。polar、3D、ins
 
 导出编辑快照升级为 schema v3：新快照中的特殊轴 editLog 必须携带完整 relation；v1/v2 仅在 stableKey 与 v2 structural fingerprint 同时一致时兼容历史缺失 relation。`/api/figure/render` 和 `/api/projects/:id/figures/render` 现在同时核对返回 manifest 与 renderer warnings；任一新 editLog 目标缺失、属性不支持或关系身份不匹配时，不写 session、项目脚本、Figure、history 或 preview。只有数据库中已持久化且 stableKey 一致的旧 editLog 才能受控兼容；旧条目若已保存 fingerprint 或 seriesKey，对应字段也必须一致，gid-only 历史日志继续阻断。standalone 重渲染复用原 session；项目脚本与 figures/sessions 在同一数据库事务提交。
 
-最新完整 Vitest 证据为 146 文件、1098/1098；本轮新增后续定向证据包括特殊轴 Python 10 项中 8 通过、2 项因依赖缺失跳过，特殊轴 API、patch 拒绝、旧 contour 项目、项目历史事务、R semantic 5/5、TypeScript、生产构建和 `git diff --check` 均通过。2026-07-20 10:42 已新增首个用户可见能力摘要：`StandardFigureModel.capabilitySummary` 消费 renderer coverage contract，在右侧栏显示当前 Figure 的可编辑、部分可编辑、只读或暂不支持状态；该摘要不扫描 SVG，也不扩大能力宣传。2026-07-20 10:55 补充真实浏览器证据：`npm run test:special-axes-ui` 通过，隔离 fixture 中右侧栏摘要显示特殊轴混合 Figure 为“部分可编辑”，并继续验证 polar/secondary/3D scope、布局中心特殊 panel 只读边界和 Draft 行为。2026-07-20 11:02 补齐 WP4 无标签 collection 结构身份首轮关键缺口：generic collection fingerprint 纳入 offsets 结构签名，两个无标签 scatter 交换顺序时旧身份会被 `identity_mismatch` 阻断；可编辑 size/color/linewidth 不进入 fingerprint，单 collection 旧弱身份仍可读。2026-07-20 11:36 补齐组件中心批量入口和 Draft 清理缺口：现代 manifest 组件属性按 `propertyCapabilities` 逐项显示，组件 set patch 走 renderer 验证，成功应用后只清除与执行快照完全一致的 Draft。2026-07-20 15:21 完成 WP3 当前全入口审计：现代对象按属性、replay 和 object scope 三重事实判断；旧 contour 只兼容已持久化历史编辑；新导出快照使用 v4 精确签名，旧 v1-v3 继续可读。专用控件、文字立即应用、批量刻度、风格预设、配色 fallback、global 字段和 standalone local->backend 对账均已收敛。新增证据包括定向单测最高一轮 13 文件/210 项、旧 contour 全链路、快照 DB/恢复/并发、导出矩阵、组件中心 41/41、轴样式 8/8、TypeScript 和 diff-check。Python 后续重点为 WP5 完整能力报告、WP9 性能与碰撞和 WP10 默认启用门禁，不能据此宣布 Python 计划全部完成。
+最新完整 Vitest 证据为 150 文件、1144/1144。WP5 能力摘要已覆盖对象类型、属性并集/交集/变体、只读/不支持/降级原因、科学影响属性和旧 manifest 补全；`test:capability-report-smoke` 验证部分可编辑、无对象和已识别但只读三种真实 UI 状态。renderer `unsupportedNotes` 和复杂对象内部 reason 不再原文展示，而转换为用户级限制提示。WP9 固定 Python 3.8.19 / Matplotlib 3.7.2 门禁现为 11/11：覆盖动态 seed、`random`/NumPy 模块别名、`default_rng(None)`、死分支 seed、布局诊断非阻断和宽松性能预算。诊断已随类型契约、StandardFigureModel、manifest、cache hit 和项目重开保留；两 Figure 隔离 smoke 证明不同 Figure 的布局警告不会串写。
 
-2026-07-20 16:10 发布候选补充：纯 local patch 后存储 manifest 暂时缺失时，下一次 backend 修改现在进入 renderer 权威验证，renderer 拒绝仍保持零持久化。线上 `spines['left']` 崩溃已确认来自旧镜像；当前仓库通用读取实际存在的 spine，并由 polar 回归覆盖。直接适用门禁 `python-semantic-workflow`、`semantic-smoke`、`project-save-preflight`、`drag-extended-smoke`、`cache-smoke` 和跨 Figure 18/18 均通过。最新完整 Vitest 证据为 148 文件、1127/1127；独立 5.5 high 复审为 APPROVE，HIGH/MEDIUM 均为 0。
+2026-07-20 16:10 阶段补充：纯 local patch 后存储 manifest 暂时缺失时，下一次 backend 修改进入 renderer 权威验证，renderer 拒绝仍保持零持久化。线上 `spines['left']` 崩溃已确认来自旧镜像；当前仓库通用读取实际存在的 spine，并由 polar 回归覆盖。该时点完整 Vitest 为 148 文件、1127/1127，WP3-WP8 阶段独立复审为 APPROVE；这不是当前 WP9/WP10 最终复审结论。
 
 生产部署只运行一套内容固定的 renderer 镜像，并锁定 Python、R、绘图库、字体和系统依赖。WP7 的固定测试启动器明确校验 Python `3.8.19` 与 Matplotlib `3.7.2`；本轮没有迁移到 Python 3.11，也没有把历史临时 Matplotlib 3.8.4 容器改成目标版本。当前仓库 `Dockerfile.renderer` 与依赖声明仍需在部署工作包中另行核对，本轮未修改运行服务或线上版本。
+
+WP10 已达到当前计划范围的本地候选条件：普通编辑、字体、组件、配色和跨 Figure 统一从一个 feature-flag 合同读取；V2 默认开启，旧 compiler 和弱 score mapper 作为显式适配器保留。`VITE_*` 是构建时开关，逐域回退必须基于同一提交重建前端并部署新的不可变 release；重大错误优先原子切回上一整版，不能把修改服务器环境变量描述为即时生效。独立审查发现的 same-GID、非同 GID 和 App 跨 Figure Draft 编译旁路均已收敛到统一受控 resolver；稳定凭据冲突 fail-closed，多 Figure 诊断按 Figure 隔离，Shadow 证据按 release candidate 隔离。当前定向证据为 WP10 167/167、跨 Figure 18/18、WP9 11/11、组件 41/41、扩展拖拽 10/10、缓存、历史、导出事务、R 安全、用户隔离、renderer 沙箱、生产构建和数据审计均通过；最终独立 gpt-5.5 high 复审 APPROVE，0 HIGH/MEDIUM。当前候选未提交、推送或部署。
 
 ## 4. 用户数据红线
 

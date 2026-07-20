@@ -149,6 +149,59 @@ async function startServer() {
     );
   `);
 
+  function normalizeDiagnosticWarnings(value: unknown): Array<Record<string, unknown>> {
+    if (!Array.isArray(value)) return [];
+    return value.filter((warning): warning is Record<string, unknown> => (
+      Boolean(warning)
+      && typeof warning === 'object'
+      && typeof (warning as any).type === 'string'
+      && typeof (warning as any).message === 'string'
+    ));
+  }
+
+  function renderDiagnosticsFrom(source: any, manifest?: any): Record<string, unknown> | undefined {
+    const direct = source?.diagnostics;
+    const stored = manifest?.renderDiagnostics;
+    const determinismSource = source?.determinismWarnings
+      ?? direct?.determinismWarnings
+      ?? stored?.determinismWarnings;
+    const layoutSource = source?.layoutWarnings
+      ?? direct?.layoutWarnings
+      ?? stored?.layoutWarnings;
+    const layoutDiagnosticsSource = source?.timingBreakdown?.layoutDiagnosticsMs
+      ?? direct?.layoutDiagnosticsMs
+      ?? stored?.layoutDiagnosticsMs;
+    const hasDiagnostics = Array.isArray(determinismSource)
+      || Array.isArray(layoutSource)
+      || Number.isFinite(Number(layoutDiagnosticsSource));
+    if (!hasDiagnostics) return undefined;
+
+    const layoutDiagnosticsMs = Number(layoutDiagnosticsSource);
+    return {
+      determinismWarnings: normalizeDiagnosticWarnings(determinismSource),
+      layoutWarnings: normalizeDiagnosticWarnings(layoutSource),
+      ...(Number.isFinite(layoutDiagnosticsMs)
+        ? { layoutDiagnosticsMs: Math.max(0, Math.round(layoutDiagnosticsMs)) }
+        : {}),
+    };
+  }
+
+  function withRenderDiagnostics(manifest: any, source: any): any {
+    if (!manifest || typeof manifest !== 'object') return manifest;
+    const diagnostics = renderDiagnosticsFrom(source, manifest);
+    return diagnostics ? { ...manifest, renderDiagnostics: diagnostics } : manifest;
+  }
+
+  function renderDiagnosticsSourceForFigure(renderResult: any, figure: any): any {
+    const storedLayoutWarnings = figure?.manifest?.renderDiagnostics?.layoutWarnings;
+    return {
+      ...renderResult,
+      layoutWarnings: Array.isArray(figure?.layoutWarnings)
+        ? figure.layoutWarnings
+        : Array.isArray(storedLayoutWarnings) ? storedLayoutWarnings : [],
+    };
+  }
+
   function getCachedRender(cacheKey: string) {
     try {
       const row = getDb().prepare('SELECT svg, manifest, code_slice FROM render_cache WHERE cache_key = ?').get(cacheKey) as any;
@@ -165,12 +218,13 @@ async function startServer() {
     return null;
   }
 
-  function setCachedRender(cacheKey: string, svg: string, manifest: any, codeSlice?: any) {
+  function setCachedRender(cacheKey: string, svg: string, manifest: any, codeSlice?: any, diagnosticsSource?: any) {
     try {
+      const cachedManifest = withRenderDiagnostics(manifest, diagnosticsSource);
       getDb().prepare(`
         INSERT OR REPLACE INTO render_cache (cache_key, svg, manifest, code_slice)
         VALUES (?, ?, ?, ?)
-      `).run(cacheKey, svg, JSON.stringify(manifest), codeSlice ? JSON.stringify(codeSlice) : null);
+      `).run(cacheKey, svg, JSON.stringify(cachedManifest), codeSlice ? JSON.stringify(codeSlice) : null);
     } catch (e) {
       console.error('Failed to write to render cache:', e);
     }
@@ -2208,7 +2262,9 @@ ${inner}
     manifest?: unknown;
     codeSlice?: unknown;
     fingerprint?: string | number | null;
+    diagnosticsSource?: unknown;
   }): void {
+    const manifest = withRenderDiagnostics(args.manifest, args.diagnosticsSource);
     getDb().prepare(`
       UPDATE project_figures
       SET revision = ?,
@@ -2222,7 +2278,7 @@ ${inner}
     `).run(
       args.revision,
       args.svg || null,
-      args.manifest ? JSON.stringify(args.manifest) : null,
+      manifest ? JSON.stringify(manifest) : null,
       args.codeSlice ? JSON.stringify(args.codeSlice) : null,
       args.fingerprint !== undefined && args.fingerprint !== null ? String(args.fingerprint) : null,
       args.sessionId,
@@ -2361,6 +2417,7 @@ ${inner}
       'editApplyMs',
       'introspectionMs',
       'svgSerializeMs',
+      'layoutDiagnosticsMs',
       'binaryExportMs',
       'manifestBuildMs',
       'svgPostprocessMs',
@@ -2409,6 +2466,14 @@ ${inner}
     const originalJson = res.json.bind(res);
     res.json = ((body: any) => {
       if (body && typeof body === 'object') {
+        const manifestLayoutWarnings = body.manifest?.renderDiagnostics?.layoutWarnings;
+        const diagnostics = renderDiagnosticsFrom(
+          Array.isArray(manifestLayoutWarnings)
+            ? { ...body, layoutWarnings: manifestLayoutWarnings }
+            : body,
+          body.manifest,
+        );
+        if (diagnostics) body.diagnostics = diagnostics;
         const cacheHit = body.cache?.hit === true;
         const existingPerformance = body.performance && typeof body.performance === 'object'
           ? body.performance
@@ -5066,7 +5131,7 @@ ${inner}
           persistMs = roundedDuration(persistStartedAt);
 
           const cacheWriteStartedAt = performance.now();
-          setCachedRender(cacheKey, result.svg, result.manifest);
+          setCachedRender(cacheKey, result.svg, result.manifest, undefined, result);
           cacheWriteMs = roundedDuration(cacheWriteStartedAt);
         }
         const response = attachServerPerformance({
@@ -5472,6 +5537,12 @@ ${inner}
           }
         }
 
+        const targetDiagnosticsSource = projectContext && renderedFigure
+          ? renderDiagnosticsSourceForFigure(result, renderedFigure)
+          : result;
+        targetFigManifest = withRenderDiagnostics(targetFigManifest, targetDiagnosticsSource);
+        result.manifest = targetFigManifest;
+
         if (projectContext) {
           getDb().transaction(() => {
             persistSession(session);
@@ -5482,6 +5553,7 @@ ${inner}
               manifest: targetFigManifest,
               codeSlice: targetFigCodeSlice,
               fingerprint: targetFigFingerprint ?? projectContext.figRow?.fingerprint ?? null,
+              diagnosticsSource: targetDiagnosticsSource,
             });
           })();
         } else {
@@ -5494,7 +5566,7 @@ ${inner}
         persistMs = roundedDuration(persistStartedAt);
 
         const cacheWriteStartedAt = performance.now();
-        setCachedRender(cacheKey, targetFigSvg, targetFigManifest, targetFigCodeSlice);
+        setCachedRender(cacheKey, targetFigSvg, targetFigManifest, targetFigCodeSlice, targetDiagnosticsSource);
         validatedPythonPatchCacheKeys.add(cacheKey);
         cacheWriteMs = roundedDuration(cacheWriteStartedAt);
       }
@@ -5654,6 +5726,7 @@ ${inner}
             manifest: result.manifest || null,
             codeSlice: result.codeSlice ?? null,
             fingerprint: result.fingerprint ?? null,
+            diagnosticsSource: result,
           });
           persistProjectScript(projectContext.projectId, userId, script);
         } else {
@@ -6546,6 +6619,10 @@ ${inner}
         const figInputs: FigSessionInput[] = [];
         for (let i = 0; i < newFigures.length; i++) {
           const fig = newFigures[i];
+          fig.manifest = withRenderDiagnostics(
+            fig.manifest,
+            renderDiagnosticsSourceForFigure(result, fig),
+          );
           const figKey = `fig_${i + 1}`;
           const figSessionIdResolved = `${projectId}_${figKey}`;
           const incomingEditLog = effectiveEditLogs?.[fig.figureId];
@@ -6787,6 +6864,10 @@ ${inner}
             resultFigures.forEach(fig => {
               const preview = previewById.get(fig.figureId) as any;
               if (preview) {
+                preview.manifest = withRenderDiagnostics(
+                  preview.manifest,
+                  renderDiagnosticsSourceForFigure(previewResult, preview),
+                );
                 fig.svg = preview.svg || null;
                 fig.manifest = preview.manifest || null;
                 fig.codeSlice = preview.codeSlice ?? null;

@@ -372,6 +372,12 @@ async function run() {
     assert(capabilitySummaryText.includes('当前 Figure：部分可编辑'), `capability summary did not report partial editability: ${capabilitySummaryText}`);
     assert(capabilitySummaryText.includes('8/10 objects'), `capability summary object count drifted: ${capabilitySummaryText}`);
     assert(capabilitySummaryText.includes('可编辑 8 · 只读 2 · 不支持 0'), `capability summary breakdown drifted: ${capabilitySummaryText}`);
+    await capabilitySummary.getByTestId('figure-capability-details-toggle').click();
+    const capabilityDetails = capabilitySummary.getByTestId('figure-capability-details');
+    await capabilityDetails.waitFor();
+    const capabilityDetailsText = await capabilityDetails.innerText();
+    assert(capabilityDetailsText.includes('对象类型'), `capability details did not expose object types: ${capabilityDetailsText}`);
+    assert(capabilityDetailsText.includes('编辑能力'), `capability details did not explain editable capability variants: ${capabilityDetailsText}`);
 
     assert(await specialPanelIsAssigned(page), 'polar panel is not assigned under the subplot structure');
     const polarLineSection = await treeParentSectionId(page, 'line.polar.0');

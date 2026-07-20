@@ -1,11 +1,11 @@
 # Python 图元编辑与分组识别收敛执行计划
 
-> 状态：WP3 当前全入口清单已收敛，现代 `propertyCapabilities` 的属性、replay 和 object scope 已覆盖服务端、RightSidebar、ChartPreview、配色 fallback、批量/预设、standalone 对账与导出快照；旧 contour 兼容改为已持久化 editLog/v4 签名白名单。WP4 核心边界、WP6、WP7 和 WP8 已完成当前计划范围；WP5 已完成首个用户可见能力摘要，仍需完整矩阵和 release gate
-> 最后修改时间：2026-07-20 16:24:34 +08:00
+> 状态：WP3-WP10 已完成当前计划范围的本地候选收敛。WP5 能力报告、WP9 确定性/布局/固定运行时性能门禁、WP10 默认启用和独立回滚边界均已实现并通过适用自动化；旧 compiler、palette legacy resolution 和 cross-Figure score mapper 仍作为显式兼容适配器保留一个稳定发布周期。候选尚未提交、推送或部署
+> 最后修改时间：2026-07-20 22:12:50 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
 > 当前部署状态：未推送、未部署；本计划不改变线上版本
-> 执行模型：协调者负责基线和集成，具体核查与实现由 5.5 high 子代理承担
+> 执行模型：协调者负责基线和集成，具体核查、实现与门禁由 5.5 high / 5.6 Terra 边界化子代理承担
 
 ## 1. 目标
 
@@ -29,14 +29,14 @@
 - 常见 Python 二维图元、legend、colorbar、annotation、container、twin/shared axes 已有真实 renderer 和测试基础。
 - 组件中心、字体中心、配色中心、布局中心、Draft、拖拽、历史、导出快照等主链路已经可用。
 - `identity`、`relation`、`propertyCapabilities` 和严格 target resolver 已部分接入。
-- 最新全量 Vitest 为 145 文件、1078/1078；complex artist 26/26、结构身份漂移 7/7、R renderer 31/31。网络图/路径图/SEM 显式语义的 API 持久化、真实浏览器、真实控件跨 Figure、完整用户链路、组合项目、R 5/5 和 R 风险预检均通过，生产构建通过。
+- 最新全量 Vitest 为 150 文件、1144/1144；complex artist 26/26、结构身份漂移 10/10、特殊 axes 8 通过/2 依赖缺失跳过、R renderer 31/31。网络图/路径图/SEM 显式语义的 API 持久化、真实浏览器、真实控件跨 Figure、完整用户链路、组合项目、R 5/5 和 R 风险预检均通过，生产构建通过。
 
 ### 2.2 尚未完整证明
 
 - 已有一条隔离 E2E 连续证明“选择 -> 语义分组 -> Draft -> 后端重绘 -> 刷新 -> 撤销/重做 -> 导出 -> 后续编辑 -> 快照恢复”，但尚未扩展到全部复杂对象家族。
 - capability matrix 只证明当前 renderer fixture，不等同于任意真实科研脚本的完整用户流程。
 - line、scatter、bar、errorbar、boxplot、violin 等文档能力仍缺少完整浏览器矩阵证据。
-- 无标签 collection 交换顺序的首轮关键身份缺口已修复；line/scatter/bar/errorbar/boxplot/violin 的完整浏览器矩阵、用户可见能力报告和性能/碰撞门禁仍不完整。
+- 无标签 collection 交换顺序的首轮关键身份缺口已修复；用户可见能力报告和固定运行时性能/碰撞门禁已形成候选证据，但 line/scatter/bar/errorbar/boxplot/violin 的完整浏览器矩阵仍未覆盖任意脚本变体。
 
 ### 2.3 已发现的高风险问题
 
@@ -47,7 +47,7 @@
 5. `instanceKey` 仍以 GID 为核心，插入、删除或重排 artist 后可能漂移。
 6. [已在 WP4 修复] `fingerprint` 包含可编辑样式，不适合作为结构身份锚点。
 7. [已在 WP6 修复] quiver、streamplot 及网络图/路径图/SEM 曾被压平成普通 collection/patch/container/text，缺少稳定父对象或显式关系、结构只读边界和跨 Figure 关系约束。
-8. [renderer 已修复，用户摘要待 WP5] `coverageReport` 不能区分“真正语义支持”和“被普通基类接住”。
+8. [已在 WP5 修复] `coverageReport` 曾不能区分“真正语义支持”和“被普通基类接住”；当前能力报告同时消费 dedicated/flattened/ambiguous、属性变体和 renderer 限制说明。
 
 ### 2.4 2026-07-18 首轮执行结果
 
@@ -89,7 +89,15 @@
 
 2026-07-20 16:10 WP3 发布候选补充：纯 local patch 清空存储 preview manifest 后，下一次 backend patch 不再因 `manifest_unavailable` 提前失败；服务端仅在有可信 manifest 时预检，缺失时进入 renderer 权威验证，返回 manifest 通过核验后才持久化。线上 `KeyError: 'left'` 已确认是旧 renderer 固定读取 left spine，当前仓库通用读取实际 spine，polar 回归 50/50 通过。直接适用发布门禁 `python-semantic-workflow`、`semantic-smoke`、`project-save-preflight`、`drag-extended-smoke`、`cache-smoke`、`cross-figure-smoke` 全部通过；完整语义测试同时检查 HTTP 与业务响应 `status`。独立 5.5 high 复审 APPROVE，0 HIGH/MEDIUM。
 
-仍未完成：WP5 完整用户可见能力报告、WP9 性能与碰撞、WP10 默认启用与旧路径退役。WP4 无标签 collection 首轮关键矩阵已完成，但后续新增 collection 家族仍必须按同一结构身份规则验证。WP6、WP7 和 WP8 已完成当前计划范围；Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。
+2026-07-20 18:19 WP5 首轮报告补充：对象类型矩阵从 `coverageReport.byKind` 或旧 manifest 对象事实推导属性并集、交集和变体；展开面板区分对象类型、部分支持、只读与不支持，并把 `vmin/vmax` 标为可能改变科学表达的编辑。内部 resolver/sandbox 细节不进入用户提示。`npm run test:capability-report-smoke` 通过，覆盖部分可编辑、无可识别对象和已识别但只读三种隔离浏览器状态。该结果只证明当前 UI 报告首轮，未证明全部对象家族、真实项目说明或 release gate。
+
+2026-07-20 20:35 WP9 当前范围收敛：动态 seed 不再误判为固定 seed，`random` 和 `import numpy as <alias>` 的随机调用、seed 与 `default_rng` 均被覆盖；死分支或其他无法证明必经的 seed 不会抑制告警。布局诊断不执行二次完整绘制且异常非阻断。`RenderDiagnostics` 已进入响应类型、StandardFigureModel、manifest 持久化、patch cache hit 和项目重开路径，`layoutDiagnosticsMs` 进入性能白名单。`npm run test:wp9-release-gate` 11/11 通过，并对固定 Python 3.8.19 / Matplotlib 3.7.2 建立宽松发布预算：大 scatter 总耗时小于 10 秒、布局诊断小于 2 秒、对象数小于 500；该预算是回归上限，不是延迟承诺。两 Figure `test:render-diagnostics-cache` 证明 cache hit、缓存重开和强制预览重开保留各自诊断且不串 Figure。
+
+2026-07-20 22:12 WP10 当前范围收敛：`editingFeatureFlags` 统一普通编辑、字体、组件、配色和跨 Figure 的默认值；V2 默认开启。`VITE_*` 是构建时开关，逐域回退必须从同一提交重建并部署新的不可变 release，紧急故障切回上一整版。严格 resolver 在现代协议完整时生效；旧 manifest 仅在 `VITE_SCIFIGURE_TARGET_RESOLVER_LEGACY_ADAPTER=1` 时进入兼容 compiler，关闭适配器时保守拒绝。跨 Figure same-GID fast path 要求现代 source 的全部稳定凭据在 target 中存在且一致；非同 GID remap 允许 instanceKey 随 GID 变化，但 source 声明的 stableKey/seriesKey/semanticKey 必须全部存在且一致，凭据冲突不得进入 weak score。App 的跨 Figure Draft role 编译也统一走受控 resolver，不再直接调用 legacy compiler。弱 score mapper 默认关闭并保留一个稳定发布周期。Shadow 只保存目标 metadata，不保存操作值，并仅加载当前 release candidate 的记录。当前修复后定向证据为 WP10 167/167、跨 Figure 18/18、能力报告和多 Figure 诊断 smoke；组件 41/41、扩展拖拽 10/10、缓存、历史/导出事务、R 安全、用户隔离、renderer 沙箱、生产构建和数据审计均通过；最终独立 gpt-5.5 high 复审 APPROVE，0 HIGH/MEDIUM。
+
+RightSidebar 不得直接读取 `sessionStorage` 决定当前 Figure、选择或 Draft；这些状态必须经 `figSession`、`activeFigureId`、选择和 Draft props 进入组件，再由规范化模型消费。2026-07-20 静态检查确认该组件没有 `sessionStorage` 调用，保留的 `localStorage` 仅保存用户预设。隔离浏览器 fixture 写入 `sessionStorage` 只用于启动测试状态，不能作为组件边界的例外。
+
+当前 Python 计划已达到本地候选条件，但不代表任意第三方 Matplotlib artist 或任意真实科研脚本均可编辑。后续新增 collection/复杂对象家族仍必须重复结构身份、能力、生命周期和导出门禁。Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。当前工作区变更尚未提交、推送或部署；部署必须使用同一候选提交并保留逐域 feature flag 与整版回退能力。
 
 ### 2.5 2026-07-18 WP8 执行结果
 
@@ -318,6 +326,8 @@
 
 ### WP5：能力覆盖事实与用户可见报告
 
+**状态：已完成当前计划范围。能力摘要、对象类型矩阵、限制/科学影响提示、旧 manifest 补全和隔离浏览器三状态均有回归证据。**
+
 **renderer 升级**
 
 - `coverageReport` 区分 recognized、semantic、flattened、readonly 和 unsupported。
@@ -409,12 +419,16 @@ broken axes / parasite axes
 
 ### WP9：确定性、布局碰撞和性能
 
+**状态：已完成当前固定运行时范围。8 项门禁覆盖确定性、动态 seed、别名、布局风险、诊断非阻断、缓存/项目持久化和宽松性能预算。**
+
 - 对无 seed 随机数、当前时间、外部状态和不可重放副作用给出确定性警告。
 - 为字体、图例、色条和标题变化增加裁切/重叠检查。
 - 扩展 621 对象基线到系列级超大 scatter、密集 tick 和多子图。
 - 优化只基于分段指标；不得取消沙箱、减少身份事实或缩减 manifest。
 
 ### WP10：默认启用与旧路径退役
+
+**状态：已完成当前计划范围的本地候选。V2 默认开启，旧路径保留为独立回滚 flag/adapter；尚未推送或部署。**
 
 默认启用条件：
 

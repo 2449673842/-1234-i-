@@ -218,6 +218,7 @@ export interface CoverageSummary {
   editable: number;
   readonly: number;
   unsupported: number;
+  semantic?: number;
   dedicated?: number;
   flattened?: number;
   ambiguous?: number;
@@ -242,6 +243,7 @@ export interface UnsupportedArtistDetail {
 export interface ComplexArtistCoverageDetail {
   id: string;
   class: string;
+  sourceCall?: string;
   family: string;
   status: SemanticCoverageStatus;
   attribution: string;
@@ -323,6 +325,8 @@ export interface Manifest {
   };
   coverageReport?: CoverageReport;
   unsupportedNotes?: string[];
+  /** Renderer diagnostics persisted with an existing manifest payload. */
+  renderDiagnostics?: RenderDiagnostics;
 }
 
 /* ---- Edit Log ---- */
@@ -398,6 +402,7 @@ export interface RendererPerformanceV1 {
   editApplyMs?: number;
   introspectionMs?: number;
   svgSerializeMs?: number;
+  layoutDiagnosticsMs?: number;
   binaryExportMs?: number;
   manifestBuildMs?: number;
   svgPostprocessMs?: number;
@@ -433,6 +438,24 @@ export interface RenderCacheStatus {
   key: string;
 }
 
+export interface RenderDiagnostic {
+  type: string;
+  message: string;
+  suggestion?: string;
+  symbol?: string;
+  line?: number;
+  figureId?: string;
+  element?: string;
+  elements?: string[];
+  [key: string]: unknown;
+}
+
+export interface RenderDiagnostics {
+  determinismWarnings: RenderDiagnostic[];
+  layoutWarnings: RenderDiagnostic[];
+  layoutDiagnosticsMs?: number;
+}
+
 export interface RenderResponse {
   status: "success" | "error";
   sessionId: string;
@@ -443,6 +466,10 @@ export interface RenderResponse {
   editLog?: EditEntry[];
   coverageReport?: CoverageReport;
   timingMs: number;
+  timingBreakdown?: RendererPerformanceV1;
+  determinismWarnings?: RenderDiagnostic[];
+  layoutWarnings?: RenderDiagnostic[];
+  diagnostics?: RenderDiagnostics;
   performance?: RenderPerformanceV1;
   cache?: RenderCacheStatus;
   message?: string;

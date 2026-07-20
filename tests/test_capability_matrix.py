@@ -129,6 +129,56 @@ def validate_manifest(testcase, fixture_id, manifest):
         )
 
 
+def validate_python_coverage_report(testcase, fixture_id, manifest):
+    objects = manifest.get("objects", [])
+    report = manifest.get("coverageReport", {})
+    summary = report.get("summary", {})
+    by_kind = report.get("byKind", {})
+    complex_rows = report.get("complexArtists", [])
+
+    testcase.assertEqual(summary.get("recognized"), len(objects), f"{fixture_id}: recognized count drift")
+    dedicated_rows = [row for row in complex_rows if row.get("status") == "dedicated"]
+    testcase.assertEqual(summary.get("semantic"), len(dedicated_rows), f"{fixture_id}: semantic count drift")
+    testcase.assertEqual(summary.get("semantic"), summary.get("dedicated"), f"{fixture_id}: semantic alias drift")
+
+    kinds = {obj.get("kind") for obj in objects}
+    testcase.assertEqual(set(by_kind), kinds, f"{fixture_id}: byKind keys drift")
+    for kind in kinds:
+        kind_objects = [obj for obj in objects if obj.get("kind") == kind]
+        prop_sets = [set(map(str, obj.get("editable", []))) for obj in kind_objects]
+        expected_union = sorted(set().union(*prop_sets)) if prop_sets else []
+        expected_intersection = sorted(set.intersection(*prop_sets)) if prop_sets else []
+        expected_variants = Counter(tuple(sorted(props)) for props in prop_sets)
+        detail = by_kind[kind]
+        testcase.assertEqual(detail.get("count"), len(kind_objects), f"{fixture_id}: {kind} count drift")
+        testcase.assertEqual(detail.get("editableProps"), expected_union, f"{fixture_id}: {kind} union drift")
+        testcase.assertEqual(
+            detail.get("editablePropsIntersection"),
+            expected_intersection,
+            f"{fixture_id}: {kind} intersection drift",
+        )
+        actual_variants = Counter(
+            {
+                tuple(item.get("editableProps", [])): item.get("count", 0)
+                for item in detail.get("editablePropVariants", [])
+            }
+        )
+        testcase.assertEqual(actual_variants, expected_variants, f"{fixture_id}: {kind} variants drift")
+
+    object_map = {obj.get("id"): obj for obj in objects}
+    for row in complex_rows:
+        obj = object_map.get(row.get("id"))
+        testcase.assertIsNotNone(obj, f"{fixture_id}: complex row target missing: {row}")
+        if row.get("status") == "flattened":
+            testcase.assertTrue(row.get("class"), f"{fixture_id}: flattened class missing: {row}")
+            testcase.assertTrue(row.get("reason"), f"{fixture_id}: flattened reason missing: {row}")
+            testcase.assertEqual(
+                row.get("sourceCall"),
+                obj.get("source", {}).get("callName"),
+                f"{fixture_id}: flattened source call drift: {row}",
+            )
+
+
 def validate_entry(testcase, entry, manifests):
     all_objects = []
     for manifest in manifests:
@@ -173,6 +223,8 @@ class TestCapabilityMatrix(unittest.TestCase):
                 self.assertEqual(len(figures), entry.get("expectedFigures", 1), f"{entry['id']}: figure count")
                 self.assertTrue(all(figure.get("svg") for figure in figures), f"{entry['id']}: empty SVG")
                 validate_entry(self, entry, [figure.get("manifest", {}) for figure in figures])
+                for figure in figures:
+                    validate_python_coverage_report(self, entry["id"], figure.get("manifest", {}))
 
     @unittest.skipUnless(rscript_bin() and Path(rscript_bin()).exists(), "Rscript is not available")
     def test_r_capability_matrix(self):
