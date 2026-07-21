@@ -158,6 +158,82 @@
         { "from": "r.text.1.0", "field": "annotationId", "equals": "r.text.1.0" },
         { "from": "r.text.2.0", "field": "annotationId", "equals": "r.text.2.0" }
       ]
+    },
+    {
+      "id": "r_default_discrete_scatter",
+      "file": "r/default_discrete_scatter.R",
+      "minKindCounts": { "collection": 3, "legend": 1 },
+      "requiredIds": ["r.layer.0", "r.group.color.0.0", "r.group.color.0.1", "legend.0"],
+      "requiredRoles": ["ggplot_GeomPoint", "ggplot_scale_color", "legend"]
+    },
+    {
+      "id": "r_manual_fill_grouped_col",
+      "file": "r/manual_fill_grouped_col.R",
+      "minKindCounts": { "patch": 3, "legend": 1 },
+      "requiredIds": ["r.layer.0", "r.group.fill.0.0", "r.group.fill.0.1", "legend.0"],
+      "requiredRoles": ["ggplot_GeomCol", "ggplot_scale_fill", "legend"]
+    },
+    {
+      "id": "r_grouped_line_path",
+      "file": "r/grouped_line_path.R",
+      "minKindCounts": { "line": 4, "collection": 1, "legend": 1 },
+      "requiredIds": ["r.layer.0", "r.layer.1", "r.layer.2", "r.group.color.0.0", "r.group.color.0.1"],
+      "requiredRoles": ["ggplot_GeomLine", "ggplot_GeomPath", "ggplot_GeomPoint", "ggplot_scale_color"]
+    },
+    {
+      "id": "r_errorbar_linerange",
+      "file": "r/errorbar_linerange.R",
+      "minKindCounts": { "collection": 1, "errorbar_container": 2 },
+      "requiredIds": ["r.layer.0", "r.layer.1", "r.layer.2"],
+      "requiredRoles": ["ggplot_GeomPoint", "ggplot_GeomErrorbar", "ggplot_GeomLinerange"]
+    },
+    {
+      "id": "r_facet_grid",
+      "file": "r/facet_grid.R",
+      "minKindCounts": { "subplot": 4, "collection": 1, "text": 4 },
+      "requiredIds": ["subplot.0", "subplot.1", "subplot.2", "subplot.3", "r.layer.0"],
+      "requiredRoles": ["ggplot_facet_panel", "facet_strip_title", "ggplot_GeomPoint"]
+    },
+    {
+      "id": "r_geom_text_label",
+      "file": "r/geom_text_label.R",
+      "minKindCounts": { "collection": 1, "text": 8 },
+      "requiredIds": ["r.layer.0", "r.text.1.0", "r.text.2.0"],
+      "requiredRoles": ["ggplot_GeomPoint", "ggplot_text_annotation"]
+    },
+    {
+      "id": "r_coord_flip",
+      "file": "r/coord_flip.R",
+      "minKindCounts": { "subplot": 1, "patch": 1, "text": 4 },
+      "requiredIds": ["subplot.0", "r.layer.0", "r.text.1.0"],
+      "requiredRoles": ["ggplot_panel", "ggplot_GeomCol", "ggplot_text_annotation"]
+    },
+    {
+      "id": "r_log_scale",
+      "file": "r/log_scale.R",
+      "minKindCounts": { "subplot": 1, "collection": 1, "text": 5 },
+      "requiredIds": ["subplot.0", "r.layer.0", "r.text.1.0"],
+      "requiredRoles": ["ggplot_panel", "ggplot_GeomPoint", "ggplot_text_annotation"]
+    },
+    {
+      "id": "r_coord_polar",
+      "file": "r/coord_polar.R",
+      "minKindCounts": { "subplot": 1, "patch": 5, "text": 5 },
+      "requiredIds": ["subplot.0", "r.layer.0", "r.text.1.0"],
+      "requiredRoles": ["ggplot_panel", "ggplot_GeomCol", "ggplot_scale_fill", "ggplot_text_annotation"]
+    },
+    {
+      "id": "r_raster_colorbar",
+      "file": "r/raster_colorbar.R",
+      "minKindCounts": { "heatmap": 1, "colorbar": 1 },
+      "requiredIds": ["r.heatmap.fill.0", "r.colorbar.fill.0"],
+      "requiredRoles": ["ggplot_heatmap_series", "ggplot_colorbar"]
+    },
+    {
+      "id": "r_base_preview",
+      "file": "r/base_r_preview.R",
+      "semanticSupport": "preview_only",
+      "expectedUnsupportedClass": "base_r_or_grid_output"
     }
   ]
 }

@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import * as XLSX from 'xlsx';
@@ -34,6 +35,30 @@ function assertCapabilityManifest(result, label) {
   assert(capabilityBacked.length > 0, `${label} did not return identity/capability-backed objects`);
 }
 
+function reservePort() {
+  return new Promise((resolve, reject) => {
+    const listener = net.createServer();
+    listener.once('error', reject);
+    listener.listen(0, '127.0.0.1', () => {
+      const address = listener.address();
+      const selectedPort = typeof address === 'object' && address ? address.port : 0;
+      listener.close((error) => error ? reject(error) : resolve(selectedPort));
+    });
+  });
+}
+
+function assertIsolatedExternalServer() {
+  assert(process.env.SCIFIGURE_TEST_ISOLATED === '1', 'external sandbox server requires the isolated wrapper marker');
+  assert(process.env.SCIFIGURE_DATA_DIR, 'external sandbox server requires SCIFIGURE_DATA_DIR');
+  assert(process.env.SCIFIGURE_DB_PATH, 'external sandbox server requires SCIFIGURE_DB_PATH');
+  const url = new URL(BASE_URL);
+  assert(url.hostname === '127.0.0.1' && url.port !== '3000', `unsafe sandbox URL: ${BASE_URL}`);
+  const resolvedDataDir = path.resolve(process.env.SCIFIGURE_DATA_DIR);
+  const resolvedDbPath = path.resolve(process.env.SCIFIGURE_DB_PATH);
+  assert(resolvedDbPath.startsWith(`${resolvedDataDir}${path.sep}`), `sandbox DB is outside isolated data dir: ${resolvedDbPath}`);
+  assert(resolvedDataDir !== path.resolve(repoRoot, 'data'), 'sandbox test refuses the repository data directory');
+}
+
 async function register() {
   const response = await fetch(`${BASE_URL}/api/auth/register`, {
     method: 'POST',
@@ -49,9 +74,12 @@ async function register() {
 }
 
 async function ensureServer() {
-  if (BASE_URL) return;
+  if (BASE_URL) {
+    assertIsolatedExternalServer();
+    return;
+  }
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-renderer-sandbox-'));
-  const port = 36_000 + Math.floor(Math.random() * 2_000);
+  const port = await reservePort();
   BASE_URL = `http://127.0.0.1:${port}`;
   const tsxCli = path.join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
   ownedServer = spawn(process.execPath, [tsxCli, 'server.ts'], {
@@ -59,8 +87,10 @@ async function ensureServer() {
     env: {
       ...process.env,
       PORT: String(port),
-      SCIFIGURE_DB_PATH: path.join(tempDir, 'scifigure-test.db'),
       SCIFIGURE_DATA_DIR: path.join(tempDir, 'data'),
+      SCIFIGURE_DB_PATH: path.join(tempDir, 'data', 'scifigure-test.db'),
+      SCIFIGURE_LEGACY_OWNER_EMAIL: '',
+      SCIFIGURE_TEST_ISOLATED: '1',
       SCIFIGURE_RENDER_MODE: 'docker',
       SCIFIGURE_R_RISK_ENFORCE: '0',
       SCIFIGURE_R_TIMEOUT_MS: '5000',

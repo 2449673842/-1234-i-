@@ -3,7 +3,7 @@
 > 状态：当前有效，所有平台功能升级的合并阻断基线
 > 最后修改时间：2026-07-21 15:21:24 +08:00
 > 证据截止时间：2026-07-21 15:20:55 +08:00
-> 代码范围：`feature/standard-figure-model-v1`，Python WP3-WP10 固定候选及旧项目完整重渲染、文本 Draft/立即应用兼容收尾、旧 editLog 精确兼容、导出快照 v4、能力报告、渲染诊断与逐域默认启用
+> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 固定候选及旧项目兼容收尾、导出快照 v4、能力报告、渲染诊断与逐域默认启用，以及 R-WP0 隔离 fixture/旧 identity 基线
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -55,7 +55,7 @@
 | `quiver/streamplot` 专用语义 | 通过 | 专用父对象/role、旧 GID 兼容、内部 child 只读、可信关系映射、图例联动、结构只读、跨 Figure、导出和恢复均通过 |
 | 网络图/路径图/SEM 显式语义 | 通过 | 七类专用 role、完整关系签名、科学结构只读、组件/配色隔离、Draft/backend replay、跨 Figure、导出和恢复均通过 |
 | Python 特殊 axes | 通过当前固定运行时门禁 | polar、3D、inset、secondary、parasite 和自定义投影分类；Python 10 项中 8 通过，Cartopy/brokenaxes 因未安装跳过且不得宣称支持 |
-| R 共享协议回归 | 通过 | R renderer 31/31、R 浏览器 5/5、Python/R capability matrix 2/2 |
+| R-WP0 基线与旧版兼容 fixture | 基线通过，兼容阻断已固定 | R renderer 32 个正向测试通过；旧 group editLog 遇到语义漂移仍可能按 ordinal GID 误应用，已固化为 1 个 `expectedFailure`，R-WP2 未关闭前不得宣称 R identity v2 兼容完成；15 个 R capability fixture、浏览器 6/6、安全与隔离门禁通过 |
 | patch/全渲染事务保护 | 通过 | standalone patch、standalone full render 与项目 full render 均由服务端按返回 manifest/renderer 决定；拒绝批次不改变 revision、session、项目脚本、Figure、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |

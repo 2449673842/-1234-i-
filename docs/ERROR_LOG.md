@@ -33,6 +33,31 @@
 
 ---
 
+## 2026-07-21 22:06:41 +08:00 R 安全测试缺少临时数据根与旧 identity 缺少静态升级证据
+
+**状态与级别**
+
+- 状态：测试隔离与 R-WP0 基线已修复；未修改产品行为，未推送、未部署。
+- 级别：P1 测试数据边界与兼容证据真实性。测试虽使用临时 DB，但未显式设置数据根时仍可能让服务端默认初始化仓库真实 `data/`；动态生成的“旧 manifest”也不能证明未来升级兼容真实旧记录。
+
+**根因与修复**
+
+- `r_security_precheck_smoke.mjs` 原先只设置临时 `SCIFIGURE_DB_PATH`，主服务和 production/staging guard 没有设置 `SCIFIGURE_DATA_DIR`；端口使用随机区间而非系统分配。
+- R semantic 浏览器脚本有 `localhost:3000` fallback，即使 package 入口通常走隔离 wrapper，直接执行仍可能误触运行服务。
+- 当前 R identity 尚无 fingerprint 版本；若等 R-WP2 完成后才生成兼容 fixture，测试会把新 renderer 结果伪装成旧项目。
+- 当前安全测试为主服务和 guard 设置独立临时 data/DB、`SCIFIGURE_TEST_ISOLATED=1`、空 legacy owner 和系统分配端口。R semantic 测试缺少 wrapper、临时路径或使用 3000 时立即拒绝。
+- 冻结 `legacy_identity_v1.json`，保留升级前无 `fingerprintVersion/fingerprint` 的 group identity 和 durable editLog；renderer 定向测试先证明当前基线可重放。
+- capability matrix 扩展为 15 个纯合成 R fixture，base R 的预览/导出但不可语义编辑边界也成为可执行断言。
+
+**验证与防复发**
+
+- R renderer 32 个正向测试通过；另有 1 个 legacy 分组语义漂移 `expectedFailure`，明确证明当前 ordinal GID 仍可能误应用旧 editLog，作为 R-WP2 阻断项；Python/R capability matrix 2/2。
+- R semantic 浏览器 6/6，覆盖字体、组件、分组配色、Draft/apply 和导出 bundle editLog；R 安全预检通过。
+- 后续旧版兼容测试必须引用升级前冻结的静态记录，不能在新 renderer 下即时生成。
+- 自建 server 或浏览器 smoke 必须同时设置临时 data、临时 DB、随机非 3000 端口和 isolation marker；只设置临时 DB 不算完整隔离。
+
+---
+
 ## 2026-07-20 16:10:50 +08:00 local 修改后 backend 编辑冲突与线上 spine 旧镜像崩溃
 
 **状态与级别**

@@ -1,15 +1,31 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 
 const repoRoot = process.cwd();
 const tsxCli = path.join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-r-security-'));
-const dbPath = path.join(tempDir, 'scifigure-test.db');
-const port = 34_000 + Math.floor(Math.random() * 2_000);
+const dataDir = path.join(tempDir, 'data');
+const dbPath = path.join(dataDir, 'scifigure-test.db');
+const port = await reservePort();
+const productionGuardPort = await reservePort();
+const stagingGuardPort = await reservePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const serverOutput = [];
+
+function reservePort() {
+  return new Promise((resolve, reject) => {
+    const listener = net.createServer();
+    listener.once('error', reject);
+    listener.listen(0, '127.0.0.1', () => {
+      const address = listener.address();
+      const selectedPort = typeof address === 'object' && address ? address.port : 0;
+      listener.close((error) => error ? reject(error) : resolve(selectedPort));
+    });
+  });
+}
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -37,14 +53,17 @@ async function waitForServer() {
   throw new Error(`Server did not start. Output:\n${serverOutput.join('')}`);
 }
 
-async function assertNonDevelopmentLocalRendererRejected(nodeEnv, portOffset) {
+async function assertNonDevelopmentLocalRendererRejected(nodeEnv, guardPort) {
   const output = [];
   const child = spawn(process.execPath, [tsxCli, 'server.ts'], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      PORT: String(port + portOffset),
-      SCIFIGURE_DB_PATH: path.join(tempDir, `${nodeEnv}-guard.db`),
+      PORT: String(guardPort),
+      SCIFIGURE_DATA_DIR: path.join(tempDir, `${nodeEnv}-data`),
+      SCIFIGURE_DB_PATH: path.join(tempDir, `${nodeEnv}-data`, 'scifigure.db'),
+      SCIFIGURE_LEGACY_OWNER_EMAIL: '',
+      SCIFIGURE_TEST_ISOLATED: '1',
       SCIFIGURE_RENDER_MODE: 'local',
       NODE_ENV: nodeEnv,
     },
@@ -67,7 +86,10 @@ const server = spawn(process.execPath, [tsxCli, 'server.ts'], {
   env: {
     ...process.env,
     PORT: String(port),
+    SCIFIGURE_DATA_DIR: dataDir,
     SCIFIGURE_DB_PATH: dbPath,
+    SCIFIGURE_LEGACY_OWNER_EMAIL: '',
+    SCIFIGURE_TEST_ISOLATED: '1',
     SCIFIGURE_RENDER_MODE: 'local',
     SCIFIGURE_R_RISK_ENFORCE: '1',
     NODE_ENV: 'development',
@@ -80,8 +102,8 @@ server.stderr.on('data', (chunk) => serverOutput.push(chunk.toString()));
 
 try {
   await waitForServer();
-  await assertNonDevelopmentLocalRendererRejected('production', 1);
-  await assertNonDevelopmentLocalRendererRejected('staging', 2);
+  await assertNonDevelopmentLocalRendererRejected('production', productionGuardPort);
+  await assertNonDevelopmentLocalRendererRejected('staging', stagingGuardPort);
   const registerResponse = await request('/api/auth/register', {
     method: 'POST',
     body: JSON.stringify({

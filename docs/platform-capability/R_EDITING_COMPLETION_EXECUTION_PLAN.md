@@ -1,8 +1,8 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：规划完成；Python 阶段仍在执行，R 产品工作包尚未开始
-> 最后修改时间：2026-07-19 06:19:06 +08:00
-> 当前部署状态：R 计划尚未进入产品实现；本轮仅完成共享协议回归，未推送、未部署
+> 状态：R-WP0 本地候选完成；R-WP1 尚未开始
+> 最后修改时间：2026-07-21 22:06:41 +08:00
+> 当前部署状态：R-WP0 仅新增隔离测试、合成 fixture、旧 identity 基线和证据文档；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 现状入口：`docs/R_COMPATIBILITY_PLAN.md`
 > 适用范围：R/ggplot2 渲染、语义图元、对象身份、patch 写回、Draft、历史、导出、复杂坐标、网络图/路径图/SEM 与生产一致性
@@ -75,7 +75,7 @@ standalone Python patch 的客户端 mode 绕过已经修复：无 `projectId/pr
 
 Python 专项修改共享协议时，R renderer、R semantic smoke 和导出回归仍是强制门禁；R 专项修改共享协议时，同样必须回归 Python，不允许以“只改 R”为理由跳过 Python 基线。
 
-2026-07-19 的 Python contour 工作包已重新通过 R renderer 31/31、R semantic 浏览器 5/5、R 安全预检和共享导出门禁。该证据只表示现有 R 基线未回退，不表示 R-WP0 至 R-WP10 已开始或完成。
+2026-07-21 的 R-WP0 已冻结 15 个合成 capability fixture 和一份无 fingerprint 版本的静态旧 identity/editLog fixture。当前新鲜证据为 R renderer 32 个正向测试通过，另有 1 个“ordinal GID 相同但分组语义已变化”的明确 `expectedFailure`；该失败是 R-WP2 必须关闭的兼容阻断项。Python/R capability matrix 2/2、R semantic 浏览器 6/6（含 SVG 导出状态）、R 安全预检和数据审计 0 issue。详细清单见 `R_WP0_BASELINE_EVIDENCE.md`。该结论只完成 Baseline，不代表 R-WP1 至 R-WP10 已实现。
 
 ## 3. 执行原则
 

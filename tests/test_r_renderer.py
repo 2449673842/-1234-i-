@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -9,6 +10,13 @@ from typing import Any, Dict, List
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 R_RENDERER = os.path.join(PROJECT_ROOT, "renderer", "r_renderer.R")
+LEGACY_IDENTITY_FIXTURE = os.path.join(
+    PROJECT_ROOT,
+    "tests",
+    "fixtures",
+    "r_editing_baseline",
+    "legacy_identity_v1.json",
+)
 
 
 def _rscript_bin() -> str:
@@ -87,6 +95,61 @@ def _object(result: Dict[str, Any], gid: str) -> Dict[str, Any]:
 
 @unittest.skipUnless(os.path.exists(_rscript_bin()), "Rscript is not available")
 class TestRRenderer(unittest.TestCase):
+    def test_frozen_legacy_identity_fixture_replays_without_version_migration(self):
+        with open(LEGACY_IDENTITY_FIXTURE, "r", encoding="utf-8") as handle:
+            fixture = json.load(handle)
+
+        self.assertEqual(fixture["fixtureVersion"], 1)
+        self.assertEqual(fixture["contract"], "r-manifest-before-fingerprint-v2")
+        self.assertEqual(fixture["sourceCommit"], "c29e93d")
+        frozen_payload = {
+            "manifestExcerpt": fixture["manifestExcerpt"],
+            "persistedEditLog": fixture["persistedEditLog"],
+        }
+        canonical_payload = json.dumps(
+            frozen_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertEqual(
+            hashlib.sha256(canonical_payload).hexdigest(),
+            fixture["fixturePayloadSha256"],
+        )
+
+        frozen_objects = fixture["manifestExcerpt"]["objects"]
+        self.assertTrue(frozen_objects)
+        legacy_protocol_json = json.dumps(frozen_payload, ensure_ascii=False)
+        self.assertNotIn('"fingerprintVersion"', legacy_protocol_json)
+        self.assertNotIn('"fingerprint"', legacy_protocol_json)
+
+        result = _run_r_renderer(fixture["script"], fixture["persistedEditLog"])
+        for frozen in frozen_objects:
+            replayed = _object(result, frozen["id"])
+            self.assertEqual(replayed["currentProps"]["color"], frozen["currentProps"]["color"])
+            self.assertEqual(replayed["identity"], frozen["identity"])
+
+
+    @unittest.expectedFailure
+    def test_frozen_legacy_identity_rejects_semantic_group_drift(self):
+        with open(LEGACY_IDENTITY_FIXTURE, "r", encoding="utf-8") as handle:
+            fixture = json.load(handle)
+
+        drifted_script = fixture["script"].replace(
+            'group=c("A", "A", "B", "B")',
+            'group=c("C", "C", "B", "B")',
+        )
+        self.assertNotEqual(drifted_script, fixture["script"])
+        drifted = _run_r_renderer(drifted_script, fixture["persistedEditLog"])
+        drifted_target = _object(drifted, "r.group.color.0.0")
+        frozen_target = fixture["manifestExcerpt"]["objects"][0]
+        self.assertNotEqual(drifted_target["identity"], frozen_target["identity"])
+        self.assertNotEqual(
+            drifted_target["currentProps"]["color"],
+            fixture["persistedEditLog"][0]["value"],
+            "R-WP2 must reject an old group edit when the same ordinal gid now identifies another group",
+        )
+
     def test_r_shadow_identity_is_stable_across_style_edits(self):
         script = """
 library(ggplot2)

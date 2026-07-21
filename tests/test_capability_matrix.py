@@ -206,6 +206,20 @@ def validate_entry(testcase, entry, manifests):
         )
 
 
+def validate_r_preview_only_entry(testcase, entry, manifest):
+    testcase.assertEqual(manifest.get("objects", []), [], f"{entry['id']}: preview-only fixture exposed editable objects")
+    report = manifest.get("coverageReport", {})
+    testcase.assertGreaterEqual(report.get("summary", {}).get("unsupported", 0), 1, f"{entry['id']}: missing limitation count")
+    unsupported_classes = {
+        row.get("class") for row in report.get("unsupportedArtists", [])
+    }
+    testcase.assertIn(
+        entry.get("expectedUnsupportedClass"),
+        unsupported_classes,
+        f"{entry['id']}: missing explicit preview-only limitation",
+    )
+
+
 class TestCapabilityMatrix(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -233,7 +247,11 @@ class TestCapabilityMatrix(unittest.TestCase):
                 source = read_synthetic_fixture(entry["file"])
                 result = run_r_fixture(source)
                 self.assertTrue(result.get("svg"), f"{entry['id']}: empty SVG")
-                validate_entry(self, entry, [result.get("manifest", {})])
+                manifest = result.get("manifest", {})
+                if entry.get("semanticSupport") == "preview_only":
+                    validate_r_preview_only_entry(self, entry, manifest)
+                else:
+                    validate_entry(self, entry, [manifest])
 
 
 if __name__ == "__main__":

@@ -4,8 +4,8 @@
  * Verifies that the frontend semantic centers can edit R-generated manifests
  * through the same draft/apply flow used by Python figures.
  *
- * Prerequisite:
- *   The app is running. Override with SCIFIGURE_URL when needed.
+ * Run through scripts/testing/run_with_isolated_server.mjs. Direct execution
+ * fails closed so this smoke cannot target port 3000 or repository data.
  */
 
 import { chromium } from 'playwright';
@@ -20,7 +20,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
-const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.SCIFIGURE_URL || '';
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
 const OUTPUT_DIR = path.join(ROOT, 'output', 'playwright', `r-semantic-centers-${RUN_ID}`);
 
@@ -32,6 +32,24 @@ const pageErrors = [];
 const failedRequests = [];
 const diagnostics = {};
 let authToken = '';
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function assertIsolatedEnvironment() {
+  assert(process.env.SCIFIGURE_TEST_ISOLATED === '1', 'R semantic smoke must use the isolated server wrapper');
+  assert(BASE_URL, 'SCIFIGURE_URL is required from the isolated server wrapper');
+  assert(process.env.SCIFIGURE_DATA_DIR, 'SCIFIGURE_DATA_DIR is required');
+  assert(process.env.SCIFIGURE_DB_PATH, 'SCIFIGURE_DB_PATH is required');
+  const url = new URL(BASE_URL);
+  assert(url.hostname === '127.0.0.1' && url.port !== '3000', `unsafe R semantic smoke URL: ${BASE_URL}`);
+  const resolvedDataDir = path.resolve(process.env.SCIFIGURE_DATA_DIR);
+  const resolvedDbPath = path.resolve(process.env.SCIFIGURE_DB_PATH);
+  assert(path.basename(path.dirname(resolvedDataDir)).startsWith('scifigure-isolated-smoke-'), `non-isolated data dir: ${resolvedDataDir}`);
+  assert(resolvedDbPath.startsWith(`${resolvedDataDir}${path.sep}`), `DB is outside isolated data dir: ${resolvedDbPath}`);
+  assert(resolvedDataDir !== path.resolve(ROOT, 'data'), 'R semantic smoke refuses the repository data directory');
+}
 
 const script = [
   'library(ggplot2)',
@@ -326,6 +344,7 @@ async function prepareProject(page) {
 }
 
 async function run() {
+  assertIsolatedEnvironment();
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'R semantic centers');
   await cleanupSmokeProjects();
@@ -428,6 +447,18 @@ async function run() {
       layoutOk ? 'PASS' : 'FAIL',
       `expected=${layoutV2Expected}, panel=${layoutPanelCount}, bounds=${JSON.stringify(unsupportedBoundStates)}, blocked=${facetBoundsBlocked}`,
     );
+
+    const exported = await requestJson('/api/figure/export', {
+      method: 'POST',
+      body: JSON.stringify({ sessionId: `${projectId}_fig_1`, format: 'svg', dpi: 300 }),
+    });
+    const exportedEdits = exported?.bundle?.editLog || [];
+    const exportOk = exported?.status === 'success'
+      && String(exported?.svg || '').includes('<svg')
+      && exported?.bundle?.metadata?.environment === 'R + SVG renderer'
+       && exportedEdits.some((patch) => patch.gid === 'axis.x.0' && patch.prop === 'tick_labelsize')
+       && exportedEdits.some((patch) => String(patch.gid).startsWith('r.group.color.') && patch.prop === 'color');
+     record('R5-export-state', exportOk ? 'PASS' : 'FAIL', `environment=${exported?.bundle?.metadata?.environment}, edits=${JSON.stringify(exportedEdits)}`);
 
     record(
       'N1',
