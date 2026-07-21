@@ -95,6 +95,31 @@ export function buildInlineTextPatch(
   };
 }
 
+const SELECTABLE_PANEL_KINDS = new Set([
+  'subplot',
+  'polar_subplot',
+  'three_d_subplot',
+  'inset_subplot',
+  'geo_subplot',
+  'parasite_subplot',
+  'unsupported_axes',
+  'brokenaxes_group',
+]);
+
+export function resolveAxesPatchPanelGid(
+  objects: readonly ManifestObject[],
+  axesIndex: number,
+): string | null {
+  const ordinarySubplotId = `subplot.${axesIndex}`;
+  if (objects.some(object => object.id === ordinarySubplotId && object.kind === 'subplot')) {
+    return ordinarySubplotId;
+  }
+  return objects.find(object => (
+    object.source?.axesIndex === axesIndex
+      && SELECTABLE_PANEL_KINDS.has(String(object.kind))
+  ))?.id ?? null;
+}
+
 interface ChartPreviewProps {
   spec: FigureSpec;
   onSpecChange: (spec: FigureSpec) => void;
@@ -261,7 +286,8 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     // subplot.* is a logical manifest object. Matplotlib writes the physical axes group as axes.*.
     const subplotMatch = gid.match(/^subplot\.(\d+)$/);
     if (subplotMatch) {
-      return querySvgElementById(svgEl, `axes.${subplotMatch[1]}`);
+      return querySvgElementById(svgEl, `axes.patch.${subplotMatch[1]}`)
+        || querySvgElementById(svgEl, `axes.${subplotMatch[1]}`);
     }
 
     const specialPanelKinds = new Set([
@@ -386,20 +412,11 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
         const axesPatchMatch = current.id.match(/^axes\.patch\.(\d+)$/);
         if (axesPatchMatch) {
           const axesIndex = Number(axesPatchMatch[1]);
-          const panel = (Array.from(manifestObjectMap.values()) as any[]).find((object: any) => (
-            typeof object?.source?.axesIndex === 'number'
-            && object.source.axesIndex === axesIndex
-            && [
-              'polar_subplot',
-              'three_d_subplot',
-              'inset_subplot',
-              'geo_subplot',
-              'parasite_subplot',
-              'unsupported_axes',
-              'brokenaxes_group',
-            ].includes(String(object?.kind))
-          ));
-          if (panel?.id && validGids.has(panel.id)) return panel.id;
+          const panelGid = resolveAxesPatchPanelGid(
+            Array.from(manifestObjectMap.values()) as ManifestObject[],
+            axesIndex,
+          );
+          if (panelGid && validGids.has(panelGid)) return panelGid;
         }
         const gridMatch = current.id.match(/^grid\.(\d+)\.line\./);
         if (gridMatch && validGids.has(`grid.${gridMatch[1]}`)) {
@@ -411,7 +428,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       current = current.parentElement;
     }
     return null;
-  }, [resolveParentOwnedHitGid, validGids]);
+  }, [manifestObjectMap, resolveParentOwnedHitGid, validGids]);
 
   const resolveLegendDragTarget = useCallback((gid: string | null) => {
     if (!gid) return gid;
@@ -1333,6 +1350,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
                 data-svg-sanitize-ms={sanitizedRenderedSvg.sanitizeMs.toFixed(2)}
                 data-svg-sanitize-count={sanitizedRenderedSvg.sanitizeCount}
                 data-svg-sanitize-cache-hit={sanitizedRenderedSvg.cacheHit ? 'true' : 'false'}
+                data-scifigure-canvas-svg="true"
                 className="flex items-center justify-center shadow-sm [&>svg]:block [&>svg]:h-auto [&>svg]:max-h-none [&>svg]:max-w-none [&>svg]:w-auto"
                 dangerouslySetInnerHTML={renderedSvgMarkup}
               />

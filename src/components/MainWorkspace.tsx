@@ -4,7 +4,7 @@ import { ChartPreview } from './ChartPreview';
 import { WordA4Preview } from './WordA4Preview';
 import { ManifestViewer } from './ManifestViewer';
 import { DatasetEntry, FigureSpec } from '../types';
-import { Home, ChevronRight, PenLine, Maximize, Settings, UploadCloud, Download, Loader2, Save, Eye, Copy, Plus, X, Search, GripVertical, AlertTriangle, ArrowUp, ArrowDown } from 'lucide-react';
+import { Home, ChevronRight, PenLine, Maximize, Settings, UploadCloud, Download, Loader2, Save, Eye, Copy, Plus, X, Search, GripVertical, AlertTriangle, ArrowUp, ArrowDown, FileText } from 'lucide-react';
 import { ViewState } from '../App';
 import { buildReproduciblePython } from '../utils/reproduciblePython';
 import { sanitizeSvg } from '../utils/svgEditor';
@@ -283,6 +283,8 @@ export function MainWorkspace({
   const [activeTab, setActiveTab] = useState<'preview' | 'code' | 'data' | 'spec'>('preview');
   const [showWordA4Preview, setShowWordA4Preview] = useState(false);
   const [showWordA4ReadingPreview, setShowWordA4ReadingPreview] = useState(false);
+  const [showRenderLogDialog, setShowRenderLogDialog] = useState(false);
+  const renderLogButtonRef = useRef<HTMLButtonElement | null>(null);
   const [bottomTab, setBottomTab] = useState<'python' | 'spec' | 'log'>('python');
   const [showBottomPanel, setShowBottomPanel] = useState(false);
   const [showSvgModal, setShowSvgModal] = useState(false);
@@ -335,6 +337,19 @@ export function MainWorkspace({
   const scriptLanguage = spec.script_language || 'python';
   const isRScript = scriptLanguage === 'r';
 
+  useEffect(() => {
+    if (!showRenderLogDialog) return undefined;
+    const opener = renderLogButtonRef.current;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowRenderLogDialog(false);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      window.requestAnimationFrame(() => opener?.focus());
+    };
+  }, [showRenderLogDialog]);
+
   // Task A2: Derive StandardFigureModel for debug display (read-only)
   const debugModel: StandardFigureModel | null = useMemo(() => {
     // In project mode, use the active figure's manifest
@@ -360,6 +375,32 @@ export function MainWorkspace({
   const updateScriptLanguageFromFile = (fileName: string): 'python' | 'r' => (
     fileName.toLowerCase().endsWith('.r') ? 'r' : 'python'
   );
+
+  const loadScriptFileIntoWorkspace = (file: File) => {
+    if (!/\.(py|r)$/i.test(file.name)) {
+      onRenderLog([`> [脚本] 已忽略不支持的文件 ${file.name}；请拖入 .py 或 .R 脚本。`]);
+      return false;
+    }
+    const reader = new FileReader();
+    reader.onload = event => {
+      const content = String(event.target?.result || '');
+      const language = updateScriptLanguageFromFile(file.name);
+      onSpecChange({
+        ...spec,
+        plot_type: 'custom',
+        script_language: language,
+        script: content,
+        custom_script: content,
+      }, { recordHistory: false });
+      setActiveTab('code');
+      onRenderLog([`> [脚本] 已导入 ${file.name}，请确认后点击“同步至引擎并预览 SVG”。`]);
+    };
+    reader.onerror = () => {
+      onRenderLog([`> [脚本错误] 无法读取 ${file.name}。`]);
+    };
+    reader.readAsText(file);
+    return true;
+  };
 
   useEffect(() => {
     if (!isRendering) {
@@ -1403,7 +1444,42 @@ export function MainWorkspace({
   }, [spec]);
 
   return (
-    <div className="scifig-main-workspace flex-1 flex flex-col overflow-hidden min-w-0 relative">
+    <div
+      className="scifig-main-workspace flex-1 flex flex-col overflow-hidden min-w-0 relative"
+      data-testid="workspace-script-drop-zone"
+      onDragEnter={event => {
+        if (!event.dataTransfer.types.includes('Files')) return;
+        event.preventDefault();
+        setScriptDragOver(true);
+      }}
+      onDragOver={event => {
+        if (!event.dataTransfer.types.includes('Files')) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+        setScriptDragOver(true);
+      }}
+      onDragLeave={event => {
+        const nextTarget = event.relatedTarget;
+        if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+        setScriptDragOver(false);
+      }}
+      onDrop={event => {
+        const files = Array.from<File>(event.dataTransfer.files);
+        if (files.length === 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setScriptDragOver(false);
+        const scriptFile = files.find(file => /\.(py|r)$/i.test(file.name));
+        loadScriptFileIntoWorkspace(scriptFile || files[0]);
+      }}
+    >
+      {scriptDragOver && (
+        <div className="pointer-events-none absolute inset-0 z-[70] flex items-center justify-center border-2 border-dashed border-blue-500 bg-blue-500/15 backdrop-blur-[1px]">
+          <div className="border border-blue-200 bg-white px-5 py-3 text-sm font-semibold text-blue-700 shadow-xl">
+            松开以导入 .py / .R 脚本并切换到代码编辑
+          </div>
+        </div>
+      )}
       <div className="scifig-workspace-commandbar min-h-14 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2 sm:px-5 shrink-0">
         <div className="flex min-w-0 items-center text-sm text-slate-500 font-medium">
           <Home className="w-4 h-4 hover:text-slate-700 cursor-pointer" onClick={() => onNavigate('home')} />
@@ -1659,6 +1735,22 @@ export function MainWorkspace({
                 >
                   Word真实预览
                 </button>
+                <button
+                  type="button"
+                  ref={renderLogButtonRef}
+                  onClick={() => setShowRenderLogDialog(true)}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs font-semibold transition-colors ${
+                    renderError
+                      ? 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100'
+                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+                  }`}
+                  title="打开当前渲染日志、错误和 traceback。"
+                  aria-label="打开渲染日志"
+                >
+                  <FileText className="h-3.5 w-3.5" />
+                  日志
+                  <span className="text-[10px] font-normal opacity-70">{renderLog.length}</span>
+                </button>
               </>
             )}
             {figSession?.updatedAt && <div className="hidden xl:block shrink-0 text-xs text-slate-500 whitespace-nowrap">最近渲染 {new Date(figSession.updatedAt).toLocaleTimeString()}</div>}
@@ -1779,29 +1871,8 @@ export function MainWorkspace({
             spec.plot_type === 'custom' ? (
               <div
                 className="w-full h-full flex flex-col bg-[#1e1e1e] rounded shadow-xl overflow-hidden relative"
-                onDragOver={(e) => { e.preventDefault(); setScriptDragOver(true); }}
-                onDragLeave={() => setScriptDragOver(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setScriptDragOver(false);
-                  const file = e.dataTransfer.files?.[0];
-                  if (!file || !/\.(py|r)$/i.test(file.name)) return;
-                  const reader = new FileReader();
-                  reader.onload = (ev) => {
-                    onSpecChange({
-                      ...spec,
-                      script_language: updateScriptLanguageFromFile(file.name),
-                      custom_script: ev.target?.result as string || '',
-                    });
-                  };
-                  reader.readAsText(file);
-                }}
+                data-testid="workspace-code-editor"
               >
-                {scriptDragOver && (
-                  <div className="absolute inset-0 z-20 bg-blue-500/20 border-2 border-dashed border-blue-500 rounded-lg flex items-center justify-center pointer-events-none">
-                    <span className="text-blue-700 font-semibold text-lg bg-white/80 px-4 py-2 rounded shadow">松开以上传 .py / .R 文件</span>
-                  </div>
-                )}
                 <div className="flex items-center justify-between gap-3 border-b border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200">
                   <div className="font-semibold">脚本语言</div>
                   <select
@@ -1855,15 +1926,7 @@ export function MainWorkspace({
                     onChange={(e) => {
                       const file = e.target.files?.[0];
                       if (!file) return;
-                      const reader = new FileReader();
-                      reader.onload = (ev) => {
-                        onSpecChange({
-                          ...spec,
-                          script_language: updateScriptLanguageFromFile(file.name),
-                          custom_script: ev.target?.result as string || '',
-                        }, { recordHistory: false });
-                      };
-                      reader.readAsText(file);
+                      loadScriptFileIntoWorkspace(file);
                       e.target.value = '';
                     }}
                   />
@@ -2571,6 +2634,81 @@ export function MainWorkspace({
             </div>
             <div className="min-h-0 flex-1">
               <WordA4Preview spec={spec} figSession={figSession} readingMode />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRenderLogDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-5 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label="渲染日志"
+          data-testid="render-log-dialog"
+          onMouseDown={event => {
+            if (event.target === event.currentTarget) setShowRenderLogDialog(false);
+          }}
+        >
+          <div className="flex h-[min(78vh,720px)] w-[min(960px,96vw)] flex-col overflow-hidden rounded-lg border border-slate-700 bg-slate-950 shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-700 bg-slate-900 px-4 py-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 text-sm font-bold text-white">
+                  <FileText className="h-4 w-4 text-emerald-400" />
+                  渲染日志
+                </div>
+                <div className="mt-0.5 truncate text-xs text-slate-400">
+                  数据文件 {datasets.length || (spec.source?.columns?.length ? 1 : 0)} 个 · 日志 {renderLog.length} 行
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleExportDiagnosticReport}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-100 transition-colors hover:bg-slate-700"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  导出诊断记录
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRenderLogDialog(false)}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-600 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-300 transition-colors hover:bg-slate-800 hover:text-white"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  关闭
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-4 font-mono text-xs leading-relaxed">
+              <div className="space-y-2">
+                {renderLog.length > 0 ? renderLog.map((line, index) => (
+                  <div
+                    key={`${index}-${line.slice(0, 24)}`}
+                    className={/[错误异常]|error|failed|traceback/i.test(line)
+                      ? 'whitespace-pre-wrap text-red-300'
+                      : /完成|success|pass/i.test(line)
+                        ? 'whitespace-pre-wrap font-semibold text-emerald-300'
+                        : 'whitespace-pre-wrap text-emerald-400'}
+                  >
+                    {line}
+                  </div>
+                )) : (
+                  <div className="text-slate-400">当前没有渲染日志。</div>
+                )}
+              </div>
+              {renderError && (
+                <div className="mt-5 border-t border-red-900/70 pt-4">
+                  <div className="font-semibold text-red-300">错误说明</div>
+                  <div className="mt-2 whitespace-pre-wrap text-red-200">{renderError}</div>
+                  {renderTraceback && (
+                    <details className="mt-3 text-slate-200">
+                      <summary className="cursor-pointer text-slate-100">展开 Python traceback</summary>
+                      <pre className="mt-2 whitespace-pre-wrap text-[11px] leading-relaxed">{renderTraceback}</pre>
+                    </details>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>

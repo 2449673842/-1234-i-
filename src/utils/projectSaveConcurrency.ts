@@ -1,4 +1,5 @@
 import type { DraftPatch } from '../schemas/draftPatchBatch';
+import { draftPatchStorageKey } from '../schemas/draftPatchBatch';
 import { stableStringify } from './stableJson';
 
 type DraftBuckets = Record<string, Record<string, DraftPatch>>;
@@ -8,6 +9,7 @@ function matchesPersistedDraft(current: DraftPatch | undefined, persisted: Draft
   return current.gid === persisted.gid
     && current.prop === persisted.prop
     && current.mode === persisted.mode
+    && current.matchColor === persisted.matchColor
     && current.type === persisted.type
     && current.target_id === persisted.target_id
     && stableStringify(current.value) === stableStringify(persisted.value)
@@ -18,7 +20,7 @@ function matchesPersistedDraft(current: DraftPatch | undefined, persisted: Draft
 export function removeMatchingPersistedDrafts(
   currentDrafts: DraftBuckets,
   persistedByFigure: Record<string, DraftPatch[]>,
-  storageKey: (patch: DraftPatch) => string = patch => `${patch.gid}:${patch.prop}`,
+  storageKey: (patch: DraftPatch) => string = draftPatchStorageKey,
 ): DraftBuckets {
   const next = { ...currentDrafts };
   Object.entries(persistedByFigure).forEach(([figureId, persistedDrafts]) => {

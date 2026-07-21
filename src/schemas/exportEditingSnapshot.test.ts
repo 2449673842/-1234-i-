@@ -3,12 +3,13 @@ import {
   EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   LEGACY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
+  PRE_LINE_VISIBILITY_SIGNATURE_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   SCRIPTED_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   parseExportEditingSnapshot,
-  type ExportEditingSnapshotV4,
+  type ExportEditingSnapshotV5,
 } from './exportEditingSnapshot';
 
-const snapshot: ExportEditingSnapshotV4 = {
+const snapshot: ExportEditingSnapshotV5 = {
   schemaVersion: EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   capturedAt: '2026-07-16T10:00:00.000Z',
   projectId: 'project-12345678',
@@ -65,6 +66,14 @@ describe('export editing snapshot schema', () => {
       figures: snapshot.figures.map(({ legacyReplaySignatures: _signatures, ...figure }) => figure),
     };
     expect(parseExportEditingSnapshot(v3)).toEqual(v3);
+  });
+
+  it('keeps pre-line-visibility-signature v4 snapshots readable', () => {
+    const v4 = {
+      ...snapshot,
+      schemaVersion: PRE_LINE_VISIBILITY_SIGNATURE_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
+    };
+    expect(parseExportEditingSnapshot(v4)).toEqual(v4);
   });
 
   it('requires well-formed legacy replay signatures in current snapshots', () => {

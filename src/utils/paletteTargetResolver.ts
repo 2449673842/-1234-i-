@@ -1,6 +1,7 @@
 import type {
   Binding,
   BindingTarget,
+  EditEntry,
   EditMode,
   LocalPatchEntry,
   Manifest,
@@ -816,6 +817,115 @@ export function resolvePaletteColorFallbackTargets(
     skipped: [],
     ambiguous: [],
     warnings: ['Palette binding used scoped rendered-color fallback because the static palette binding was missing or ambiguous.'],
+  };
+}
+
+export function resolveEffectivePaletteColor(
+  manifest: Manifest,
+  resolution: PaletteTargetResolution,
+  paletteColor: unknown,
+  selectedObjectIds?: string[],
+  editLog?: readonly Pick<EditEntry, 'gid' | 'prop' | 'value' | 'matchColor'>[],
+): string | null {
+  const selected = selectedObjectIds ? new Set(selectedObjectIds) : null;
+  const renderedColors = new Set<string>();
+  resolution.targets.forEach((target) => {
+    if (selected && !selected.has(target.objectId)) return;
+    const object = objectById(manifest, target.objectId);
+    const currentColor = normalizeHexColor(object?.currentProps?.[target.prop]);
+    if (currentColor) renderedColors.add(currentColor);
+  });
+
+  if (renderedColors.size === 1) return renderedColors.values().next().value ?? null;
+  const fallback = normalizeHexColor(paletteColor);
+  if (fallback && editLog?.length) {
+    const chainedColors = new Set<string>();
+    resolution.targets.forEach((target) => {
+      if (selected && !selected.has(target.objectId)) return;
+      let currentColor = fallback;
+      let advanced = false;
+      editLog.forEach((entry) => {
+        if (entry.gid !== target.objectId || entry.prop !== target.prop) return;
+        if (normalizeHexColor(entry.matchColor) !== currentColor) return;
+        const nextColor = normalizeHexColor(entry.value);
+        if (!nextColor) return;
+        currentColor = nextColor;
+        advanced = true;
+      });
+      const object = objectById(manifest, target.objectId);
+      if (advanced && colorValueContains(object?.currentProps?.[target.prop], currentColor)) {
+        chainedColors.add(currentColor);
+      }
+    });
+    if (chainedColors.size === 1) return chainedColors.values().next().value ?? null;
+  }
+  if (fallback && renderedColors.has(fallback)) return fallback;
+  return fallback;
+}
+
+export function resolveScopedPaletteTargets(
+  manifest: Manifest,
+  paletteId: string,
+  paletteColor: unknown,
+  enabled: boolean,
+  selectedObjectIds: string[],
+  editLog?: readonly Pick<EditEntry, 'gid' | 'prop' | 'value' | 'matchColor'>[],
+  requireProtocol = false,
+): PaletteTargetResolution {
+  const strict = resolvePaletteTargets(
+    manifest,
+    paletteId,
+    enabled,
+    selectedObjectIds,
+    requireProtocol,
+  );
+  const hasIdentityRisk = [...strict.skipped, ...strict.ambiguous].some(issue => (
+    issue.reason === 'identity_mismatch'
+      || issue.reason === 'series_mismatch'
+      || issue.reason === 'duplicate_identity'
+  ));
+  if (hasIdentityRisk) return strict;
+
+  const needsRenderedFallback = strict.targets.length === 0
+    || strict.targets.some(target => target.replayMode === 'code_only')
+    || strict.ambiguous.some(issue => issue.reason === 'ambiguous_binding');
+  if (!needsRenderedFallback) return strict;
+
+  const effectivePaletteColor = resolveEffectivePaletteColor(
+    manifest,
+    strict,
+    paletteColor,
+    selectedObjectIds,
+    editLog,
+  );
+
+  const rendered = resolvePaletteColorFallbackTargets(
+    manifest,
+    paletteId,
+    effectivePaletteColor ?? paletteColor,
+    selectedObjectIds,
+  );
+  if (rendered.targets.length === 0) return strict;
+
+  const merged = new Map<string, ResolvedPaletteTarget>();
+  strict.targets
+    .filter(target => target.replayMode !== 'code_only')
+    .forEach(target => merged.set(`${target.objectId}:${target.prop}`, target));
+  rendered.targets.forEach(target => {
+    const key = `${target.objectId}:${target.prop}`;
+    if (!merged.has(key)) merged.set(key, target);
+  });
+
+  return {
+    ...strict,
+    targetMode: 'conditional',
+    targets: Array.from(merged.values()),
+    skipped: [
+      ...strict.skipped.filter(issue => issue.reason !== 'no_binding'),
+      ...rendered.skipped,
+    ],
+    ambiguous: strict.ambiguous.filter(issue => issue.reason !== 'ambiguous_binding'),
+    warnings: Array.from(new Set([...strict.warnings, ...rendered.warnings])),
   };
 }
 

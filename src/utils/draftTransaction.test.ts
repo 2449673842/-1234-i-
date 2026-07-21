@@ -4,6 +4,7 @@ import {
   draftAppliesToFigure,
   draftsEligibleForDirectPersistence,
   draftsRequiringEngineApply,
+  isSameDraftPatch,
   mergeDraftSettlement,
   settleDraftTransaction,
 } from './draftTransaction';
@@ -110,6 +111,20 @@ describe('draft transaction settlement', () => {
     const merged = mergeDraftSettlement(current, snapshot, {});
 
     expect(merged).toEqual({ width: widthDraft });
+  });
+
+  it('does not settle a different mixed-color subset draft', () => {
+    expect(isSameDraftPatch(
+      { ...colorDraft, matchColor: '#0f3cf0' },
+      { ...colorDraft, matchColor: '#d62728' },
+    )).toBe(false);
+  });
+
+  it('treats equivalent mixed-color subset keys as the same draft', () => {
+    expect(isSameDraftPatch(
+      { ...colorDraft, matchColor: ' #0F3CF0 ' },
+      { ...colorDraft, matchColor: '#0f3cf0' },
+    )).toBe(true);
   });
 
   it('does not let save consume drafts reserved for failed-figure retry', () => {

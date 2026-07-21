@@ -26,6 +26,17 @@ const script = [
   'ax.legend(loc="upper right")',
 ].join('\n');
 
+const cartesianScript = [
+  'import matplotlib',
+  'matplotlib.use("Agg")',
+  'import matplotlib.pyplot as plt',
+  '',
+  'fig, ax = plt.subplots(figsize=(4, 3))',
+  'ax.plot([0, 1, 2], [1, 3, 2], color="#1f77b4", linewidth=1.2, label="series")',
+  'ax.set_title("Legacy line visibility")',
+  'ax.legend(loc="upper right")',
+].join('\n');
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -428,12 +439,12 @@ function assertPersistenceStateUnchanged(before, after, label) {
   );
 }
 
-async function createProject(token) {
+async function createProject(token, projectScript = script) {
   const created = await jsonRequest('/api/projects', token, {
     method: 'POST',
     body: JSON.stringify({
       name: `Special axes persistence ${Date.now()}`,
-      spec: { plot_type: 'custom', custom_script: script, script_language: 'python' },
+      spec: { plot_type: 'custom', custom_script: projectScript, script_language: 'python' },
     }),
   });
   assert(created.response.ok && created.data?.id, `project creation failed: ${JSON.stringify(created.data)}`);
@@ -441,7 +452,7 @@ async function createProject(token) {
   const rendered = await jsonRequest(`/api/projects/${created.data.id}/figures/render`, token, {
     method: 'POST',
     body: JSON.stringify({
-      script,
+      script: projectScript,
       editLogs: { fig_1: [] },
       language: 'python',
       requestId: `special-axes-render-${Date.now()}`,
@@ -451,6 +462,240 @@ async function createProject(token) {
   const figure = rendered.data.figures?.find(item => item.figureId === 'fig_1');
   assert(figure?.manifest?.objects?.length > 0, 'initial render returned no manifest objects');
   return { projectId: created.data.id, figure };
+}
+
+async function verifyProjectRenderUsesDurableLegacyLineVisibility(token) {
+  const created = await createProject(token, cartesianScript);
+  const projectId = created.projectId;
+  let exportedSnapshot = null;
+  try {
+    const line = created.figure.manifest?.objects?.find(item => item.id === 'line.0.0' && item.kind === 'line');
+    assert(line, 'legacy visibility fixture is missing line.0.0');
+    assert(
+      !(line.propertyCapabilities || []).some(capability => capability?.prop === 'visible'),
+      'legacy visibility fixture unexpectedly exposes modern line.visible capability',
+    );
+    const legacyVisibilityPatch = {
+      gid: line.id,
+      prop: 'visible',
+      value: false,
+      mode: 'backend_patch',
+    };
+    writeProjectFigureOnlyEditLog(projectId, [legacyVisibilityPatch]);
+
+    const replayed = await jsonRequest(`/api/projects/${projectId}/figures/render`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        script: cartesianScript,
+        language: 'python',
+        editLogs: { fig_1: [legacyVisibilityPatch] },
+        requestId: `legacy-line-visibility-${Date.now()}`,
+      }),
+    });
+    assert(
+      replayed.response.ok && replayed.data?.status === 'success',
+      `project render rejected a persisted legacy line visibility edit: ${JSON.stringify(replayed.data)}`,
+    );
+    const replayedFigure = replayed.data.figures?.find(item => item.figureId === 'fig_1');
+    const replayedLine = replayedFigure?.manifest?.objects?.find(item => item.id === line.id);
+    assert(replayedLine, `legacy visibility replay lost ${line.id}: ${JSON.stringify(replayedFigure?.manifest)}`);
+    assertEditLogHasPatch(replayedFigure?.editLog, legacyVisibilityPatch, 'legacy visibility replay response');
+    const replayedRevision = Number(replayedFigure?.revision || created.figure.revision || 1);
+    await assertProjectRefreshHasPatch(token, projectId, legacyVisibilityPatch, replayedRevision, false);
+
+    const continuedEdit = {
+      op: 'set',
+      mode: 'backend_patch',
+      gid: replayedLine.id,
+      prop: 'linewidth',
+      value: 2.4,
+      ...identityFields(replayedLine),
+    };
+    const continued = await submitPatchBatch(
+      token,
+      projectId,
+      [continuedEdit],
+      'legacy-line-continued-edit',
+      replayedRevision,
+    );
+    assert(continued?.status === 'success', `continued edit on legacy project failed: ${JSON.stringify(continued)}`);
+    const continuedRevision = Number(continued.revision);
+    assert(continuedRevision === replayedRevision + 1, `continued edit revision mismatch: ${JSON.stringify(continued)}`);
+    assertEditLogHasPatch(continued.editLog, legacyVisibilityPatch, 'continued legacy project response');
+    assertEditLogHasPatch(continued.editLog, continuedEdit, 'continued legacy project response');
+    await assertProjectRefreshHasPatch(token, projectId, continuedEdit, continuedRevision);
+
+    const exported = await jsonRequest(`/api/projects/${projectId}/export`, token, {
+      method: 'POST',
+      body: JSON.stringify({ figureId: 'fig_1', format: 'svg', dpi: 150, saveToLibrary: true }),
+    });
+    assert(exported.response.ok && exported.data?.status === 'success', `legacy line export failed: ${JSON.stringify(exported.data)}`);
+    const asset = exported.data.figures?.[0]?.asset;
+    assert(asset?.assetId && asset.hasEditingSnapshot === true, `legacy line export has no editing snapshot: ${JSON.stringify(asset)}`);
+
+    const snapshotDb = new Database(process.env.SCIFIGURE_DB_PATH, { readonly: true });
+    try {
+      const stored = snapshotDb.prepare(`
+        SELECT schema_version, snapshot_json
+        FROM export_asset_snapshots
+        WHERE asset_id = ?
+      `).get(asset.assetId);
+      const snapshot = parseJson(stored?.snapshot_json, null);
+      exportedSnapshot = snapshot;
+      assert(stored?.schema_version === 5 && snapshot?.schemaVersion === 5,
+        `legacy line export did not use current snapshot schema: ${JSON.stringify(stored)}`);
+      const snapshotFigure = snapshot?.figures?.find(item => item.figureId === 'fig_1');
+      assertEditLogHasPatch(snapshotFigure?.editLog, legacyVisibilityPatch, 'legacy line export snapshot');
+      assert(
+        Array.isArray(snapshotFigure?.legacyReplaySignatures)
+          && snapshotFigure.legacyReplaySignatures.length === 1,
+        `legacy line export snapshot did not capture one exact compatibility signature: ${JSON.stringify(snapshotFigure)}`,
+      );
+    } finally {
+      snapshotDb.close();
+    }
+
+    const laterEdit = { ...continuedEdit, value: 3.2 };
+    const later = await submitPatchBatch(
+      token,
+      projectId,
+      [laterEdit],
+      'legacy-line-later-edit',
+      continuedRevision,
+    );
+    assert(later?.status === 'success', `later edit on legacy project failed: ${JSON.stringify(later)}`);
+    const laterRevision = Number(later.revision);
+    assert(laterRevision === continuedRevision + 1, `later edit revision mismatch: ${JSON.stringify(later)}`);
+
+    const restored = await jsonRequest(
+      `/api/projects/${projectId}/export-assets/${asset.assetId}/restore`,
+      token,
+      { method: 'POST' },
+    );
+    assert(restored.response.ok && restored.data?.status === 'success', `legacy line snapshot restore failed: ${JSON.stringify(restored.data)}`);
+    const restoredProject = await jsonRequest(`/api/projects/${projectId}`, token);
+    const restoredFigure = restoredProject.data?.project?.figures?.find(item => item.figureId === 'fig_1');
+    assertEditLogHasPatch(restoredFigure?.editLog, legacyVisibilityPatch, 'restored legacy line project');
+    assertEditLogHasPatch(restoredFigure?.editLog, continuedEdit, 'restored legacy line project');
+    assertNoRejectedTriplet('restored legacy line project', restoredFigure?.editLog || [], laterEdit);
+    assertEditLogHasPatch(restoredFigure?.history?.past?.at(-1)?.editLog, laterEdit, 'legacy line restore checkpoint');
+
+    const regenerated = await jsonRequest(`/api/projects/${projectId}/figures?includePreview=1`, token);
+    assert(regenerated.response.ok && regenerated.data?.status === 'success', `restored legacy line preview regeneration failed: ${JSON.stringify(regenerated.data)}`);
+    const regeneratedFigure = regenerated.data.figures?.find(item => item.figureId === 'fig_1');
+    assertManifestPatchValue(regeneratedFigure?.manifest, continuedEdit, 'regenerated legacy line preview');
+
+    const afterSignedRestoreRevision = Number(restoredFigure?.revision);
+    const postExportEdit = { ...continuedEdit, value: 3.6 };
+    const postExportApplied = await submitPatchBatch(
+      token,
+      projectId,
+      [postExportEdit],
+      'legacy-line-post-export-edit',
+      afterSignedRestoreRevision,
+    );
+    assert(postExportApplied?.status === 'success',
+      `post-export edit before v4 restore failed: ${JSON.stringify(postExportApplied)}`);
+
+    const legacyV4Db = new Database(process.env.SCIFIGURE_DB_PATH);
+    try {
+      legacyV4Db.pragma('busy_timeout = 5000');
+      const legacyV4 = JSON.parse(JSON.stringify(exportedSnapshot));
+      legacyV4.schemaVersion = 4;
+      const legacyV4Figure = legacyV4.figures?.find(item => item.figureId === 'fig_1');
+      legacyV4Figure.legacyReplaySignatures = [];
+      const legacyV4Json = JSON.stringify(legacyV4);
+      const legacyV4Hash = crypto.createHash('sha256').update(legacyV4Json).digest('hex');
+      legacyV4Db.prepare(`
+        UPDATE export_asset_snapshots
+        SET schema_version = 4, snapshot_json = ?, snapshot_hash = ?
+        WHERE asset_id = ?
+      `).run(legacyV4Json, legacyV4Hash, asset.assetId);
+    } finally {
+      legacyV4Db.close();
+    }
+
+    const restoredLegacyV4 = await jsonRequest(
+      `/api/projects/${projectId}/export-assets/${asset.assetId}/restore`,
+      token,
+      { method: 'POST' },
+    );
+    assert(
+      restoredLegacyV4.response.ok && restoredLegacyV4.data?.status === 'success',
+      `pre-signature v4 line visibility snapshot did not restore: ${JSON.stringify(restoredLegacyV4.data)}`,
+    );
+    const projectAfterV4Restore = await jsonRequest(`/api/projects/${projectId}`, token);
+    const figureAfterV4Restore = projectAfterV4Restore.data?.project?.figures?.find(item => item.figureId === 'fig_1');
+    assertEditLogHasPatch(figureAfterV4Restore?.editLog, legacyVisibilityPatch, 'restored pre-signature v4 project');
+    assertEditLogHasPatch(figureAfterV4Restore?.editLog, continuedEdit, 'restored pre-signature v4 project');
+    assertNoRejectedTriplet('restored pre-signature v4 project', figureAfterV4Restore?.editLog || [], postExportEdit);
+
+    const unsignedV5Db = new Database(process.env.SCIFIGURE_DB_PATH);
+    try {
+      unsignedV5Db.pragma('busy_timeout = 5000');
+      const unsignedV5 = JSON.parse(JSON.stringify(exportedSnapshot));
+      unsignedV5.schemaVersion = 5;
+      const unsignedV5Figure = unsignedV5.figures?.find(item => item.figureId === 'fig_1');
+      unsignedV5Figure.legacyReplaySignatures = [];
+      const unsignedV5Json = JSON.stringify(unsignedV5);
+      const unsignedV5Hash = crypto.createHash('sha256').update(unsignedV5Json).digest('hex');
+      unsignedV5Db.prepare(`
+        UPDATE export_asset_snapshots
+        SET schema_version = 5, snapshot_json = ?, snapshot_hash = ?
+        WHERE asset_id = ?
+      `).run(unsignedV5Json, unsignedV5Hash, asset.assetId);
+    } finally {
+      unsignedV5Db.close();
+    }
+
+    const beforeUnsignedV5 = readPersistenceState(projectId);
+    const rejectedUnsignedV5 = await jsonRequest(
+      `/api/projects/${projectId}/export-assets/${asset.assetId}/restore`,
+      token,
+      { method: 'POST' },
+    );
+    assert(
+      rejectedUnsignedV5.response.status === 409
+        && rejectedUnsignedV5.data?.code === 'EXPORT_SNAPSHOT_REPLAY_REJECTED',
+      `unsigned current line visibility snapshot was not rejected: ${JSON.stringify(rejectedUnsignedV5.data)}`,
+    );
+    assert(
+      rejectedUnsignedV5.data?.issues?.some(issue => (
+        issue.type === 'unsupported_prop'
+          && issue.gid === legacyVisibilityPatch.gid
+          && issue.prop === legacyVisibilityPatch.prop
+      )),
+      `unsigned current snapshot rejection did not identify line.visible: ${JSON.stringify(rejectedUnsignedV5.data?.issues)}`,
+    );
+    assertPersistenceStateUnchanged(
+      beforeUnsignedV5,
+      readPersistenceState(projectId),
+      'unsigned current line visibility snapshot rejection',
+    );
+
+    const untrustedVisibilityPatch = { ...legacyVisibilityPatch, value: true };
+    const beforeUntrusted = readPersistenceState(projectId);
+    const rejected = await jsonRequest(`/api/projects/${projectId}/figures/render`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        script: cartesianScript,
+        language: 'python',
+        editLogs: { fig_1: [untrustedVisibilityPatch] },
+        requestId: `untrusted-line-visibility-${Date.now()}`,
+      }),
+    });
+    assert(
+      rejected.response.ok && rejected.data?.status === 'conflict',
+      `project render accepted an unpersisted legacy line visibility edit: ${JSON.stringify(rejected.data)}`,
+    );
+    assertPersistenceStateUnchanged(
+      beforeUntrusted,
+      readPersistenceState(projectId),
+      'unpersisted legacy line visibility rejection',
+    );
+  } finally {
+    await jsonRequest(`/api/projects/${projectId}`, token, { method: 'DELETE' }).catch(() => null);
+  }
 }
 
 async function verifyProjectRenderRejectsInvalidEditLog(token, projectId, line) {
@@ -722,7 +967,7 @@ async function submitPatchBatch(token, projectId, patches, label, baseRevision) 
   return result.data;
 }
 
-async function assertProjectRefreshHasPatch(token, projectId, patch, expectedRevision) {
+async function assertProjectRefreshHasPatch(token, projectId, patch, expectedRevision, assertManifestValue = true) {
   const loaded = await jsonRequest(`/api/projects/${projectId}`, token);
   assert(loaded.response.ok && loaded.data?.status === 'success', `project load failed: ${JSON.stringify(loaded.data)}`);
   const loadedFigure = loaded.data.project?.figures?.find(item => item.figureId === 'fig_1');
@@ -733,14 +978,18 @@ async function assertProjectRefreshHasPatch(token, projectId, patch, expectedRev
   assert(listing.response.ok && listing.data?.status === 'success', `project preview listing failed: ${JSON.stringify(listing.data)}`);
   const listedFigure = listing.data.figures?.find(item => item.figureId === 'fig_1');
   assert(Number(listedFigure?.revision) === expectedRevision, `project preview listing revision mismatch: ${JSON.stringify(listedFigure)}`);
-  assertManifestPatchValue(listedFigure?.manifest, patch, 'project preview listing');
+  if (assertManifestValue) {
+    assertManifestPatchValue(listedFigure?.manifest, patch, 'project preview listing');
+  }
 
   const stored = readPersistenceState(projectId);
   assert(Number(stored.session?.revision) === expectedRevision, `DB session did not advance to ${expectedRevision}: ${JSON.stringify(stored.session)}`);
   assert(Number(stored.figure?.revision) === expectedRevision, `DB project figure did not advance to ${expectedRevision}: ${JSON.stringify(stored.figure)}`);
   assertEditLogHasPatch(stored.session?.editLog, patch, 'DB session');
   assertEditLogHasPatch(stored.figure?.editLog, patch, 'DB project figure');
-  assertManifestPatchValue(stored.figure?.manifest, patch, 'DB project preview cache');
+  if (assertManifestValue) {
+    assertManifestPatchValue(stored.figure?.manifest, patch, 'DB project preview cache');
+  }
 }
 
 async function main() {
@@ -754,6 +1003,7 @@ async function main() {
     await verifyStandaloneRenderKeepsPersistedLegacyEditLog(token);
     await verifyProjectPatchRejectsPreexistingUnsafeEditLog(token);
     await verifyProjectRenderUsesDurableLegacyEditLog(token);
+    await verifyProjectRenderUsesDurableLegacyLineVisibility(token);
     const created = await createProject(token);
     projectId = created.projectId;
     const baselineRevision = Number(created.figure.revision || 1);
@@ -1033,6 +1283,10 @@ async function main() {
         'persisted gid-only special-axes logs remain blocked without a matching stable identity',
         'project patch rejects a pre-existing unsafe special-axes editLog before advancing revision',
         'project full render rejects mixed editLogs before script, Figure, session, history, or preview persistence',
+        'persisted legacy line visibility survives open, continued editing, export, later editing, snapshot restore, and refresh',
+        'pre-signature v4 line visibility snapshots remain restorable after v5 is introduced',
+        'unsigned v5 line visibility snapshots are rejected without persistence changes',
+        'unpersisted legacy line visibility values are rejected without persistence changes',
         'mixed batches roll back valid siblings when one special-axes relation is missing',
         'valid identity-bearing linestyle patch persists across project and preview refresh',
         'tampered special-axes export snapshot is rejected without persistence leakage',

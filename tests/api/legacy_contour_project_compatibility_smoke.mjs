@@ -256,7 +256,7 @@ async function main() {
     const modernAsset = modernExport.data.figures?.[0]?.asset;
     assert(modernAsset?.assetId, `modern export did not create an asset: ${JSON.stringify(modernExport.data)}`);
     const modernSnapshot = readSnapshot(modernAsset.assetId);
-    assert(modernSnapshot?.schema_version === 4, `unexpected modern snapshot schema: ${JSON.stringify(modernSnapshot)}`);
+    assert(modernSnapshot?.schema_version === 5, `unexpected modern snapshot schema: ${JSON.stringify(modernSnapshot)}`);
     assert(
       Array.isArray(modernSnapshot.snapshot?.figures?.[0]?.legacyReplaySignatures)
         && modernSnapshot.snapshot.figures[0].legacyReplaySignatures.length === 0,
@@ -379,7 +379,7 @@ async function main() {
       `exported SVG does not include legacy contour child alpha state: ${JSON.stringify(exportedFigure?.warnings || [])}`,
     );
     const snapshot = readSnapshot(asset.assetId);
-    assert(snapshot?.schema_version === 4, `unexpected snapshot schema: ${JSON.stringify(snapshot)}`);
+    assert(snapshot?.schema_version === 5, `unexpected snapshot schema: ${JSON.stringify(snapshot)}`);
     assert(hasEdit(snapshot.snapshot?.figures?.[0]?.editLog, legacyEdit), 'export snapshot did not capture legacy child alpha edit');
     assert(hasEdit(snapshot.snapshot?.figures?.[0]?.editLog, identityLegacyEdit), 'export snapshot did not capture identity-bearing legacy child edit');
     assert(
@@ -429,7 +429,7 @@ async function main() {
       checks: [
         'isolated runner and temp DB were enforced',
         'modern contour child edit was rejected by authoritative propertyCapabilities without persistence',
-        'modern v4 snapshot could not replay an unlisted legacy contour child edit',
+        'modern v5 snapshot could not replay an unlisted legacy contour child edit',
         'legacy contour child alpha edit loaded from downgraded manifest without propertyCapabilities',
         'identity-bearing contour child edit tolerated fingerprint-only Matplotlib class drift',
         'unchanged PUT preserved the legacy edit and stored it in history',

@@ -698,17 +698,31 @@ async function run() {
     const pointDraft = (await getBodyText(page)).includes('已暂存');
     const pointApply = pointSizeChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const pointPatches = patchList(pointApply.patchBody);
+    const pointScaleInput = page.locator('input[data-param-role="number"][data-param-gid="component-points"][data-param-prop="size_scale"]').first();
+    const pointScaleReflected = await page.waitForFunction(() => {
+      const input = document.querySelector('input[data-param-role="number"][data-param-gid="component-points"][data-param-prop="size_scale"]');
+      return input instanceof HTMLInputElement && Number(input.value) === 1.5;
+    }, null, { timeout: 15_000 }).then(() => true).catch(() => false);
+    const persistedPointState = await requestJson(`/api/projects/${projectId}/figures?includePreview=1`);
+    const persistedPointObjects = persistedPointState.figures?.[0]?.manifest?.objects || [];
+    const persistedPointScales = pointPatches.map((patch) => (
+      persistedPointObjects.find((object) => object.id === patch.gid)?.currentProps?.size_scale
+    ));
     const pointOk = pointSizeChanged
       && pointDraft
       && pointApply.successful
+      && await pointScaleInput.isVisible().catch(() => false)
+      && pointScaleReflected
       && pointPatches.length >= 2
       && pointPatches.every((patch) => (
         /^collection\.\d+\.\d+$/.test(String(patch?.gid || ''))
-        && patch?.prop === 'size'
-        && Number(patch?.value) === 90
+        && patch?.prop === 'size_scale'
+        && Number(patch?.value) === 1.5
       ))
-      && Number(pointPatches[0]?.value) === 90;
-    record('G2-scatter-excludes-legend', pointOk ? 'PASS' : 'FAIL', `changed=${pointSizeChanged}, draft=${pointDraft}, patches=${JSON.stringify(pointPatches)}`);
+      && Number(pointPatches[0]?.value) === 1.5
+      && persistedPointScales.length === pointPatches.length
+      && persistedPointScales.every((value) => Number(value) === 1.5);
+    record('G2-scatter-excludes-legend', pointOk ? 'PASS' : 'FAIL', `changed=${pointSizeChanged}, draft=${pointDraft}, reflected=${pointScaleReflected}, persistedScales=${JSON.stringify(persistedPointScales)}, patches=${JSON.stringify(pointPatches)}`);
 
     const semanticObjects = fixture.semanticObjects || [];
     const stairsIds = semanticObjects.filter((object) => object.role === 'stairs_series').map((object) => object.id);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Binding, Manifest, ManifestObject } from '../schemas/manifest';
-import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolvePaletteColorFallbackTargets, resolvePaletteTargets } from './paletteTargetResolver';
+import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolveEffectivePaletteColor, resolvePaletteColorFallbackTargets, resolvePaletteTargets, resolveScopedPaletteTargets } from './paletteTargetResolver';
 
 function object(
   id: string,
@@ -548,6 +548,151 @@ describe('palette target resolver', () => {
       prop: 'facecolor',
       value: '#1188ff',
       matchColor: '#0f3cf0',
+    }]);
+  });
+
+  it('merges an exact legend target with a scoped mixed-collection color subset', () => {
+    const legend = object('legend_line.3.0', 'color', 'positive-legend', 'local_patch');
+    legend.subplotId = 'subplot.3';
+    legend.identity!.relation = { subplotId: 'subplot.3' };
+    legend.currentProps.color = '#0f3cf0';
+    const collection = object('collection.3.1', 'facecolor', 'positive-points', 'local_patch');
+    collection.kind = 'collection';
+    collection.subplotId = 'subplot.3';
+    collection.identity!.relation = { subplotId: 'subplot.3' };
+    collection.currentProps.facecolor = [
+      [0.0588235294, 0.2352941176, 0.9411764706, 1],
+      [0.8392156863, 0.1529411765, 0.1568627451, 1],
+    ];
+    const collectionTarget = {
+      ...target(collection.id, 'facecolor', 'positive-points'),
+      replayMode: 'code_only' as const,
+    };
+    const figure = manifest([legend, collection], [binding('BLUE', [
+      target(legend.id, 'color', 'positive-legend'),
+      collectionTarget,
+    ])]);
+
+    const scoped = resolveScopedPaletteTargets(
+      figure,
+      'BLUE',
+      '#0F3CF0',
+      true,
+      [legend.id, collection.id],
+    );
+
+    expect(scoped.ambiguous).toEqual([]);
+    expect(buildPaletteObjectPatches(scoped, '#1188ff')).toEqual([
+      {
+        op: 'set',
+        mode: 'local_patch',
+        gid: legend.id,
+        prop: 'color',
+        value: '#1188ff',
+      },
+      {
+        op: 'set',
+        mode: 'backend_patch',
+        gid: collection.id,
+        prop: 'facecolor',
+        value: '#1188ff',
+        matchColor: '#0f3cf0',
+      },
+    ]);
+  });
+
+  it('uses replayed scoped color for a second mixed-collection palette edit', () => {
+    const legend = object('legend_line.3.0', 'color', 'positive-legend', 'local_patch');
+    legend.subplotId = 'subplot.3';
+    legend.identity!.relation = { subplotId: 'subplot.3' };
+    legend.currentProps.color = '#1188ff';
+    const collection = object('collection.3.1', 'facecolor', 'positive-points', 'local_patch');
+    collection.kind = 'collection';
+    collection.subplotId = 'subplot.3';
+    collection.identity!.relation = { subplotId: 'subplot.3' };
+    collection.currentProps.facecolor = [
+      [0.0666666667, 0.5333333333, 1, 1],
+      [0.8392156863, 0.1529411765, 0.1568627451, 1],
+    ];
+    const replayedCollectionTarget = {
+      ...target(collection.id, 'facecolor', 'positive-points'),
+      replayMode: 'code_only' as const,
+    };
+    const figure = manifest([legend, collection], [binding('BLUE', [
+      target(legend.id, 'color', 'positive-legend'),
+      replayedCollectionTarget,
+    ])]);
+    const strict = resolvePaletteTargets(figure, 'BLUE', true, [legend.id, collection.id]);
+
+    expect(resolveEffectivePaletteColor(
+      figure,
+      strict,
+      '#0F3CF0',
+      [legend.id, collection.id],
+    )).toBe('#1188ff');
+
+    const secondEdit = resolveScopedPaletteTargets(
+      figure,
+      'BLUE',
+      '#0F3CF0',
+      true,
+      [legend.id, collection.id],
+    );
+    expect(buildPaletteObjectPatches(secondEdit, '#22aa77')).toEqual([
+      {
+        op: 'set',
+        mode: 'local_patch',
+        gid: legend.id,
+        prop: 'color',
+        value: '#22aa77',
+      },
+      {
+        op: 'set',
+        mode: 'backend_patch',
+        gid: collection.id,
+        prop: 'facecolor',
+        value: '#22aa77',
+        matchColor: '#1188ff',
+      },
+    ]);
+  });
+
+  it('follows matchColor edit history for collection-only repeated scoped edits', () => {
+    const collection = object('collection.3.1', 'facecolor', 'positive-points', 'local_patch');
+    collection.kind = 'collection';
+    collection.subplotId = 'subplot.3';
+    collection.identity!.relation = { subplotId: 'subplot.3' };
+    collection.currentProps.facecolor = [
+      [0.0666666667, 0.5333333333, 1, 1],
+      [0.8392156863, 0.1529411765, 0.1568627451, 1],
+    ];
+    const collectionTarget = {
+      ...target(collection.id, 'facecolor', 'positive-points'),
+      replayMode: 'code_only' as const,
+    };
+    const figure = manifest([collection], [binding('BLUE', [collectionTarget])]);
+    const editLog = [{
+      gid: collection.id,
+      prop: 'facecolor',
+      matchColor: '#0f3cf0',
+      value: '#1188ff',
+    }];
+    const secondEdit = resolveScopedPaletteTargets(
+      figure,
+      'BLUE',
+      '#0F3CF0',
+      true,
+      [collection.id],
+      editLog,
+    );
+
+    expect(buildPaletteObjectPatches(secondEdit, '#22aa77')).toEqual([{
+      op: 'set',
+      mode: 'backend_patch',
+      gid: collection.id,
+      prop: 'facecolor',
+      value: '#22aa77',
+      matchColor: '#1188ff',
     }]);
   });
 

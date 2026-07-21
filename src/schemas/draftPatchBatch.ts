@@ -24,6 +24,14 @@ export interface DraftPatch {
   pendingFigureIds?: string[];
 }
 
+export function draftPatchStorageKey(
+  patch: Pick<DraftPatch, 'gid' | 'prop' | 'matchColor'>,
+): string {
+  const base = `${patch.gid}:${patch.prop}`;
+  const matchColor = patch.matchColor?.trim().toLowerCase();
+  return matchColor ? `${base}:match:${matchColor}` : base;
+}
+
 export interface DraftPatchBatch {
   batchId: string;
   figureIds: string[];

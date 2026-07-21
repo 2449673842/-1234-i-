@@ -26,11 +26,17 @@ function stableDraftValue(value: unknown): string {
   }
 }
 
+function normalizeMatchColor(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized || undefined;
+}
+
 export function isSameDraftPatch(current: DraftPatch | undefined, snapshot: DraftPatch): boolean {
   if (!current) return false;
   return current.gid === snapshot.gid
     && current.prop === snapshot.prop
     && current.mode === snapshot.mode
+    && normalizeMatchColor(current.matchColor) === normalizeMatchColor(snapshot.matchColor)
     && current.type === snapshot.type
     && current.target_id === snapshot.target_id
     && stableDraftValue(current.value) === stableDraftValue(snapshot.value)

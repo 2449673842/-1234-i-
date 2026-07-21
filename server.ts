@@ -31,14 +31,16 @@ import { isDurableVirtualEditGid, mergePreviewGlobalsIntoEditLog } from './src/u
 import { resolveAuthoritativeProjectPatchMode } from './src/utils/propertyPatchMode';
 import { sanitizeLegacyRetireObservationBatch } from './src/utils/legacyRetireObservation';
 import { KeyedMutationGate } from './src/utils/keyedMutationGate';
+import { compressEditLogEntries } from './src/utils/editLogCompression';
 import {
   EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
+  PRE_LINE_VISIBILITY_SIGNATURE_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   SCRIPTED_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   parseExportEditingSnapshot,
   type ExportDatasetSnapshotV1,
   type ExportEditingSnapshot,
-  type ExportEditingSnapshotV4,
+  type ExportEditingSnapshotV5,
   type ExportFigureSnapshotV1,
   type ExportFigureSnapshotV2,
   type ExportFigureSnapshotV4,
@@ -2157,18 +2159,7 @@ ${inner}
    *  Preserves full History Log for undo/redo — only the render/export
    *  payload uses the compressed version. */
   function compressEditLog(log: EditEntry[]): EditEntry[] {
-    const seen = new Set<string>();
-    const result: EditEntry[] = [];
-    for (let i = log.length - 1; i >= 0; i--) {
-      const entry = log[i];
-      const matchColor = typeof entry.matchColor === 'string' ? entry.matchColor.trim().toLowerCase() : '';
-      const key = `${entry.gid}\0${entry.prop}\0${matchColor}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        result.unshift(entry);
-      }
-    }
-    return result;
+    return compressEditLogEntries(log);
   }
 
   // Only disposable sessions expire. Sessions referenced by saved projects are durable.
@@ -3416,6 +3407,32 @@ ${inner}
     return seriesKey === undefined || seriesKey === object?.identity?.seriesKey;
   }
 
+  function isCompatibleKnownLegacyLineVisibilityEdit(
+    manifestValue: unknown,
+    patch: any,
+    knownEditLog: any[],
+  ): boolean {
+    if (patch?.prop !== 'visible' || typeof patch?.value !== 'boolean') return false;
+    if (!knownEditLog.some(existing => (
+      sameProjectEditValue(existing, patch)
+        && sameProjectEditIdentity(existing, patch)
+    ))) return false;
+    const manifest = parseManifestValue(manifestValue);
+    const object = Array.isArray(manifest?.objects)
+      ? manifest.objects.find((candidate: any) => candidate?.id === patch?.gid)
+      : null;
+    if (!object || object.kind !== 'line') return false;
+    if (patch?.stableKey !== undefined && patch.stableKey !== object.stableKey) return false;
+    if (
+      patch?.fingerprintVersion === 2
+      && object?.fingerprintVersion === 2
+      && patch?.fingerprint !== undefined
+      && patch.fingerprint !== object.fingerprint
+    ) return false;
+    const seriesKey = patch?.identity?.seriesKey;
+    return seriesKey === undefined || seriesKey === object?.identity?.seriesKey;
+  }
+
   function sameProjectEditLogSemantics(left: any[], right: any[]): boolean {
     const canonicalize = (entries: any[]) => entries.map((entry: any) => (
       entry?.type === 'code_patch'
@@ -3548,11 +3565,14 @@ ${inner}
         && isCompatibleKnownDisappearingEdit(patch, knownEditLog);
       const compatibleLegacyAxisFontEdit = warning?.type === 'unsupported_prop'
         && isCompatibleKnownLegacyAxisFontEdit(manifest, patch, knownEditLog);
+      const compatibleLegacyLineVisibilityEdit = warning?.type === 'unsupported_prop'
+        && isCompatibleKnownLegacyLineVisibilityEdit(manifest, patch, knownEditLog);
       if (
         !compatibleLegacySpecialAxesEdit
         && !compatibleLegacyContourChildEdit
         && !compatibleDisappearingEdit
         && !compatibleLegacyAxisFontEdit
+        && !compatibleLegacyLineVisibilityEdit
       ) {
         warnings.push(figureId ? { ...warning, figureId } : warning);
       }
@@ -3941,6 +3961,24 @@ ${inner}
     })).digest('hex');
   }
 
+  function legacyReplayIdentitySignature(entry: any): string {
+    return crypto.createHash('sha256').update(stableStringifyForExport({
+      gid: String(entry?.gid || ''),
+      prop: String(entry?.prop || ''),
+      value: entry?.value,
+      stableKey: entry?.stableKey,
+      fingerprint: entry?.fingerprint,
+      fingerprintVersion: entry?.fingerprintVersion,
+      identity: entry?.identity,
+    })).digest('hex');
+  }
+
+  function isLegacyLineVisibilitySnapshotEdit(object: any, entry: any): boolean {
+    return object?.kind === 'line'
+      && entry?.prop === 'visible'
+      && typeof entry?.value === 'boolean';
+  }
+
   function captureLegacyReplaySignatures(manifestValue: unknown, editLog: EditEntry[]): string[] {
     const manifest = parseManifestValue(manifestValue);
     if (!manifest) return [];
@@ -3951,10 +3989,14 @@ ${inner}
       const object = objectById.get(String(entry?.gid || ''));
       const prop = String(entry?.prop || '');
       const editable = Array.isArray(object?.editable) ? object.editable.map(String) : [];
-      const isVerifiedLegacyEdit = !Array.isArray(object?.propertyCapabilities)
+      const isVerifiedLegacyContourEdit = !Array.isArray(object?.propertyCapabilities)
         && editable.includes(prop)
         && isLegacyContourChildSnapshotEdit(object, prop);
-      return isVerifiedLegacyEdit ? [legacyReplaySignature(entry)] : [];
+      if (isVerifiedLegacyContourEdit) return [legacyReplaySignature(entry)];
+      if (isLegacyLineVisibilitySnapshotEdit(object, entry)) {
+        return [legacyReplayIdentitySignature(entry)];
+      }
+      return [];
     })));
   }
 
@@ -3967,7 +4009,7 @@ ${inner}
     requestedFormat: string;
     effectiveFormat: string;
     dpi: number | null;
-  }): ExportEditingSnapshotV4 {
+  }): ExportEditingSnapshotV5 {
     const figureRows = listProjectFigures(args.project.id);
     const targetRow = figureRows.find(row => `fig_${row.figure_index + 1}` === args.targetFigureId);
     const targetSession = targetRow ? loadSession(targetRow.session_id, args.userId) : null;
@@ -4219,8 +4261,14 @@ ${inner}
           snapshotSchemaVersion <= PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
           || legacyReplaySignatures.includes(legacyReplaySignature(entry))
         );
+      const legacyLineVisibilityReplay = isLegacyLineVisibilitySnapshotEdit(object, entry)
+        && (
+          snapshotSchemaVersion <= PRE_LINE_VISIBILITY_SIGNATURE_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+          || legacyReplaySignatures.includes(legacyReplayIdentitySignature(entry))
+        );
       if (
         !legacyContourChildReplay
+        && !legacyLineVisibilityReplay
         && (
           (capability && (capability.replay === 'unsupported' || !capabilityScopes.includes('object')))
           || (!capability && (hasAuthoritativeCapabilities || !editable.includes(prop)))

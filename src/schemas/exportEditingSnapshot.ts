@@ -3,7 +3,8 @@ import type { EditEntry } from './manifest';
 export const LEGACY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 1 as const;
 export const SCRIPTED_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 2 as const;
 export const PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 3 as const;
-export const EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 4 as const;
+export const PRE_LINE_VISIBILITY_SIGNATURE_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 4 as const;
+export const EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 5 as const;
 
 export interface ExportDatasetSnapshotV1 {
   datasetId: string;
@@ -59,6 +60,11 @@ export interface ExportEditingSnapshotV3 extends ExportEditingSnapshotBase {
 }
 
 export interface ExportEditingSnapshotV4 extends ExportEditingSnapshotBase {
+  schemaVersion: typeof PRE_LINE_VISIBILITY_SIGNATURE_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION;
+  figures: ExportFigureSnapshotV4[];
+}
+
+export interface ExportEditingSnapshotV5 extends ExportEditingSnapshotBase {
   schemaVersion: typeof EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION;
   figures: ExportFigureSnapshotV4[];
 }
@@ -67,7 +73,8 @@ export type ExportEditingSnapshot =
   | ExportEditingSnapshotV1
   | ExportEditingSnapshotV2
   | ExportEditingSnapshotV3
-  | ExportEditingSnapshotV4;
+  | ExportEditingSnapshotV4
+  | ExportEditingSnapshotV5;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -80,6 +87,7 @@ export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapsho
     schemaVersion !== LEGACY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
     && schemaVersion !== SCRIPTED_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
     && schemaVersion !== PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+    && schemaVersion !== PRE_LINE_VISIBILITY_SIGNATURE_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
     && schemaVersion !== EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
   ) return null;
   if (
@@ -119,7 +127,10 @@ export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapsho
       return null;
     }
     if (
-      schemaVersion === EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+      (
+        schemaVersion === PRE_LINE_VISIBILITY_SIGNATURE_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+        || schemaVersion === EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+      )
       && (
         !Array.isArray(rawFigure.legacyReplaySignatures)
         || rawFigure.legacyReplaySignatures.some(signature => (
@@ -174,12 +185,15 @@ export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapsho
         figures: figures as ExportFigureSnapshotV1[],
       };
   }
-  if (schemaVersion === EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION) {
+  if (
+    schemaVersion === PRE_LINE_VISIBILITY_SIGNATURE_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+    || schemaVersion === EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+  ) {
     return {
       ...base,
       schemaVersion,
       figures: figures as ExportFigureSnapshotV4[],
-    };
+    } as ExportEditingSnapshotV4 | ExportEditingSnapshotV5;
   }
   return {
     ...base,

@@ -17,7 +17,7 @@ import {
   resolvePatchModeById,
   supportsObjectProp,
 } from '../utils/propertyPatchMode';
-import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolvePaletteColorFallbackTargets, resolvePaletteTargets } from '../utils/paletteTargetResolver';
+import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolveEffectivePaletteColor, resolvePaletteColorFallbackTargets, resolvePaletteTargets, resolveScopedPaletteTargets } from '../utils/paletteTargetResolver';
 import { projectPaletteColorControl } from '../utils/palettePropertyProjection';
 import { computeEqualAxesPhysicalLayout } from '../utils/subplotPhysicalLayout';
 import { resolveExplicitColorbarOwner } from '../utils/colorbarOwnership';
@@ -1046,30 +1046,27 @@ export function RightSidebar({
   ) => {
     if (scope === 'all' && !isRenderedPaletteId(paletteId)) return baseResolution;
     if (scope === 'all') {
-      return resolvePaletteColorFallbackTargets(manifest, paletteId, paletteColor);
-    }
-    const scopedObjectIds = Array.from(new Set(
-      baseResolution.targets
-        .map(target => target.objectId)
-        .filter(gid => isObjectInSubplotScope(manifest.objects.find(item => item.id === gid), scope)),
-    ));
-    if (scopedObjectIds.length > 0) {
-      const scopedResolution = resolvePaletteTargets(
+      const effectivePaletteColor = resolveEffectivePaletteColor(
+        manifest,
+        baseResolution,
+        paletteColor,
+        undefined,
+        figSession?.editLog,
+      );
+      return resolvePaletteColorFallbackTargets(
         manifest,
         paletteId,
-        PALETTE_TARGET_RESOLVER_V2_ENABLED,
-        scopedObjectIds,
-        PALETTE_CONTROLS_V2_ENABLED,
+        effectivePaletteColor ?? paletteColor,
       );
-      if (scopedResolution.targets.some(target => target.replayMode !== 'code_only')) {
-        return scopedResolution;
-      }
     }
-    return resolvePaletteColorFallbackTargets(
+    return resolveScopedPaletteTargets(
       manifest,
       paletteId,
       paletteColor,
+      PALETTE_TARGET_RESOLVER_V2_ENABLED,
       getObjectIdsInSubplotScope(scope),
+      figSession?.editLog,
+      PALETTE_CONTROLS_V2_ENABLED,
     );
   };
 
@@ -6312,6 +6309,16 @@ export function RightSidebar({
       const binding = bindings.find((b: any) => b.paletteId === palette.id);
       const baseResolution = resolvePaletteBindingTargets(palette.id);
       const resolution = resolvePaletteForScope(palette.id, palette.color, baseResolution, paletteSubplotScope);
+      const scopeObjectIds = paletteSubplotScope === 'all'
+        ? undefined
+        : getObjectIdsInSubplotScope(paletteSubplotScope);
+      const effectivePaletteColor = resolveEffectivePaletteColor(
+        manifest,
+        baseResolution,
+        palette.color,
+        scopeObjectIds,
+        figSession?.editLog,
+      ) ?? palette.color;
       const gids = Array.from(new Set(resolution.targets.map(target => target.objectId)));
       const selectableGids = Array.from(new Set(
         resolution.targets.map(target => target.objectId),
@@ -6321,7 +6328,7 @@ export function RightSidebar({
         .filter(Boolean) as any[];
       const selectedCount = selectableGids.filter((gid: string) => selectedGids.includes(gid)).length;
       return {
-        palette,
+        palette: { ...palette, color: effectivePaletteColor },
         binding,
         resolution,
         gids,
@@ -6757,7 +6764,10 @@ export function RightSidebar({
   };
 
   return (
-    <div className="scifig-editor-panel scifig-editor-panel-right w-full flex flex-col h-full overflow-hidden shrink-0 select-none">
+    <div
+      className="scifig-editor-panel scifig-editor-panel-right w-full flex flex-col h-full overflow-hidden shrink-0 select-none"
+      data-scifigure-property-panel="true"
+    >
       <div className="flex shrink-0 overflow-x-auto border-b border-slate-200">
         <button
           type="button"

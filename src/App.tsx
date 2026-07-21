@@ -48,7 +48,7 @@ import { isTextContentPatchProp, resolvePatchModeById } from './utils/propertyPa
 import { fnv1a, stableStringify } from './utils/stableJson';
 import { removeMatchingPersistedDrafts } from './utils/projectSaveConcurrency';
 import type { FigureSession, EditEntry, PatchEntry, HistorySnapshot, ProjectHistoryState } from './schemas/manifest';
-import type { DraftPatch } from './schemas/draftPatchBatch';
+import { draftPatchStorageKey, type DraftPatch } from './schemas/draftPatchBatch';
 import type { EditingIntentApplyReport, EditingIntentSkippedTarget } from './schemas/editingIntent';
 import './index.css';
 
@@ -141,13 +141,6 @@ function cloneSpec(spec: FigureSpec): FigureSpec {
 
 function cloneEditLog(editLog: EditEntry[]): EditEntry[] {
   return JSON.parse(JSON.stringify(editLog || [])) as EditEntry[];
-}
-
-function draftPatchStorageKey(patch: Pick<DraftPatch, 'gid' | 'prop' | 'matchColor'>): string {
-  const matchColor = typeof patch.matchColor === 'string' ? patch.matchColor.trim().toLowerCase() : '';
-  return matchColor
-    ? `${patch.gid}:${patch.prop}:match:${matchColor}`
-    : `${patch.gid}:${patch.prop}`;
 }
 
 function patchEntryStorageKey(patch: PatchEntry): string {

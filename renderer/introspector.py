@@ -2034,6 +2034,12 @@ def _read_collection_props(artist) -> dict:
             size = float(sizes[0])
     except Exception:
         size = None
+    try:
+        size_scale = float(getattr(artist, "_scifigure_size_scale", 1.0))
+        if size_scale <= 0:
+            size_scale = 1.0
+    except Exception:
+        size_scale = 1.0
     props = {
         "facecolor": fc.tolist() if hasattr(fc, "tolist") else fc,
         "edgecolor": ec.tolist() if hasattr(ec, "tolist") else ec,
@@ -2041,7 +2047,7 @@ def _read_collection_props(artist) -> dict:
         "linewidth": linewidth,
         "size": size,
         "sizes": sizes_list,
-        "size_scale": 1.0,
+        "size_scale": size_scale,
     }
     if _intercepted_complex_artists.get(artist, {}).get("semanticRole") == "streamplot_child_line":
         colors = getattr(artist, "get_colors", lambda: [])()
@@ -5508,7 +5514,10 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         return
 
     if prop == "size" and hasattr(artist, "set_sizes"):
-        artist.set_sizes([float(value)])
+        absolute_size = float(value)
+        artist.set_sizes([absolute_size])
+        setattr(artist, "_scifigure_base_sizes", [absolute_size])
+        setattr(artist, "_scifigure_size_scale", 1.0)
         return
 
     if prop == "size_scale" and hasattr(artist, "get_sizes") and hasattr(artist, "set_sizes"):
@@ -5518,7 +5527,12 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         sizes = artist.get_sizes()
         if sizes is None or len(sizes) == 0:
             return "no_sizes_to_scale"
-        artist.set_sizes([float(size) * scale for size in sizes])
+        base_sizes = getattr(artist, "_scifigure_base_sizes", None)
+        if not isinstance(base_sizes, (list, tuple)) or len(base_sizes) == 0:
+            base_sizes = [float(size) for size in sizes]
+            setattr(artist, "_scifigure_base_sizes", base_sizes)
+        artist.set_sizes([float(size) * scale for size in base_sizes])
+        setattr(artist, "_scifigure_size_scale", scale)
         return
 
     # Fallback to _PROP_TO_SETTER for common props

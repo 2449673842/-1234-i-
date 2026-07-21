@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ManifestObject } from '../schemas/manifest';
-import { buildInlineTextPatch, supportsInlineTextEditing } from './ChartPreview';
+import { buildInlineTextPatch, resolveAxesPatchPanelGid, supportsInlineTextEditing } from './ChartPreview';
 
 function textObject(overrides: Partial<ManifestObject> = {}): ManifestObject {
   return {
@@ -48,5 +48,33 @@ describe('ChartPreview inline text editing capability gate', () => {
         },
       },
     });
+  });
+});
+
+describe('ChartPreview subplot hit mapping', () => {
+  it('maps a normal axes patch back to the matching logical subplot', () => {
+    const subplot: ManifestObject = {
+      id: 'subplot.3',
+      kind: 'subplot',
+      label: '(d)',
+      editable: ['left', 'bottom', 'width', 'height'],
+      currentProps: {},
+      source: { artistClass: 'Axes', axesIndex: 3 },
+    };
+
+    expect(resolveAxesPatchPanelGid([subplot], 3)).toBe('subplot.3');
+  });
+
+  it('keeps special axes selectable when no normal subplot exists', () => {
+    const polar: ManifestObject = {
+      id: 'subplot.polar.0',
+      kind: 'polar_subplot',
+      label: 'polar',
+      editable: [],
+      currentProps: {},
+      source: { artistClass: 'PolarAxes', axesIndex: 0 },
+    };
+
+    expect(resolveAxesPatchPanelGid([polar], 0)).toBe('subplot.polar.0');
   });
 });

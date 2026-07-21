@@ -340,8 +340,51 @@ ax.scatter([0, 1, 2], [0, 1, 0], s=[20, 40, 80])
 
         self.assertEqual(collection["currentProps"]["sizes"], [40.0, 80.0, 160.0])
         self.assertEqual(collection["currentProps"]["size"], 40.0)
+        self.assertEqual(collection["currentProps"]["size_scale"], 2.0)
         self.assertIn("size_scale", collection["editable"])
 
+        replaced_scale = replay_render(script, edit_log=[
+            {
+                "gid": "collection.0.0",
+                "prop": "size_scale",
+                "value": 2,
+                "mode": "backend_patch",
+            },
+            {
+                "gid": "collection.0.0",
+                "prop": "size_scale",
+                "value": 3,
+                "mode": "backend_patch",
+            },
+        ])
+        replaced_collection = next(
+            obj for obj in replaced_scale["figures"][0]["manifest"]["objects"]
+            if obj["id"] == "collection.0.0"
+        )
+        self.assertEqual(replaced_collection["currentProps"]["sizes"], [60.0, 120.0, 240.0])
+        self.assertEqual(replaced_collection["currentProps"]["size_scale"], 3.0)
+
+    def test_legend_and_axis_fontweight_patches_replay(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 3, 2], label="response")
+ax.set_xticks([0, 1, 2])
+ax.legend()
+"""
+        patched = replay_render(script, edit_log=[
+            {"gid": "legend.0", "prop": "fontweight", "value": "bold", "mode": "backend_patch"},
+            {"gid": "axis.x.0", "prop": "tick_fontweight", "value": "bold", "mode": "backend_patch"},
+        ])
+        objects = patched["figures"][0]["manifest"]["objects"]
+        legend = next(obj for obj in objects if obj["id"] == "legend.0")
+        xtick = next(obj for obj in objects if obj["id"] == "xtick.0.0")
+        axis_x = next(obj for obj in objects if obj["id"] == "axis.x.0")
+
+        self.assertIn("fontweight", legend["editable"])
+        self.assertEqual(legend["currentProps"]["fontweight"], "bold")
+        self.assertEqual(xtick["currentProps"]["fontweight"], "bold")
+        self.assertEqual(axis_x["currentProps"]["tick_fontweight"], "bold")
     
     def test_replay_render_captures_more_than_three_figures(self):
         script = """
