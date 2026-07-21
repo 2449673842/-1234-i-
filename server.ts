@@ -234,6 +234,7 @@ async function startServer() {
   }
 
   const validatedPythonPatchCacheKeys = new Set<string>();
+  const validatedRPatchCacheKeys = new Set<string>();
 
   async function computeRenderCacheKey(session: any, projectContext: any, editLogOverride?: any[]): Promise<string> {
     const engine = session.language === 'r' ? 'r_ggplot' : 'python_matplotlib';
@@ -3646,6 +3647,51 @@ ${inner}
     return warnings;
   }
 
+  function collectRendererAcknowledgementWarnings(
+    rendererResult: any,
+    patches: any[],
+    figureId?: string,
+  ) {
+    const applied = Array.isArray(rendererResult?.applied) ? rendererResult.applied : [];
+    const skipped = Array.isArray(rendererResult?.skipped) ? rendererResult.skipped : [];
+    const warnings: any[] = [];
+
+    for (let index = 0; index < patches.length; index += 1) {
+      const patch = patches[index];
+      if (!applied.some((entry: any) => sameProjectEditValue(entry, patch))) {
+        warnings.push({
+          type: 'renderer_ack_missing',
+          gid: patch?.gid || '',
+          prop: patch?.prop || '',
+          patchIndex: index,
+          ...(figureId ? { figureId } : {}),
+          message: `R renderer did not acknowledge ${patch?.gid || '<missing>'}.${patch?.prop || '<missing>'} as applied.`,
+        });
+      }
+    }
+
+    for (const skippedPatch of skipped) {
+      warnings.push({
+        type: 'renderer_skipped',
+        gid: skippedPatch?.gid || '',
+        prop: skippedPatch?.prop || '',
+        ...(figureId ? { figureId } : {}),
+        message: `R renderer reported ${skippedPatch?.gid || '<missing>'}.${skippedPatch?.prop || '<missing>'} as skipped.`,
+      });
+    }
+
+    if (rendererResult?.conflict === true && warnings.length === 0) {
+      warnings.push({
+        type: 'renderer_conflict',
+        gid: '',
+        prop: '',
+        ...(figureId ? { figureId } : {}),
+        message: 'R renderer reported a patch conflict without a complete acknowledgement.',
+      });
+    }
+    return warnings;
+  }
+
   function collectRendererReplayConflictsByFigure(
     resultWarnings: any,
     editLogs: Record<string, EditEntry[]>,
@@ -5041,6 +5087,7 @@ ${inner}
         result = await spawnRWithPayload({
           script,
           dataPayload: effectiveDataPayload,
+          editLog: compressedRequestedEditLog,
           renderOptions: renderOptions || { width_in: 7, height_in: 5 },
         }, { req, label: 'r-render' });
       } else {
@@ -5057,7 +5104,7 @@ ${inner}
         }, { req, label: 'render' });
       }
       if (result.status === 'success') {
-        if (language === 'python' && compressedRequestedEditLog.length > 0) {
+        if (compressedRequestedEditLog.length > 0) {
           const knownEditLog = Array.isArray(existingSession?.editLog) ? existingSession.editLog : [];
           const renderedManifest = result.manifest || result.figures?.[0]?.manifest;
           const renderedPrecheck = precheckRenderedProjectFigureEditLog(
@@ -5072,7 +5119,14 @@ ${inner}
             compressedRequestedEditLog,
             'fig_1',
           );
-          const conflictWarnings = [...precheckWarnings, ...rendererConflicts];
+          const rendererAcknowledgementWarnings = language === 'r'
+            ? collectRendererAcknowledgementWarnings(result, compressedRequestedEditLog, 'fig_1')
+            : [];
+          const conflictWarnings = [
+            ...precheckWarnings,
+            ...rendererConflicts,
+            ...rendererAcknowledgementWarnings,
+          ];
           if (conflictWarnings.length > 0) {
             return res.json({
               status: 'conflict',
@@ -5197,10 +5251,8 @@ ${inner}
 
       const codePatches = (patches || []).filter((p: any) => p.type === 'code_patch');
       let regularPatches = (patches || []).filter((p: any) => p.type !== 'code_patch');
-      if (session.language !== 'r') {
-        regularPatches = normalizeProjectFigurePatchModes(projectContext?.figRow, regularPatches);
-      }
-      if (session.language !== 'r' && projectContext?.figRow && regularPatches.length > 0) {
+      regularPatches = normalizeProjectFigurePatchModes(projectContext?.figRow, regularPatches);
+      if (projectContext?.figRow && regularPatches.length > 0) {
         const precheck = precheckProjectFigurePatches(projectContext.figRow, regularPatches);
         if (!precheck.ok) {
           const rejectedIndexes = new Set(
@@ -5208,7 +5260,9 @@ ${inner}
               .map((warning: any) => warning.patchIndex)
               .filter((index: unknown): index is number => typeof index === 'number'),
           );
-          const rejected = regularPatches.filter((_: any, index: number) => rejectedIndexes.has(index));
+          const rejected = session.language === 'r'
+            ? regularPatches
+            : regularPatches.filter((_: any, index: number) => rejectedIndexes.has(index));
           const response = buildPatchConflictResponse(
             sessionBeforePatch,
             requestId,
@@ -5233,11 +5287,16 @@ ${inner}
           gid: p.gid,
           prop: p.prop,
           value: p.value,
-          mode: 'backend_patch',
+          mode: p.mode || 'backend_patch',
           timestamp: patchTimestamp,
-          ...(typeof p.matchColor === 'string' ? { matchColor: p.matchColor } : {}),
+          ...(p.matchColor !== undefined ? { matchColor: p.matchColor } : {}),
+          ...(p.stableKey !== undefined ? { stableKey: p.stableKey } : {}),
+          ...(p.fingerprint !== undefined ? { fingerprint: p.fingerprint } : {}),
+          ...(p.fingerprintVersion !== undefined ? { fingerprintVersion: p.fingerprintVersion } : {}),
+          ...(p.identity !== undefined ? { identity: p.identity } : {}),
         }));
         const mergedEditLog = [...session.editLog, ...newEdits];
+        const rendererEditLog = compressEditLog(mergedEditLog);
         let cwd: string | undefined = projectContext?.cwd;
         let uploaded_file_paths: Record<string, string> | undefined = projectContext?.uploaded_file_paths;
         if (projectContext) {
@@ -5247,15 +5306,50 @@ ${inner}
         // Cache lookup
         const cacheLookupStartedAt = performance.now();
         const cacheKey = await computeRenderCacheKey(session, projectContext, mergedEditLog);
-        const cached = getCachedRender(cacheKey);
+        const cached = validatedRPatchCacheKeys.has(cacheKey)
+          ? getCachedRender(cacheKey)
+          : null;
         const cacheLookupMs = roundedDuration(cacheLookupStartedAt);
         if (cached) {
+          const cachedPrecheck = projectContext
+            ? precheckRenderedProjectFigureEditLog(
+                cached.manifest,
+                rendererEditLog,
+                sessionBeforePatch.editLog,
+                projectContext.figureId,
+              )
+            : { ...precheckRenderedPythonPatches(cached.manifest, newEdits), rejected: [] as any[] };
+          if (!cachedPrecheck.ok) {
+            const response = buildPatchConflictResponse(
+              sessionBeforePatch,
+              requestId,
+              projectContext ? cachedPrecheck.rejected : newEdits,
+              [
+                ...cachedPrecheck.warnings,
+                ...(revisionWarning ? [revisionWarning] : []),
+              ],
+            );
+            processedIds.add(requestId);
+            cache.set(requestId, response);
+            return res.json(response);
+          }
           const persistStartedAt = performance.now();
           session.editLog = mergedEditLog;
           session.revision++;
-          persistSession(session);
           if (projectContext) {
-            syncProjectFigureRevision(session.sessionId, session.revision);
+            getDb().transaction(() => {
+              persistSession(session);
+              syncProjectFigurePreview({
+                sessionId: session.sessionId,
+                revision: session.revision,
+                svg: cached.svg,
+                manifest: cached.manifest,
+                codeSlice: cached.codeSlice,
+                fingerprint: hashString(cached.svg || ''),
+              });
+            })();
+          } else {
+            persistSession(session);
           }
           const cachedResponse = attachServerPerformance({
             status: 'success',
@@ -5278,20 +5372,76 @@ ${inner}
         const result = await spawnRWithPayload({
           script: session.script,
           dataPayload: session.dataPayload || null,
-          editLog: compressEditLog(mergedEditLog),
+          editLog: rendererEditLog,
           cwd,
           uploaded_file_paths: prepareUploadedFilePathsForR(uploaded_file_paths, cwd),
           renderOptions: { width_in: 7, height_in: 5 },
         }, { req, label: 'r-patch' });
+        const renderedPrecheck = result.status === 'success'
+          ? (
+              projectContext
+                ? precheckRenderedProjectFigureEditLog(
+                    result.manifest,
+                    rendererEditLog,
+                    sessionBeforePatch.editLog,
+                    projectContext.figureId,
+                  )
+                : { ...precheckRenderedPythonPatches(result.manifest, newEdits), rejected: [] as any[] }
+            )
+          : { ok: true, warnings: [] as any[] };
+        const rendererConflicts = result.status === 'success'
+          ? collectRendererConflictWarnings(
+              result.warnings,
+              projectContext ? rendererEditLog : newEdits,
+              projectContext?.figureId || 'fig_1',
+            )
+          : [];
+        const rendererAcknowledgementWarnings = result.status === 'success'
+          ? collectRendererAcknowledgementWarnings(
+              result,
+              rendererEditLog,
+              projectContext?.figureId || 'fig_1',
+            )
+          : [];
+        if (!renderedPrecheck.ok || rendererConflicts.length > 0 || rendererAcknowledgementWarnings.length > 0) {
+          const warnings = [
+            ...renderedPrecheck.warnings,
+            ...rendererConflicts,
+            ...rendererAcknowledgementWarnings,
+            ...(revisionWarning ? [revisionWarning] : []),
+          ];
+          const response = buildPatchConflictResponse(
+            sessionBeforePatch,
+            requestId,
+            projectContext
+              ? regularPatches
+              : newEdits,
+            warnings,
+          );
+          processedIds.add(requestId);
+          cache.set(requestId, response);
+          return res.json(response);
+        }
         let persistMs = 0;
         let cacheWriteMs = 0;
         if (result.status === 'success') {
           const persistStartedAt = performance.now();
           session.editLog = mergedEditLog;
           session.revision++;
-          persistSession(session);
           if (projectContext) {
-            syncProjectFigureRevision(session.sessionId, session.revision);
+            getDb().transaction(() => {
+              persistSession(session);
+              syncProjectFigurePreview({
+                sessionId: session.sessionId,
+                revision: session.revision,
+                svg: result.svg,
+                manifest: result.manifest,
+                fingerprint: hashString(result.svg || ''),
+                diagnosticsSource: result,
+              });
+            })();
+          } else {
+            persistSession(session);
           }
           result.sessionId = session.sessionId;
           result.revision = session.revision;
@@ -5301,11 +5451,13 @@ ${inner}
 
           const cacheWriteStartedAt = performance.now();
           setCachedRender(cacheKey, result.svg, result.manifest, undefined, result);
+          validatedRPatchCacheKeys.add(cacheKey);
           cacheWriteMs = roundedDuration(cacheWriteStartedAt);
         }
         const response = attachServerPerformance({
           ...result,
-          applied: newEdits,
+          applied: result.status === 'success' ? newEdits : [],
+          rejected: result.status === 'success' ? [] : newEdits,
           requestId,
           cache: { hit: false, key: cacheKey },
           warnings: [
@@ -5978,6 +6130,38 @@ ${inner}
       }
       if (result.status !== 'success') {
         return res.json(result);
+      }
+      if (session.language === 'r') {
+        const exportPrecheck = precheckRenderedProjectFigureEditLog(
+          result.manifest,
+          exportEditLog,
+          session.editLog,
+          'fig_1',
+        );
+        const rendererConflicts = collectRendererConflictWarnings(
+          result.warnings,
+          exportEditLog,
+          'fig_1',
+        );
+        const rendererAcknowledgementWarnings = collectRendererAcknowledgementWarnings(
+          result,
+          exportEditLog,
+          'fig_1',
+        );
+        if (!exportPrecheck.ok || rendererConflicts.length > 0 || rendererAcknowledgementWarnings.length > 0) {
+          return res.status(409).json({
+            status: 'conflict',
+            code: 'EXPORT_REPLAY_CONFLICT',
+            message: 'R 导出前未能确认全部编辑已重放，未生成导出结果。',
+            applied: [],
+            rejected: exportEditLog,
+            warnings: [
+              ...exportPrecheck.warnings,
+              ...rendererConflicts,
+              ...rendererAcknowledgementWarnings,
+            ],
+          });
+        }
       }
       
       const svg = result.svg;
@@ -6729,6 +6913,9 @@ ${inner}
                 codeSlice: null,
               }],
               warnings: rResult.warnings || [],
+              applied: rResult.applied || [],
+              skipped: rResult.skipped || [],
+              conflict: rResult.conflict === true,
               language: 'r',
             }
           : rResult;
@@ -6747,28 +6934,34 @@ ${inner}
         // Detect figure count drift
         const newFigures = result.figures || [];
         const manifestPrecheckWarnings: any[] = [];
-        if (language === 'python') {
-          for (const fig of newFigures) {
-            const figureId = String(fig.figureId || '');
-            const patches = compressedEditLogs[figureId] || [];
-            if (patches.length === 0) continue;
-            const knownEditLog = oldEditLogMap[figureId] || [];
-            const precheck = precheckRenderedProjectFigureEditLog(
-              fig.manifest,
-              patches,
-              knownEditLog,
-              figureId,
-            );
-            manifestPrecheckWarnings.push(...precheck.warnings);
-          }
+        for (const fig of newFigures) {
+          const figureId = String(fig.figureId || '');
+          const patches = compressedEditLogs[figureId] || [];
+          if (patches.length === 0) continue;
+          const knownEditLog = oldEditLogMap[figureId] || [];
+          const precheck = precheckRenderedProjectFigureEditLog(
+            fig.manifest,
+            patches,
+            knownEditLog,
+            figureId,
+          );
+          manifestPrecheckWarnings.push(...precheck.warnings);
         }
         const rendererConflicts = collectRendererReplayConflictsByFigure(
           result.warnings,
           compressedEditLogs,
         );
+        const rendererAcknowledgementWarnings = language === 'r'
+          ? collectRendererAcknowledgementWarnings(
+              result,
+              compressedEditLogs.fig_1 || [],
+              'fig_1',
+            )
+          : [];
         const replayWarnings = [
           ...manifestPrecheckWarnings,
           ...rendererConflicts.map(conflict => ({ ...conflict.warning, figureId: conflict.figureId })),
+          ...rendererAcknowledgementWarnings,
         ];
         if (replayWarnings.length > 0) {
           return res.json({
@@ -7712,16 +7905,7 @@ ${inner}
       }
 
       const results = [];
-      const projectData = getProject(projectId, userId);
-      const script = projectData?.script || '';
-
-      // AST gate
-      if (script) {
-        const astCheck = await validateAst(script, req);
-        if (!astCheck.ok) {
-          return res.status(400).json({ status: 'error', message: '脚本安全校验失败: ' + (astCheck.message || ''), details: astCheck.message, errors: astCheck.errors });
-        }
-      }
+      const validatedPythonExportScripts = new Set<string>();
       const datasets = listProjectFiles(projectId);
       const exportDatasetCapture = saveToLibrary !== false
         ? captureExportDatasetSnapshots(datasets)
@@ -7745,21 +7929,46 @@ ${inner}
       for (const fig of targetFigs) {
         const session = loadSession(fig.session_id, userId);
         if (!session) continue;
+        if (session.language !== 'r' && !validatedPythonExportScripts.has(session.script)) {
+          const astCheck = await validateAst(session.script, req);
+          if (!astCheck.ok) {
+            return res.status(400).json({ status: 'error', message: '脚本安全校验失败: ' + (astCheck.message || ''), details: astCheck.message, errors: astCheck.errors });
+          }
+          validatedPythonExportScripts.add(session.script);
+        }
         const exportEditLog = compressEditLog(mergePreviewGlobalsIntoEditLog(
           session.editLog,
           fig.manifest,
         ));
 
         const targetFigId = `fig_${fig.figure_index + 1}`;
-        const result = await spawnPythonWithPayload('introspector.py', {
-          script: session.script,
-          dataPayload: projectDataPayload || session.dataPayload || null,
-          cwd: cwd.replace(/\\/g, '/'),
-          uploaded_file_paths,
-          editLogs: { [targetFigId]: exportEditLog },
-          renderOptions: { dpi: dpi || 300 },
-          export_format: reqFormat !== 'svg' ? reqFormat : undefined,
-        }, { req, label: 'project-export', maxOutputMb: 64 });
+        const result = session.language === 'r'
+          ? await spawnRWithPayload({
+              script: session.script,
+              dataPayload: projectDataPayload || session.dataPayload || null,
+              cwd: cwd.replace(/\\/g, '/'),
+              uploaded_file_paths: prepareUploadedFilePathsForR(uploaded_file_paths, cwd),
+              editLog: exportEditLog,
+              renderOptions: { width_in: 7, height_in: 5 },
+            }, { req, label: 'project-r-export', maxOutputMb: 64 })
+          : await spawnPythonWithPayload('introspector.py', {
+              script: session.script,
+              dataPayload: projectDataPayload || session.dataPayload || null,
+              cwd: cwd.replace(/\\/g, '/'),
+              uploaded_file_paths,
+              editLogs: { [targetFigId]: exportEditLog },
+              renderOptions: { dpi: dpi || 300 },
+              export_format: reqFormat !== 'svg' ? reqFormat : undefined,
+            }, { req, label: 'project-export', maxOutputMb: 64 });
+
+        if (session.language === 'r' && result.status !== 'success') {
+          return res.status(422).json({
+            ...result,
+            status: 'error',
+            message: result.message || `${targetFigId} R 导出渲染失败，未创建导出资产或快照。`,
+            figureId: targetFigId,
+          });
+        }
 
         if (result.status === 'success') {
           const matchedFig = result.figures?.find((f: any) => f.figureId === targetFigId) || result;
@@ -7767,15 +7976,61 @@ ${inner}
             ? result.warnings.filter((warning: any) => !warning?.figureId || warning.figureId === targetFigId)
             : [];
           const replayWarnings = targetWarnings.filter(isSnapshotReplayWarning);
-          if (replayWarnings.length > 0) {
+          const manifestPrecheck = precheckRenderedProjectFigureEditLog(
+            matchedFig.manifest,
+            exportEditLog,
+            session.editLog,
+            targetFigId,
+          );
+          const rendererConflicts = collectRendererConflictWarnings(
+            targetWarnings,
+            exportEditLog,
+            targetFigId,
+          );
+          const rendererAcknowledgementWarnings = session.language === 'r'
+            ? collectRendererAcknowledgementWarnings(result, exportEditLog, targetFigId)
+            : [];
+          if (
+            replayWarnings.length > 0
+            || !manifestPrecheck.ok
+            || rendererConflicts.length > 0
+            || rendererAcknowledgementWarnings.length > 0
+          ) {
             return res.status(409).json({
               status: 'conflict',
               code: 'EXPORT_REPLAY_CONFLICT',
               message: `${targetFigId} 存在未能完整重放的编辑，导出和编辑快照均未保存。`,
               figureId: targetFigId,
-              warnings: targetWarnings,
-              replayWarnings,
+              warnings: [
+                ...targetWarnings,
+                ...manifestPrecheck.warnings,
+                ...rendererConflicts,
+                ...rendererAcknowledgementWarnings,
+              ],
+              replayWarnings: [
+                ...replayWarnings,
+                ...manifestPrecheck.warnings,
+                ...rendererConflicts,
+                ...rendererAcknowledgementWarnings,
+              ],
             });
+          }
+          if (session.language === 'r' && reqFormat !== 'svg' && !matchedFig.binary_b64) {
+            const converted = await spawnPythonWithPayload('svg_convert.py', {
+              svg: matchedFig.svg,
+              format: reqFormat,
+              dpi: dpi || 300,
+            }, { req, label: 'project-r-svg-export', maxOutputMb: 64 });
+            if (converted.status !== 'success' || !converted.binary_b64) {
+              return res.status(422).json({
+                status: 'error',
+                code: 'R_EXPORT_CONVERSION_FAILED',
+                message: converted.message || `${targetFigId} 无法转换为 ${reqFormat}，未创建导出资产或快照。`,
+                figureId: targetFigId,
+                requestedFormat: reqFormat,
+              });
+            }
+            matchedFig.binary_b64 = converted.binary_b64;
           }
           renderedTargets.push({
             session,

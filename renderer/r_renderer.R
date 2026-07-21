@@ -19,6 +19,7 @@ if (is.null(payload_file) || !file.exists(payload_file)) {
 }
 
 payload <- jsonlite::fromJSON(payload_file, simplifyVector = TRUE)
+raw_payload <- jsonlite::fromJSON(payload_file, simplifyVector = FALSE)
 script <- payload$script
 if (is.null(script) || !nzchar(script)) {
   cat(jsonlite::toJSON(list(status = "error", message = "R script is required"), auto_unbox = TRUE))
@@ -33,9 +34,25 @@ if (!is.null(render_options$height_in)) height <- as.numeric(render_options$heig
 
 tmp_svg <- tempfile(fileext = ".svg")
 warnings_collected <- character()
+renderer_patch_warnings <- list()
 
 add_warning_once <- function(message) {
   warnings_collected <<- unique(c(warnings_collected, message))
+}
+
+add_patch_warning_once <- function(type, gid, prop, message) {
+  key <- paste(type, gid, prop, message, sep = "\u001f")
+  existing_keys <- vapply(renderer_patch_warnings, function(item) {
+    paste(item$type, item$gid, item$prop, item$message, sep = "\u001f")
+  }, character(1))
+  if (!key %in% existing_keys) {
+    renderer_patch_warnings[[length(renderer_patch_warnings) + 1]] <<- list(
+      type = type,
+      gid = gid,
+      prop = prop,
+      message = message
+    )
+  }
 }
 
 as_edit_entries <- function(edit_log) {
@@ -48,7 +65,7 @@ as_edit_entries <- function(edit_log) {
   list()
 }
 
-edit_entries <- as_edit_entries(payload$editLog)
+edit_entries <- as_edit_entries(raw_payload$editLog)
 
 latest_value <- function(gid, prop, fallback) {
   value <- fallback
@@ -805,7 +822,9 @@ apply_text_layer_edits <- function(plot_obj) {
     }
     if (has_edit(gid, "position")) {
       if (!isTRUE(position_support$supported)) {
-        add_warning_once(position_support$reason %||% "Text position patch ignored for unsupported ggplot coordinate system.")
+        warning_message <- position_support$reason %||% "Text position patch ignored for unsupported ggplot coordinate system."
+        add_warning_once(warning_message)
+        add_patch_warning_once("unsupported_coordinate", gid, "position", warning_message)
       } else {
         pos <- extract_position_value(latest_value(gid, "position", NULL))
         if (!is.null(pos)) {
@@ -816,7 +835,9 @@ apply_text_layer_edits <- function(plot_obj) {
             panel_index <- as.integer(row$PANEL %||% 1)
             converted <- coord_from_axes_fraction(position_context, panel_index, next_x, next_y, row$x, row$y)
             if (is.null(converted)) {
-              add_warning_once("Text position patch ignored because the ggplot affine coordinate transform could not be inverted.")
+              warning_message <- "Text position patch ignored because the ggplot affine coordinate transform could not be inverted."
+              add_warning_once(warning_message)
+              add_patch_warning_once("no_setter", gid, "position", warning_message)
               next_x <- NA_real_
               next_y <- NA_real_
             } else {
@@ -2740,6 +2761,168 @@ attach_r_manifest_shadow_metadata <- function(obj) {
   obj
 }
 
+unwrap_manifest_value <- function(value) {
+  if (is.data.frame(value) && nrow(value) == 1 && ncol(value) == 1) {
+    return(unwrap_manifest_value(value[[1]][[1]]))
+  }
+  if (is.list(value) && length(value) == 1 && is.null(names(value))) {
+    return(unwrap_manifest_value(value[[1]]))
+  }
+  value
+}
+
+present_manifest_value <- function(value) {
+  value <- unwrap_manifest_value(value)
+  if (is.null(value) || length(value) == 0) return(FALSE)
+  if (all(is.na(value))) return(FALSE)
+  TRUE
+}
+
+identity_manifest_value <- function(identity, field) {
+  identity <- unwrap_manifest_value(identity)
+  if (is.null(identity)) return(NULL)
+  if (is.data.frame(identity)) {
+    if (!field %in% names(identity) || nrow(identity) == 0) return(NULL)
+    return(unwrap_manifest_value(identity[[field]][[1]]))
+  }
+  if (!is.list(identity) || is.null(identity[[field]])) return(NULL)
+  unwrap_manifest_value(identity[[field]])
+}
+
+manifest_values_equal <- function(prop, actual, expected) {
+  actual <- unwrap_manifest_value(actual)
+  expected <- unwrap_manifest_value(expected)
+  if (grepl("color|colour|facecolor|edgecolor", prop, ignore.case = TRUE)) {
+    return(colors_equal(actual, expected))
+  }
+  actual_numeric <- suppressWarnings(as.numeric(actual))
+  expected_numeric <- suppressWarnings(as.numeric(expected))
+  if (
+    length(actual_numeric) == 1 && length(expected_numeric) == 1 &&
+    !is.na(actual_numeric) && !is.na(expected_numeric)
+  ) {
+    return(abs(actual_numeric - expected_numeric) <= 1e-9)
+  }
+  identical(
+    jsonlite::toJSON(actual, auto_unbox = TRUE, null = "null", digits = NA),
+    jsonlite::toJSON(expected, auto_unbox = TRUE, null = "null", digits = NA)
+  )
+}
+
+confirm_r_edit_entries <- function(manifest, entries) {
+  objects <- manifest$objects %||% list()
+  object_by_id <- setNames(objects, vapply(objects, function(obj) as.character(obj$id %||% ""), character(1)))
+  applied <- list()
+  rejected <- list()
+  warnings <- renderer_patch_warnings
+
+  forced_warning_for <- function(gid, prop) {
+    any(vapply(renderer_patch_warnings, function(item) {
+      identical(as.character(item$gid %||% ""), gid) &&
+        identical(as.character(item$prop %||% ""), prop)
+    }, logical(1)))
+  }
+
+  reject_entry <- function(entry, patch_index, type, gid, prop, message, extra = list()) {
+    warning <- c(list(
+      type = type,
+      gid = gid,
+      prop = prop,
+      patchIndex = patch_index,
+      message = message
+    ), extra)
+    warnings[[length(warnings) + 1]] <<- warning
+    rejected[[length(rejected) + 1]] <<- entry
+  }
+
+  for (index in seq_along(entries)) {
+    entry <- entries[[index]]
+    gid <- as.character(unwrap_manifest_value(entry$gid) %||% "")
+    prop <- as.character(unwrap_manifest_value(entry$prop) %||% "")
+    if (!nzchar(gid)) {
+      reject_entry(entry, index - 1, "missing_gid", gid, prop, "R patch is missing a gid.")
+      next
+    }
+    if (!nzchar(prop)) {
+      reject_entry(entry, index - 1, "unsupported_prop", gid, prop, "R patch is missing a property name.")
+      next
+    }
+    if (forced_warning_for(gid, prop)) {
+      rejected[[length(rejected) + 1]] <- entry
+      next
+    }
+
+    if (identical(gid, "global")) {
+      field <- manifest$globals[[prop]]
+      if (is.null(field)) {
+        reject_entry(entry, index - 1, "unsupported_prop", gid, prop, paste0("R global property is not declared: ", prop, "."))
+        next
+      }
+      if (!manifest_values_equal(prop, field$value, entry$value)) {
+        reject_entry(entry, index - 1, "no_setter", gid, prop, paste0("R renderer did not confirm ", gid, ".", prop, "."))
+        next
+      }
+      applied[[length(applied) + 1]] <- entry
+      next
+    }
+
+    object <- object_by_id[[gid]]
+    if (is.null(object)) {
+      reject_entry(entry, index - 1, "missing_gid", gid, prop, paste0("R manifest is missing gid ", gid, "."))
+      next
+    }
+    editable <- as.character(unlist(object$editable %||% list(), use.names = FALSE))
+    capabilities <- object$propertyCapabilities %||% list()
+    supported <- prop %in% editable && any(vapply(capabilities, function(capability) {
+      identical(as.character(capability$prop %||% ""), prop) &&
+        !identical(as.character(capability$replay %||% ""), "unsupported")
+    }, logical(1)))
+    if (!supported) {
+      reject_entry(entry, index - 1, "unsupported_prop", gid, prop, paste0(gid, ".", prop, " is not replayable in the R manifest."))
+      next
+    }
+
+    entry_stable_key <- unwrap_manifest_value(entry$stableKey)
+    if (present_manifest_value(entry_stable_key) && !identical(as.character(entry_stable_key), as.character(object$stableKey %||% ""))) {
+      reject_entry(entry, index - 1, "identity_mismatch", gid, prop, paste0(gid, " stableKey does not match the R manifest object."), list(field = "stableKey"))
+      next
+    }
+    entry_fingerprint_version <- suppressWarnings(as.integer(unwrap_manifest_value(entry$fingerprintVersion)))
+    if (
+      length(entry_fingerprint_version) == 1 && !is.na(entry_fingerprint_version) && entry_fingerprint_version == 2 &&
+      identical(as.integer(object$fingerprintVersion %||% 0), 2) &&
+      present_manifest_value(entry$fingerprint) &&
+      !identical(as.character(unwrap_manifest_value(entry$fingerprint)), as.character(object$fingerprint %||% ""))
+    ) {
+      reject_entry(entry, index - 1, "identity_mismatch", gid, prop, paste0(gid, " fingerprint does not match the R manifest object."), list(field = "fingerprint"))
+      next
+    }
+    for (identity_field in c("semanticKey", "seriesKey")) {
+      expected_identity <- identity_manifest_value(object$identity, identity_field)
+      actual_identity <- identity_manifest_value(entry$identity, identity_field)
+      if (present_manifest_value(actual_identity) && !identical(as.character(actual_identity), as.character(expected_identity %||% ""))) {
+        reject_entry(entry, index - 1, "identity_mismatch", gid, prop, paste0(gid, " identity.", identity_field, " does not match the R manifest object."), list(field = paste0("identity.", identity_field)))
+        break
+      }
+    }
+    if (length(rejected) > 0 && identical(rejected[[length(rejected)]], entry)) next
+
+    current_value <- object$currentProps[[prop]]
+    if (!manifest_values_equal(prop, current_value, entry$value)) {
+      reject_entry(entry, index - 1, "no_setter", gid, prop, paste0("R renderer did not confirm ", gid, ".", prop, "."))
+      next
+    }
+    applied[[length(applied) + 1]] <- entry
+  }
+
+  list(
+    applied = applied,
+    skipped = rejected,
+    warnings = warnings,
+    conflict = length(rejected) > 0
+  )
+}
+
 build_ggplot_manifest <- function(plot_obj, svg = "") {
   layout_bounds <- svg_plot_layout_bounds(svg)
   title_style <- style_for_gid("title.0", default_title)
@@ -3223,13 +3406,17 @@ result <- tryCatch({
   }
   timing_breakdown$svgPostprocessMs <- max(0, round(monotonic_ms() - svg_postprocess_started_ms))
   timing_breakdown$totalMs <- max(0, round(monotonic_ms() - render_started_ms))
+  patch_confirmation <- confirm_r_edit_entries(manifest, edit_entries)
 
   list(
     status = "success",
     svg = svg,
     manifest = manifest,
     revision = 1,
-    warnings = as.list(warnings_collected),
+    applied = patch_confirmation$applied,
+    skipped = patch_confirmation$skipped,
+    conflict = patch_confirmation$conflict,
+    warnings = c(as.list(warnings_collected), patch_confirmation$warnings),
     timingMs = timing_breakdown$totalMs,
     timingBreakdown = timing_breakdown
   )

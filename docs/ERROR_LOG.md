@@ -3566,3 +3566,105 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - mode、Figure identity 和 revision 以服务端持久化状态为权威；无法证明时必须 backend 验证或拒绝。
 - 语义父容器的视觉断言必须检查其 renderer 声明的真实子图元，不能假设父对象一定有 SVG 节点。
 - 浏览器颜色验证必须比较规范化 CSS 色值，不能直接比较十六进制与 `rgb(...)` 字符串。
+
+---
+
+## 2026-07-21 19:02:40 +08:00 旧项目 `line.visible` 阻断、组合图蓝色漏绑定与散点比例假回读
+
+**状态与级别**
+
+- 状态：当前本地候选已修复并通过定向单元、隔离 API 和真实浏览器门禁；尚未提交、推送或部署。
+- 级别：P0 旧项目可用性 + P1 组合图作用域与状态回读。
+
+**根因**
+
+- Python renderer 已成功重放 42 条历史 `line.visible=true`，但新 manifest 不再声明 line `visible` capability；Node 二次预检因此把已保存旧记录误判为 `unsupported_prop`，进而阻断整个项目。
+- 旧编辑的导出快照签名仅覆盖 contour child；若只修打开流程，`line.visible` 仍会在快照恢复时失败。
+- 子图 scoped 配色一旦命中任意可 object-patch 的精确目标（通常是图例）就提前返回，同一 binding 中 `code_only` 的红蓝 mixed collection 不会进入按实际颜色子集 fallback，表现为蓝色只能选图例。
+- 第一次 scoped 改色后，脚本颜色常量仍是旧值，但 renderer manifest 已是新值；第二次若继续按静态常量匹配，会再次丢掉 mixed collection。
+- mixed collection 的 `matchColor` 此前在转成 Draft 时被丢弃；服务端 editLog 压缩又只按 `gid+prop` 去重，不同颜色子集及同一颜色的连续变换会互相覆盖。
+- `size_scale` 已正确放大 marker area 并保留逐点比例，但 `_read_collection_props` 始终返回 `1.0`，导致重渲染后控件看似没有应用。
+- Matplotlib SVG 中普通子图背景是 `axes.patch.N`；点击映射只处理特殊 axes，未映射普通 `subplot.N`。日志另外只藏在底部面板，用户检查错误需要改变布局。
+
+**修复**
+
+- 旧 `line.visible` 仅在 patch 与数据库 durable editLog 的 `gid/prop/value/identity` 完全一致，且当前对象仍是 line 时受控放行；未保存新值继续冲突。
+- 当前导出快照升级为 schema v5，并为已保存旧 `line.visible` 生成包含 `stableKey/fingerprint/identity` 的 replay signature；签名机制加入前的 v4 仍按严格 `line + visible + boolean` 边界恢复，v5 缺少精确签名则拒绝。v1-v4 继续可读，不要求真实旧五字段 editLog 凭空具备新身份字段。
+- 新增 scoped palette resolver：合并可重放的精确目标与子图内 rendered-color fallback；mixed collection 生成 `matchColor` backend patch；identity/series/duplicate 风险仍 fail closed。
+- 连续 scoped 配色从当前 manifest 的精确标量目标推导有效颜色；即使脚本常量仍是旧蓝色，第二次也会用第一次重放后的蓝色匹配 mixed collection。
+- collection-only 场景通过已持久化的 `matchColor -> value` 链解析当前颜色；Draft 以 `gid+prop+matchColor` 独立存储，服务端压缩保留不同颜色子集和连续颜色链。普通旧 Draft 仍使用原 `gid:prop` 键，不要求迁移。
+- `axes.patch.N` 反向映射到普通 `subplot.N`；`size_scale` 应用后回读 renderer 保存的实际绝对比例，`size` 绝对设置会重置该比例。
+- Word 真实预览旁新增日志弹窗，保留原底部日志页签和诊断导出能力。
+
+**验证与防复发**
+
+- `npm run test:special-axes-api`：旧 `line.visible=false` 打开、继续编辑、导出、后续编辑、签名 v5 恢复、无签名 v4 恢复和刷新通过；无签名 v5、未保存的相反值均冲突且完整 persistence state 不变。
+- 快照、palette、Draft、editLog compression、保存并发和 identity 定向 Vitest：19 文件、189/189；真实浏览器 `test:subplot-scope-follow` 以“静态常量旧蓝色、manifest 已是新蓝色”连续提交两次 scoped 改色，直接核对两次 API 请求的 collection `matchColor` 依次为当前颜色；普通 axes 背景选中对应子图，日志弹窗支持 Escape 关闭并返回焦点。
+- `npm run test:legacy-contour-project-compatibility`：当前 v5 继续拒绝未签名 contour child，真实旧 contour editLog 的保存、导出和恢复没有回退。
+- Python `size_scale` 定向单测通过；`test:semantic-smoke` 14/14，8 个 scatter collection 在 API 持久 manifest 和页面控件中均回读 `1.5`。
+- 新增 Gate L：后续协议升级必须用 durable 旧记录走完打开、继续编辑、历史、导出、恢复和拒绝零写入；不得只跑新项目 fixture。
+
+**修复后独立审查补充（2026-07-21 21:05:56 +08:00）**
+
+- 独立复审发现条件配色日志具有顺序依赖：若按 `gid + prop + matchColor` 只保留末值，`蓝 -> 青 -> 绿` 后追加一个对旧蓝色的无效修改时，压缩重放可能错误变成紫色。
+- 当前仅压缩不带 `matchColor` 的普通属性；所有条件颜色子集编辑保持原始顺序完整重放。Draft 等价比较同时按 storage key 规则对 `matchColor` 执行 trim 和小写归一化，避免同一颜色因大小写差异残留为无法清除的 Draft。
+- 防复发回归加入“后续编辑依赖前一颜色输出”和“旧源颜色的末尾 stale edit”序列；定向 Vitest 46/46、`test:subplot-scope-follow`、`test:special-axes-api` 均通过。本地 3000 已重启到该实现，HTTP 200 且 stderr 为空。
+- 后续不得把 conditional patch 当作普通 last-write-wins 属性压缩；任何压缩优化必须先证明与原始顺序重放语义等价。
+
+---
+
+## 2026-07-21 21:33:30 +08:00 Browser MCP 默认信任全部 localhost 端口
+
+**状态与级别**
+
+- 状态：独立安全审查发现后已修复，定向安全与真实 UI smoke 通过；尚未推送或部署。
+- 级别：P0 安全边界。浏览器 MCP 具备读取可见页面文字和截图的能力，不能把“本机地址”直接等同于“SciFigure 服务”。
+
+**根因与修复**
+
+- URL 校验曾默认允许 `localhost`、`127.0.0.1` 和 `::1` 的任意端口。提示注入或错误工具调用可据此打开其他本地管理页、数据库 UI 或调试端口并读取可见内容。
+- 当前删除 hostname 级默认信任；包括本机服务在内，所有目标必须精确匹配 `SCIFIGURE_URL` 或 `SCIFIGURE_MCP_ALLOWED_ORIGINS` 中声明的 origin。重定向、HTTP 子资源、blob 和 WebSocket 继续复用同一精确边界。
+- `SciFigureBrowserSession` 支持测试显式注入 origin 集合，隔离测试不再依赖宽泛 localhost 例外。
+
+**验证与防复发**
+
+- `test:scifigure-browser-mcp-security` 4/4：明确允许的本机端口通过，相邻未声明端口、远程 origin、跨 origin blob、重定向和子资源均拒绝。
+- `test:scifigure-browser-mcp-ui`：真实 UI 的选择、修改、应用、撤销、重做、截图和 SVG 导出继续通过；`npm run lint` 通过。
+- 后续浏览器工具不得基于 localhost、私网 IP 或域名后缀隐式扩权；每个可访问 origin、输入目录和输出目录都必须由调用方显式声明并有拒绝回归。
+
+---
+
+## 2026-07-21 22:46:34 +08:00 R patch 信任客户端 mode、失败后仍持久化与项目导出误用 Python renderer
+
+**状态与级别**
+
+- 状态：R-WP1 本地修复完成，定向 API、renderer、真实浏览器和安全门禁通过；等待独立审查和本地提交，未推送、未部署。
+- 级别：P0 数据一致性与旧项目可用性。失败 patch 可能增加 revision 或进入 editLog；项目级 R 导出会返回空的伪成功，无法形成可恢复快照。
+
+**根因**
+
+- `/api/figure/patch` 的 R 分支跳过服务端 mode 归一化和可信 manifest 预检，并在构造新 editLog 时丢弃 `stableKey/fingerprint/identity`。
+- R cache hit 直接写 session/revision，cache miss 只要 renderer 返回 success 就持久化；缺少 returned manifest 和逐 patch acknowledgement 复核。
+- 项目 R patch 只同步 revision/editLog，没有原子更新 preview SVG/manifest；standalone R full render 又没有把请求 editLog 传给 renderer。
+- 项目级导出无条件调用 Python introspector。R 渲染失败后循环跳过目标，接口仍返回 `status=success, figures=[]`，因此没有资产或编辑快照。
+
+**修复**
+
+- 所有语言先由可信 `propertyCapabilities` 计算实际 mode；无 manifest 的 standalone 强制 backend 验证。R 新 editLog 保留完整身份字段。
+- R renderer 返回 `applied/skipped/warnings/conflict`；missing、unsupported、identity mismatch、setter 未确认和 renderer warning 均视为未应用事实。
+- R cache 只读取当前进程已验证的 key，并在命中后再次核对 manifest。成功项目 patch 在同一事务中更新 session、Figure revision、SVG、manifest 与 fingerprint；失败批次不写任何 durable state。
+- 项目导出按 session language 路由。R 使用 R renderer，并在创建资产/快照前复核完整 editLog；R renderer error 返回错误，不再产生空伪成功。
+
+**验证与防复发**
+
+- `npm run test:r-patch-authority`：合法 standalone/project fake-local 被改为 backend；合法 mixed batch 一次 revision；missing、unsupported、identity mismatch、setter 未确认和 valid+invalid mixed batch 原子拒绝；既有 session/Figure/history/preview/cache/export asset/snapshot 均不变。
+- R 项目 SVG/PNG 导出在测试中真实返回 `assetId` 且 `hasEditingSnapshot=true`；PNG 同时返回二进制，禁止悄悄回退为 SVG。
+- R renderer 32 个正向测试通过；一个旧 group ordinal 漂移仍为 R-WP2 expected failure。`test:r-semantic-smoke` 6/6、R 安全预检、lint 和 diff-check 通过。
+- 后续任何 renderer 新入口必须先形成结构化应用确认，再写 revision、history、cache 或导出快照；“renderer 进程成功退出”不等于 patch 已应用。
+- 旧 manifest 兼容只能使用已保存的 stable/series/relation 证据；身份变化时 fail-closed，不能为了兼容恢复 ordinal 猜测。
+
+**独立审查与浏览器复测补充（2026-07-21 23:09:30 +08:00）**
+
+- 首轮独立审查发现项目 R PNG/PDF/TIFF 会静默保存 SVG，以及服务端只看 `conflict/warnings`、没有逐项核对 renderer `applied/skipped`。当前非 SVG 必须先通过 `svg_convert.py`，失败在任何资产/快照写入前返回错误；patch、完整 render、项目 render、standalone export 和项目 export 均要求每个发送的 R patch 出现在 `applied`，任何 skipped 或缺失确认都拒绝。
+- 修复后真实浏览器暴露 mixed editLog 类型问题：R `simplifyVector=TRUE` 会因同一 value 列同时含数值和颜色字符串，把历史数值 `3.3` 转为字符串，服务端遂把已应用旧 patch 误判为 acknowledgement 缺失。当前 data payload 保持原解析，只有 editLog 使用 `simplifyVector=FALSE`，数值、布尔、列表和嵌套 identity 类型不再被整列强制转换。
+- 新增语义 group 配色持久化和 PNG 二进制导出回归；`test:r-patch-authority` 10 个场景、`test:r-semantic-smoke` 6/6 通过。修复后独立复审 APPROVE，0 HIGH/MEDIUM。

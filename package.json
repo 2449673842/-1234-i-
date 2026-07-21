@@ -17,6 +17,7 @@
     "test:semantic-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/semantic_centers_smoke.mjs",
     "test:python-semantic-workflow": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/python_semantic_workflow_regression_smoke.mjs",
     "test:patch-rejection-persistence": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/patch_rejection_persistence_regression.mjs",
+    "test:r-patch-authority": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/r_patch_authority_persistence_smoke.mjs",
     "test:project-save-preflight": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/project_save_preflight_regression.mjs",
     "test:property-inspector-v2-staging": "node tests/playwright/property_inspector_v2_smoke.mjs",
     "test:multisubplot-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/multisubplot_semantics_smoke.mjs",
