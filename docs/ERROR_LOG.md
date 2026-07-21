@@ -3668,3 +3668,25 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - 首轮独立审查发现项目 R PNG/PDF/TIFF 会静默保存 SVG，以及服务端只看 `conflict/warnings`、没有逐项核对 renderer `applied/skipped`。当前非 SVG 必须先通过 `svg_convert.py`，失败在任何资产/快照写入前返回错误；patch、完整 render、项目 render、standalone export 和项目 export 均要求每个发送的 R patch 出现在 `applied`，任何 skipped 或缺失确认都拒绝。
 - 修复后真实浏览器暴露 mixed editLog 类型问题：R `simplifyVector=TRUE` 会因同一 value 列同时含数值和颜色字符串，把历史数值 `3.3` 转为字符串，服务端遂把已应用旧 patch 误判为 acknowledgement 缺失。当前 data payload 保持原解析，只有 editLog 使用 `simplifyVector=FALSE`，数值、布尔、列表和嵌套 identity 类型不再被整列强制转换。
 - 新增语义 group 配色持久化和 PNG 二进制导出回归；`test:r-patch-authority` 10 个场景、`test:r-semantic-smoke` 6/6 通过。修复后独立复审 APPROVE，0 HIGH/MEDIUM。
+
+---
+
+## 2026-07-21 23:30:02 +08:00 新建项目顶部宣称支持脚本拖放但没有绑定事件
+
+**状态与级别**
+
+- 状态：已修复；本机 3000 当前开发服务已实际返回新模块，定向真实浏览器用例和类型检查通过；尚未推送或部署。
+- 级别：P1 核心导入流程。用户按第一步文案把 `.py/.R` 拖到顶部脚本卡片时没有任何反馈，只在页面下方代码编辑框拖放才有效。
+
+**根因与修复**
+
+- `ProjectCreatePage` 的“1. 先读取绘图脚本”卡片写有“支持上传、拖入”，但该节点只有文件选择按钮；`dragover/drop` 仅绑定在第三步代码编辑框。
+- 顶部卡片现在复用同一脚本读取函数，接受大小写不敏感的 `.py/.R`，提供明确拖入态，并阻止嵌套拖放事件串到数据区。
+- 下方代码编辑框同步复用统一的拖入文件筛选；不支持的文件继续不覆盖现有脚本。数据上传、项目创建和已有项目状态均未改变。
+
+**验证与防复发**
+
+- `npm run test:script-drag-upload`：真实浏览器直接把 `.PY` 拖入第一步顶部卡片，脚本内容和语言正确更新；下方编辑器与完整工作区拖入继续通过，非脚本文件不覆盖代码。
+- `npm run lint -- --no-cache` 与定向 `git diff --check` 通过。
+- 本机 3000 监听进程为当前仓库 `tsx server.ts`；直接读取其 Vite 模块确认包含 `project-create-script-drop-zone` 和统一 `readDroppedScript` 实现。
+- 后续页面文案宣称可拖放时，浏览器验收必须以文案对应的可见区域作为 drop target，不能只验证同页另一个隐藏或远端入口。

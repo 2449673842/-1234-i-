@@ -373,6 +373,11 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
     reader.readAsText(file);
   };
 
+  const readDroppedScript = (files: FileList) => {
+    const file = Array.from(files).find(candidate => /\.(py|r)$/i.test(candidate.name));
+    if (file) readScriptFile(file);
+  };
+
   const handleCopyPrompt = async () => {
     const copied = await copyTextToClipboard(aiPrompt);
     setCopyLabel(copied ? '已复制 ✓' : '复制失败，请手动复制');
@@ -616,6 +621,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
 
           <section
             aria-label="脚本上传区域"
+            data-testid="project-create-script-drop-zone"
             className={`rounded-xl border p-6 shadow-sm transition-colors ${
               scriptUploadDragOver ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200' : 'border-emerald-200 bg-white'
             }`}
@@ -641,8 +647,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
               event.stopPropagation();
               scriptUploadDragDepthRef.current = 0;
               setScriptUploadDragOver(false);
-              const file = event.dataTransfer.files?.[0];
-              if (file) readScriptFile(file);
+              readDroppedScript(event.dataTransfer.files);
             }}
           >
             <div className="flex flex-wrap items-start justify-between gap-4">
@@ -925,15 +930,19 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                   }`}
                   onDragOver={e => {
                     e.preventDefault();
+                    e.stopPropagation();
                     e.dataTransfer.dropEffect = 'copy';
                     setScriptDragOver(true);
                   }}
-                  onDragLeave={() => setScriptDragOver(false)}
+                  onDragLeave={e => {
+                    if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
+                    setScriptDragOver(false);
+                  }}
                   onDrop={e => {
                     e.preventDefault();
+                    e.stopPropagation();
                     setScriptDragOver(false);
-                    const file = e.dataTransfer.files?.[0];
-                    if (file) readScriptFile(file);
+                    readDroppedScript(e.dataTransfer.files);
                   }}
                 >
                   {scriptDragOver && (
