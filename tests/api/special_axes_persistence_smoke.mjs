@@ -228,6 +228,21 @@ function writeProjectFigureEditLog(projectId, editLog) {
   }
 }
 
+function writeProjectFigureOnlyEditLog(projectId, editLog) {
+  const database = new Database(process.env.SCIFIGURE_DB_PATH);
+  try {
+    database.pragma('busy_timeout = 5000');
+    database.transaction(() => {
+      database.prepare('UPDATE sessions SET edit_log = ? WHERE id = ?')
+        .run('[]', `${projectId}_fig_1`);
+      database.prepare('UPDATE project_figures SET edit_log = ? WHERE project_id = ? AND figure_index = 0')
+        .run(JSON.stringify(editLog), projectId);
+    })();
+  } finally {
+    database.close();
+  }
+}
+
 async function verifyStandaloneMissingRelationRejection(token) {
   const rendered = await jsonRequest('/api/figure/render', token, {
     method: 'POST',
@@ -527,6 +542,141 @@ async function verifyProjectPatchRejectsPreexistingUnsafeEditLog(token) {
   }
 }
 
+async function verifyProjectRenderUsesDurableLegacyEditLog(token) {
+  const created = await createProject(token);
+  const projectId = created.projectId;
+  try {
+    const { line } = findPolarTargets(created.figure.manifest);
+    const title = created.figure.manifest?.objects?.find(item => item.id === 'title.0');
+    const axisY = created.figure.manifest?.objects?.find(item => item.id === 'axis.y.0');
+    assert(title && axisY, 'durable legacy fixture is missing title.0 or axis.y.0');
+    const legacyPatch = {
+      gid: line.id,
+      prop: 'color',
+      value: '#00aa55',
+      mode: 'backend_patch',
+      stableKey: line.stableKey,
+      fingerprint: line.fingerprint,
+      fingerprintVersion: line.fingerprintVersion,
+      identity: { seriesKey: line.identity?.seriesKey },
+    };
+    const disappearingTitlePatch = {
+      gid: title.id,
+      prop: 'text',
+      value: '',
+      mode: 'backend_patch',
+    };
+    const legacyAxisFontPatch = {
+      gid: axisY.id,
+      prop: 'fontweight',
+      value: 'bold',
+      mode: 'backend_patch',
+      ...identityFields(axisY),
+    };
+    const legacyPatches = [legacyPatch, disappearingTitlePatch, legacyAxisFontPatch];
+    writeProjectFigureOnlyEditLog(projectId, legacyPatches);
+
+    const replayed = await jsonRequest(`/api/projects/${projectId}/figures/render`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        script,
+        language: 'python',
+        editLogs: { fig_1: legacyPatches },
+        requestId: `special-axes-durable-legacy-${Date.now()}`,
+      }),
+    });
+    assert(
+      replayed.response.ok && replayed.data?.status === 'success',
+      `project render rejected the durable legacy editLog fallback: ${JSON.stringify(replayed.data)}`,
+    );
+    const figure = replayed.data.figures?.find(item => item.figureId === 'fig_1');
+    assertManifestPatchValue(figure?.manifest, legacyPatch, 'durable legacy project render');
+    assert(
+      !figure?.manifest?.objects?.some(item => item.id === title.id && item.currentProps?.text),
+      'empty persisted title should remain removed after replay',
+    );
+    const renderedAxisY = figure?.manifest?.objects?.find(item => item.id === axisY.id);
+    assert(
+      String(renderedAxisY?.currentProps?.tick_fontweight).toLowerCase() === 'bold',
+      `legacy axis fontweight did not map to tick_fontweight: ${JSON.stringify(renderedAxisY?.currentProps)}`,
+    );
+
+    const forgedPatch = { ...legacyPatch, stableKey: `${line.stableKey}:forged` };
+    const beforeForgedLine = readPersistenceState(projectId);
+    const rejected = await jsonRequest(`/api/projects/${projectId}/figures/render`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        script,
+        language: 'python',
+        editLogs: { fig_1: [disappearingTitlePatch, legacyAxisFontPatch, forgedPatch] },
+        requestId: `special-axes-durable-forged-${Date.now()}`,
+      }),
+    });
+    assert(
+      rejected.response.ok && rejected.data?.status === 'conflict',
+      `project render accepted a forged durable legacy identity: ${JSON.stringify(rejected.data)}`,
+    );
+    assertPersistenceStateUnchanged(
+      beforeForgedLine,
+      readPersistenceState(projectId),
+      'forged durable legacy line rejection',
+    );
+
+    const forgedDisappearingPatch = {
+      ...disappearingTitlePatch,
+      stableKey: `${title.stableKey}:forged`,
+      identity: { semanticKey: 'forged-disappearing-title' },
+    };
+    const beforeForgedDisappearing = readPersistenceState(projectId);
+    const rejectedDisappearing = await jsonRequest(`/api/projects/${projectId}/figures/render`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        script,
+        language: 'python',
+        editLogs: { fig_1: [forgedDisappearingPatch, legacyAxisFontPatch, legacyPatch] },
+        requestId: `special-axes-durable-forged-disappearing-${Date.now()}`,
+      }),
+    });
+    assert(
+      rejectedDisappearing.response.ok && rejectedDisappearing.data?.status === 'conflict',
+      `project render accepted forged identity metadata for a disappearing legacy edit: ${JSON.stringify(rejectedDisappearing.data)}`,
+    );
+    assertPersistenceStateUnchanged(
+      beforeForgedDisappearing,
+      readPersistenceState(projectId),
+      'forged disappearing legacy edit rejection',
+    );
+
+    const weakenedAxisFontPatch = {
+      gid: legacyAxisFontPatch.gid,
+      prop: legacyAxisFontPatch.prop,
+      value: legacyAxisFontPatch.value,
+      mode: 'backend_patch',
+    };
+    const beforeWeakenedAxisFont = readPersistenceState(projectId);
+    const rejectedWeakenedAxisFont = await jsonRequest(`/api/projects/${projectId}/figures/render`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        script,
+        language: 'python',
+        editLogs: { fig_1: [disappearingTitlePatch, weakenedAxisFontPatch, legacyPatch] },
+        requestId: `special-axes-durable-weakened-axis-font-${Date.now()}`,
+      }),
+    });
+    assert(
+      rejectedWeakenedAxisFont.response.ok && rejectedWeakenedAxisFont.data?.status === 'conflict',
+      `project render accepted a weakened identity for a known legacy axis font edit: ${JSON.stringify(rejectedWeakenedAxisFont.data)}`,
+    );
+    assertPersistenceStateUnchanged(
+      beforeWeakenedAxisFont,
+      readPersistenceState(projectId),
+      'weakened legacy axis font rejection',
+    );
+  } finally {
+    await jsonRequest(`/api/projects/${projectId}`, token, { method: 'DELETE' }).catch(() => null);
+  }
+}
+
 function findPolarTargets(manifest) {
   const objects = manifest?.objects || [];
   const polar = objects.find(object => object.id === 'polar_subplot.0');
@@ -603,6 +753,7 @@ async function main() {
     await verifyStandaloneRenderRejectsInvalidEditLog(token);
     await verifyStandaloneRenderKeepsPersistedLegacyEditLog(token);
     await verifyProjectPatchRejectsPreexistingUnsafeEditLog(token);
+    await verifyProjectRenderUsesDurableLegacyEditLog(token);
     const created = await createProject(token);
     projectId = created.projectId;
     const baselineRevision = Number(created.figure.revision || 1);

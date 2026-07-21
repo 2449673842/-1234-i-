@@ -584,13 +584,29 @@ export default function App() {
   };
 
   const handleUpdateDraft = (figId: string, patch: DraftPatch) => {
+    const normalizedPatch = normalizeDraftForFigure(figId, patch);
+    const manifest = projectFigures[figId]?.manifest
+      || (!projectId && figId === 'fig_1' ? hookSession?.manifest : null);
+    const committedValue = normalizedPatch.type === 'code_patch'
+      ? undefined
+      : normalizedPatch.gid === 'global'
+        ? manifest?.globals?.[normalizedPatch.prop]?.value
+        : manifest?.objects?.find(object => object.id === normalizedPatch.gid)?.currentProps?.[normalizedPatch.prop];
+    const removesNoopDraft = normalizedPatch.type !== 'code_patch'
+      && sameDraftValue(normalizedPatch.value, committedValue);
     setProjectDrafts(prev => {
       const figBucket = { ...(prev[figId] || {}) };
-      const normalizedPatch = normalizeDraftForFigure(figId, patch);
       const key = draftPatchStorageKey(normalizedPatch);
-      const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = normalizedPatch;
-      figBucket[key] = freshPatch;
-      return { ...prev, [figId]: figBucket };
+      if (removesNoopDraft) {
+        delete figBucket[key];
+      } else {
+        const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = normalizedPatch;
+        figBucket[key] = freshPatch;
+      }
+      const next = { ...prev };
+      if (Object.keys(figBucket).length > 0) next[figId] = figBucket;
+      else delete next[figId];
+      return next;
     });
   };
 
@@ -1536,6 +1552,14 @@ export default function App() {
 
   const handleImmediatePatch = async (patches: PatchEntry[]) => {
     const figureId = projectId ? activeFigureId : 'fig_1';
+    const draftSnapshot = projectDraftsRef.current[figureId] || {};
+    const matchingDrafts = new Map(patches.flatMap((patch) => {
+      if (!('gid' in patch) || !('prop' in patch)) return [];
+      const key = patchEntryStorageKey(patch);
+      const draft = draftSnapshot[key];
+      if (!draft) return [];
+      return [[key, draft] as const];
+    }));
     const result = await executeSingleFigurePatch(figureId, patches);
     if (result.success) {
       setProjectDrafts(prev => {
@@ -1544,7 +1568,8 @@ export default function App() {
           if (!('gid' in patch)) return;
           const key = patchEntryStorageKey(patch);
           const currentDraft = bucket[key];
-          if (!currentDraft) return;
+          const submittedDraft = matchingDrafts.get(key);
+          if (!currentDraft || !submittedDraft || !isSameDraftPatch(currentDraft, submittedDraft)) return;
           const normalizedCurrent = normalizeDraftForFigure(figureId, currentDraft);
           if (
             normalizedCurrent.gid === patch.gid

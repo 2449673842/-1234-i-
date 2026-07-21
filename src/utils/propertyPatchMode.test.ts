@@ -164,10 +164,42 @@ describe('resolvePatchMode', () => {
     expect(resolvePatchMode(manifest(approximate, 'r_svg'), approximate, 'color')).toBe('backend_patch');
   });
 
-  it('fails closed for omitted capabilities, unsupported props, grids, and missing gids', () => {
+  it('always validates text content through the renderer even for stale exact-local manifests', () => {
+    const target = object('local_patch', 'text', 'text');
+    const legacyTarget = legacyObject({
+      id: 'title.legacy',
+      kind: 'text',
+      editable: ['text'],
+      currentProps: { text: 'Legacy title' },
+    });
+
+    expect(resolvePatchMode(manifest(target), target, 'text')).toBe('backend_patch');
+    expect(resolvePatchMode(manifest(legacyTarget), legacyTarget, 'text')).toBe('backend_patch');
+  });
+
+  it('does not use a legacy guess when a modern capability list omits the property', () => {
+    const target = legacyObject({ propertyCapabilities: [] });
+    expect(resolvePatchMode(manifest(target), target, 'color')).toBe('backend_patch');
+  });
+
+  it('uses a narrow compatibility fallback only for legacy Python objects', () => {
+    const target = legacyObject();
+    expect(resolvePatchMode(manifest(target), target, 'color')).toBe('local_patch');
+    expect(resolvePatchMode(manifest(target), target, 'linewidth')).toBe('backend_patch');
+    expect(resolvePatchMode(manifest(target, 'r_svg'), target, 'color')).toBe('backend_patch');
+  });
+
+  it('fails closed for unsupported props, grids, omitted capabilities, and missing gids', () => {
     const omitted = legacyObject({ propertyCapabilities: [] });
-    const unsupported = legacyObject({ currentProps: { color: '#123456', unsupportedProps: ['color'] } });
-    const grid = legacyObject({ kind: 'grid', editable: ['visible'], currentProps: { visible: false } });
+    const grid = legacyObject({
+      id: 'grid.0',
+      kind: 'grid',
+      editable: ['visible'],
+      currentProps: { visible: false },
+    });
+    const unsupported = legacyObject({
+      currentProps: { color: '#123456', unsupportedProps: ['color'] },
+    });
     expect(resolvePatchMode(manifest(omitted), omitted, 'color')).toBe('backend_patch');
     expect(resolvePatchMode(manifest(unsupported), unsupported, 'color')).toBe('backend_patch');
     expect(resolvePatchMode(manifest(grid), grid, 'visible')).toBe('backend_patch');

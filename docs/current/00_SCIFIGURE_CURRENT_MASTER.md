@@ -3,7 +3,7 @@
 > 状态：当前有效  
 > 更新时间：2026-07-30 07:03:06 +08:00
 > 证据截止时间：2026-07-30 07:03:06 +08:00
-> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 capability 权威、组件能力/Draft 收敛、旧 contour 精确兼容、导出快照 v4、local->backend 缺失 manifest 对账、无标签 collection 身份、统一能力报告、性能诊断、默认启用与逐域回滚，以及语义/拖拽/缓存/保存/历史/导出/恢复/安全/跨 Figure/R 隔离回归；候选尚未部署
+> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 capability 权威、组件能力/Draft 收敛、旧 contour 精确兼容、旧项目完整重渲染、文本自动 Draft/立即应用竞态、导出快照 v4、local->backend 缺失 manifest 对账、无标签 collection 身份、统一能力报告、性能诊断、默认启用与逐域回滚，以及语义/拖拽/缓存/保存/历史/导出/恢复/安全/跨 Figure/R 隔离回归；候选尚未部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
 
@@ -151,6 +151,8 @@ WP7 已完成当前固定运行时范围的特殊 axes 收敛。polar、3D、ins
 生产部署只运行一套内容固定的 renderer 镜像，并锁定 Python、R、绘图库、字体和系统依赖。WP7 的固定测试启动器明确校验 Python `3.8.19` 与 Matplotlib `3.7.2`；本轮没有迁移到 Python 3.11，也没有把历史临时 Matplotlib 3.8.4 容器改成目标版本。当前仓库 `Dockerfile.renderer` 与依赖声明仍需在部署工作包中另行核对，本轮未修改运行服务或线上版本。
 
 WP10 已达到当前计划范围的本地候选条件：普通编辑、字体、组件、配色和跨 Figure 统一从一个 feature-flag 合同读取；V2 默认开启，旧 compiler 和弱 score mapper 作为显式适配器保留。`VITE_*` 是构建时开关，逐域回退必须基于同一提交重建前端并部署新的不可变 release；重大错误优先原子切回上一整版，不能把修改服务器环境变量描述为即时生效。独立审查发现的 same-GID、非同 GID 和 App 跨 Figure Draft 编译旁路均已收敛到统一受控 resolver；稳定凭据冲突 fail-closed，多 Figure 诊断按 Figure 隔离，Shadow 证据按 release candidate 隔离。当前定向证据为 WP10 167/167、跨 Figure 18/18、WP9 11/11、组件 41/41、扩展拖拽 10/10、缓存、历史、导出事务、R 安全、用户隔离、renderer 沙箱、生产构建和数据审计均通过；最终独立 gpt-5.5 high 复审 APPROVE，0 HIGH/MEDIUM。当前候选未提交、推送或部署。
+
+2026-07-21 兼容收尾：项目完整重渲染现在统一从 Figure、session 和受控单 Figure 旧 spec fallback 解析 durable editLog。已持久化的空文本/隐藏对象和旧轴字体属性可按当前 renderer 能力继续重放，但客户端不能以相同 `gid/prop/value` 弱化或伪造已知 `stableKey/fingerprint/identity`；任何差异均冲突且保持项目、session、history、preview 零写入。Matplotlib 文本统一走 backend renderer，文本键入即时进入当前 Figure Draft，改回已提交值会删除 no-op Draft；旧请求返回时不会清除期间产生的新文本。定向证据包括 `special-axes-api`、Python 完整语义工作流 B0E/B0F/B0G、RightSidebar/property mode 242/242、R semantic 5/5、patch rejection、lint、build 和 diff-check。当前改动仍未推送或部署。
 
 ## 4. 用户数据红线
 

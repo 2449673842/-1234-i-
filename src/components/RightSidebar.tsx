@@ -1879,10 +1879,25 @@ export function RightSidebar({
     setDraftValues(prev => ({ ...prev, [key]: value }));
   };
 
+  const updateTextDraft = (gid: string, prop: string, value: string) => {
+    updateDraft(gid, prop, value);
+    handlePatch(gid, prop, value);
+  };
+
   const clearDraft = (gid: string, prop: string) => {
     const key = getDraftKey(gid, prop);
     setDraftValues(prev => {
       if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
+
+  const clearDraftIfUnchanged = (gid: string, prop: string, submittedValue: string) => {
+    const key = getDraftKey(gid, prop);
+    setDraftValues(prev => {
+      if (prev[key] !== submittedValue) return prev;
       const next = { ...prev };
       delete next[key];
       return next;
@@ -2189,9 +2204,9 @@ export function RightSidebar({
       ? String(stagedDraft.value ?? '')
       : undefined;
     const inputValue = draftValues[key] ?? stagedDraftValue ?? value;
+    const readCurrentInputValue = () => textInputRefs.current[key]?.value ?? inputValue;
     const dirty = isDirty(gid, label);
     const displayLabel = getPropLabel(label);
-    const latestTextValue = () => draftValues[key] ?? stagedDraftValue ?? value ?? '';
     const rememberSelection = (input: HTMLTextAreaElement) => {
       setTextSelections(prev => ({
         ...prev,
@@ -2201,22 +2216,16 @@ export function RightSidebar({
         },
       }));
     };
-    const stageTextValue = (nextValue: string) => {
-      updateDraft(gid, label, nextValue);
-      if (nextValue !== value || stagedDraftValue !== undefined) {
-        onValue(nextValue);
-      }
-    };
     const insertTextFragment = (fragmentFactory: (selected: string) => { fragment: string; cursorOffset: number }) => {
       const input = textInputRefs.current[key];
-      const baseValue = latestTextValue();
+      const baseValue = readCurrentInputValue();
       const saved = textSelections[key];
       const start = input?.selectionStart ?? saved?.start ?? baseValue.length;
       const end = input?.selectionEnd ?? saved?.end ?? start;
       const selected = baseValue.slice(start, end);
       const { fragment, cursorOffset } = fragmentFactory(selected);
       const nextValue = `${baseValue.slice(0, start)}${fragment}${baseValue.slice(end)}`;
-      stageTextValue(nextValue);
+      updateTextDraft(gid, label, nextValue);
       window.requestAnimationFrame(() => {
         const nextInput = textInputRefs.current[key];
         if (!nextInput) return;
@@ -2244,21 +2253,19 @@ export function RightSidebar({
       clearDraft(gid, label);
     };
     const applyTextImmediately = async (nextVal: string) => {
-      if (nextVal === value && stagedDraftValue === undefined) {
+      const committedValue = gid === 'global'
+        ? manifest.globals?.[label]?.value
+        : manifest.objects.find(item => item.id === gid)?.currentProps?.[label];
+      if (nextVal === String(committedValue ?? '') && stagedDraftValue === undefined) {
         clearDraft(gid, label);
         return;
       }
       const patch = buildSupportedSidebarPatchEntry(manifest, gid, label, nextVal);
       if (!patch) return;
-      if (onImmediatePatch) {
-        const result = await onImmediatePatch([patch]);
-        if (result && typeof result === 'object' && 'status' in result && result.status === 'error') {
-          return;
-        }
-      } else {
-        await onPatch([patch]);
+      const result: unknown = await Promise.resolve((onImmediatePatch || onPatch)([patch]));
+      if (result === undefined || (result as { status?: string }).status === 'success') {
+        clearDraftIfUnchanged(gid, label, nextVal);
       }
-      clearDraft(gid, label);
     };
     return (
       <div className="text-sm space-y-1.5" key={label}>
@@ -2277,7 +2284,7 @@ export function RightSidebar({
           className="min-h-[34px] resize-y whitespace-pre-wrap border border-slate-200 rounded p-1.5 outline-none focus:border-blue-500 w-full bg-white text-slate-700"
           rows={Math.max(1, Math.min(4, String(inputValue || '').split('\n').length))}
           value={inputValue}
-          onChange={(event) => updateDraft(gid, label, event.target.value)}
+          onChange={(event) => updateTextDraft(gid, label, event.target.value)}
           onSelect={(event) => rememberSelection(event.currentTarget)}
           onKeyUp={(event) => rememberSelection(event.currentTarget)}
           onClick={(event) => rememberSelection(event.currentTarget)}
@@ -2332,7 +2339,7 @@ export function RightSidebar({
           <button
             type="button"
             onMouseDown={(event) => event.preventDefault()}
-            onClick={() => commitTextDraft(draftValues[key] ?? value)}
+            onClick={() => commitTextDraft(readCurrentInputValue())}
             className="px-2 py-1 rounded border border-amber-200 bg-amber-50 text-[11px] font-semibold text-amber-700 hover:bg-amber-100"
             title="只暂存修改，稍后用底部按钮统一应用"
           >
@@ -2341,7 +2348,7 @@ export function RightSidebar({
           <button
             type="button"
             onMouseDown={(event) => event.preventDefault()}
-            onClick={() => void applyTextImmediately(latestTextValue())}
+            onClick={() => void applyTextImmediately(readCurrentInputValue())}
             className="px-2 py-1 rounded border border-blue-200 bg-blue-50 text-[11px] font-semibold text-blue-700 hover:bg-blue-100"
             title="立即写入当前 Figure 并重渲染"
           >
@@ -2349,7 +2356,7 @@ export function RightSidebar({
           </button>
         </div>
         <div className="text-[10px] text-slate-400 leading-relaxed">
-          Enter/失焦只会暂存到草稿；Shift+Enter 或“换行”按钮可插入换行。要马上看到文本变化，请点“立即应用”，或用底部“应用当前图”批量提交。
+          输入后会自动暂存到草稿；Shift+Enter 或“换行”按钮可插入换行。要马上看到文本变化，请点“立即应用”，或用底部“应用当前图”批量提交。
         </div>
       </div>
     );
@@ -6838,7 +6845,7 @@ export function RightSidebar({
               )}
               {renderGlobalsPanel()}
               <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-500">
-                数字、选项和颜色修改后会自动进入最新暂存；文本内容在失焦或按 Enter 后暂存。底部统一应用时才触发后端重渲染。
+                数字、选项、颜色和文本修改后都会自动进入最新暂存。底部统一应用时才触发后端重渲染。
               </div>
             </>
           )}

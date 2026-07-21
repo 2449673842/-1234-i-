@@ -1,7 +1,7 @@
 # Python 图元编辑与分组识别收敛执行计划
 
-> 状态：WP3-WP10 已完成当前计划范围的本地候选收敛。WP5 能力报告、WP9 确定性/布局/固定运行时性能门禁、WP10 默认启用和独立回滚边界均已实现并通过适用自动化；旧 compiler、palette legacy resolution 和 cross-Figure score mapper 仍作为显式兼容适配器保留一个稳定发布周期。候选尚未提交、推送或部署
-> 最后修改时间：2026-07-20 22:12:50 +08:00
+> 状态：WP3-WP10 已完成当前计划范围的本地候选收敛，固定候选 `4bb0db7` 之后的旧项目完整重渲染和文本 Draft/立即应用兼容收尾也已通过定向门禁；旧 compiler、palette legacy resolution 和 cross-Figure score mapper 仍作为显式兼容适配器保留一个稳定发布周期。当前候选尚未推送或部署
+> 最后修改时间：2026-07-21 15:21:24 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
 > 当前部署状态：未推送、未部署；本计划不改变线上版本
@@ -37,6 +37,14 @@
 - capability matrix 只证明当前 renderer fixture，不等同于任意真实科研脚本的完整用户流程。
 - line、scatter、bar、errorbar、boxplot、violin 等文档能力仍缺少完整浏览器矩阵证据。
 - 无标签 collection 交换顺序的首轮关键身份缺口已修复；用户可见能力报告和固定运行时性能/碰撞门禁已形成候选证据，但 line/scatter/bar/errorbar/boxplot/violin 的完整浏览器矩阵仍未覆盖任意脚本变体。
+
+### 2.4 旧项目兼容收尾（2026-07-21）
+
+- 完整重渲染统一从 Figure、session 和受控旧 spec fallback 解析 durable editLog，不再因为 session 缺失而把已保存编辑误判为身份漂移。
+- 已持久化的空文本/隐藏对象和旧轴字体属性只在值与完整已知身份同时一致时兼容；客户端弱化、伪造或替换身份均 fail-closed。
+- Matplotlib 文本不再使用不可靠的 SVG `textContent` 本地预览，统一进入 backend renderer。
+- 文本键入立即进入项目 Draft；改回原始 manifest 值删除 no-op Draft；立即应用只清除本次成功值，请求期间的新输入继续保留。
+- 定向证据：`test:special-axes-api`、`test:python-semantic-workflow` B0E/B0F/B0G、RightSidebar/property mode 242/242、`test:patch-rejection-persistence`、R semantic 5/5、lint、build 和 diff-check。
 
 ### 2.3 已发现的高风险问题
 

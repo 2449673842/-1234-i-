@@ -5262,6 +5262,13 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
     if gid.startswith("axis.x.") or gid.startswith("axis.y.") or gid.startswith("axis.z."):
         axis_name = "x" if gid.startswith("axis.x.") else "y" if gid.startswith("axis.y.") else "z"
         parent_ax = artist.axes
+        prop = {
+            "fontsize": "tick_labelsize",
+            "fontfamily": "tick_labelfamily",
+            "color": "tick_labelcolor",
+            "fontweight": "tick_fontweight",
+            "fontstyle": "tick_fontstyle",
+        }.get(prop, prop)
         if prop == "limits":
             low = float(value[0])
             high = float(value[1])

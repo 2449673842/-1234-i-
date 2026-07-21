@@ -3442,3 +3442,35 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `test:cache-smoke`、`test:project-history-persistence`、`test:export-snapshot-restore`、`test:export-file-transaction`、`test:security-baseline`、`test:user-isolation`、`test:renderer-sandbox`：全部通过。
 - `npm run build`、`git diff --check` 和 `npm run data:audit`：通过；构建仅保留既有 bundle/CJS `import.meta` 警告，数据审计为 25 用户、121 项目、263 文件、101 导出资产、0 issue、23 条既有测试账号 warning。
 - 防复发回归：以后发布前必须先固定候选提交，再执行不可变 release；重大故障整版切回上一 release，不从脏工作区或单独修改运行时变量回退。
+
+---
+
+## 2026-07-21 15:21:24 +08:00 旧项目完整重渲染误拒绝与文本立即应用竞态
+
+**状态与级别**
+
+- 状态：当前本地候选已修复并通过定向 API、真实浏览器和共享 R 回归；尚未推送或部署。
+- 级别：P0/P1。误拒绝会让原本可编辑的旧项目统一显示“编辑记录未通过当前 Figure 身份或 renderer 重放确认”；文本竞态会表现为“立即应用没有反应”、必须手动同步，或旧请求返回后覆盖用户刚输入的新内容。
+
+**根因**
+
+- 项目完整重渲染只从 session 读取旧 editLog。部分旧项目的 durable editLog 位于 `project_figures` 或受控单 Figure 旧 spec 中，session 缺失时 renderer 实际应用了编辑，但服务端预检使用了错误的“已知日志”来源。
+- 空文本和隐藏对象重放后可能从新 manifest 消失，旧轴字体又使用 `fontweight/fontsize/fontfamily/color/fontstyle` 名称；通用预检把这些已持久化旧条目分别报成 `missing_gid` 和 `unsupported_prop`。
+- Matplotlib SVG 经常把文本输出为 glyph path 组，本地替换 `textContent` 不是可信预览；立即应用又在 renderer 成功前清理 Draft。
+- RightSidebar 的对象代理会用 Draft 覆盖 `currentProps`。如果把代理值当成已提交值，按钮会误判“没有变化”；Figure revision 更新还会清空组件本地输入，覆盖请求期间的新文本。
+
+**修复**
+
+- 完整重渲染复用统一的 durable editLog 解析，并在 renderer 返回后使用同一已知日志执行兼容预检。
+- 空文本/隐藏对象和旧轴字体只允许数据库中已经存在且值、`stableKey`、fingerprint 版本/值和 identity 完全一致的条目继续重放。两轮独立审查发现的伪造 disappearing identity 和弱化 axis identity 均已 fail-closed。
+- 文本统一使用 backend renderer；输入时立即写当前 Figure Draft，比较是否已应用时只读取原始 manifest，不读取 Draft proxy。
+- 与原始 manifest 相同的 no-op Draft 在 App Draft 入口删除；成功请求只清除提交时快照仍一致的 Draft，请求期间的新输入保留。
+
+**验证与防复发**
+
+- `npm run test:special-axes-api`：通过；覆盖 durable fallback、伪造 line identity、伪造 disappearing identity、弱化 axis font identity，以及所有拒绝请求的完整 persistence state 不变。
+- `npm run test:python-semantic-workflow`：通过；B0E 证明立即应用真实 renderer 写回，B0G 证明改回已提交值删除 no-op Draft，B0F 证明旧请求完成时保留更新文本；批量应用、刷新、撤销/重做、导出和快照恢复继续通过。
+- `npm test -- src/components/RightSidebar.test.ts src/utils/propertyPatchMode.test.ts`：242/242；`npm run test:r-semantic-smoke`：5/5；`npm run test:patch-rejection-persistence`、`npm run lint`、`npm run build` 和 `git diff --check`：通过。
+- `npm run data:audit`：25 用户、121 项目、263 文件、103 导出资产、0 issue；测试未访问 3000 或真实项目。
+- 以后新增 legacy 兼容例外时，必须同时证明“只接受 durable known entry”“客户端不能弱化身份”“拒绝后完整 persistence state 不变”，不能只比较 `gid/prop/value`。
+- 文本和其他可异步重绘控件必须区分原始 manifest、项目 Draft 与 renderer 已提交状态，并覆盖请求期间继续编辑的竞态。

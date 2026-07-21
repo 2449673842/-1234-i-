@@ -3318,6 +3318,13 @@ ${inner}
       && stableStringifyForExport(left?.value) === stableStringifyForExport(right?.value);
   }
 
+  function sameProjectEditIdentity(left: any, right: any): boolean {
+    return left?.stableKey === right?.stableKey
+      && left?.fingerprint === right?.fingerprint
+      && left?.fingerprintVersion === right?.fingerprintVersion
+      && stableStringifyForExport(left?.identity) === stableStringifyForExport(right?.identity);
+  }
+
   function isCompatibleKnownLegacyContourChildEdit(
     manifestValue: unknown,
     patch: any,
@@ -3351,6 +3358,62 @@ ${inner}
     }
     const patchSeriesKey = patch?.identity?.seriesKey;
     return patchSeriesKey === undefined || patchSeriesKey === object?.identity?.seriesKey;
+  }
+
+  const LEGACY_AXIS_FONT_PROP_MAP: Record<string, string> = {
+    fontsize: 'tick_labelsize',
+    fontfamily: 'tick_labelfamily',
+    color: 'tick_labelcolor',
+    fontweight: 'tick_fontweight',
+    fontstyle: 'tick_fontstyle',
+  };
+
+  function isCompatibleKnownDisappearingEdit(patch: any, knownEditLog: any[]): boolean {
+    const isDisappearing = patch?.prop === 'text'
+      ? String(patch?.value ?? '') === ''
+      : patch?.prop === 'visible' && patch?.value === false;
+    if (!isDisappearing) return false;
+    return knownEditLog.some(existing => (
+      sameProjectEditValue(existing, patch)
+        && sameProjectEditIdentity(existing, patch)
+    ));
+  }
+
+  function isCompatibleKnownLegacyAxisFontEdit(
+    manifestValue: unknown,
+    patch: any,
+    knownEditLog: any[],
+  ): boolean {
+    if (!knownEditLog.some(existing => (
+      sameProjectEditValue(existing, patch)
+        && sameProjectEditIdentity(existing, patch)
+    ))) return false;
+    if (!/^axis\.[xyz]\.\d+$/.test(String(patch?.gid || ''))) return false;
+    const canonicalProp = LEGACY_AXIS_FONT_PROP_MAP[String(patch?.prop || '')];
+    if (!canonicalProp) return false;
+    const manifest = parseManifestValue(manifestValue);
+    const object = Array.isArray(manifest?.objects)
+      ? manifest.objects.find((candidate: any) => candidate?.id === patch?.gid)
+      : null;
+    if (!object) return false;
+    const capability = Array.isArray(object.propertyCapabilities)
+      ? object.propertyCapabilities.find((item: any) => item?.prop === canonicalProp)
+      : null;
+    if (
+      !capability
+      || capability.replay === 'unsupported'
+      || !Array.isArray(capability.scopes)
+      || !capability.scopes.includes('object')
+    ) return false;
+    if (patch?.stableKey !== undefined && patch.stableKey !== object.stableKey) return false;
+    if (
+      patch?.fingerprintVersion === 2
+      && object?.fingerprintVersion === 2
+      && patch?.fingerprint !== undefined
+      && patch.fingerprint !== object.fingerprint
+    ) return false;
+    const seriesKey = patch?.identity?.seriesKey;
+    return seriesKey === undefined || seriesKey === object?.identity?.seriesKey;
   }
 
   function sameProjectEditLogSemantics(left: any[], right: any[]): boolean {
@@ -3481,7 +3544,16 @@ ${inner}
         && isCompatibleKnownLegacySpecialAxesEdit(manifest, patch, knownEditLog);
       const compatibleLegacyContourChildEdit = warning?.type === 'unsupported_prop'
         && isCompatibleKnownLegacyContourChildEdit(manifest, patch, knownEditLog);
-      if (!compatibleLegacySpecialAxesEdit && !compatibleLegacyContourChildEdit) {
+      const compatibleDisappearingEdit = warning?.type === 'missing_gid'
+        && isCompatibleKnownDisappearingEdit(patch, knownEditLog);
+      const compatibleLegacyAxisFontEdit = warning?.type === 'unsupported_prop'
+        && isCompatibleKnownLegacyAxisFontEdit(manifest, patch, knownEditLog);
+      if (
+        !compatibleLegacySpecialAxesEdit
+        && !compatibleLegacyContourChildEdit
+        && !compatibleDisappearingEdit
+        && !compatibleLegacyAxisFontEdit
+      ) {
         warnings.push(figureId ? { ...warning, figureId } : warning);
       }
     });
@@ -4896,20 +4968,13 @@ ${inner}
         if (language === 'python' && compressedRequestedEditLog.length > 0) {
           const knownEditLog = Array.isArray(existingSession?.editLog) ? existingSession.editLog : [];
           const renderedManifest = result.manifest || result.figures?.[0]?.manifest;
-          const renderedPrecheck = precheckRenderedPythonPatches(
+          const renderedPrecheck = precheckRenderedProjectFigureEditLog(
             renderedManifest,
             compressedRequestedEditLog,
+            knownEditLog,
+            'fig_1',
           );
-          const precheckWarnings = renderedPrecheck.warnings.filter((warning: any) => {
-            const patch = typeof warning?.patchIndex === 'number'
-              ? compressedRequestedEditLog[warning.patchIndex]
-              : null;
-            return !(
-              warning?.type === 'identity_mismatch'
-              && warning?.field === 'identity.relation'
-              && isCompatibleKnownLegacySpecialAxesEdit(renderedManifest, patch, knownEditLog)
-            );
-          });
+          const precheckWarnings = renderedPrecheck.warnings;
           const rendererConflicts = collectRendererConflictWarnings(
             result.warnings,
             compressedRequestedEditLog,
@@ -6507,13 +6572,20 @@ ${inner}
       // Read existing figure bindings before render so omitted editLogs still
       // participate in the returned SVG/manifest, not only in persisted state.
       const oldFigRows = listProjectFigures(projectId);
+      const legacySpecEditLog = parseStoredArray(projectSpec.editLog);
+      const canUseLegacySpecFallback = oldFigRows.length === 1 && legacySpecEditLog.length > 0;
       const oldEditLogMap: Record<string, any[]> = {};
       const oldSessionMap: Record<string, any> = {};
       for (const row of oldFigRows) {
         const key = `fig_${row.figure_index + 1}`;
         const sess = loadSession(row.session_id, userId);
+        oldEditLogMap[key] = resolveProjectFigureEditLog(
+          row,
+          sess,
+          legacySpecEditLog,
+          canUseLegacySpecFallback,
+        ).editLog;
         if (sess) {
-          oldEditLogMap[key] = sess.editLog;
           oldSessionMap[key] = sess;
         }
       }
@@ -6571,20 +6643,13 @@ ${inner}
             const patches = compressedEditLogs[figureId] || [];
             if (patches.length === 0) continue;
             const knownEditLog = oldEditLogMap[figureId] || [];
-            const precheck = precheckRenderedPythonPatches(fig.manifest, patches);
-            precheck.warnings.forEach((warning: any) => {
-              const patch = typeof warning?.patchIndex === 'number'
-                ? patches[warning.patchIndex]
-                : null;
-              const compatibleLegacySpecialAxesEdit = warning?.type === 'identity_mismatch'
-                && warning?.field === 'identity.relation'
-                && isCompatibleKnownLegacySpecialAxesEdit(fig.manifest, patch, knownEditLog);
-              const compatibleLegacyContourChildEdit = warning?.type === 'unsupported_prop'
-                && isCompatibleKnownLegacyContourChildEdit(fig.manifest, patch, knownEditLog);
-              if (!compatibleLegacySpecialAxesEdit && !compatibleLegacyContourChildEdit) {
-                manifestPrecheckWarnings.push({ ...warning, figureId });
-              }
-            });
+            const precheck = precheckRenderedProjectFigureEditLog(
+              fig.manifest,
+              patches,
+              knownEditLog,
+              figureId,
+            );
+            manifestPrecheckWarnings.push(...precheck.warnings);
           }
         }
         const rendererConflicts = collectRendererReplayConflictsByFigure(

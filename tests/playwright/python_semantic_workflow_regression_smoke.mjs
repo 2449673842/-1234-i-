@@ -418,6 +418,100 @@ async function applyCurrentDraft(page, expectedPatchCount = 2, options = {}) {
   return { ...patchBody, response: patchResponseBody };
 }
 
+async function applyTextImmediately(page, projectId, gid, nextValue) {
+  await clickSvgObject(page, gid);
+  await page.getByRole('button', { name: '属性编辑', exact: true }).click();
+  const input = page.locator(`textarea[data-param-gid="${gid}"][data-param-prop="text"]`);
+  await input.waitFor({ state: 'visible', timeout: 30000 });
+  await input.fill(nextValue);
+
+  const requestStart = apiRequests.length;
+  const button = input.locator('..').getByRole('button', { name: '立即应用', exact: true });
+  await button.click();
+  let patchRequest = null;
+  const requestDeadline = Date.now() + 15000;
+  while (Date.now() < requestDeadline) {
+    patchRequest = apiRequests.slice(requestStart).find((request) => (
+      new URL(request.url).pathname === '/api/figure/patch'
+        && request.method === 'POST'
+    ));
+    if (patchRequest) break;
+    await page.waitForTimeout(200);
+  }
+  if (!patchRequest) {
+    const state = await readWorkspaceFigureState(page);
+    const body = await getBodyText(page);
+    throw new Error(`immediate text click emitted no patch request: input=${await input.inputValue()}, state=${JSON.stringify(state)}, body=${body.slice(-1200)}`);
+  }
+  const requestBody = parseJson(patchRequest.postData);
+  assert(
+    requestBody?.patches?.length === 1
+      && requestBody.patches[0]?.gid === gid
+      && requestBody.patches[0]?.prop === 'text'
+      && requestBody.patches[0]?.mode === 'backend_patch'
+      && requestBody.patches[0]?.value === nextValue,
+    `immediate text patch did not use renderer replay: ${JSON.stringify(requestBody)}`,
+  );
+  await waitForWorkspaceReady(page);
+  const persisted = await requestJson(`/api/projects/${projectId}`);
+  const figure = persisted.project?.figures?.find((item) => item.figureId === 'fig_1');
+  assert(
+    figure?.editLog?.some((entry) => entry.gid === gid && entry.prop === 'text' && entry.value === nextValue && entry.mode === 'backend_patch'),
+    `immediate text patch was not persisted: ${JSON.stringify(figure?.editLog)}`,
+  );
+  return figure;
+}
+
+async function applyTextImmediatelyWhileEditing(page, projectId, gid, submittedValue, newerValue) {
+  await clickSvgObject(page, gid);
+  await page.getByRole('button', { name: '属性编辑', exact: true }).click();
+  const input = page.locator(`textarea[data-param-gid="${gid}"][data-param-prop="text"]`);
+  await input.waitFor({ state: 'visible', timeout: 30000 });
+  await input.fill(submittedValue);
+
+  let releaseRequest;
+  let markIntercepted;
+  const releasePromise = new Promise((resolve) => { releaseRequest = resolve; });
+  const interceptedPromise = new Promise((resolve) => { markIntercepted = resolve; });
+  await page.route('**/api/figure/patch', async (route) => {
+    markIntercepted();
+    await releasePromise;
+    await route.continue();
+  }, { times: 1 });
+
+  const responsePromise = page.waitForResponse((response) => (
+    new URL(response.url()).pathname === '/api/figure/patch'
+      && response.request().method() === 'POST'
+  ), { timeout: 60000 });
+  const button = input.locator('..').getByRole('button', { name: '立即应用', exact: true });
+  await button.click();
+  await interceptedPromise;
+  await input.fill(newerValue);
+  releaseRequest();
+
+  const response = await responsePromise;
+  assert(response.ok(), `delayed immediate text patch failed: ${response.status()}`);
+  const responseBody = await response.json();
+  assert(responseBody?.status === 'success', `delayed immediate text patch was not applied: ${JSON.stringify(responseBody)}`);
+  await waitForWorkspaceReady(page);
+  assert(
+    await input.inputValue() === newerValue,
+    `successful older text request cleared a newer local draft: ${await input.inputValue()}`,
+  );
+  const workspaceState = await readWorkspaceFigureState(page);
+  assert(
+    workspaceState?.projectDrafts?.fig_1?.[`${gid}:text`]?.value === newerValue,
+    `successful older text request cleared a newer project Draft: ${JSON.stringify(workspaceState?.projectDrafts?.fig_1)}`,
+  );
+  const persisted = await requestJson(`/api/projects/${projectId}`);
+  const figure = persisted.project?.figures?.find((item) => item.figureId === 'fig_1');
+  assert(
+    figure?.editLog?.some((entry) => entry.gid === gid && entry.prop === 'text' && entry.value === submittedValue),
+    `delayed immediate text patch was not persisted: ${JSON.stringify(figure?.editLog)}`,
+  );
+  return figure;
+}
+
 async function applyCurrentDraftExpectFailure(page, expectedPatchCount) {
   const start = apiRequests.length;
   await page.route('**/api/figure/patch', async (route) => {
@@ -540,7 +634,7 @@ async function main() {
   await cleanupSmokeProjects();
 
   const fixture = await createFixtureProject();
-  const initialRevision = fixture.rendered.figures[0]?.revision || 1;
+  let initialRevision = fixture.rendered.figures[0]?.revision || 1;
   const fillBetweenBand = fixture.rendered.figures[0]?.manifest?.objects?.find((object) => (
     object.kind === 'fill_between' && object.role === 'fill_between_series'
   ));
@@ -549,6 +643,12 @@ async function main() {
     object.kind === 'contourf' && object.role === 'contourf_series'
   ));
   assert(contourFill?.id, 'fixture manifest is missing the dedicated contourf parent');
+  const textTarget = fixture.rendered.figures[0]?.manifest?.objects?.find((object) => (
+    object.id?.startsWith('title.')
+      && object.editable?.includes('text')
+      && typeof object.currentProps?.text === 'string'
+  ));
+  assert(textTarget?.id, 'fixture manifest is missing an editable title text object');
   const pieSlices = fixture.rendered.figures[0]?.manifest?.objects?.filter((object) => object.role === 'pie_slice') || [];
   assert(pieSlices.length === 3, `fixture manifest expected 3 Axes.pie slices, got ${pieSlices.length}`);
   assert(
@@ -597,6 +697,47 @@ async function main() {
     await installWorkspaceState(page, fixture);
     await waitForWorkspaceReady(page);
 
+    const immediateTextValue = 'Immediate renderer title';
+    const immediateResponse = await applyTextImmediately(page, fixture.projectId, textTarget.id, immediateTextValue);
+    const immediateObject = await page.evaluate((gid) => {
+      const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+      const state = raw ? JSON.parse(raw) : {};
+      return state.projectFigures?.fig_1?.manifest?.objects?.find((object) => object.id === gid) || null;
+    }, textTarget.id);
+    assert(immediateObject?.currentProps?.text === immediateTextValue, `immediate text render did not update the manifest: ${JSON.stringify(immediateObject)}`);
+    const immediateState = await readWorkspaceFigureState(page);
+    assert(!immediateState?.projectDrafts?.fig_1?.[`${textTarget.id}:text`], 'successful immediate text apply left a stale Draft entry');
+    initialRevision = Number(immediateResponse?.revision || initialRevision + 1);
+    record('B0E-text-immediate-render', 'PASS', `gid=${textTarget.id}, value=${immediateTextValue}`);
+
+    const immediateInput = page.locator(`textarea[data-param-gid="${textTarget.id}"][data-param-prop="text"]`);
+    await immediateInput.fill('Temporary title draft');
+    await page.waitForFunction(({ gid, expected }) => {
+      const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+      const state = raw ? JSON.parse(raw) : {};
+      return state.projectDrafts?.fig_1?.[`${gid}:text`]?.value === expected;
+    }, { gid: textTarget.id, expected: 'Temporary title draft' }, { timeout: 10000 });
+    await immediateInput.fill(immediateTextValue);
+    await page.waitForFunction((gid) => {
+      const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+      const state = raw ? JSON.parse(raw) : {};
+      return !state.projectDrafts?.fig_1?.[`${gid}:text`];
+    }, textTarget.id, { timeout: 10000 });
+    record('B0G-text-noop-draft', 'PASS', `gid=${textTarget.id}, restored=${immediateTextValue}`);
+
+    const submittedRaceValue = 'Submitted renderer title';
+    const newerDraftValue = 'Newer unsaved title';
+    const raceResponse = await applyTextImmediatelyWhileEditing(
+      page,
+      fixture.projectId,
+      textTarget.id,
+      submittedRaceValue,
+      newerDraftValue,
+    );
+    initialRevision = Number(raceResponse?.revision || initialRevision + 1);
+    record('B0F-text-immediate-race', 'PASS', `persisted=${submittedRaceValue}, retained=${newerDraftValue}`);
+
+    await page.locator('[data-layer-node-id="Figure"]').click();
     await openComponentCenter(page);
     const patchRequestStart = apiRequests.length;
     await editContourVmax(page, 1.25);
@@ -608,16 +749,26 @@ async function main() {
     assert(bodyAfterDraft.includes('已暂存'), 'draft indicator did not appear after editing');
     assert(countPatchRequests(patchRequestStart) === 0, 'draft emitted a backend patch before apply');
 
-    const patchBody = await applyCurrentDraft(page, 5);
+    await clickSvgObject(page, textTarget.id);
+    await page.getByRole('button', { name: '属性编辑', exact: true }).click();
+    const batchedTextValue = 'Batched renderer title';
+    const batchedTextInput = page.locator(`textarea[data-param-gid="${textTarget.id}"][data-param-prop="text"]`);
+    await batchedTextInput.waitFor({ state: 'visible', timeout: 30000 });
+    await batchedTextInput.fill(batchedTextValue);
+
+    const patchBody = await applyCurrentDraft(page, 6);
     const bandPatch = patchBody.patches.find((patch) => patch.gid === fillBetweenBand.id && patch.prop === 'linewidth');
     const contourPatch = patchBody.patches.find((patch) => patch.gid === contourFill.id && patch.prop === 'vmax');
     const contourAlphaPatch = patchBody.patches.find((patch) => patch.gid === contourFill.id && patch.prop === 'alpha');
+    const textPatch = patchBody.patches.find((patch) => patch.gid === textTarget.id && patch.prop === 'text');
     record(
       'B0B-apply-batch',
-      patchBody.patches.length === 5
+      patchBody.patches.length === 6
         && Number(bandPatch?.value) === 2.1
         && Number(contourPatch?.value) === 1.25
-        && Number(contourAlphaPatch?.value) === 0.35 ? 'PASS' : 'FAIL',
+        && Number(contourAlphaPatch?.value) === 0.35
+        && textPatch?.mode === 'backend_patch'
+        && textPatch?.value === batchedTextValue ? 'PASS' : 'FAIL',
       `patches=${JSON.stringify(patchBody.patches)}`,
     );
 
@@ -628,6 +779,7 @@ async function main() {
     assert(persistedFigure.editLog.some((entry) => entry.gid === fillBetweenBand.id && entry.prop === 'linewidth' && Number(entry.value) === 2.1), 'persisted editLog does not contain the fill_between edit');
     assert(persistedFigure.editLog.some((entry) => entry.gid === contourFill.id && entry.prop === 'vmax' && Number(entry.value) === 1.25), 'persisted editLog does not contain the contourf edit');
     assert(persistedFigure.editLog.some((entry) => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.35), 'persisted editLog does not contain the contourf alpha edit');
+    assert(persistedFigure.editLog.some((entry) => entry.gid === textTarget.id && entry.prop === 'text' && entry.value === batchedTextValue && entry.mode === 'backend_patch'), 'persisted editLog does not contain the batched text edit');
 
     await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
     await waitForWorkspaceReady(page);

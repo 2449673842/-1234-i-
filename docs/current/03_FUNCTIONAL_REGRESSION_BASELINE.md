@@ -1,9 +1,9 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-20 22:12:50 +08:00
-> 证据截止时间：2026-07-20 22:11:53 +08:00
-> 代码范围：`feature/standard-figure-model-v1`，Python WP3-WP10 本地候选、旧 editLog 精确兼容、导出快照 v4、能力报告、渲染诊断与逐域默认启用；尚未形成提交
+> 最后修改时间：2026-07-21 15:21:24 +08:00
+> 证据截止时间：2026-07-21 15:20:55 +08:00
+> 代码范围：`feature/standard-figure-model-v1`，Python WP3-WP10 固定候选及旧项目完整重渲染、文本 Draft/立即应用兼容收尾、旧 editLog 精确兼容、导出快照 v4、能力报告、渲染诊断与逐域默认启用
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -25,7 +25,7 @@
 
 ## 2. 当前证据快照
 
-2026-07-20 本轮已经获得的最新证据：
+2026-07-21 当前候选已经获得的最新证据：
 
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
@@ -40,6 +40,8 @@
 | 导出恢复事务 | 通过 | snapshot DB、恢复、并发、v1 兼容和完整 SVG/PNG/PDF/TIFF 导出矩阵 |
 | 本轮直接浏览器回归 | 组件 41/41；轴样式 8/8 | global 画布比例、组件布局、网格、图例、刻度和边框未回退 |
 | Python 完整语义链路 | 通过 | 组件中心 set 全部由 backend renderer 验证；饼图切片与图例联动、Draft 失败保留、导出快照恢复通过，并检查响应业务 `status` |
+| 文本自动 Draft 与立即应用 | 通过 | B0E/B0F/B0G 覆盖输入即暂存、backend renderer 写回、改回原值删除 no-op Draft、旧请求完成时保留更新文本、批量应用、刷新、导出和快照恢复 |
+| 旧项目完整重渲染兼容 | 通过 | durable Figure editLog 在 session 缺失时仍可重放；空文本、旧轴字体属性受控兼容；伪造、弱化或关系漂移身份均冲突且 persistence state 完全不变 |
 | 保存/拖拽/缓存/跨 Figure | 通过 | project save preflight、drag extended、render cache、cross Figure 18/18；均使用隔离随机端口和临时数据目录 |
 | 无 left spine introspection | 50/50 | polar axes 回归通过；线上旧镜像仍需部署当前 renderer 才能消除 `KeyError: 'left'` |
 | 独立发布审查 | APPROVE，0 HIGH/MEDIUM | 修复后复审继续发现并关闭非同 GID remap、跨 release Shadow 污染和 App 跨 Figure Draft 编译旁路；最终只读复审无剩余高中风险 |
@@ -63,11 +65,13 @@
 | 扩展拖拽 | 10/10 通过 | 真实 Ctrl 三选、累计确认、取消、只读命中、annotation 和 R native 保护 |
 | Python cache | 通过 | 首次 miss、同语义重复 hit、值变化 miss；只信任本进程已确认 key |
 | 生产构建 | 通过 | 保留既有 bundle 体积和 CJS `import.meta` 警告 |
-| 数据完整性 | 0 个错误 | 25 用户、121 项目、263 项目文件、101 导出资产；23 条历史测试账号警告未删除 |
+| 数据完整性 | 0 个错误 | 25 用户、121 项目、263 项目文件、103 导出资产；23 条历史测试账号警告未删除 |
 
 本轮还重新运行了编辑、R、跨 Figure、历史、导出、页面、组合、安全和隔离 smoke。所有请求均使用随机 `127.0.0.1` 端口和临时数据库；未访问 3000，未修改 Docker/WSL。
 
 先前独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包、旧项目 GET/PUT 恢复源不一致，以及 standalone/project full render 在 renderer 拒绝 editLog 后仍可能写入的问题均已修复。当前保存与全渲染入口同时执行可信 manifest 预检、renderer warning 检查和必要的 revision/hash CAS；项目脚本与 Figure/session 在同一事务提交。新增 full render mixed batch、旧 contour、项目 history、R 共享路由、组件容器、扩展拖拽、缓存、导出文件事务、用户隔离和 renderer 沙箱回归均通过。WP5、WP9 和 WP10 已达到当前计划范围的本地候选条件，最终独立复审为 APPROVE、0 HIGH/MEDIUM；但这不构成任意第三方 Matplotlib artist、全部真实科研脚本或性能 SLO 的支持承诺。旧 compiler、palette legacy resolution 和 cross-Figure score mapper 在一个稳定发布周期内继续作为显式适配器保留；必须先形成固定候选提交，才能作为不可变部署输入。
+
+2026-07-21 的兼容性审查进一步确认：任何“已知旧 editLog”例外都必须同时满足数据库中已持久化的值和身份，不能让客户端用相同值替换更弱或伪造的身份。空文本/隐藏对象和旧轴字体兼容均执行完整 `stableKey/fingerprintVersion/fingerprint/identity` 同一性核验；拒绝请求由数据库快照断言证明不会写 project、session、Figure、history 或 preview。文本输入以原始 manifest 作为已提交事实，以项目 Draft 作为待应用事实，不能用 Draft proxy 判断“已经应用”。
 
 默认启用采用逐域回退，而不是一个总开关：`VITE_SCIFIGURE_GENERAL_TARGET_RESOLVER_V2`、`VITE_SCIFIGURE_FONT_TARGET_RESOLVER_V2`、`VITE_SCIFIGURE_COMPONENT_TARGET_RESOLVER_V2`、`VITE_SCIFIGURE_PALETTE_TARGET_RESOLVER_V2` 和 `VITE_SCIFIGURE_CROSS_FIGURE_IDENTITY_V2` 可分别设为 `0`。这些 `VITE_*` 值在前端构建时固化，逐域回退需要从同一代码提交重建并部署新的不可变 release；紧急回退直接切回上一整版。旧 manifest 兼容由 `VITE_SCIFIGURE_TARGET_RESOLVER_LEGACY_ADAPTER` 控制；弱跨 Figure score mapper 默认关闭，只能通过 `VITE_SCIFIGURE_CROSS_FIGURE_LEGACY_SCORE_ADAPTER=1` 显式启用。
 
