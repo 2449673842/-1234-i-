@@ -1,8 +1,8 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0、R-WP1、R-WP2、R-WP3 本地候选完成；下一工作包为 R-WP4
-> 最后修改时间：2026-07-22 20:34:28 +08:00
-> 当前部署状态：R-WP0-R-WP3 仅在本地完成并验证；未推送、未部署
+> 状态：R-WP0、R-WP1、R-WP2、R-WP3 本地候选完成；R-WP4 Point/Jitter、Line/Path/Smooth、Bar/Col、Errorbar family、Boxplot/Violin 与 Ribbon/Area 本地候选已实现，下一图元家族为 Step/Histogram/Freqpoly
+> 最后修改时间：2026-07-23 04:45:54 +08:00
+> 当前部署状态：R-WP0-R-WP4 已完成子家族仅在本地验证；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 现状入口：`docs/R_COMPATIBILITY_PLAN.md`
 > 适用范围：R/ggplot2 渲染、语义图元、对象身份、patch 写回、Draft、历史、导出、复杂坐标、网络图/路径图/SEM 与生产一致性
@@ -330,12 +330,12 @@ legend/guide 增删和重排
 
 一次只处理一个对象家族，顺序如下：
 
-1. `GeomPoint/Jitter`：点大小、填充、边框、透明度、shape 和 group。
-2. `GeomLine/Path/Smooth`：线色、线宽、线型、透明度、marker/point relation。
-3. `GeomBar/Col`：fill/edge/linewidth/alpha、stack/dodge group。
-4. `GeomErrorbar/Linerange/Pointrange/Crossbar`：主线、端帽、点和容器关系。
-5. `GeomBoxplot/Violin`：box、median、whisker、staple、outlier、body 关系。
-6. `GeomRibbon/Area`：置信区间带、边界线、fill 和 owner series。
+1. `GeomPoint/Jitter`：点大小、填充、边框、透明度、shape 和 group。本地候选已实现：shape 19 只开放可见 `color`，shape 21-25 开放 `facecolor/edgecolor/linewidth`，`size_scale` 保留映射大小比例，`marker` 支持 R 数字 shape，`PositionJitter` 以 `adapterClass=GeomJitter` 表达且保留 `artistClass=GeomPoint`。
+2. `GeomLine/Path/Smooth`：线色、线宽、线型、透明度、marker/point relation。本地候选已实现：保留旧 `r.layer.N`，输出 `adapterFamily=line`、mapped linewidth/linetype/color 回读、`linewidthValues` 诊断和 `smoothLayer` 边界标记；`GeomSmooth` 只按线层样式开放，不把置信带填充冒充为 ribbon 专用编辑。
+3. `GeomBar/Col`：fill/edge/linewidth/alpha、stack/dodge group。本地候选已实现：保留旧 `r.layer.N`，输出 `adapterFamily=bar`、mapped fill/color、渲染后 fill 列表、position class 和 bar count；离散分组继续通过既有 `r.group.fill.*` scale identity 单独改色，整层 adapter 不伪装成单个分组对象。
+4. `GeomErrorbar/Linerange/Pointrange/Crossbar`：主线、端帽、点和容器关系。本地候选已实现：容器保留旧 `r.layer.N`，按 geom 声明 `interval_line/caps/point/crossbar` 组件角色；`elinewidth` 控制区间线，旧 `linewidth` editLog 兼容映射；Errorbar/Crossbar 的 `capsize` 明确为数据单位，Pointrange 才开放 marker/markersize，可填充 Pointrange 与 Crossbar 才开放 facecolor。
+5. `GeomBoxplot/Violin`：box、median、whisker、staple、outlier、body 关系。本地候选已实现：Boxplot 声明 box body、median、whiskers、staples、outliers 组件角色，整体线色、箱体填充与稳定 outlier 属性分离；旧 `median_color` 仅作为兼容 alias 映射到整体轮廓并返回 warning，新 manifest/UI 不再把它冒充为独立中位线 setter。Violin 声明 body/quantile-lines 边界，琴身样式可编辑，quantile 独立属性保持只读。
+6. `GeomRibbon/Area`：置信区间带、边界线、fill 和 owner series。本地候选已实现：保留旧 `r.layer.N`、`kind=patch` 和 GeomRibbon/GeomArea role，增加 `adapterFamily=ribbon/area` 与 `body/boundary_lines` 关系，只开放 `facecolor/edgecolor/linewidth/alpha`；`x/y/ymin/ymax`、堆叠、边界拆分和 `GeomSmooth(se=TRUE)` 置信带保持只读。离散 fill group 使用 `ribbon/area/band` 语义，整层 style override 只恢复可信 baseline 的 scale/guide 结构身份，不恢复旧颜色；`scaleActive=false` 的休眠 group 保留用于身份诊断但拒绝编辑。
 7. `GeomStep/Histogram/Freqpoly`：bin/step 语义和连续系列身份。
 8. `GeomTile/Raster/Rect/Contour`：mappable、scale、guide 和 panel 关系。
 9. `GeomSegment/Curve`：线、箭头和端点语义，不自动与任意文本配对。
@@ -367,6 +367,61 @@ fixture
 **回滚单位**
 
 - 每个 geom 家族独立 adapter 和 capability flag。
+
+**GeomPoint/Jitter 本地候选证据（2026-07-22 23:26:50 +08:00）**
+
+- R renderer 定向 10/10 通过，覆盖 shape 21 fill/outline/stroke/alpha/absolute size、GeomJitter identity、mapped size 的 `size_scale`、absolute size 与比例缩放分离、shape 19/21 能力边界、旧 shape 19 `facecolor` 迁移、mapped shape 全部可填充、mapped 19/21 混合不可填充、同批 `marker + facecolor + edgecolor`、`color/edgecolor` latest-value alias。
+- 旧兼容定向 5/5 通过，覆盖冻结旧 identity fixture、v2 layer remap、style edit 下 shadow identity 稳定、普通 layer style 和 manual scale palette。
+- 前端 R Point 协议测试 3/3 通过，覆盖 strict backend resolver、fillable 子集和 non-fillable 点层过滤。
+- `npm run test:r-semantic-smoke` 通过，隔离随机端口真实浏览器覆盖 Point `size_scale`、marker、保存刷新、撤销、重做、导出状态和 0 console/page error。
+- `npm run lint` 与相关文件 `git diff --check` 通过。
+- 当前仍未形成独立本地提交；不得把本段解释为 R-WP4 全部家族完成。
+
+**GeomLine/Path/Smooth 本地候选证据（2026-07-23 00:21:34 +08:00）**
+
+- R renderer Line/Path/Smooth 定向通过，覆盖旧 `layer_style_patch`、Line/Path/Smooth 三类 adapter、layer-local 与 plot-level inherited mapped linewidth/linetype/color、旧 `r.layer.0` GID 和 style edit 下 v2 identity/fingerprint 稳定。
+- 同轮 Point/Jitter 回归 7/7 通过，证明新增 line adapter 未破坏 shape 21、mapped fillable shape、`color/edgecolor` alias 和 `size_scale`。
+- `npm run test:r-semantic-smoke` 通过，隔离随机端口真实浏览器覆盖 line linewidth、Point `size_scale`、marker、保存刷新、撤销、重做、导出状态和 0 console/page error。
+- `npm run lint` 通过。
+- Errorbar、Boxplot/Violin、Ribbon/Area 等后续家族尚未完成，不得把本段解释为 R-WP4 全部完成。
+
+**GeomBar/Col 本地候选证据（2026-07-23 01:14:18 +08:00）**
+
+- R renderer 覆盖 GeomCol 与 StatCount GeomBar，验证 plot-level inherited fill/color mapping、facecolor/edgecolor/linewidth/alpha 重放、PositionStack/Dodge、bar count、旧 `r.layer.0` GID 和 style edit 下 v2 identity/fingerprint 稳定。
+- Point adapter 同步补齐 inherited `colorMapped/fillMapped`；整层 mapped fill override 后，baseline layer-group-panel 关系恢复保证 scope、groupIds 和 subplotIds 不漂移，旧身份定向 7/7 通过。
+- mapped fill 的单组颜色编辑继续由既有离散 scale 对象 `r.group.fill.*` 承担，Bar layer adapter 只表达整层样式，避免把整层 override 错当成单个分组改色。
+- 隔离浏览器 R semantic 12/12：组件中心 Bar 整层 linewidth、配色中心单 fill group、保存刷新、撤销重做、导出和 0 console/page error 通过。
+- `unsupportedNotes` 已同步列出 Bar/Col adapter；当前仍未推送、未部署。
+
+**Errorbar/Linerange/Pointrange/Crossbar 本地候选证据（2026-07-23 01:14:18 +08:00）**
+
+- R renderer 定向 2/2 通过，覆盖四类 geom 的组件角色、color/elinewidth/linestyle/alpha、Errorbar/Crossbar capsize、Pointrange marker/markersize、可填充点/Crossbar facecolor、旧 linewidth alias、mapped color 和 PositionDodge。
+- 真实 built `PANEL` 直接写入 layer-subplot relation；单 panel 对象进入 subplot scope，多 panel 保留 plural subplotIds，stableKey/fingerprint 与旧 identity remap 规则不变。
+- 前端 R Errorbar strict resolver 与 Point 合同合计 6/6；组件中心按数据单位给 R capsize 0.05 步进，并修复 errorbar markersize 控件曾过滤掉容器对象的问题。
+- R capability matrix 连同 Point/Bar 定向 5/5 通过；隔离浏览器 R semantic 12/12 覆盖 Errorbar 批量线宽/端帽、Pointrange marker/markersize、Draft、保存刷新、撤销重做和导出状态。
+- capthick 未开放：ggplot2 Errorbar 的端帽与主线没有跨版本稳定的独立线宽 setter；组件角色通过容器统一编辑，不伪造可单独选择的 grob children。
+
+**Boxplot/Violin 本地候选证据（2026-07-23 02:30:50 +08:00）**
+
+- R renderer 定向 6/6 通过：Boxplot 的 `color/box_color/linewidth/alpha` 与 `outlier_color/outlier_shape/outlier_size/outlier_stroke/outlier_alpha` 可稳定重放，`outlier_fill` 仅在 shape 21-25 时开放；Violin 的 body 样式可重放，旧 `color` 映射到 `edgecolor` 并告警，`draw_quantiles` 只输出 relation/只读元数据。
+- `median_color` 已从 Boxplot editable、propertyCapabilities、能力矩阵和 R 组件中心移除；冻结旧 editLog 仍映射到整体 `color`，返回 `legacy_prop_alias`，不改变 stableKey、v2 fingerprint 或持久化条目原值。
+- 前端 R Boxplot/Violin 合同 7/7 通过，覆盖现代 manifest、旧无 propertyCapabilities manifest、fill/outline 分离、条件化 `outlier_fill`、outlier backend patch、Violin 旧 alias 和 quantile setter 拒绝。
+- Boxplot/Violin 共用离散 fill scale 时输出 `distribution` 语义和 `geomFamilies`；整层样式覆盖移除 scale 使用后，只从可信编辑前 baseline 恢复结构分组关系，不恢复旧样式值。
+- 隔离浏览器 R semantic 12/12：同一 fixture 覆盖 Point、Line、Bar、Errorbar、Pointrange、Violin 和 Boxplot；组件中心真实修改 Boxplot outlier 与 Violin outline/linewidth，并通过 Draft、保存刷新、撤销、重做、配色 group、导出和 0 console/page error。
+- `npm run lint` 与相关文件 `git diff --check` 通过；浏览器用例曾因选择页面首个图标 SVG 产生 11/12 假失败，改用 `[data-scifigure-canvas-svg="true"] > svg` 后稳定为 12/12。当前仍未推送、未部署，R-WP4 后续家族不得据此视为完成。
+- 独立 `gpt-5.5 high` 只读审查 APPROVE、0 HIGH/MEDIUM。剩余 LOW 边界为浏览器尚未直接操作 `outlier_fill`，以及 layer-level fill override 后 palette 的既有优先级；前者已有 renderer 和前端合同覆盖，后者不作为本家族新增能力承诺。
+
+**Ribbon/Area 本地候选证据（2026-07-23 04:45:54 +08:00）**
+
+- R renderer 定向 3/3：Ribbon/Area 专用 adapter 的四项样式写回、mapped fill 的 `ribbon/area/band` 分组语义，以及 layer fill override 后继续使用当前样式但保持旧 group stableKey/fingerprint/identity 均通过。
+- 前端 `rRibbonAreaEditingContract.test.ts` 3/3：现代 manifest 进入 data-band 组件，旧无 `propertyCapabilities` manifest 仅回退既有安全 patch 属性，`y/ymin/ymax/baseline` 等结构字段不进入 setter。
+- 隔离浏览器 `test:r-semantic-smoke` 12/12：真实组件中心修改 Ribbon/Area fill 与 linewidth，配色中心同时修改 color/fill group，完成 Draft、保存刷新、撤销、重做和 SVG 导出；导出 bundle 包含两类 group edit，console/page error 为 0。
+- 首轮 11/12 暴露测试假阳性：用例只检查请求和 HTTP 2xx，而服务端业务冲突同样返回 200。测试现在读取 `/api/figure/patch` 响应体，只有 `status=success` 才算应用成功，并把 warning 写入报告。
+- 根因是 layer-level fill override 会让 ggplot scale 训练键从 A-F 缩短为 A-D，旧实现把该变化写入 group v2 fingerprint。最终 manifest 现在从同次原始脚本 baseline 恢复 `scaleId/scaleKey/guideId/guideKey/legendId/aesthetic/groupKey`，颜色等 currentProps 仍取编辑后值。
+- baseline 恢复后的 group 同时报告 `scaleActive`；已被整层 fill override 覆盖的休眠 group 无论 palette edit 位于 override 前还是后都返回 conflict，服务端整批零持久化，不把图例与数据不一致冒充为 superseded 成功。
+- 项目 PUT 保存预检同步拒绝 `scaleActive=false` 的 `r.group.*`；构造 editLog 回归返回 409/`no_setter`，并证明 session、Figure、history、cache、导出资产和快照均未变化。
+- R remap 同步增加存在性与 GID 家族门禁：请求 GID 必须先存在于当前 manifest；合法 `r.group.*`、`r.layer.*`、tick/text 序号变化继续唯一 remap，伪造 missing GID 不能凭借复制 identity 跳到真实对象。`test:r-identity-v2-compatibility` 与 `test:r-patch-authority` 通过。
+- 最新 Boxplot/Violin 与 Ribbon/Area renderer 定向 9/9、前端合同 10/10、隔离浏览器 12/12、R patch authority 11 场景通过；identity 回归新增现存跨家族 GID 拒绝。最终独立 `gpt-5.5 high` 代码审查 `APPROVE`、架构审查 `CLEAR`，无 HIGH/MEDIUM。当前仍未推送、未部署；下一家族为 Step/Histogram/Freqpoly。
 
 ### R-WP5：scale、guide、facet 与布局关系
 

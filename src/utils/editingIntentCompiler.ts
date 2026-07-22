@@ -72,6 +72,7 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.role === 'annotation_arrow') return 'annotation_arrow';
   if (object.kind === 'grid') return 'grid';
   if (object.kind === 'line') return 'data_line';
+  if (['ribbon', 'area'].includes(String(object.currentProps?.adapterFamily || ''))) return 'data_band';
   if (object.kind === 'fill_between' || object.role === 'fill_between_series') return 'data_band';
   if (
     object.role === 'contour_child_collection'

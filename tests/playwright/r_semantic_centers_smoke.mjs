@@ -53,10 +53,24 @@ function assertIsolatedEnvironment() {
 
 const script = [
   'library(ggplot2)',
-  'df <- data.frame(x=1:4, y=c(1, 3, 2, 5), group=c("A", "A", "B", "B"), facet=c("F1", "F1", "F2", "F2"))',
+  'df <- data.frame(x=1:4, y=c(1, 3, 2, 5), group=c("A", "A", "B", "B"), facet=c("F1", "F1", "F2", "F2"), weight=c(1.2, 2.4, 3.6, 4.8))',
+  'bars <- data.frame(x=1:4, y=c(0.45, 0.7, 0.55, 0.8), group=c("A", "A", "B", "B"))',
+  'err <- data.frame(x=1:4, y=c(1.4, 3.1, 2.2, 4.7), ymin=c(1.0, 2.6, 1.7, 4.1), ymax=c(1.8, 3.6, 2.7, 5.3))',
+  'dist <- data.frame(x=rep(c(5, 6), each=12), value=c(1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 18, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 8, 20), group=rep(c("C", "D"), each=12))',
+  'band <- data.frame(x=rep(7:10, 2), ymin=c(0.8, 1.2, 1.0, 1.5, 1.4, 1.9, 1.6, 2.2), ymax=c(1.5, 2.0, 1.8, 2.4, 2.1, 2.8, 2.5, 3.2), group=rep(c("E", "F"), each=4))',
+  'area <- data.frame(x=rep(7:10, 2), y=c(0.7, 1.1, 0.9, 1.4, 1.2, 1.7, 1.5, 2.0), group=rep(c("E", "F"), each=4))',
   'p <- ggplot(df, aes(x, y, color=group)) +',
-  '  geom_point(size=3) +',
+  '  geom_point(size=3, shape=21, fill="#FFFFFF", stroke=0.6) +',
+  '  geom_point(aes(size=weight), shape=21, fill="#A6CEE3", stroke=0.7, alpha=0.8) +',
   '  geom_line(linewidth=0.8) +',
+  '  geom_col(data=bars, aes(x=x, y=y, fill=group), inherit.aes=FALSE, width=0.5, colour="#333333", linewidth=0.45, alpha=0.3) +',
+  '  geom_errorbar(data=err, aes(x=x, y=y, ymin=ymin, ymax=ymax), inherit.aes=FALSE, width=0.18, colour="#444444", linewidth=0.6) +',
+  '  geom_pointrange(data=err, aes(x=x, y=y, ymin=ymin, ymax=ymax), inherit.aes=FALSE, shape=21, fill="#FDBF6F", colour="#B15928", size=2.4, linewidth=0.7) +',
+  '  geom_violin(data=dist, aes(x=x, y=value, group=group, fill=group), inherit.aes=FALSE, alpha=0.25, colour="#238B45", linewidth=0.6, draw_quantiles=0.5) +',
+  '  geom_boxplot(data=dist, aes(x=x, y=value, group=group, fill=group), inherit.aes=FALSE, width=0.22, alpha=0.75, colour="#333333", linewidth=0.55, outlier.shape=21, outlier.fill="white") +',
+  '  geom_ribbon(data=band, aes(x=x, ymin=ymin, ymax=ymax, group=group, fill=group), inherit.aes=FALSE, position="identity", alpha=0.3, colour="#2166AC", linewidth=0.55) +',
+  '  geom_area(data=area, aes(x=x, y=y, group=group, fill=group), inherit.aes=FALSE, position="identity", alpha=0.2, colour="#4D9221", linewidth=0.45) +',
+  '  scale_fill_manual(values=c(A="#80B1D3", B="#FDB462", C="#B3DE69", D="#FCCDE5", E="#92C5DE", F="#A6D96A")) +',
   '  labs(title="R Semantic Centers", x="R X Axis", y="R Y Axis") +',
   '  facet_wrap(~facet) +',
   '  theme_classic()',
@@ -124,7 +138,7 @@ async function waitForPreviewReady(page, timeoutMs = 120000) {
   while (Date.now() - start < timeoutMs) {
     const body = await getBodyText(page);
     const rendering = body.includes('正在重新渲染当前图形') || body.includes('等待 Python 渲染结果') || body.includes('正在恢复项目预览');
-    const svgCount = await page.locator('svg').count().catch(() => 0);
+    const svgCount = await page.locator('[data-scifigure-canvas-svg="true"] > svg').count().catch(() => 0);
     if (!rendering && svgCount > 0 && body.includes('属性编辑')) return true;
     await page.waitForTimeout(800);
   }
@@ -215,6 +229,16 @@ async function setComponentNumberByGroup(page, groupId, prop, value) {
   return true;
 }
 
+async function setSelectByParam(page, gid, prop, value) {
+  const select = page.locator(
+    `select[data-param-role="select"][data-param-gid="${gid}"][data-param-prop="${prop}"]`,
+  ).first();
+  if (!(await select.isVisible({ timeout: 4000 }).catch(() => false))) return false;
+  await select.selectOption(String(value));
+  await page.waitForTimeout(700);
+  return true;
+}
+
 async function setColorControl(page, sectionText, labelText, value) {
   const handle = await findControlInRightSidebar(page, { sectionText, labelText, selector: 'input[type="text"]' });
   const element = handle.asElement();
@@ -260,18 +284,102 @@ async function setColorByScope(page, scope, value) {
 
 async function applyDraftAndReadPatch(page) {
   const start = apiRequests.length;
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/figure/patch'
+  ), { timeout: 90000 }).catch(() => null);
   const clicked = await clickText(page, '应用当前图');
   if (!clicked) return { clicked: false, patchBody: null, successful: false };
+  const patchResponse = await responsePromise;
   await waitForApiSettle(start, 90000);
   await waitForPreviewReady(page);
   const patchRequest = apiRequests.slice(start).find((request) => request.url.includes('/api/figure/patch')) || null;
   const patchBody = parseJson(patchRequest?.postData);
-  const successful = apiResponses.slice(start).some((response) => response.url.includes('/api/figure/patch') && response.status >= 200 && response.status < 300);
-  return { clicked, patchBody, successful };
+  const responseBody = await patchResponse?.json().catch(() => null);
+  const successful = Boolean(
+    patchResponse
+    && patchResponse.status() >= 200
+    && patchResponse.status() < 300
+    && responseBody?.status === 'success'
+  );
+  return { clicked, patchBody, responseBody, successful };
 }
 
 function patchList(body) {
   return Array.isArray(body?.patches) ? body.patches : [];
+}
+
+async function saveProjectAndReadPut(page) {
+  const start = apiRequests.length;
+  const saveButton = page.getByRole('button', { name: /^保存$/ }).first();
+  if (!(await saveButton.isVisible({ timeout: 5000 }).catch(() => false))) {
+    return { clicked: false, putBody: null, successful: false };
+  }
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'PUT'
+    && /\/api\/projects\/[^/]+$/.test(new URL(response.url()).pathname)
+  ), { timeout: 40000 }).catch(() => null);
+  await saveButton.click();
+  const putResponse = await responsePromise;
+  await waitForApiSettle(start, 40000);
+  const putRequest = apiRequests.slice(start).find((request) => (
+    request.method === 'PUT' && /\/api\/projects\/[^/]+$/.test(new URL(request.url).pathname)
+  )) || null;
+  return {
+    clicked: true,
+    putBody: parseJson(putRequest?.postData),
+    successful: Boolean(putResponse && putResponse.status() >= 200 && putResponse.status() < 300),
+  };
+}
+
+async function readFigureState(page) {
+  return page.evaluate(() => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    const state = raw ? JSON.parse(raw) : {};
+    const figure = state.projectFigures?.[state.activeFigureId || 'fig_1'];
+    return {
+      revision: figure?.revision || null,
+      editLog: figure?.editLog || [],
+      projectDrafts: state.projectDrafts || {},
+    };
+  });
+}
+
+function hasEdit(editLog, expected) {
+  return Array.isArray(editLog) && editLog.some((entry) => (
+    entry.gid === expected.gid
+    && entry.prop === expected.prop
+    && String(entry.value).toLowerCase() === String(expected.value).toLowerCase()
+    && entry.mode === (expected.mode || 'backend_patch')
+  ));
+}
+
+async function waitForEdits(page, expectedEdits, timeoutMs = 60000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const state = await readFigureState(page);
+    if (expectedEdits.every((edit) => hasEdit(state.editLog, edit))) return state;
+    await page.waitForTimeout(500);
+  }
+  return readFigureState(page);
+}
+
+async function clickHistoryButton(page, label) {
+  const button = page.getByRole('button', { name: label, exact: true }).first();
+  if (!(await button.isVisible({ timeout: 4000 }).catch(() => false))) {
+    return { clicked: false, reason: 'not-visible', renderOk: false };
+  }
+  if (!(await button.isEnabled().catch(() => false))) {
+    return { clicked: false, reason: 'disabled', renderOk: false };
+  }
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname.endsWith('/figures/render')
+  ), { timeout: 60000 }).catch(() => null);
+  await button.click();
+  const response = await responsePromise;
+  await waitForPreviewReady(page);
+  return { clicked: true, reason: '', renderOk: Boolean(response && response.status() >= 200 && response.status() < 300) };
 }
 
 async function prepareProject(page) {
@@ -335,6 +443,37 @@ async function prepareProject(page) {
       objectIds: objects.map((obj) => obj.id),
       axisEditable: objects.filter((obj) => obj.id === 'axis.x.0' || obj.id === 'axis.y.0').map((obj) => ({ id: obj.id, editable: obj.editable })),
       layerObjects: objects.filter((obj) => String(obj.id).startsWith('r.layer.')).map((obj) => ({ id: obj.id, kind: obj.kind, editable: obj.editable })),
+      pointLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.kind === 'collection').map((obj) => ({
+        id: obj.id,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+      })),
+      errorbarLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.kind === 'errorbar_container').map((obj) => ({
+        id: obj.id,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+      })),
+      barLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.currentProps?.adapterFamily === 'bar').map((obj) => ({
+        id: obj.id,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+      })),
+      boxplotLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.currentProps?.adapterFamily === 'boxplot').map((obj) => ({
+        id: obj.id,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+      })),
+      violinLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.currentProps?.adapterFamily === 'violin').map((obj) => ({
+        id: obj.id,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+      })),
+      bandLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && ['ribbon', 'area'].includes(obj.currentProps?.adapterFamily)).map((obj) => ({
+        id: obj.id,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+      })),
+      fillGroups: (figure.manifest?.groups || []).filter((group) => group.aesthetic === 'fill'),
       paletteCount: figure.manifest?.palettes?.length || 0,
     };
   }, { baseUrl: BASE_URL, script });
@@ -382,7 +521,20 @@ async function run() {
     diagnostics.fixture = fixture;
     record(
       'R0-fixture',
-      fixture.generatedBy === 'r_svg' && fixture.axisEditable.some((axis) => axis.editable?.includes('tick_labelsize')) ? 'PASS' : 'FAIL',
+      fixture.generatedBy === 'r_svg'
+        && fixture.axisEditable.some((axis) => axis.editable?.includes('tick_labelsize'))
+        && fixture.pointLayers.some((layer) => layer.editable?.includes('size_scale'))
+        && fixture.pointLayers.some((layer) => layer.editable?.includes('marker') && Number(layer.currentProps?.marker) === 21)
+        && fixture.errorbarLayers.some((layer) => layer.editable?.includes('capsize') && layer.currentProps?.capUnit === 'data')
+        && fixture.errorbarLayers.some((layer) => layer.editable?.includes('marker') && layer.editable?.includes('markersize'))
+        && fixture.barLayers.some((layer) => layer.editable?.includes('linewidth') && layer.currentProps?.fillMapped === true)
+        && fixture.boxplotLayers.some((layer) => layer.editable?.includes('outlier_shape') && !layer.editable?.includes('median_color') && layer.currentProps?.componentRoles?.includes('median'))
+        && fixture.violinLayers.some((layer) => !layer.editable?.includes('color') && !layer.editable?.includes('quantile_color') && layer.currentProps?.componentRoles?.includes('quantile_lines'))
+        && fixture.bandLayers.length === 2
+        && fixture.bandLayers.every((layer) => layer.editable?.includes('facecolor') && layer.editable?.includes('edgecolor') && layer.currentProps?.componentRoles?.includes('boundary_lines'))
+        && fixture.fillGroups.some((group) => group.kind === 'distribution' && group.geomFamilies?.includes('GeomBoxplot') && group.geomFamilies?.includes('GeomViolin'))
+        && fixture.fillGroups.some((group) => group.kind === 'band' && group.geomFamilies?.includes('GeomRibbon') && group.geomFamilies?.includes('GeomArea'))
+        ? 'PASS' : 'FAIL',
       JSON.stringify(fixture),
     );
 
@@ -402,6 +554,178 @@ async function run() {
     const componentOk = componentChanged && componentDraft && componentApply.successful && componentPatches.some((patch) => String(patch.gid).startsWith('r.layer.') && patch.prop === 'linewidth' && Number(patch.value) === 2.2);
     record('R2-component-center', componentOk ? 'PASS' : 'FAIL', `changed=${componentChanged}, draft=${componentDraft}, patches=${JSON.stringify(componentPatches)}`);
 
+    await clickText(page, '组件中心');
+    const pointSizeValue = 1.7;
+    const pointSizeChanged = await setNumberByParam(page, 'component-points', 'size_scale', pointSizeValue);
+    const pointSizeDraft = (await getBodyText(page)).includes('已暂存');
+    const pointSizeApply = pointSizeChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const pointSizePatches = patchList(pointSizeApply.patchBody);
+    const pointSizeExpectedEdits = pointSizePatches.map((patch) => ({
+      gid: patch.gid,
+      prop: 'size_scale',
+      value: pointSizeValue,
+    }));
+    const pointSizeState = await waitForEdits(page, pointSizeExpectedEdits);
+    const pointSizeOk = pointSizeChanged
+      && pointSizeDraft
+      && pointSizeApply.successful
+      && pointSizePatches.length >= 1
+      && pointSizePatches.every((patch) => (
+        String(patch.gid).startsWith('r.layer.')
+        && patch.prop === 'size_scale'
+        && Number(patch.value) === pointSizeValue
+      ))
+      && pointSizeExpectedEdits.every((edit) => hasEdit(pointSizeState.editLog, edit));
+    record('R2b-point-size-scale', pointSizeOk ? 'PASS' : 'FAIL', `changed=${pointSizeChanged}, draft=${pointSizeDraft}, stateRevision=${pointSizeState.revision}, patches=${JSON.stringify(pointSizePatches)}`);
+
+    await clickText(page, '组件中心');
+    const markerValue = 24;
+    const markerChanged = await setSelectByParam(page, 'component-points', 'marker', markerValue);
+    const markerDraft = (await getBodyText(page)).includes('已暂存');
+    const markerApply = markerChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const markerPatches = patchList(markerApply.patchBody);
+    const markerExpectedEdits = markerPatches.map((patch) => ({
+      gid: patch.gid,
+      prop: 'marker',
+      value: markerValue,
+    }));
+    const markerState = await waitForEdits(page, markerExpectedEdits);
+    const markerOk = markerChanged
+      && markerDraft
+      && markerApply.successful
+      && markerPatches.length >= 1
+      && markerPatches.every((patch) => (
+        String(patch.gid).startsWith('r.layer.')
+        && patch.prop === 'marker'
+        && Number(patch.value) === markerValue
+      ))
+      && markerExpectedEdits.every((edit) => hasEdit(markerState.editLog, edit));
+    record('R2c-point-marker', markerOk ? 'PASS' : 'FAIL', `changed=${markerChanged}, draft=${markerDraft}, stateRevision=${markerState.revision}, patches=${JSON.stringify(markerPatches)}`);
+
+    await clickText(page, '组件中心');
+    const componentSvgBefore = await page.locator('[data-scifigure-canvas-svg="true"] > svg').first().evaluate((node) => node.outerHTML).catch(() => '');
+    const barLineChanged = await setNumberByParam(page, 'component-patches', 'linewidth', 1.25);
+    const errorbarLineChanged = await setNumberByParam(page, 'component-errorbars', 'elinewidth', 1.45);
+    const errorbarCapChanged = await setNumberByParam(page, 'component-errorbars', 'capsize', 0.35);
+    const errorbarMarkerChanged = await setSelectByParam(page, 'component-errorbars', 'marker', 25);
+    const errorbarMarkerSizeChanged = await setNumberByParam(page, 'component-errorbars', 'markersize', 4.5);
+    const boxplotTargetKey = fixture.boxplotLayers.map((layer) => layer.id).join('|');
+    const violinTargetKey = fixture.violinLayers.map((layer) => layer.id).join('|');
+    const bandTargetKey = fixture.bandLayers.map((layer) => layer.id).join('|');
+    const legacyMedianControlHidden = await page.locator('[data-component-group-id="boxplots"]').getByText('中位线颜色', { exact: true }).count() === 0;
+    const boxplotOutlierColorChanged = await setColorByScope(page, `component:boxplots:${boxplotTargetKey}:outlier_color`, '#de2d26');
+    const boxplotOutlierShapeChanged = await setSelectByParam(page, 'component-boxplots', 'outlier_shape', 24);
+    const boxplotOutlierSizeChanged = await setNumberByParam(page, 'component-boxplots', 'outlier_size', 3.2);
+    const violinEdgeChanged = await setColorByScope(page, `component:violins:${violinTargetKey}:edgecolor`, '#54278f');
+    const violinLineChanged = await setNumberByParam(page, 'component-violins', 'linewidth', 1.35);
+    const bandFillChanged = await setColorByScope(page, `component:bands:${bandTargetKey}:color`, '#8c510a');
+    const bandLineChanged = await setNumberByParam(page, 'component-bands', 'linewidth', 1.15);
+    const errorbarDraft = (await getBodyText(page)).includes('已暂存');
+    const componentBatchApply = barLineChanged
+      && errorbarLineChanged
+      && errorbarCapChanged
+      && errorbarMarkerChanged
+      && errorbarMarkerSizeChanged
+      && legacyMedianControlHidden
+      && boxplotOutlierColorChanged
+      && boxplotOutlierShapeChanged
+      && boxplotOutlierSizeChanged
+      && violinEdgeChanged
+      && violinLineChanged
+      && bandFillChanged
+      && bandLineChanged
+      ? await applyDraftAndReadPatch(page)
+      : { patchBody: null, successful: false };
+    const componentBatchPatches = patchList(componentBatchApply.patchBody);
+    const componentBatchExpectedEdits = componentBatchPatches.map((patch) => ({
+      gid: patch.gid,
+      prop: patch.prop,
+      value: patch.value,
+    }));
+    const componentBatchState = await waitForEdits(page, componentBatchExpectedEdits);
+    const componentSvgAfter = await page.locator('[data-scifigure-canvas-svg="true"] > svg').first().evaluate((node) => node.outerHTML).catch(() => '');
+    const errorbarProps = new Set(componentBatchPatches
+      .filter((patch) => patch.prop !== 'linewidth')
+      .map((patch) => patch.prop));
+    const barPatch = componentBatchPatches.find((patch) => patch.prop === 'linewidth' && Number(patch.value) === 1.25);
+    const boxplotProps = new Set(componentBatchPatches
+      .filter((patch) => patch.gid === fixture.boxplotLayers[0]?.id)
+      .map((patch) => patch.prop));
+    const violinProps = new Set(componentBatchPatches
+      .filter((patch) => patch.gid === fixture.violinLayers[0]?.id)
+      .map((patch) => patch.prop));
+    const bandPatchCoverage = fixture.bandLayers.every((layer) => {
+      const props = new Set(componentBatchPatches
+        .filter((patch) => patch.gid === layer.id)
+        .map((patch) => patch.prop));
+      return props.has('facecolor') && props.has('linewidth');
+    });
+    const componentBatchOk = barLineChanged
+      && errorbarLineChanged
+      && errorbarCapChanged
+      && errorbarMarkerChanged
+      && errorbarMarkerSizeChanged
+      && legacyMedianControlHidden
+      && boxplotOutlierColorChanged
+      && boxplotOutlierShapeChanged
+      && boxplotOutlierSizeChanged
+      && violinEdgeChanged
+      && violinLineChanged
+      && bandFillChanged
+      && bandLineChanged
+      && errorbarDraft
+      && componentBatchApply.successful
+      && Boolean(barPatch)
+      && ['elinewidth', 'capsize', 'marker', 'markersize'].every((prop) => errorbarProps.has(prop))
+      && ['outlier_color', 'outlier_shape', 'outlier_size'].every((prop) => boxplotProps.has(prop))
+      && ['edgecolor', 'linewidth'].every((prop) => violinProps.has(prop))
+      && bandPatchCoverage
+      && componentSvgBefore !== componentSvgAfter
+      && componentSvgAfter.toLowerCase().includes('#de2d26')
+      && componentSvgAfter.toLowerCase().includes('#8c510a')
+      && componentBatchPatches.every((patch) => String(patch.gid).startsWith('r.layer.'))
+      && componentBatchExpectedEdits.every((edit) => hasEdit(componentBatchState.editLog, edit));
+    record('R2d-r-layer-components', componentBatchOk ? 'PASS' : 'FAIL', `changed=${JSON.stringify({ barLineChanged, errorbarLineChanged, errorbarCapChanged, errorbarMarkerChanged, errorbarMarkerSizeChanged, legacyMedianControlHidden, boxplotOutlierColorChanged, boxplotOutlierShapeChanged, boxplotOutlierSizeChanged, violinEdgeChanged, violinLineChanged, bandFillChanged, bandLineChanged })}, draft=${errorbarDraft}, patches=${JSON.stringify(componentBatchPatches)}`);
+
+    const expectedCoreEdits = [
+      ...pointSizeExpectedEdits,
+      ...markerExpectedEdits,
+      ...componentBatchExpectedEdits,
+    ];
+    const saveResult = await saveProjectAndReadPut(page);
+    await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+    await waitForPreviewReady(page);
+    const refreshedState = await waitForEdits(page, expectedCoreEdits);
+    const refreshOk = saveResult.successful
+      && expectedCoreEdits.length >= 6
+      && expectedCoreEdits.every((edit) => hasEdit(refreshedState.editLog, edit));
+    record('R3b-save-refresh-component-edits', refreshOk ? 'PASS' : 'FAIL', `save=${JSON.stringify({ clicked: saveResult.clicked, successful: saveResult.successful })}, refreshedRevision=${refreshedState.revision}, expected=${JSON.stringify(expectedCoreEdits)}`);
+
+    const undoResult = await clickHistoryButton(page, '撤销');
+    const undoState = await readFigureState(page);
+    const undoOk = undoResult.clicked
+      && undoResult.renderOk
+      && componentBatchExpectedEdits.length >= 5
+      && componentBatchExpectedEdits.every((edit) => !hasEdit(undoState.editLog, edit))
+      && [...pointSizeExpectedEdits, ...markerExpectedEdits].every((edit) => hasEdit(undoState.editLog, edit));
+    record(
+      'R3c-undo-bar-errorbar-batch',
+      undoResult.clicked ? (undoOk ? 'PASS' : 'FAIL') : 'BLOCKED',
+      `undo=${JSON.stringify(undoResult)}, editLog=${JSON.stringify(undoState.editLog)}`,
+    );
+
+    const redoResult = await clickHistoryButton(page, '重做');
+    const redoState = await waitForEdits(page, expectedCoreEdits);
+    const redoOk = redoResult.clicked
+      && redoResult.renderOk
+      && componentBatchExpectedEdits.length >= 5
+      && expectedCoreEdits.every((edit) => hasEdit(redoState.editLog, edit));
+    record(
+      'R3d-redo-bar-errorbar-batch',
+      redoResult.clicked ? (redoOk ? 'PASS' : 'FAIL') : 'BLOCKED',
+      `redo=${JSON.stringify(redoResult)}, revision=${redoState.revision}`,
+    );
+
     await clickText(page, '配色中心');
     const paletteV2Expected = process.env.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 !== '0';
     const paletteV2Count = await page.locator('[data-palette-controls-version="2"]').count();
@@ -413,11 +737,18 @@ async function run() {
     const paletteChanged = await setColorByScope(page, 'palette:r.scale.color.0.0', '#2ca02c')
       || await setColorControl(page, 'A', '颜色', '#2ca02c')
       || await setColorControl(page, '配色', '颜色', '#2ca02c');
+    const fillPaletteChanged = await setColorByScope(page, 'palette:r.scale.fill.0.0', '#fb9a99')
+      || await setColorControl(page, 'A', '填充色', '#fb9a99');
     const paletteDraft = (await getBodyText(page)).includes('已暂存');
-    const paletteApply = paletteChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const paletteApply = paletteChanged && fillPaletteChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const palettePatches = patchList(paletteApply.patchBody);
-    const paletteOk = paletteChanged && paletteDraft && paletteApply.successful && palettePatches.some((patch) => String(patch.gid).startsWith('r.group.color.') && patch.prop === 'color' && String(patch.value).toLowerCase() === '#2ca02c');
-    record('R3-palette-center', paletteOk ? 'PASS' : 'FAIL', `changed=${paletteChanged}, draft=${paletteDraft}, patches=${JSON.stringify(palettePatches)}`);
+    const paletteOk = paletteChanged
+      && fillPaletteChanged
+      && paletteDraft
+      && paletteApply.successful
+      && palettePatches.some((patch) => String(patch.gid).startsWith('r.group.color.') && patch.prop === 'color' && String(patch.value).toLowerCase() === '#2ca02c')
+      && palettePatches.some((patch) => String(patch.gid).startsWith('r.group.fill.') && patch.prop === 'facecolor' && String(patch.value).toLowerCase() === '#fb9a99');
+    record('R3-palette-center', paletteOk ? 'PASS' : 'FAIL', `changed=${JSON.stringify({ paletteChanged, fillPaletteChanged })}, draft=${paletteDraft}, response=${JSON.stringify(paletteApply.responseBody)}, patches=${JSON.stringify(palettePatches)}`);
 
     await clickText(page, '布局中心');
     const layoutV2Expected = process.env.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 !== '0';
@@ -456,9 +787,11 @@ async function run() {
     const exportOk = exported?.status === 'success'
       && String(exported?.svg || '').includes('<svg')
       && exported?.bundle?.metadata?.environment === 'R + SVG renderer'
-       && exportedEdits.some((patch) => patch.gid === 'axis.x.0' && patch.prop === 'tick_labelsize')
-       && exportedEdits.some((patch) => String(patch.gid).startsWith('r.group.color.') && patch.prop === 'color');
-     record('R5-export-state', exportOk ? 'PASS' : 'FAIL', `environment=${exported?.bundle?.metadata?.environment}, edits=${JSON.stringify(exportedEdits)}`);
+      && exportedEdits.some((patch) => patch.gid === 'axis.x.0' && patch.prop === 'tick_labelsize')
+      && exportedEdits.some((patch) => String(patch.gid).startsWith('r.group.color.') && patch.prop === 'color')
+      && exportedEdits.some((patch) => String(patch.gid).startsWith('r.group.fill.') && patch.prop === 'facecolor')
+      && expectedCoreEdits.every((edit) => hasEdit(exportedEdits, edit));
+    record('R5-export-state', exportOk ? 'PASS' : 'FAIL', `environment=${exported?.bundle?.metadata?.environment}, edits=${JSON.stringify(exportedEdits)}`);
 
     record(
       'N1',

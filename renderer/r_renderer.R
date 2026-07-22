@@ -734,6 +734,49 @@ geom_class <- function(layer) {
   classes[[1]]
 }
 
+layer_position_class <- function(layer) {
+  classes <- class(layer$position)
+  if (length(classes) == 0) return("PositionIdentity")
+  classes[[1]]
+}
+
+is_point_layer <- function(layer) {
+  geom_class(layer) %in% c("GeomPoint", "GeomJitter")
+}
+
+is_line_adapter_layer <- function(layer) {
+  geom_class(layer) %in% c("GeomLine", "GeomPath", "GeomSmooth")
+}
+
+is_bar_adapter_layer <- function(layer) {
+  geom_class(layer) %in% c("GeomCol", "GeomBar")
+}
+
+is_errorbar_adapter_layer <- function(layer) {
+  geom_class(layer) %in% c("GeomErrorbar", "GeomErrorbarh", "GeomLinerange", "GeomPointrange", "GeomCrossbar")
+}
+
+is_boxplot_adapter_layer <- function(layer) {
+  identical(geom_class(layer), "GeomBoxplot")
+}
+
+is_violin_adapter_layer <- function(layer) {
+  identical(geom_class(layer), "GeomViolin")
+}
+
+is_ribbon_area_adapter_layer <- function(layer) {
+  geom_class(layer) %in% c("GeomRibbon", "GeomArea")
+}
+
+layer_adapter_class <- function(layer) {
+  geom <- geom_class(layer)
+  position <- layer_position_class(layer)
+  if (geom %in% c("GeomPoint", "GeomJitter") && grepl("^PositionJitter", position)) {
+    return("GeomJitter")
+  }
+  geom
+}
+
 layer_kind <- function(geom) {
   if (geom %in% c("GeomPoint", "GeomJitter", "GeomDotplot")) return("collection")
   if (geom %in% c("GeomText", "GeomLabel")) return("text")
@@ -755,10 +798,16 @@ layer_label <- function(geom, index) {
     GeomCol = "ggplot column layer",
     GeomBar = "ggplot bar layer",
     GeomErrorbar = "ggplot errorbar layer",
+    GeomErrorbarh = "ggplot horizontal errorbar layer",
+    GeomLinerange = "ggplot linerange layer",
+    GeomPointrange = "ggplot pointrange layer",
+    GeomCrossbar = "ggplot crossbar layer",
     GeomText = "ggplot text layer",
     GeomLabel = "ggplot label layer",
     GeomBoxplot = "ggplot boxplot layer",
     GeomViolin = "ggplot violin layer",
+    GeomRibbon = "ggplot ribbon layer",
+    GeomArea = "ggplot area layer",
     GeomSmooth = "ggplot smooth layer",
     paste("ggplot layer", index)
   )
@@ -783,6 +832,799 @@ as_hex_or_fallback <- function(value, fallback) {
   as.character(value[[1]])
 }
 
+first_present_value <- function(values, fallback = NULL) {
+  if (is.null(values) || length(values) == 0) return(fallback)
+  for (value in values) {
+    if (is.null(value) || length(value) == 0 || is.na(value[[1]])) next
+    return(value[[1]])
+  }
+  fallback
+}
+
+layer_data_values <- function(data, name) {
+  if (is.null(data) || !name %in% names(data)) return(list())
+  values <- data[[name]]
+  values <- values[!is.na(values)]
+  as.list(values)
+}
+
+point_shape_value <- function(value, fallback = 19) {
+  if (is.null(value) || length(value) == 0 || is.na(value[[1]])) return(fallback)
+  numeric_value <- suppressWarnings(as.numeric(value[[1]]))
+  if (length(numeric_value) == 1 && is.finite(numeric_value)) return(numeric_value)
+  as.character(value[[1]])
+}
+
+point_shapes_are_fillable <- function(values) {
+  if (length(values) == 0) return(FALSE)
+  numeric_values <- suppressWarnings(as.numeric(unlist(values, use.names = FALSE)))
+  length(numeric_values) > 0 && all(is.finite(numeric_values)) && all(numeric_values %in% 21:25)
+}
+
+point_layer_rendered_shapes <- function(layer, built_data = NULL) {
+  params <- layer_params(layer)
+  default_shape <- ggplot2::GeomPoint$default_aes$shape %||% 19
+  shape_values <- layer_data_values(built_data, "shape")
+  if (length(shape_values) == 0) {
+    shape_values <- list(param_value(params, c("shape"), default_shape))
+  }
+  unique(unlist(lapply(shape_values, point_shape_value), use.names = FALSE))
+}
+
+point_layer_final_shape <- function(layer, gid, built_data = NULL) {
+  params <- layer_params(layer)
+  rendered_shapes <- point_layer_rendered_shapes(layer, built_data)
+  fallback <- if (length(rendered_shapes) > 0) rendered_shapes[[1]] else ggplot2::GeomPoint$default_aes$shape %||% 19
+  point_shape_value(latest_value(gid, "marker", fallback), fallback)
+}
+
+point_layer_final_fillable <- function(layer, gid, built_data = NULL) {
+  if (has_edit(gid, "marker")) {
+    return(point_shapes_are_fillable(list(point_layer_final_shape(layer, gid, built_data))))
+  }
+  point_shapes_are_fillable(as.list(point_layer_rendered_shapes(layer, built_data)))
+}
+
+latest_alias_value <- function(gid, props, fallback) {
+  value <- fallback
+  for (entry in edit_entries) {
+    if (identical(as.character(entry$gid), gid) && as.character(entry$prop) %in% props) {
+      value <- entry$value
+      if (is.list(value) && length(value) == 1 && is.null(names(value))) value <- value[[1]]
+    }
+  }
+  value
+}
+
+latest_alias_numeric <- function(gid, props, fallback) {
+  value <- suppressWarnings(as.numeric(latest_alias_value(gid, props, fallback)))
+  if (length(value) == 0 || !is.finite(value[[1]])) return(as.numeric(fallback))
+  value[[1]]
+}
+
+point_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  params <- layer_params(layer)
+  default_aes <- ggplot2::GeomPoint$default_aes
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  shapes <- point_layer_rendered_shapes(layer, built_data)
+  marker <- point_layer_final_shape(layer, gid, built_data)
+  fillable <- point_layer_final_fillable(layer, gid, built_data)
+
+  base_size <- suppressWarnings(as.numeric(param_value(params, c("size"), default_aes$size %||% 1.5)))
+  if (length(base_size) == 0 || !is.finite(base_size[[1]])) base_size <- 1.5
+  size_scale <- max(0.01, latest_numeric(gid, "size_scale", layer$.scifigure_size_scale %||% 1))
+  rendered_sizes <- suppressWarnings(as.numeric(unlist(layer_data_values(built_data, "size"), use.names = FALSE)))
+  rendered_sizes <- rendered_sizes[is.finite(rendered_sizes)]
+  if (length(rendered_sizes) == 0) rendered_sizes <- base_size[[1]]
+  rendered_sizes <- rendered_sizes * size_scale
+
+  color_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "colour"),
+    param_value(params, c("colour", "color"), default_aes$colour %||% "black")
+  ))
+  outline <- as.character(latest_alias_value(gid, c("color", "edgecolor"), color_fallback))
+  fill_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "fill"),
+    param_value(params, c("fill"), "#1F77B4")
+  ))
+  stroke_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "stroke"),
+    param_value(params, c("stroke"), default_aes$stroke %||% 0.5)
+  )))
+  if (length(stroke_fallback) == 0 || !is.finite(stroke_fallback[[1]])) stroke_fallback <- 0.5
+  alpha_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "alpha"),
+    param_value(params, c("alpha"), 1)
+  )))
+  if (length(alpha_fallback) == 0 || !is.finite(alpha_fallback[[1]])) alpha_fallback <- 1
+
+  list(
+    color = outline,
+    facecolor = latest_string(gid, "facecolor", fill_fallback),
+    edgecolor = outline,
+    linewidth = latest_numeric(gid, "linewidth", stroke_fallback[[1]]),
+    size = latest_numeric(gid, "size", base_size[[1]]),
+    size_scale = size_scale,
+    sizes = as.list(rendered_sizes),
+    marker = marker,
+    markerValues = as.list(shapes),
+    alpha = latest_numeric(gid, "alpha", alpha_fallback[[1]]),
+    fillSupported = fillable,
+    sizeMapped = "size" %in% names(effective_mapping),
+    shapeMapped = "shape" %in% names(effective_mapping),
+    colorMapped = any(c("colour", "color") %in% names(effective_mapping)),
+    fillMapped = "fill" %in% names(effective_mapping),
+    positionClass = layer_position_class(layer),
+    adapterFamily = "point"
+  )
+}
+
+scaled_point_geom <- function(parent_geom, scale_factor) {
+  draw_panel <- local({
+    parent <- parent_geom
+    factor <- scale_factor
+    function(data, panel_params, coord, na.rm = FALSE) {
+      data$size <- data$size * factor
+      parent$draw_panel(data, panel_params, coord, na.rm = na.rm)
+    }
+  })
+  draw_key <- local({
+    parent <- parent_geom
+    factor <- scale_factor
+    function(data, params, size) {
+      data$size <- data$size * factor
+      parent$draw_key(data, params, size)
+    }
+  })
+  ggplot2::ggproto(NULL, parent_geom, draw_panel = draw_panel, draw_key = draw_key)
+}
+
+apply_point_layer_edits <- function(layer, gid, built_data = NULL) {
+  params <- layer$aes_params
+  if (is.null(params)) params <- list()
+
+  final_shape <- point_layer_final_shape(layer, gid, built_data)
+  final_fillable <- point_layer_final_fillable(layer, gid, built_data)
+  if (has_edit(gid, "marker")) {
+    params$shape <- final_shape
+  }
+
+  if (has_edit(gid, "color") || has_edit(gid, "edgecolor")) {
+    params$colour <- as.character(latest_alias_value(
+      gid,
+      c("color", "edgecolor"),
+      params$colour %||% params$color %||% "black"
+    ))
+  }
+  if (has_edit(gid, "facecolor")) {
+    if (final_fillable) {
+      params$fill <- latest_string(gid, "facecolor", params$fill %||% "#1F77B4")
+    } else {
+      params$colour <- latest_string(gid, "facecolor", params$colour %||% params$color %||% "black")
+    }
+  }
+  if (has_edit(gid, "linewidth")) {
+    params$stroke <- latest_numeric(gid, "linewidth", params$stroke %||% 0.5)
+  }
+  if (has_edit(gid, "size")) {
+    params$size <- latest_numeric(gid, "size", params$size %||% 1.5)
+  }
+  if (has_edit(gid, "alpha")) {
+    params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
+  }
+
+  layer$aes_params <- params
+  if (has_edit(gid, "size_scale")) {
+    scale_factor <- max(0.01, latest_numeric(gid, "size_scale", 1))
+    layer$geom <- scaled_point_geom(layer$geom, scale_factor)
+    layer$.scifigure_size_scale <- scale_factor
+  }
+  layer
+}
+
+line_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  params <- layer_params(layer)
+  default_aes <- layer$geom$default_aes %||% ggplot2::GeomLine$default_aes
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  color_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "colour"),
+    param_value(params, c("colour", "color"), default_aes$colour %||% "black")
+  ))
+  linewidth_fallback <- suppressWarnings(as.numeric(first_present_value(
+    c(layer_data_values(built_data, "linewidth"), layer_data_values(built_data, "size")),
+    param_value(params, c("linewidth", "size"), default_aes$linewidth %||% default_aes$size %||% 1)
+  )))
+  if (length(linewidth_fallback) == 0 || !is.finite(linewidth_fallback[[1]])) linewidth_fallback <- 1
+  rendered_widths <- suppressWarnings(as.numeric(unlist(
+    c(layer_data_values(built_data, "linewidth"), layer_data_values(built_data, "size")),
+    use.names = FALSE
+  )))
+  rendered_widths <- rendered_widths[is.finite(rendered_widths)]
+  if (length(rendered_widths) == 0) rendered_widths <- linewidth_fallback[[1]]
+  linetype_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "linetype"),
+    param_value(params, c("linetype"), default_aes$linetype %||% "solid")
+  ))
+  alpha_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "alpha"),
+    param_value(params, c("alpha"), default_aes$alpha %||% 1)
+  )))
+  if (length(alpha_fallback) == 0 || !is.finite(alpha_fallback[[1]])) alpha_fallback <- 1
+
+  list(
+    color = latest_string(gid, "color", color_fallback),
+    linewidth = latest_numeric(gid, "linewidth", linewidth_fallback[[1]]),
+    linewidthValues = as.list(rendered_widths),
+    linestyle = latest_string(gid, "linestyle", linetype_fallback),
+    alpha = latest_numeric(gid, "alpha", alpha_fallback[[1]]),
+    linewidthMapped = "linewidth" %in% names(effective_mapping) || "size" %in% names(effective_mapping),
+    linetypeMapped = "linetype" %in% names(effective_mapping),
+    colorMapped = any(c("colour", "color") %in% names(effective_mapping)),
+    positionClass = layer_position_class(layer),
+    adapterFamily = "line",
+    smoothLayer = identical(geom_class(layer), "GeomSmooth")
+  )
+}
+
+apply_line_layer_edits <- function(layer, gid) {
+  params <- layer$aes_params
+  if (is.null(params)) params <- list()
+
+  if (has_edit(gid, "color")) {
+    params$colour <- latest_string(gid, "color", params$colour %||% params$color %||% "black")
+  }
+  if (has_edit(gid, "linewidth")) {
+    line_width <- latest_numeric(gid, "linewidth", params$linewidth %||% params$size %||% 1)
+    params$linewidth <- line_width
+    params$size <- line_width
+  }
+  if (has_edit(gid, "linestyle")) {
+    params$linetype <- latest_string(gid, "linestyle", params$linetype %||% "solid")
+  }
+  if (has_edit(gid, "alpha")) {
+    params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
+  }
+
+  layer$aes_params <- params
+  layer
+}
+
+bar_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  params <- layer_params(layer)
+  default_aes <- layer$geom$default_aes %||% ggplot2::GeomCol$default_aes
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  fill_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "fill"),
+    param_value(params, c("fill"), default_aes$fill %||% "#595959")
+  ))
+  edge_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "colour"),
+    param_value(params, c("colour", "color"), default_aes$colour %||% "#000000")
+  ))
+  linewidth_fallback <- suppressWarnings(as.numeric(first_present_value(
+    c(layer_data_values(built_data, "linewidth"), layer_data_values(built_data, "size")),
+    param_value(params, c("linewidth", "size"), default_aes$linewidth %||% default_aes$size %||% 0.5)
+  )))
+  if (length(linewidth_fallback) == 0 || !is.finite(linewidth_fallback[[1]])) linewidth_fallback <- 0.5
+  alpha_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "alpha"),
+    param_value(params, c("alpha"), default_aes$alpha %||% 1)
+  )))
+  if (length(alpha_fallback) == 0 || !is.finite(alpha_fallback[[1]])) alpha_fallback <- 1
+  rendered_fills <- as.character(unlist(layer_data_values(built_data, "fill"), use.names = FALSE))
+  rendered_fills <- rendered_fills[!is.na(rendered_fills) & nzchar(rendered_fills)]
+  if (length(rendered_fills) == 0) rendered_fills <- fill_fallback
+
+  list(
+    facecolor = latest_string(gid, "facecolor", fill_fallback),
+    edgecolor = latest_string(gid, "edgecolor", edge_fallback),
+    linewidth = latest_numeric(gid, "linewidth", linewidth_fallback[[1]]),
+    alpha = latest_numeric(gid, "alpha", alpha_fallback[[1]]),
+    facecolorValues = as.list(rendered_fills),
+    fillMapped = "fill" %in% names(effective_mapping),
+    colorMapped = any(c("colour", "color") %in% names(effective_mapping)),
+    positionClass = layer_position_class(layer),
+    adapterFamily = "bar",
+    barCount = if (!is.null(built_data) && !is.null(nrow(built_data))) nrow(built_data) else 0L
+  )
+}
+
+apply_bar_layer_edits <- function(layer, gid) {
+  params <- layer$aes_params
+  if (is.null(params)) params <- list()
+
+  if (has_edit(gid, "facecolor")) {
+    params$fill <- latest_string(gid, "facecolor", params$fill %||% "#595959")
+  }
+  if (has_edit(gid, "edgecolor")) {
+    params$colour <- latest_string(gid, "edgecolor", params$colour %||% params$color %||% "#000000")
+  }
+  if (has_edit(gid, "linewidth")) {
+    line_width <- latest_numeric(gid, "linewidth", params$linewidth %||% params$size %||% 0.5)
+    params$linewidth <- line_width
+    params$size <- line_width
+  }
+  if (has_edit(gid, "alpha")) {
+    params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
+  }
+
+  layer$aes_params <- params
+  layer
+}
+
+errorbar_component_profile <- function(layer) {
+  geom <- geom_class(layer)
+  switch(
+    geom,
+    GeomErrorbar = list(
+      components = c("interval_line", "caps"),
+      hasCaps = TRUE,
+      hasPoint = FALSE,
+      hasCrossbar = FALSE,
+      capParam = "width",
+      orientation = "vertical"
+    ),
+    GeomErrorbarh = list(
+      components = c("interval_line", "caps"),
+      hasCaps = TRUE,
+      hasPoint = FALSE,
+      hasCrossbar = FALSE,
+      capParam = "height",
+      orientation = "horizontal"
+    ),
+    GeomPointrange = list(
+      components = c("interval_line", "point"),
+      hasCaps = FALSE,
+      hasPoint = TRUE,
+      hasCrossbar = FALSE,
+      capParam = NULL,
+      orientation = "vertical"
+    ),
+    GeomCrossbar = list(
+      components = c("interval_line", "caps", "crossbar"),
+      hasCaps = TRUE,
+      hasPoint = FALSE,
+      hasCrossbar = TRUE,
+      capParam = "width",
+      orientation = "vertical"
+    ),
+    list(
+      components = c("interval_line"),
+      hasCaps = FALSE,
+      hasPoint = FALSE,
+      hasCrossbar = FALSE,
+      capParam = NULL,
+      orientation = "vertical"
+    )
+  )
+}
+
+errorbar_cap_extent <- function(layer, built_data = NULL, profile = errorbar_component_profile(layer)) {
+  if (!isTRUE(profile$hasCaps) || is.null(profile$capParam)) return(NULL)
+  geom_params <- layer$geom_params %||% list()
+  explicit <- suppressWarnings(as.numeric(geom_params[[profile$capParam]] %||% NA_real_))
+  if (length(explicit) > 0 && is.finite(explicit[[1]])) return(explicit[[1]])
+
+  extent <- if (identical(profile$orientation, "horizontal")) {
+    if (!is.null(built_data) && all(c("ymin", "ymax") %in% names(built_data))) {
+      suppressWarnings(as.numeric(built_data$ymax - built_data$ymin))
+    } else {
+      numeric()
+    }
+  } else if (!is.null(built_data) && all(c("xmin", "xmax") %in% names(built_data))) {
+    suppressWarnings(as.numeric(built_data$xmax - built_data$xmin))
+  } else {
+    numeric()
+  }
+  extent <- extent[is.finite(extent) & extent >= 0]
+  if (length(extent) == 0) 0 else extent[[1]]
+}
+
+errorbar_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  params <- layer_params(layer)
+  default_aes <- layer$geom$default_aes %||% list()
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  profile <- errorbar_component_profile(layer)
+  color_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "colour"),
+    param_value(params, c("colour", "color"), default_aes$colour %||% "black")
+  ))
+  linewidth_fallback <- suppressWarnings(as.numeric(first_present_value(
+    c(layer_data_values(built_data, "linewidth"), layer_data_values(built_data, "size")),
+    param_value(params, c("linewidth", "size"), default_aes$linewidth %||% default_aes$size %||% 0.5)
+  )))
+  if (length(linewidth_fallback) == 0 || !is.finite(linewidth_fallback[[1]])) linewidth_fallback <- 0.5
+  final_linewidth <- latest_alias_numeric(gid, c("linewidth", "elinewidth"), linewidth_fallback[[1]])
+  linetype_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "linetype"),
+    param_value(params, c("linetype"), default_aes$linetype %||% "solid")
+  ))
+  alpha_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "alpha"),
+    param_value(params, c("alpha"), default_aes$alpha %||% 1)
+  )))
+  if (length(alpha_fallback) == 0 || !is.finite(alpha_fallback[[1]])) alpha_fallback <- 1
+  marker_values <- if (isTRUE(profile$hasPoint)) point_layer_rendered_shapes(layer, built_data) else numeric()
+  marker_fallback <- if (length(marker_values) > 0) marker_values[[1]] else default_aes$shape %||% 19
+  marker <- point_shape_value(latest_value(gid, "marker", marker_fallback), marker_fallback)
+  point_fill_supported <- isTRUE(profile$hasPoint) && point_shapes_are_fillable(list(marker))
+  marker_size_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "size"),
+    param_value(params, c("size"), default_aes$size %||% 1.5)
+  )))
+  if (length(marker_size_fallback) == 0 || !is.finite(marker_size_fallback[[1]])) marker_size_fallback <- 1.5
+  fill_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "fill"),
+    param_value(params, c("fill"), default_aes$fill %||% "white")
+  ))
+
+  props <- list(
+    color = latest_string(gid, "color", color_fallback),
+    linewidth = final_linewidth,
+    elinewidth = final_linewidth,
+    linestyle = latest_string(gid, "linestyle", linetype_fallback),
+    alpha = latest_numeric(gid, "alpha", alpha_fallback[[1]]),
+    colorMapped = any(c("colour", "color") %in% names(effective_mapping)),
+    linewidthMapped = "linewidth" %in% names(effective_mapping) || "size" %in% names(effective_mapping),
+    componentRoles = as.list(profile$components),
+    hasCaps = isTRUE(profile$hasCaps),
+    hasPoint = isTRUE(profile$hasPoint),
+    hasCrossbar = isTRUE(profile$hasCrossbar),
+    orientation = profile$orientation,
+    positionClass = layer_position_class(layer),
+    intervalCount = if (!is.null(built_data) && !is.null(nrow(built_data))) nrow(built_data) else 0L,
+    adapterFamily = "errorbar"
+  )
+  if (isTRUE(profile$hasCaps)) {
+    props$capsize <- latest_numeric(gid, "capsize", errorbar_cap_extent(layer, built_data, profile) %||% 0)
+    props$capUnit <- "data"
+  }
+  if (isTRUE(profile$hasPoint)) {
+    props$marker <- marker
+    props$markerValues <- as.list(marker_values)
+    props$markersize <- latest_numeric(gid, "markersize", marker_size_fallback[[1]])
+    props$pointFillSupported <- point_fill_supported
+  }
+  if (isTRUE(profile$hasCrossbar) || point_fill_supported) {
+    props$facecolor <- latest_string(gid, "facecolor", fill_fallback)
+    props$fillMapped <- "fill" %in% names(effective_mapping)
+  }
+  props
+}
+
+errorbar_layer_editable <- function(props) {
+  editable <- c("color", "elinewidth", "linestyle", "alpha")
+  if (isTRUE(props$hasCaps)) editable <- c(editable, "capsize")
+  if (isTRUE(props$hasPoint)) editable <- c(editable, "marker", "markersize")
+  if (isTRUE(props$hasCrossbar) || isTRUE(props$pointFillSupported)) editable <- c(editable, "facecolor")
+  as.list(unique(editable))
+}
+
+apply_errorbar_layer_edits <- function(layer, gid) {
+  params <- layer$aes_params %||% list()
+  profile <- errorbar_component_profile(layer)
+
+  if (has_edit(gid, "color")) {
+    params$colour <- latest_string(gid, "color", params$colour %||% params$color %||% "black")
+  }
+  if (has_edit(gid, "linewidth") || has_edit(gid, "elinewidth")) {
+    params$linewidth <- latest_alias_numeric(gid, c("linewidth", "elinewidth"), params$linewidth %||% params$size %||% 0.5)
+  }
+  if (has_edit(gid, "linestyle")) {
+    params$linetype <- latest_string(gid, "linestyle", params$linetype %||% "solid")
+  }
+  if (has_edit(gid, "alpha")) {
+    params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
+  }
+  if (isTRUE(profile$hasPoint) && has_edit(gid, "marker")) {
+    params$shape <- point_shape_value(latest_value(gid, "marker", params$shape %||% 19), params$shape %||% 19)
+  }
+  if (isTRUE(profile$hasPoint) && has_edit(gid, "markersize")) {
+    params$size <- latest_numeric(gid, "markersize", params$size %||% 1.5)
+  }
+  if ((isTRUE(profile$hasCrossbar) || isTRUE(profile$hasPoint)) && has_edit(gid, "facecolor")) {
+    params$fill <- latest_string(gid, "facecolor", params$fill %||% "white")
+  }
+  layer$aes_params <- params
+
+  if (isTRUE(profile$hasCaps) && has_edit(gid, "capsize") && !is.null(profile$capParam)) {
+    geom_params <- layer$geom_params %||% list()
+    geom_params[[profile$capParam]] <- latest_numeric(gid, "capsize", geom_params[[profile$capParam]] %||% 0)
+    layer$geom_params <- geom_params
+  }
+  layer
+}
+
+boxplot_outlier_shape_value <- function(value, fallback = 19) {
+  if (is.null(value) || length(value) == 0) return(fallback)
+  first <- value[[1]]
+  if (is.na(first) || tolower(as.character(first)) %in% c("none", "na")) return("none")
+  point_shape_value(first, fallback)
+}
+
+boxplot_outlier_shape_param <- function(value, fallback = 19) {
+  normalized <- boxplot_outlier_shape_value(value, fallback)
+  if (identical(normalized, "none")) return(NA)
+  normalized
+}
+
+boxplot_outlier_count <- function(built_data = NULL) {
+  if (is.null(built_data) || !"outliers" %in% names(built_data)) return(0L)
+  as.integer(sum(vapply(built_data$outliers, function(values) {
+    if (is.null(values)) return(0L)
+    length(unlist(values, use.names = FALSE))
+  }, integer(1))))
+}
+
+boxplot_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  params <- layer_params(layer)
+  geom_params <- layer$geom_params %||% list()
+  default_aes <- layer$geom$default_aes %||% ggplot2::GeomBoxplot$default_aes
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  color_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "colour"),
+    param_value(params, c("colour", "color"), default_aes$colour %||% "#333333")
+  ))
+  fill_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "fill"),
+    param_value(params, c("fill"), default_aes$fill %||% "white")
+  ))
+  linewidth_fallback <- suppressWarnings(as.numeric(first_present_value(
+    c(layer_data_values(built_data, "linewidth"), layer_data_values(built_data, "size")),
+    param_value(params, c("linewidth", "size"), default_aes$linewidth %||% default_aes$size %||% 0.5)
+  )))
+  if (length(linewidth_fallback) == 0 || !is.finite(linewidth_fallback[[1]])) linewidth_fallback <- 0.5
+  alpha_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "alpha"),
+    param_value(params, c("alpha"), default_aes$alpha %||% 1)
+  )))
+  if (length(alpha_fallback) == 0 || !is.finite(alpha_fallback[[1]])) alpha_fallback <- 1
+
+  outlier_color_fallback <- as.character(first_present_value(
+    list(param_value(geom_params, c("outlier.colour", "outlier.color"))),
+    color_fallback
+  ))
+  outlier_fill_fallback <- as.character(first_present_value(
+    list(param_value(geom_params, c("outlier.fill"))),
+    fill_fallback
+  ))
+  outlier_shape_fallback <- boxplot_outlier_shape_value(
+    param_value(geom_params, c("outlier.shape"), 19),
+    19
+  )
+  outlier_size_fallback <- suppressWarnings(as.numeric(param_value(geom_params, c("outlier.size"), 1.5)))
+  if (length(outlier_size_fallback) == 0 || !is.finite(outlier_size_fallback[[1]])) outlier_size_fallback <- 1.5
+  outlier_stroke_fallback <- suppressWarnings(as.numeric(param_value(geom_params, c("outlier.stroke"), 0.5)))
+  if (length(outlier_stroke_fallback) == 0 || !is.finite(outlier_stroke_fallback[[1]])) outlier_stroke_fallback <- 0.5
+  outlier_alpha_fallback <- suppressWarnings(as.numeric(first_present_value(
+    list(param_value(geom_params, c("outlier.alpha"))),
+    alpha_fallback[[1]]
+  )))
+  if (length(outlier_alpha_fallback) == 0 || !is.finite(outlier_alpha_fallback[[1]])) outlier_alpha_fallback <- alpha_fallback[[1]]
+  final_outlier_shape <- boxplot_outlier_shape_value(
+    latest_value(gid, "outlier_shape", outlier_shape_fallback),
+    outlier_shape_fallback
+  )
+
+  list(
+    color = as.character(latest_alias_value(gid, c("color", "median_color"), color_fallback)),
+    box_color = latest_string(gid, "box_color", fill_fallback),
+    linewidth = latest_numeric(gid, "linewidth", linewidth_fallback[[1]]),
+    alpha = latest_numeric(gid, "alpha", alpha_fallback[[1]]),
+    outlier_color = latest_string(gid, "outlier_color", outlier_color_fallback),
+    outlier_fill = latest_string(gid, "outlier_fill", outlier_fill_fallback),
+    outlier_shape = final_outlier_shape,
+    outlier_size = latest_numeric(gid, "outlier_size", outlier_size_fallback[[1]]),
+    outlier_stroke = latest_numeric(gid, "outlier_stroke", outlier_stroke_fallback[[1]]),
+    outlier_alpha = latest_numeric(gid, "outlier_alpha", outlier_alpha_fallback[[1]]),
+    outlierFillSupported = !identical(final_outlier_shape, "none") && point_shapes_are_fillable(list(final_outlier_shape)),
+    outlierCount = boxplot_outlier_count(built_data),
+    fillMapped = "fill" %in% names(effective_mapping),
+    colorMapped = any(c("colour", "color") %in% names(effective_mapping)),
+    componentRoles = as.list(c("box_body", "median", "whiskers", "staples", "outliers")),
+    positionClass = layer_position_class(layer),
+    adapterFamily = "boxplot"
+  )
+}
+
+boxplot_layer_editable <- function(props = list()) {
+  editable <- c(
+    "color", "linewidth", "alpha", "box_color",
+    "outlier_color", "outlier_shape",
+    "outlier_size", "outlier_stroke", "outlier_alpha"
+  )
+  if (isTRUE(props$outlierFillSupported)) editable <- c(editable, "outlier_fill")
+  as.list(editable)
+}
+
+apply_boxplot_layer_edits <- function(layer, gid) {
+  params <- layer$aes_params %||% list()
+  geom_params <- layer$geom_params %||% list()
+
+  if (has_edit(gid, "color") || has_edit(gid, "median_color")) {
+    params$colour <- as.character(latest_alias_value(
+      gid,
+      c("color", "median_color"),
+      params$colour %||% params$color %||% "#333333"
+    ))
+  }
+  if (has_edit(gid, "box_color")) {
+    params$fill <- latest_string(gid, "box_color", params$fill %||% "white")
+  }
+  if (has_edit(gid, "linewidth")) {
+    line_width <- latest_numeric(gid, "linewidth", params$linewidth %||% params$size %||% 0.5)
+    params$linewidth <- line_width
+    params$size <- line_width
+  }
+  if (has_edit(gid, "alpha")) {
+    params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
+  }
+  if (has_edit(gid, "outlier_color")) {
+    geom_params[["outlier.colour"]] <- latest_string(gid, "outlier_color", geom_params[["outlier.colour"]] %||% "#333333")
+  }
+  if (has_edit(gid, "outlier_fill")) {
+    geom_params[["outlier.fill"]] <- latest_string(gid, "outlier_fill", geom_params[["outlier.fill"]] %||% "white")
+  }
+  if (has_edit(gid, "outlier_shape")) {
+    geom_params[["outlier.shape"]] <- boxplot_outlier_shape_param(
+      latest_value(gid, "outlier_shape", geom_params[["outlier.shape"]] %||% 19),
+      geom_params[["outlier.shape"]] %||% 19
+    )
+  }
+  if (has_edit(gid, "outlier_size")) {
+    geom_params[["outlier.size"]] <- latest_numeric(gid, "outlier_size", geom_params[["outlier.size"]] %||% 1.5)
+  }
+  if (has_edit(gid, "outlier_stroke")) {
+    geom_params[["outlier.stroke"]] <- latest_numeric(gid, "outlier_stroke", geom_params[["outlier.stroke"]] %||% 0.5)
+  }
+  if (has_edit(gid, "outlier_alpha")) {
+    geom_params[["outlier.alpha"]] <- latest_numeric(gid, "outlier_alpha", geom_params[["outlier.alpha"]] %||% params$alpha %||% 1)
+  }
+
+  layer$aes_params <- params
+  layer$geom_params <- geom_params
+  layer
+}
+
+violin_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  params <- layer_params(layer)
+  geom_params <- layer$geom_params %||% list()
+  default_aes <- layer$geom$default_aes %||% ggplot2::GeomViolin$default_aes
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  edge_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "colour"),
+    param_value(params, c("colour", "color"), default_aes$colour %||% "#333333")
+  ))
+  fill_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "fill"),
+    param_value(params, c("fill"), default_aes$fill %||% "white")
+  ))
+  linewidth_fallback <- suppressWarnings(as.numeric(first_present_value(
+    c(layer_data_values(built_data, "linewidth"), layer_data_values(built_data, "size")),
+    param_value(params, c("linewidth", "size"), default_aes$linewidth %||% default_aes$size %||% 0.5)
+  )))
+  if (length(linewidth_fallback) == 0 || !is.finite(linewidth_fallback[[1]])) linewidth_fallback <- 0.5
+  alpha_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "alpha"),
+    param_value(params, c("alpha"), default_aes$alpha %||% 1)
+  )))
+  if (length(alpha_fallback) == 0 || !is.finite(alpha_fallback[[1]])) alpha_fallback <- 1
+  quantiles <- suppressWarnings(as.numeric(unlist(
+    geom_params$draw_quantiles %||% geom_params$quantiles %||% numeric(),
+    use.names = FALSE
+  )))
+  quantiles <- quantiles[is.finite(quantiles)]
+  component_roles <- c("body")
+  if (length(quantiles) > 0) component_roles <- c(component_roles, "quantile_lines")
+
+  list(
+    facecolor = latest_string(gid, "facecolor", fill_fallback),
+    edgecolor = as.character(latest_alias_value(gid, c("color", "edgecolor"), edge_fallback)),
+    linewidth = latest_numeric(gid, "linewidth", linewidth_fallback[[1]]),
+    alpha = latest_numeric(gid, "alpha", alpha_fallback[[1]]),
+    fillMapped = "fill" %in% names(effective_mapping),
+    colorMapped = any(c("colour", "color") %in% names(effective_mapping)),
+    componentRoles = as.list(component_roles),
+    quantileValues = as.list(quantiles),
+    quantileCount = length(quantiles),
+    positionClass = layer_position_class(layer),
+    adapterFamily = "violin"
+  )
+}
+
+apply_violin_layer_edits <- function(layer, gid) {
+  params <- layer$aes_params %||% list()
+  if (has_edit(gid, "color") || has_edit(gid, "edgecolor")) {
+    params$colour <- as.character(latest_alias_value(
+      gid,
+      c("color", "edgecolor"),
+      params$colour %||% params$color %||% "#333333"
+    ))
+  }
+  if (has_edit(gid, "facecolor")) {
+    params$fill <- latest_string(gid, "facecolor", params$fill %||% "white")
+  }
+  if (has_edit(gid, "linewidth")) {
+    line_width <- latest_numeric(gid, "linewidth", params$linewidth %||% params$size %||% 0.5)
+    params$linewidth <- line_width
+    params$size <- line_width
+  }
+  if (has_edit(gid, "alpha")) {
+    params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
+  }
+  layer$aes_params <- params
+  layer
+}
+
+ribbon_area_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  params <- layer_params(layer)
+  geom <- geom_class(layer)
+  default_aes <- layer$geom$default_aes %||% ggplot2::GeomRibbon$default_aes
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  fill_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "fill"),
+    param_value(params, c("fill"), default_aes$fill %||% "#333333")
+  ))
+  edge_fallback <- as.character(first_present_value(
+    layer_data_values(built_data, "colour"),
+    param_value(params, c("colour", "color"), default_aes$colour %||% "#000000")
+  ))
+  linewidth_fallback <- suppressWarnings(as.numeric(first_present_value(
+    c(layer_data_values(built_data, "linewidth"), layer_data_values(built_data, "size")),
+    param_value(params, c("linewidth", "size"), default_aes$linewidth %||% default_aes$size %||% 0.5)
+  )))
+  if (length(linewidth_fallback) == 0 || !is.finite(linewidth_fallback[[1]])) linewidth_fallback <- 0.5
+  alpha_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "alpha"),
+    param_value(params, c("alpha"), default_aes$alpha %||% 1)
+  )))
+  if (length(alpha_fallback) == 0 || !is.finite(alpha_fallback[[1]])) alpha_fallback <- 1
+  rendered_fills <- as.character(unlist(layer_data_values(built_data, "fill"), use.names = FALSE))
+  rendered_fills <- rendered_fills[!is.na(rendered_fills) & nzchar(rendered_fills)]
+  if (length(rendered_fills) == 0) rendered_fills <- fill_fallback
+  rendered_edges <- as.character(unlist(layer_data_values(built_data, "colour"), use.names = FALSE))
+  rendered_edges <- rendered_edges[!is.na(rendered_edges) & nzchar(rendered_edges)]
+  if (length(rendered_edges) == 0) rendered_edges <- edge_fallback
+
+  list(
+    facecolor = latest_string(gid, "facecolor", fill_fallback),
+    edgecolor = latest_string(gid, "edgecolor", edge_fallback),
+    linewidth = latest_numeric(gid, "linewidth", linewidth_fallback[[1]]),
+    alpha = latest_numeric(gid, "alpha", alpha_fallback[[1]]),
+    facecolorValues = as.list(rendered_fills),
+    edgecolorValues = as.list(rendered_edges),
+    fillMapped = "fill" %in% names(effective_mapping),
+    colorMapped = any(c("colour", "color") %in% names(effective_mapping)),
+    linewidthMapped = "linewidth" %in% names(effective_mapping) || "size" %in% names(effective_mapping),
+    alphaMapped = "alpha" %in% names(effective_mapping),
+    componentRoles = as.list(c("body", "boundary_lines")),
+    ownerSeriesKey = r_mapping_signature(effective_mapping),
+    ownerSeriesMode = "layer",
+    positionClass = layer_position_class(layer),
+    adapterFamily = if (identical(geom, "GeomArea")) "area" else "ribbon"
+  )
+}
+
+apply_ribbon_area_layer_edits <- function(layer, gid) {
+  params <- layer$aes_params %||% list()
+  if (has_edit(gid, "facecolor")) {
+    params$fill <- latest_string(gid, "facecolor", params$fill %||% "#333333")
+  }
+  if (has_edit(gid, "edgecolor")) {
+    params$colour <- latest_string(gid, "edgecolor", params$colour %||% params$color %||% "#000000")
+  }
+  if (has_edit(gid, "linewidth")) {
+    line_width <- latest_numeric(gid, "linewidth", params$linewidth %||% params$size %||% 0.5)
+    params$linewidth <- line_width
+    params$size <- line_width
+  }
+  if (has_edit(gid, "alpha")) {
+    params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
+  }
+  layer$aes_params <- params
+  layer
+}
+
 layer_current_props <- function(layer, gid) {
   params <- layer_params(layer)
   props <- list(
@@ -797,12 +1639,41 @@ layer_current_props <- function(layer, gid) {
   props
 }
 
-apply_layer_edits <- function(plot_obj) {
+apply_layer_edits <- function(plot_obj, built_data_by_layer = list()) {
   if (!inherits(plot_obj, "ggplot")) return(plot_obj)
   if (length(plot_obj$layers) == 0) return(plot_obj)
 
   for (i in seq_along(plot_obj$layers)) {
     gid <- paste0("r.layer.", i - 1)
+    built_data <- if (length(built_data_by_layer) >= i) built_data_by_layer[[i]] else NULL
+    if (is_point_layer(plot_obj$layers[[i]])) {
+      plot_obj$layers[[i]] <- apply_point_layer_edits(plot_obj$layers[[i]], gid, built_data)
+      next
+    }
+    if (is_line_adapter_layer(plot_obj$layers[[i]])) {
+      plot_obj$layers[[i]] <- apply_line_layer_edits(plot_obj$layers[[i]], gid)
+      next
+    }
+    if (is_bar_adapter_layer(plot_obj$layers[[i]])) {
+      plot_obj$layers[[i]] <- apply_bar_layer_edits(plot_obj$layers[[i]], gid)
+      next
+    }
+    if (is_errorbar_adapter_layer(plot_obj$layers[[i]])) {
+      plot_obj$layers[[i]] <- apply_errorbar_layer_edits(plot_obj$layers[[i]], gid)
+      next
+    }
+    if (is_boxplot_adapter_layer(plot_obj$layers[[i]])) {
+      plot_obj$layers[[i]] <- apply_boxplot_layer_edits(plot_obj$layers[[i]], gid)
+      next
+    }
+    if (is_violin_adapter_layer(plot_obj$layers[[i]])) {
+      plot_obj$layers[[i]] <- apply_violin_layer_edits(plot_obj$layers[[i]], gid)
+      next
+    }
+    if (is_ribbon_area_adapter_layer(plot_obj$layers[[i]])) {
+      plot_obj$layers[[i]] <- apply_ribbon_area_layer_edits(plot_obj$layers[[i]], gid)
+      next
+    }
     params <- plot_obj$layers[[i]]$aes_params
     if (is.null(params)) params <- list()
 
@@ -1600,10 +2471,27 @@ discrete_group_usage <- function(entry, item_index, built_data, plot_obj) {
     }
   }
 
-  semantic_kind <- if (any(geoms %in% c("GeomLine", "GeomPath", "GeomSmooth"))) {
+  unique_geoms <- unique(geoms)
+  semantic_kind <- if (any(unique_geoms %in% c("GeomLine", "GeomPath", "GeomSmooth"))) {
     "line"
   } else if (identical(entry$kind, "fill")) {
-    "bar"
+    distribution_geoms <- unique_geoms[unique_geoms %in% c("GeomBoxplot", "GeomViolin")]
+    band_geoms <- unique_geoms[unique_geoms %in% c("GeomRibbon", "GeomArea")]
+    if (length(unique_geoms) > 0 && all(unique_geoms == "GeomRibbon")) {
+      "ribbon"
+    } else if (length(unique_geoms) > 0 && all(unique_geoms == "GeomArea")) {
+      "area"
+    } else if (length(band_geoms) > 0 && all(unique_geoms %in% c("GeomRibbon", "GeomArea"))) {
+      "band"
+    } else if (length(unique_geoms) > 0 && all(unique_geoms == "GeomBoxplot")) {
+      "boxplot"
+    } else if (length(unique_geoms) > 0 && all(unique_geoms == "GeomViolin")) {
+      "violin"
+    } else if (length(distribution_geoms) > 0 && all(unique_geoms %in% c("GeomBoxplot", "GeomViolin"))) {
+      "distribution"
+    } else {
+      "bar"
+    }
   } else {
     "scatter"
   }
@@ -1612,6 +2500,7 @@ discrete_group_usage <- function(entry, item_index, built_data, plot_obj) {
     layerIds = as.list(unique(layer_ids)),
     subplotIds = as.list(unique(subplot_ids)),
     semanticKind = semantic_kind,
+    geomFamilies = as.list(unique_geoms),
     svgSelectable = !duplicate_color
   )
 }
@@ -1645,6 +2534,7 @@ detect_discrete_scale_semantics <- function(plot_obj) {
         paletteId = palette_id,
         kind = usage$semanticKind,
         aesthetic = kind,
+        geomFamilies = usage$geomFamilies,
         scaleId = entry$scaleId,
         layerIds = usage$layerIds,
         subplotIds = usage$subplotIds
@@ -1656,7 +2546,14 @@ detect_discrete_scale_semantics <- function(plot_obj) {
         editable = list(if (kind == "fill") "facecolor" else "color"),
         currentProps = c(
           if (kind == "fill") list(facecolor = latest_string(group_id, "facecolor", color)) else list(color = latest_string(group_id, "color", color)),
-          list(aesthetic = kind, groupKey = group_key, svgSelectable = usage$svgSelectable)
+          list(
+            aesthetic = kind,
+            groupKey = group_key,
+            geomFamilies = usage$geomFamilies,
+            semanticKind = usage$semanticKind,
+            svgSelectable = usage$svgSelectable,
+            scaleActive = length(usage$layerIds) > 0
+          )
         ),
         role = paste0("ggplot_scale_", kind),
         layerIds = usage$layerIds,
@@ -2216,7 +3113,8 @@ apply_ggplot_edits <- function(plot_obj) {
   plot_obj <- apply_legend_text_edits(plot_obj)
   plot_obj <- apply_continuous_scale_edits(plot_obj)
   plot_obj <- apply_text_layer_edits(plot_obj)
-  apply_layer_edits(plot_obj)
+  layer_build <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
+  apply_layer_edits(plot_obj, layer_build$data %||% list())
 }
 
 `%||%` <- function(lhs, rhs) {
@@ -2425,46 +3323,88 @@ r_layer_structure_signature <- function(layer, plot_mapping = NULL) {
   )
 }
 
-manifest_layer_object <- function(layer, index, plot_mapping = NULL) {
+manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data = NULL) {
   geom <- geom_class(layer)
+  adapter_class <- layer_adapter_class(layer)
   gid <- paste0("r.layer.", index - 1)
   layer_key <- r_layer_structure_signature(layer, plot_mapping)
   kind <- layer_kind(geom)
-  props <- layer_current_props(layer, gid)
+  point_adapter <- is_point_layer(layer)
+  line_adapter <- is_line_adapter_layer(layer)
+  bar_adapter <- is_bar_adapter_layer(layer)
+  errorbar_adapter <- is_errorbar_adapter_layer(layer)
+  boxplot_adapter <- is_boxplot_adapter_layer(layer)
+  violin_adapter <- is_violin_adapter_layer(layer)
+  ribbon_area_adapter <- is_ribbon_area_adapter_layer(layer)
+  panel_ids <- if (!is.null(built_data) && "PANEL" %in% names(built_data)) {
+    values <- suppressWarnings(as.integer(built_data$PANEL))
+    values <- unique(values[is.finite(values) & values >= 1])
+    paste0("subplot.", values - 1L)
+  } else {
+    character()
+  }
+  props <- if (point_adapter) {
+    point_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (line_adapter) {
+    line_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (bar_adapter) {
+    bar_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (errorbar_adapter) {
+    errorbar_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (boxplot_adapter) {
+    boxplot_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (violin_adapter) {
+    violin_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (ribbon_area_adapter) {
+    ribbon_area_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else {
+    layer_current_props(layer, gid)
+  }
   editable <- switch(
     kind,
     text = list("color", "fontsize", "alpha"),
-    collection = list("color", "facecolor", "size", "alpha"),
+    collection = if (point_adapter) {
+      point_editable <- list("color", "size", "size_scale", "marker", "alpha")
+      if (isTRUE(props$fillSupported)) {
+        point_editable <- c(point_editable, list("facecolor", "edgecolor", "linewidth"))
+      }
+      point_editable
+    } else {
+      list("color", "facecolor", "size", "alpha")
+    },
     line = list("color", "linewidth", "linestyle", "alpha"),
     patch = list("facecolor", "edgecolor", "linewidth", "alpha"),
-    errorbar_container = list("color", "linewidth", "alpha"),
-    boxplot_container = list("color", "linewidth", "alpha", "box_color", "median_color"),
-    violinplot_container = list("color", "facecolor", "edgecolor", "linewidth", "alpha"),
+    errorbar_container = if (errorbar_adapter) errorbar_layer_editable(props) else list("color", "linewidth", "alpha"),
+    boxplot_container = if (boxplot_adapter) boxplot_layer_editable(props) else list("color", "linewidth", "alpha", "box_color"),
+    violinplot_container = list("facecolor", "edgecolor", "linewidth", "alpha"),
     unsupported = list(),
     list()
   )
   current_props <- switch(
     kind,
     text = list(color = props$color, fontsize = props$size, alpha = props$alpha),
-    collection = list(color = props$color, facecolor = props$facecolor, size = props$size, alpha = props$alpha),
-    line = list(color = props$color, linewidth = props$linewidth, linestyle = props$linestyle, alpha = props$alpha),
-    patch = list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
-    errorbar_container = list(color = props$color, linewidth = props$linewidth, alpha = props$alpha),
-    boxplot_container = list(color = props$color, linewidth = props$linewidth, alpha = props$alpha, box_color = latest_string(gid, "box_color", props$facecolor), median_color = latest_string(gid, "median_color", props$edgecolor)),
-    violinplot_container = list(color = props$color, facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
+    collection = if (point_adapter) props else list(color = props$color, facecolor = props$facecolor, size = props$size, alpha = props$alpha),
+    line = if (line_adapter) props else list(color = props$color, linewidth = props$linewidth, linestyle = props$linestyle, alpha = props$alpha),
+    patch = if (bar_adapter || ribbon_area_adapter) props else list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
+    errorbar_container = if (errorbar_adapter) props else list(color = props$color, linewidth = props$linewidth, alpha = props$alpha),
+    boxplot_container = if (boxplot_adapter) props else list(color = props$color, linewidth = props$linewidth, alpha = props$alpha, box_color = latest_string(gid, "box_color", props$facecolor)),
+    violinplot_container = if (violin_adapter) props else list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
     unsupported = list(unsupportedReason = paste0("No stable SciFigure write-back adapter for ggplot geom class ", geom, ".")),
     list()
   )
   list(
     id = gid,
     kind = kind,
-    label = layer_label(geom, index),
+    label = layer_label(adapter_class, index),
     editable = editable,
     currentProps = current_props,
     role = paste0("ggplot_", geom),
     layerKey = layer_key,
+    subplotIds = as.list(panel_ids),
     source = list(
       artistClass = geom,
+      adapterClass = adapter_class,
+      positionClass = layer_position_class(layer),
       axesIndex = 0,
       zorder = index,
       layerSignature = layer_key
@@ -3570,6 +4510,20 @@ r_object_matches_identity_evidence <- function(object, evidence) {
   TRUE
 }
 
+r_gid_remap_family <- function(value) {
+  gid <- as.character(unwrap_manifest_value(value) %||% "")
+  if (!grepl("^(r\\.|axis\\.[xy]\\.|[xy]tick\\.|legend(?:_title|_text)?\\.|title\\.|xlabel\\.|ylabel\\.|grid\\.|spine\\.|subplot\\.|facet\\.strip\\.)", gid, perl = TRUE)) {
+    return("")
+  }
+  gsub("[0-9]+", "#", gid, perl = TRUE)
+}
+
+r_can_remap_gid <- function(requested_gid, resolved_gid) {
+  requested_family <- r_gid_remap_family(requested_gid)
+  resolved_family <- r_gid_remap_family(resolved_gid)
+  nzchar(requested_family) && identical(requested_family, resolved_family)
+}
+
 resolve_r_edit_entries <- function(manifest, entries) {
   objects <- manifest$objects %||% list()
   object_by_id <- setNames(objects, vapply(objects, function(obj) as.character(obj$id %||% ""), character(1)))
@@ -3654,11 +4608,25 @@ resolve_r_edit_entries <- function(manifest, entries) {
       next
     }
 
+    resolved_gid <- as.character(candidates[[1]]$id)
+    if (!identical(resolved_gid, gid) && (is.null(exact_object) || !r_can_remap_gid(gid, resolved_gid))) {
+      reject_entry(
+        entry,
+        index - 1L,
+        "identity_mismatch",
+        gid,
+        prop,
+        paste0(gid, " identity matched an object outside the requested R GID family."),
+        list(candidateGids = list(resolved_gid))
+      )
+      next
+    }
+
     resolved <- entry
     resolved[[".__requestedEntry"]] <- entry
     resolved[[".__patchIndex"]] <- index - 1L
-    resolved[[".__resolvedGid"]] <- as.character(candidates[[1]]$id)
-    resolved$gid <- as.character(candidates[[1]]$id)
+    resolved[[".__resolvedGid"]] <- resolved_gid
+    resolved$gid <- resolved_gid
     accepted[[length(accepted) + 1]] <- resolved
   }
 
@@ -3711,6 +4679,73 @@ confirm_r_edit_entries <- function(manifest, entries, resolution = list(rejected
     rejected[[length(rejected) + 1]] <<- entry
   }
 
+  effective_prop_for_object <- function(object, prop) {
+    prop <- as.character(prop)
+    if (
+      identical(prop, "facecolor") &&
+      identical(as.character(object$currentProps$adapterFamily %||% ""), "point") &&
+      !isTRUE(object$currentProps$fillSupported)
+    ) {
+      return("color")
+    }
+    if (
+      prop %in% c("color", "edgecolor") &&
+      identical(as.character(object$currentProps$adapterFamily %||% ""), "point")
+    ) {
+      editable <- as.character(unlist(object$editable %||% list(), use.names = FALSE))
+      return(if ("edgecolor" %in% editable) "edgecolor" else "color")
+    }
+    if (
+      identical(prop, "linewidth") &&
+      identical(as.character(object$currentProps$adapterFamily %||% ""), "errorbar")
+    ) {
+      return("elinewidth")
+    }
+    if (
+      identical(prop, "median_color") &&
+      identical(as.character(object$currentProps$adapterFamily %||% ""), "boxplot")
+    ) {
+      return("color")
+    }
+    if (
+      identical(prop, "color") &&
+      identical(as.character(object$currentProps$adapterFamily %||% ""), "violin")
+    ) {
+      return("edgecolor")
+    }
+    prop
+  }
+
+  is_superseded_entry <- function(entry_index, gid, effective_prop) {
+    if (entry_index >= length(entries)) return(FALSE)
+    current_object <- object_by_id[[gid]]
+    if (
+      identical(effective_prop, "outlier_fill") &&
+      identical(as.character(current_object$currentProps$adapterFamily %||% ""), "boxplot") &&
+      !isTRUE(current_object$currentProps$outlierFillSupported)
+    ) {
+      for (later_index in seq(entry_index + 1L, length(entries))) {
+        later <- entries[[later_index]]
+        if (
+          identical(as.character(unwrap_manifest_value(later$gid) %||% ""), gid) &&
+          identical(as.character(unwrap_manifest_value(later$prop) %||% ""), "outlier_shape")
+        ) {
+          return(TRUE)
+        }
+      }
+    }
+    for (later_index in seq(entry_index + 1L, length(entries))) {
+      later <- entries[[later_index]]
+      later_gid <- as.character(unwrap_manifest_value(later$gid) %||% "")
+      if (!identical(later_gid, gid)) next
+      later_object <- object_by_id[[later_gid]]
+      if (is.null(later_object)) next
+      later_prop <- effective_prop_for_object(later_object, unwrap_manifest_value(later$prop) %||% "")
+      if (identical(later_prop, effective_prop)) return(TRUE)
+    }
+    FALSE
+  }
+
   for (index in seq_along(entries)) {
     entry <- entries[[index]]
     requested_entry <- entry[[".__requestedEntry"]] %||% entry
@@ -3750,10 +4785,70 @@ confirm_r_edit_entries <- function(manifest, entries, resolution = list(rejected
       reject_entry(requested_entry, patch_index, "missing_gid", requested_gid, prop, paste0("R manifest is missing gid ", gid, "."))
       next
     }
+    effective_prop <- effective_prop_for_object(object, prop)
+    legacy_prop_alias <- NULL
+    if (
+      identical(prop, "facecolor") &&
+      identical(as.character(object$currentProps$adapterFamily %||% ""), "point") &&
+      !isTRUE(object$currentProps$fillSupported)
+    ) {
+      legacy_prop_alias <- list(
+        fromProp = prop,
+        toProp = effective_prop,
+        message = paste0(requested_gid, ".facecolor was migrated to visible point color for a non-fillable ggplot shape.")
+      )
+    } else if (
+      identical(prop, "median_color") &&
+      identical(as.character(object$currentProps$adapterFamily %||% ""), "boxplot")
+    ) {
+      legacy_prop_alias <- list(
+        fromProp = prop,
+        toProp = effective_prop,
+        message = paste0(requested_gid, ".median_color is a legacy alias and was migrated to the whole boxplot outline color.")
+      )
+    } else if (
+      identical(prop, "color") &&
+      identical(as.character(object$currentProps$adapterFamily %||% ""), "violin")
+    ) {
+      legacy_prop_alias <- list(
+        fromProp = prop,
+        toProp = effective_prop,
+        message = paste0(requested_gid, ".color is a legacy alias and was migrated to the violin edgecolor.")
+      )
+    }
+    if (!is.null(legacy_prop_alias)) {
+      warnings[[length(warnings) + 1]] <- list(
+        type = "legacy_prop_alias",
+        gid = requested_gid,
+        prop = prop,
+        patchIndex = patch_index,
+        fromProp = legacy_prop_alias$fromProp,
+        toProp = legacy_prop_alias$toProp,
+        message = legacy_prop_alias$message
+      )
+    }
+    if (grepl("^r\\.group\\.", gid) && identical(object$currentProps$scaleActive, FALSE)) {
+      reject_entry(
+        requested_entry,
+        patch_index,
+        "no_setter",
+        requested_gid,
+        prop,
+        paste0(gid, ".", prop, " is dormant behind a layer-level style override and cannot keep data and legend output consistent.")
+      )
+      next
+    }
+    if (is_superseded_entry(index, gid, effective_prop)) {
+      acknowledgement <- requested_entry
+      if (!identical(requested_gid, gid)) acknowledgement$resolvedGid <- gid
+      acknowledgement$superseded <- TRUE
+      applied[[length(applied) + 1]] <- acknowledgement
+      next
+    }
     editable <- as.character(unlist(object$editable %||% list(), use.names = FALSE))
     capabilities <- object$propertyCapabilities %||% list()
-    supported <- prop %in% editable && any(vapply(capabilities, function(capability) {
-      identical(as.character(capability$prop %||% ""), prop) &&
+    supported <- effective_prop %in% editable && any(vapply(capabilities, function(capability) {
+      identical(as.character(capability$prop %||% ""), effective_prop) &&
         !identical(as.character(capability$replay %||% ""), "unsupported")
     }, logical(1)))
     if (!supported) {
@@ -3791,7 +4886,7 @@ confirm_r_edit_entries <- function(manifest, entries, resolution = list(rejected
     }
     if (identity_rejected) next
 
-    current_value <- object$currentProps[[prop]]
+    current_value <- object$currentProps[[effective_prop]]
     if (!manifest_values_equal(prop, current_value, entry$value)) {
       reject_entry(requested_entry, patch_index, "no_setter", requested_gid, prop, paste0("R renderer did not confirm ", gid, ".", prop, "."))
       next
@@ -3809,7 +4904,119 @@ confirm_r_edit_entries <- function(manifest, entries, resolution = list(rejected
   )
 }
 
-build_ggplot_manifest <- function(plot_obj, svg = "") {
+restore_baseline_manifest_relations <- function(objects, baseline_manifest = NULL) {
+  baseline_objects <- baseline_manifest$objects %||% list()
+  if (length(objects) == 0 || length(baseline_objects) == 0) return(objects)
+  baseline_by_id <- setNames(baseline_objects, vapply(
+    baseline_objects,
+    function(object) as.character(object$id %||% ""),
+    character(1)
+  ))
+  relation_fields <- c("subplotId", "subplotIds", "layerIds", "groupIds")
+  for (index in seq_along(objects)) {
+    id <- as.character(objects[[index]]$id %||% "")
+    baseline_object <- baseline_by_id[[id]] %||% NULL
+    if (is.null(baseline_object)) next
+    baseline_relation <- baseline_object$identity$relation %||% list()
+    for (field in relation_fields) {
+      values <- r_manifest_string_values(baseline_relation[[field]])
+      if (length(values) == 0) next
+      objects[[index]][[field]] <- if (identical(field, "subplotId") && length(values) == 1) {
+        values[[1]]
+      } else {
+        as.list(values)
+      }
+    }
+  }
+  objects
+}
+
+restore_baseline_scale_semantics <- function(scale_semantics, baseline_manifest = NULL) {
+  baseline_groups <- baseline_manifest$groups %||% list()
+  if (length(baseline_groups) == 0) return(scale_semantics)
+  current_group_object_ids <- vapply(
+    scale_semantics$objects %||% list(),
+    function(object) as.character(object$id %||% ""),
+    character(1)
+  )
+  append_missing_by_id <- function(current, baseline, id_field) {
+    current <- current %||% list()
+    current_ids <- vapply(current, function(item) as.character(item[[id_field]] %||% ""), character(1))
+    for (item in baseline %||% list()) {
+      item_id <- as.character(item[[id_field]] %||% "")
+      if (nzchar(item_id) && !item_id %in% current_ids) {
+        current[[length(current) + 1]] <- item
+        current_ids <- c(current_ids, item_id)
+      }
+    }
+    current
+  }
+
+  baseline_group_ids <- vapply(baseline_groups, function(group) as.character(group$groupId %||% ""), character(1))
+  baseline_group_objects <- Filter(function(object) {
+    as.character(object$id %||% "") %in% baseline_group_ids
+  }, baseline_manifest$objects %||% list())
+  scale_semantics$groups <- append_missing_by_id(scale_semantics$groups, baseline_groups, "groupId")
+  scale_semantics$objects <- append_missing_by_id(scale_semantics$objects, baseline_group_objects, "id")
+  scale_semantics$palettes <- append_missing_by_id(scale_semantics$palettes, baseline_manifest$palettes %||% list(), "id")
+  scale_semantics$bindings <- append_missing_by_id(scale_semantics$bindings, baseline_manifest$bindings %||% list(), "groupId")
+
+  baseline_by_id <- setNames(baseline_groups, vapply(
+    baseline_groups,
+    function(group) as.character(group$groupId %||% ""),
+    character(1)
+  ))
+  object_index_by_id <- setNames(seq_along(scale_semantics$objects %||% list()), vapply(
+    scale_semantics$objects %||% list(),
+    function(object) as.character(object$id %||% ""),
+    character(1)
+  ))
+  baseline_object_by_id <- setNames(baseline_group_objects, vapply(
+    baseline_group_objects,
+    function(object) as.character(object$id %||% ""),
+    character(1)
+  ))
+
+  for (index in seq_along(scale_semantics$groups)) {
+    group_id <- as.character(scale_semantics$groups[[index]]$groupId %||% "")
+    baseline_group <- baseline_by_id[[group_id]] %||% NULL
+    if (is.null(baseline_group)) next
+    for (field in c("kind", "geomFamilies", "layerIds", "subplotIds")) {
+      if (!is.null(baseline_group[[field]])) {
+        scale_semantics$groups[[index]][[field]] <- baseline_group[[field]]
+      }
+    }
+    object_index <- object_index_by_id[[group_id]] %||% NULL
+    if (is.null(object_index)) next
+    baseline_object <- baseline_object_by_id[[group_id]] %||% NULL
+    baseline_relation <- baseline_object$identity$relation %||% list()
+    for (field in c("scaleId", "scaleKey", "guideId", "guideKey", "legendId", "aesthetic", "groupKey")) {
+      value <- baseline_relation[[field]] %||% baseline_object[[field]] %||% NULL
+      if (!is.null(value)) scale_semantics$objects[[object_index]][[field]] <- value
+    }
+    if (!group_id %in% current_group_object_ids) {
+      scale_semantics$objects[[object_index]]$currentProps$scaleActive <- FALSE
+    }
+    scale_semantics$objects[[object_index]]$layerIds <- baseline_group$layerIds %||% scale_semantics$objects[[object_index]]$layerIds
+    scale_semantics$objects[[object_index]]$subplotIds <- baseline_group$subplotIds %||% scale_semantics$objects[[object_index]]$subplotIds
+    scale_semantics$objects[[object_index]]$currentProps$semanticKind <- baseline_group$kind %||% scale_semantics$objects[[object_index]]$currentProps$semanticKind
+    scale_semantics$objects[[object_index]]$currentProps$geomFamilies <- baseline_group$geomFamilies %||% scale_semantics$objects[[object_index]]$currentProps$geomFamilies
+    color_prop <- if (identical(as.character(baseline_group$aesthetic %||% ""), "fill")) "facecolor" else "color"
+    fallback_color <- scale_semantics$objects[[object_index]]$currentProps[[color_prop]] %||% "#000000"
+    resolved_color <- latest_string(group_id, color_prop, fallback_color)
+    scale_semantics$objects[[object_index]]$currentProps[[color_prop]] <- resolved_color
+    palette_id <- as.character(baseline_group$paletteId %||% "")
+    for (palette_index in seq_along(scale_semantics$palettes %||% list())) {
+      if (identical(as.character(scale_semantics$palettes[[palette_index]]$id %||% ""), palette_id)) {
+        scale_semantics$palettes[[palette_index]]$color <- resolved_color
+        break
+      }
+    }
+  }
+  scale_semantics
+}
+
+build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) {
   layout_bounds <- svg_plot_layout_bounds(svg)
   title_style <- style_for_gid("title.0", default_title)
   x_label_style <- axis_label_style_for_gid("axis.x.0", "xlabel.0", default_label)
@@ -4018,9 +5225,16 @@ build_ggplot_manifest <- function(plot_obj, svg = "") {
   }
 
   if (length(plot_obj$layers) > 0) {
+    layer_build <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
+    layer_built_data <- layer_build$data %||% list()
     layer_objects <- lapply(
       seq_along(plot_obj$layers),
-      function(i) manifest_layer_object(plot_obj$layers[[i]], i, plot_obj$mapping)
+      function(i) manifest_layer_object(
+        plot_obj$layers[[i]],
+        i,
+        plot_obj$mapping,
+        if (length(layer_built_data) >= i) layer_built_data[[i]] else NULL
+      )
     )
     objects <- c(objects, layer_objects)
   }
@@ -4041,7 +5255,10 @@ build_ggplot_manifest <- function(plot_obj, svg = "") {
     }
   }
   built_plot <- tryCatch(ggplot2::ggplot_build(plot_obj)$plot, error = function(e) plot_obj)
-  scale_semantics <- detect_discrete_scale_semantics(built_plot)
+  scale_semantics <- restore_baseline_scale_semantics(
+    detect_discrete_scale_semantics(built_plot),
+    baseline_manifest
+  )
   if (length(scale_semantics$objects) > 0) {
     objects <- c(objects, scale_semantics$objects)
   }
@@ -4059,6 +5276,7 @@ build_ggplot_manifest <- function(plot_obj, svg = "") {
       }
     }
   }
+  objects <- restore_baseline_manifest_relations(objects, baseline_manifest)
   continuous_colorbar_objects <- manifest_continuous_colorbar_objects(plot_obj, layout_bounds)
   if (length(continuous_colorbar_objects) > 0) {
     objects <- c(objects, continuous_colorbar_objects)
@@ -4091,17 +5309,22 @@ build_ggplot_manifest <- function(plot_obj, svg = "") {
     if (!kind %in% names(kind_counts)) return(0L)
     as.integer(kind_counts[[kind]])
   }
+  kind_editable_props <- function(kind, fallback = list()) {
+    matching <- Filter(function(obj) identical(as.character(obj$kind %||% ""), kind), objects)
+    if (length(matching) == 0) return(fallback)
+    as.list(unique(unlist(lapply(matching, function(obj) obj$editable %||% list()), use.names = FALSE)))
+  }
   by_kind <- list(
     text = list(count = kind_count("text"), editableProps = list("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color")),
     axis_x = list(count = kind_count("axis_x"), editableProps = list("label", "label_fontsize", "label_color", "tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad")),
     axis_y = list(count = kind_count("axis_y"), editableProps = list("label", "label_fontsize", "label_color", "tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad")),
     legend = list(count = kind_count("legend"), editableProps = list("title", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "visible", "loc", "ncol", "markerscale", "handletextpad", "labelspacing", "columnspacing", "borderpad", "facecolor", "edgecolor", "linewidth", "alpha")),
-    collection = list(count = kind_count("collection"), editableProps = list("color", "facecolor", "size", "alpha")),
+    collection = list(count = kind_count("collection"), editableProps = list("color", "facecolor", "edgecolor", "linewidth", "size", "size_scale", "marker", "alpha")),
     line = list(count = kind_count("line"), editableProps = list("color", "linewidth", "linestyle", "alpha")),
     patch = list(count = kind_count("patch"), editableProps = list("facecolor", "edgecolor", "linewidth", "alpha")),
-    errorbar_container = list(count = kind_count("errorbar_container"), editableProps = list("color", "linewidth", "alpha")),
-    boxplot_container = list(count = kind_count("boxplot_container"), editableProps = list("color", "linewidth", "alpha", "box_color", "median_color")),
-    violinplot_container = list(count = kind_count("violinplot_container"), editableProps = list("color", "facecolor", "edgecolor", "linewidth", "alpha")),
+    errorbar_container = list(count = kind_count("errorbar_container"), editableProps = list("color", "elinewidth", "linestyle", "alpha", "capsize", "marker", "markersize", "facecolor")),
+    boxplot_container = list(count = kind_count("boxplot_container"), editableProps = kind_editable_props("boxplot_container", list("color", "linewidth", "alpha", "box_color", "outlier_color", "outlier_shape", "outlier_size", "outlier_stroke", "outlier_alpha"))),
+    violinplot_container = list(count = kind_count("violinplot_container"), editableProps = kind_editable_props("violinplot_container", list("facecolor", "edgecolor", "linewidth", "alpha"))),
     xtick = list(count = kind_count("xtick"), editableProps = list("fontsize", "fontfamily", "fontweight", "fontstyle", "color", "rotation")),
     ytick = list(count = kind_count("ytick"), editableProps = list("fontsize", "fontfamily", "fontweight", "fontstyle", "color", "rotation")),
     subplot = list(count = kind_count("subplot"), editableProps = list("aspect")),
@@ -4135,7 +5358,7 @@ build_ggplot_manifest <- function(plot_obj, svg = "") {
       unsupportedArtists = unsupported_artists
     ),
     unsupportedNotes = list(
-      "R ggplot2 semantic editing currently covers labels, theme text, whole-layer geom styles, manual color/fill scales, facet panel discovery, and continuous heatmap/colorbar scales.",
+      "R ggplot2 semantic editing currently covers labels, theme text, Point/Jitter, Line/Path/Smooth, Bar/Col, Errorbar/Linerange/Pointrange/Crossbar, and Boxplot/Violin layer adapters, whole-layer geom styles, manual color/fill scales, facet panel discovery, and continuous heatmap/colorbar scales.",
       "R facet subplot aspect uses ggplot theme(aspect.ratio); independent left/bottom/width/height panel bounds are not equivalent to Matplotlib axes bounds.",
       "Drag-position replay and per-facet independent label styling are not enabled in this phase."
     )
@@ -4242,6 +5465,7 @@ result <- tryCatch({
     try(grDevices::dev.off(), silent = TRUE)
   }, add = TRUE)
 
+  baseline_manifest <- NULL
   script_execution_started_ms <- monotonic_ms()
   withCallingHandlers({
     eval(parse(text = script), envir = env)
@@ -4290,7 +5514,7 @@ result <- tryCatch({
 
   manifest_build_started_ms <- monotonic_ms()
   manifest <- if (!is.null(ggplot_obj)) {
-    build_ggplot_manifest(ggplot_obj, svg)
+    build_ggplot_manifest(ggplot_obj, svg, baseline_manifest)
   } else {
     list(
       generatedBy = "r_svg",

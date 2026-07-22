@@ -354,12 +354,23 @@ function componentUnsupportedProps(obj: ManifestObject | undefined): string[] {
   return Array.isArray(unsupported) ? unsupported.map(String) : [];
 }
 
+export function isHiddenLegacyRProp(
+  obj: ManifestObject | undefined,
+  prop: string,
+  generatedBy?: string,
+): boolean {
+  if (!obj || generatedBy !== 'r_svg') return false;
+  return (obj.kind === 'boxplot_container' && prop === 'median_color')
+    || (obj.kind === 'violinplot_container' && prop === 'color');
+}
+
 export function supportsComponentBatchProp(
   obj: ManifestObject | undefined,
   prop: string,
   generatedBy?: string,
 ): boolean {
   if (!obj) return false;
+  if (isHiddenLegacyRProp(obj, prop, generatedBy)) return false;
   if (supportsObjectProp(obj, prop)) return true;
   if (isParentOwnedManifestObject(obj)) return false;
   if (isPythonStructuralSeriesProp(obj, prop)) return false;
@@ -376,7 +387,7 @@ export function supportsComponentBatchProp(
   if (['cmap', 'vmin', 'vmax'].includes(prop)) return ['heatmap', 'contour', 'contourf'].includes(obj.kind);
   if (prop === 'zorder') return ['line', 'patch', 'collection', 'fill_between', 'bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container', 'heatmap', 'contour', 'contourf'].includes(obj.kind);
   if (['elinewidth', 'capsize', 'capthick'].includes(prop)) return obj.kind === 'errorbar_container';
-  if (prop === 'box_color' || prop === 'median_color') return obj.kind === 'boxplot_container';
+  if (prop === 'box_color') return obj.kind === 'boxplot_container';
   if (prop === 'markersize') return obj.kind === 'line' || obj.kind === 'stem_container' || obj.kind === 'errorbar_container';
   if (LEGEND_LAYOUT_PROPS.has(prop)) {
     return obj.kind === 'legend' && (generatedBy !== 'r_svg' || obj.editable.includes(prop));
@@ -559,11 +570,20 @@ const PROP_LABELS: Record<string, string> = {
   baseline_visible: '显示基线',
   box_color: '箱体颜色',
   median_color: '中位线颜色',
+  outlier_color: '离群点边框色',
+  outlier_fill: '离群点填充色',
+  outlier_shape: '离群点形状',
+  outlier_size: '离群点大小',
+  outlier_stroke: '离群点边框宽度',
+  outlier_alpha: '离群点透明度',
   cmap: '色带',
   vmin: '色阶最小值',
   vmax: '色阶最大值',
   tick_fontsize: '刻度字号',
 };
+
+const GGPLOT_POINT_MARKERS = Array.from({ length: 26 }, (_, index) => String(index));
+const MATPLOTLIB_POINT_MARKERS = ['o', 's', '^', 'v', '<', '>', 'D', 'd', 'p', 'h', 'H', '*', '+', 'x', '.', ','];
 
 const VALUE_LABELS: Record<string, Record<string, string>> = {
   tick_direction: {
@@ -1188,7 +1208,11 @@ export function RightSidebar({
   };
   const getSemanticObjectLabel = (obj: ManifestObject) => {
     const id = obj.id;
-    if (obj.kind === 'fill_between' || obj.role === 'fill_between_series') return '置信区间带';
+    if (
+      obj.kind === 'fill_between'
+      || obj.role === 'fill_between_series'
+      || ['ribbon', 'area'].includes(String(obj.currentProps?.adapterFamily || ''))
+    ) return '置信区间带';
     if (obj.kind === 'contour') return '等高线';
     if (obj.kind === 'contourf') return '填充等高线';
     if (obj.kind === 'quiver' || obj.role === 'quiver_field') return '矢量场';
@@ -2604,6 +2628,23 @@ export function RightSidebar({
   };
 
   const renderField = (gid: string, prop: string, fieldType: string, currentValue: unknown) => {
+    if (manifest.generatedBy === 'r_svg' && prop === 'outlier_shape') {
+      const currentShape = String(currentValue ?? 19);
+      const options = GGPLOT_POINT_MARKERS.includes(currentShape)
+        ? ['none', ...GGPLOT_POINT_MARKERS]
+        : [currentShape, 'none', ...GGPLOT_POINT_MARKERS];
+      return renderSelectInput(
+        'outlier_shape',
+        currentShape,
+        options,
+        (value) => handlePatch(gid, prop, value === 'none' ? value : Number(value)),
+        gid,
+        prop,
+      );
+    }
+    if (manifest.generatedBy === 'r_svg' && prop === 'outlier_fill') {
+      return renderColorInput(prop, currentValue as string, (value) => handlePatch(gid, prop, value), `${gid}:${prop}`, gid, prop);
+    }
     if (fieldType === 'number' || typeof currentValue === 'number') {
       let step = 0.1;
       if (prop.includes('size') || prop.includes('width')) {
@@ -2634,6 +2675,23 @@ export function RightSidebar({
     }
     if (prop === 'cmap') {
       return renderCmapSelect(gid, prop, currentValue as string, (v) => handlePatch(gid, prop, v));
+    }
+    if (prop === 'marker') {
+      const currentMarker = String(currentValue ?? 'o');
+      const markerOptions = manifest.generatedBy === 'r_svg'
+        ? GGPLOT_POINT_MARKERS
+        : MATPLOTLIB_POINT_MARKERS;
+      const options = markerOptions.includes(currentMarker)
+        ? markerOptions
+        : [currentMarker, ...markerOptions];
+      return renderSelectInput(
+        'marker',
+        currentMarker,
+        options,
+        (v) => handlePatch(gid, prop, manifest.generatedBy === 'r_svg' ? Number(v) : v),
+        gid,
+        prop,
+      );
     }
     if (fieldType === 'string' || typeof currentValue === 'string') {
       return renderTextInput(gid, prop, currentValue as string, (v) => handlePatch(gid, prop, v));
@@ -3862,6 +3920,7 @@ export function RightSidebar({
           {remainingLegacyEditable.filter(prop => (
             supportsObjectProp(obj, prop)
             && !isPythonStructuralSeriesProp(obj, prop)
+            && !isHiddenLegacyRProp(obj, prop, manifest.generatedBy)
           )).map((prop) => {
             const val = obj.currentProps[prop];
             return renderField(obj.id, prop, typeof val, val);
@@ -4370,9 +4429,14 @@ export function RightSidebar({
     );
     const lineObjects = scopedObjects.filter(obj => obj.kind === 'line' && obj.role !== 'step_series' && !isDedicatedDiagramComponentObject(obj) && !isLegendChild(obj) && !isMarkerLine(obj) && !isClaimedContainerChild(obj));
     const pointObjects = scopedObjects.filter(obj => !['step_series', 'stairs_series', 'histogram_series'].includes(String(obj.role || '')) && !isDedicatedDiagramComponentObject(obj) && !isLegendChild(obj) && !isClaimedContainerChild(obj) && (isMarkerLine(obj) || isScatterCollection(obj)));
+    const isBandObject = (obj: ManifestObject) => (
+      obj.kind === 'fill_between'
+      || obj.role === 'fill_between_series'
+      || ['ribbon', 'area'].includes(String(obj.currentProps?.adapterFamily || ''))
+    );
     const bandObjects = scopedObjects.filter(obj => (
-      obj.kind === 'fill_between' || obj.role === 'fill_between_series'
-    ) && !isLegendChild(obj) && !isClaimedContainerChild(obj));
+      isBandObject(obj) && !isLegendChild(obj) && !isClaimedContainerChild(obj)
+    ));
     const legacyErrorbarObjects = scopedObjects.filter(obj => obj.kind === 'collection' && !isLegendChild(obj) && !isScatterCollection(obj) && !isClaimedContainerChild(obj));
     const errorbarObjects = COMPONENT_TARGET_RESOLVER_V2_ENABLED && errorbarContainerObjects.length > 0
       ? errorbarContainerObjects
@@ -4382,6 +4446,7 @@ export function RightSidebar({
       : [];
     const patchObjects = scopedObjects.filter(obj => (
       obj.kind === 'patch'
+      && !isBandObject(obj)
       && !['annotation_arrow', 'histogram_series', 'stairs_series'].includes(String(obj.role || ''))
       && !['pie_slice', 'wedge_slice'].includes(String(obj.role || ''))
       && !isDedicatedDiagramComponentObject(obj)
@@ -4482,7 +4547,7 @@ export function RightSidebar({
       {
         id: 'bands',
         label: '置信区间带',
-        description: 'fill_between 数据带，只调整填充色、边框色、透明度、线宽和层级，不改变数据上下界。',
+        description: '连续数据带，只调整填充色、边框色、透明度和线宽，不改变数据上下界或堆叠结构。',
         objects: bandObjects,
         colorProp: 'facecolor',
         edgeColorProp: 'edgecolor',
@@ -4586,7 +4651,7 @@ export function RightSidebar({
       {
         id: 'boxplots',
         label: '箱线图系列',
-        description: 'BoxplotContainer 统一控制箱体、须线、中位线和离群点。',
+        description: 'BoxplotContainer 统一控制整体线条、箱体填充和离群点。',
         objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? boxplotContainerObjects : [],
         colorProp: 'color',
         sizeProp: null,
@@ -4594,7 +4659,7 @@ export function RightSidebar({
       {
         id: 'violins',
         label: '小提琴图系列',
-        description: 'ViolinplotContainer 统一控制琴身和统计线。',
+        description: 'ViolinplotContainer 统一控制琴身；分位线保持只读。',
         objects: COMPONENT_TARGET_RESOLVER_V2_ENABLED ? violinContainerObjects : [],
         colorProp: 'facecolor',
         edgeColorProp: 'edgecolor',
@@ -4658,6 +4723,12 @@ export function RightSidebar({
       return values.length > 0 && values.every(value => JSON.stringify(value) === JSON.stringify(values[0])) ? values[0] : fallback;
     };
 
+    const pointPrimaryColorProp = (obj: ManifestObject): 'facecolor' | 'color' | null => {
+      if (supportsBatchProp(obj, 'facecolor')) return 'facecolor';
+      if (supportsBatchProp(obj, 'color')) return 'color';
+      return null;
+    };
+
     const componentRoleForItems = (items: ManifestObject[]): SemanticTargetRole | undefined => {
       if (items.length === 0) return undefined;
       if (items.every(obj => obj.role === 'histogram_series')) return 'data_histogram';
@@ -4685,7 +4756,7 @@ export function RightSidebar({
       if (items.every(obj => obj.kind === 'grid')) return 'grid';
       if (items.every(isLegendChild)) return 'legend_marker';
       if (items.every(obj => obj.kind === 'line' && !isLegendChild(obj))) return 'data_line';
-      if (items.every(obj => obj.kind === 'fill_between' || obj.role === 'fill_between_series')) return 'data_band';
+      if (items.every(isBandObject)) return 'data_band';
       if (items.every(obj => obj.kind === 'contour' || obj.role === 'contour_series')) return 'data_contour';
       if (items.every(obj => obj.kind === 'contourf' || obj.role === 'contourf_series')) return 'data_contourf';
       if (items.every(obj => obj.kind === 'collection' && !isLegendChild(obj))) return 'data_point';
@@ -4932,7 +5003,11 @@ export function RightSidebar({
 
     const patchPointFillColor = (items: ManifestObject[], value: unknown) => {
       const patches = items.flatMap(obj => {
-        const prop = obj.kind === 'line' ? 'color' : obj.kind === 'collection' ? 'facecolor' : null;
+        const prop = obj.kind === 'line'
+          ? 'color'
+          : obj.kind === 'collection'
+            ? pointPrimaryColorProp(obj)
+            : null;
         if (!prop || !supportsBatchProp(obj, prop)) return [];
         const targetRole: SemanticTargetRole = obj.kind === 'collection' ? 'data_point' : 'data_line';
         const intent: EditingIntent = {
@@ -5006,11 +5081,30 @@ export function RightSidebar({
           const selectedTargets = group.objects.filter(obj => selectedGids.includes(obj.id) || selectedObject === obj.id);
           const targetObjects = selectedTargets.length > 0 ? selectedTargets : group.objects;
           const isSubsetEditing = selectedTargets.length > 0 && selectedTargets.length < group.objects.length;
-          const colorValue = group.colorProp
-            ? resolvePickerColor(commonComponentProp(targetObjects, group.colorProp, '#000000'))
-            : null;
-          const edgeColorValue = group.edgeColorProp
-            ? resolvePickerColor(commonComponentProp(targetObjects, group.edgeColorProp, '#000000'))
+          const pointColorProps = group.id === 'points'
+            ? targetObjects.map(pointPrimaryColorProp).filter((prop): prop is 'facecolor' | 'color' => Boolean(prop))
+            : [];
+          const pointColors = group.id === 'points'
+            ? targetObjects.flatMap((obj) => {
+              const prop = pointPrimaryColorProp(obj);
+              return prop ? [obj.currentProps[prop]] : [];
+            }).filter(value => value !== undefined && value !== null && value !== '')
+            : [];
+          const commonPointColor = pointColors.length > 0
+            && pointColors.every(value => JSON.stringify(value) === JSON.stringify(pointColors[0]))
+            ? pointColors[0]
+            : '#000000';
+          const colorValue = group.id === 'points'
+            ? (pointColorProps.length > 0 ? resolvePickerColor(commonPointColor) : null)
+            : group.colorProp
+              ? resolvePickerColor(commonComponentProp(targetObjects, group.colorProp, '#000000'))
+              : null;
+          const edgeColorValue = group.edgeColorProp && targetObjects.some(obj => supportsBatchProp(obj, group.edgeColorProp!))
+            ? resolvePickerColor(commonComponentProp(
+              targetObjects.filter(obj => supportsBatchProp(obj, group.edgeColorProp!)),
+              group.edgeColorProp,
+              '#000000',
+            ))
             : null;
           const linewidth = commonComponentProp(targetObjects, 'linewidth', undefined) as number | undefined;
           const markerSize = commonComponentProp(targetObjects, 'markersize', undefined) as number | undefined;
@@ -5025,16 +5119,29 @@ export function RightSidebar({
           const legendBorderAxesPad = commonComponentProp(targetObjects, 'borderaxespad', undefined) as number | undefined;
           const pointSize = commonComponentProp(targetObjects, 'size', undefined) as number | undefined;
           const pointSizeScale = commonComponentProp(targetObjects, 'size_scale', 1) as number | undefined;
+          const pointMarker = commonComponentProp(targetObjects, 'marker', undefined);
+          const pointMarkerOptions = manifest.generatedBy === 'r_svg'
+            ? GGPLOT_POINT_MARKERS
+            : MATPLOTLIB_POINT_MARKERS;
           const errorbarLineWidth = commonComponentProp(targetObjects, 'elinewidth', undefined) as number | undefined;
           const errorbarCapSize = commonComponentProp(targetObjects, 'capsize', undefined) as number | undefined;
           const errorbarCapThickness = commonComponentProp(targetObjects, 'capthick', undefined) as number | undefined;
+          const errorbarCapUsesDataUnits = targetObjects.some(obj => obj.currentProps?.capUnit === 'data');
           const stemLineWidth = commonComponentProp(targetObjects, 'stem_linewidth', undefined) as number | undefined;
           const stemMarkerColor = resolvePickerColor(commonComponentProp(targetObjects, 'marker_color', '#000000'));
           const stemBaselineColor = resolvePickerColor(commonComponentProp(targetObjects, 'baseline_color', '#000000'));
           const stemBaselineLineWidth = commonComponentProp(targetObjects, 'baseline_linewidth', undefined) as number | undefined;
           const stemBaselineVisible = Boolean(commonComponentProp(targetObjects, 'baseline_visible', true));
           const boxColor = resolvePickerColor(commonComponentProp(targetObjects, 'box_color', '#000000'));
-          const medianColor = resolvePickerColor(commonComponentProp(targetObjects, 'median_color', '#000000'));
+          const boxOutlierColor = resolvePickerColor(commonComponentProp(targetObjects, 'outlier_color', '#000000'));
+          const boxOutlierFill = resolvePickerColor(commonComponentProp(targetObjects, 'outlier_fill', '#ffffff'));
+          const boxOutlierShape = String(commonComponentProp(targetObjects, 'outlier_shape', 19));
+          const boxOutlierShapeOptions = GGPLOT_POINT_MARKERS.includes(boxOutlierShape)
+            ? ['none', ...GGPLOT_POINT_MARKERS]
+            : [boxOutlierShape, 'none', ...GGPLOT_POINT_MARKERS];
+          const boxOutlierSize = commonComponentProp(targetObjects, 'outlier_size', undefined) as number | undefined;
+          const boxOutlierStroke = commonComponentProp(targetObjects, 'outlier_stroke', undefined) as number | undefined;
+          const boxOutlierAlpha = commonComponentProp(targetObjects, 'outlier_alpha', undefined) as number | undefined;
           const alpha = commonComponentProp(targetObjects, 'alpha', 1) as number | undefined;
           const cmap = String(commonComponentProp(targetObjects, 'cmap', 'viridis') || 'viridis');
           const vmin = commonComponentProp(targetObjects, 'vmin', undefined) as number | undefined;
@@ -5170,13 +5277,20 @@ export function RightSidebar({
                   </div>
                 )}
                 {group.colorProp && colorValue && (!COMPONENT_CONTROLS_V2_ENABLED || group.colorProp !== 'color') && (
-                  renderColorInput(['points', 'patches', 'bars', 'violins'].includes(group.id) ? '填充色' : '颜色', colorValue, (value) => {
+                  renderColorInput(
+                    group.id === 'points'
+                      ? (pointColorProps.every(prop => prop === 'facecolor') ? '填充色' : '点颜色')
+                      : ['bands', 'patches', 'bars', 'violins'].includes(group.id) ? '填充色' : '颜色',
+                    colorValue,
+                    (value) => {
                     if (group.id === 'points') {
                       patchPointFillColor(targetObjects, value);
                       return;
                     }
                     patchComponentGroup(targetObjects, group.colorProp!, value);
-                  }, `component:${group.id}:${targetKey}:color`)
+                    },
+                    `component:${group.id}:${targetKey}:color`,
+                  )
                 )}
                 {group.edgeColorProp && edgeColorValue && (
                   renderColorInput('边框色', edgeColorValue, (value) => patchComponentGroup(targetObjects, group.edgeColorProp!, value), `component:${group.id}:${targetKey}:edgecolor`)
@@ -5184,8 +5298,30 @@ export function RightSidebar({
                 {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'box_color')) && (
                   renderColorInput('箱体颜色', boxColor, (value) => patchComponentGroup(targetObjects, 'box_color', value), `component:${group.id}:${targetKey}:box_color`)
                 )}
-                {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'median_color')) && (
-                  renderColorInput('中位线颜色', medianColor, (value) => patchComponentGroup(targetObjects, 'median_color', value), `component:${group.id}:${targetKey}:median_color`)
+                {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'outlier_color')) && (
+                  renderColorInput('离群点边框色', boxOutlierColor, (value) => patchComponentGroup(targetObjects, 'outlier_color', value), `component:${group.id}:${targetKey}:outlier_color`)
+                )}
+                {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'outlier_fill')) && (
+                  renderColorInput('离群点填充色', boxOutlierFill, (value) => patchComponentGroup(targetObjects, 'outlier_fill', value), `component:${group.id}:${targetKey}:outlier_fill`)
+                )}
+                {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'outlier_shape')) && (
+                  renderSelectInput(
+                    'outlier_shape',
+                    boxOutlierShape,
+                    boxOutlierShapeOptions,
+                    (value) => patchComponentGroup(targetObjects, 'outlier_shape', value === 'none' ? value : Number(value)),
+                    `component-${group.id}`,
+                    'outlier_shape',
+                  )
+                )}
+                {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'outlier_size')) && (
+                  renderNumberInput(`component-${group.id}`, 'outlier_size', boxOutlierSize, (value) => patchComponentGroup(targetObjects, 'outlier_size', value), { min: 0, max: 30, step: 0.25 })
+                )}
+                {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'outlier_stroke')) && (
+                  renderNumberInput(`component-${group.id}`, 'outlier_stroke', boxOutlierStroke, (value) => patchComponentGroup(targetObjects, 'outlier_stroke', value), { min: 0, max: 10, step: 0.1 })
+                )}
+                {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'outlier_alpha')) && (
+                  renderNumberInput(`component-${group.id}`, 'outlier_alpha', boxOutlierAlpha, (value) => patchComponentGroup(targetObjects, 'outlier_alpha', value), { min: 0, max: 1, step: 0.05 })
                 )}
                 {group.id === 'contours' && (
                   <div className="space-y-2 rounded-md border border-slate-100 bg-white/80 p-2">
@@ -5219,7 +5355,12 @@ export function RightSidebar({
                   renderNumberInput(`component-${group.id}`, 'elinewidth', errorbarLineWidth, (value) => patchComponentGroup(targetObjects, 'elinewidth', value), { min: 0, max: 20, step: 0.25, displayLabel: '误差线宽' })
                 )}
                 {group.id === 'errorbars' && targetObjects.some(obj => supportsBatchProp(obj, 'capsize')) && (
-                  renderNumberInput(`component-${group.id}`, 'capsize', errorbarCapSize, (value) => patchComponentGroup(targetObjects, 'capsize', value), { min: 0, max: 30, step: 0.5, displayLabel: '端帽长度' })
+                  renderNumberInput(`component-${group.id}`, 'capsize', errorbarCapSize, (value) => patchComponentGroup(targetObjects, 'capsize', value), {
+                    min: 0,
+                    max: 30,
+                    step: errorbarCapUsesDataUnits ? 0.05 : 0.5,
+                    displayLabel: errorbarCapUsesDataUnits ? '端帽宽度（数据单位）' : '端帽长度',
+                  })
                 )}
                 {group.id === 'errorbars' && targetObjects.some(obj => supportsBatchProp(obj, 'capthick')) && (
                   renderNumberInput(`component-${group.id}`, 'capthick', errorbarCapThickness, (value) => patchComponentGroup(targetObjects, 'capthick', value), { min: 0, max: 10, step: 0.1, displayLabel: '端帽线宽' })
@@ -5246,7 +5387,7 @@ export function RightSidebar({
                   renderNumberInput(`component-${group.id}`, 'linewidth', linewidth, (value) => patchComponentGroup(targetObjects, 'linewidth', value), { min: 0, max: 20, step: 0.25, displayLabel: linewidthLabel })
                 )}
                 {targetObjects.some(obj => supportsBatchProp(obj, 'markersize')) && (
-                  renderNumberInput(`component-${group.id}`, 'markersize', markerSize, (value) => patchComponentGroup(targetObjects.filter(obj => obj.kind === 'line' || obj.kind === 'stem_container'), 'markersize', value), { min: 1, max: 60, step: 0.5 })
+                  renderNumberInput(`component-${group.id}`, 'markersize', markerSize, (value) => patchComponentGroup(targetObjects.filter(obj => supportsBatchProp(obj, 'markersize')), 'markersize', value), { min: 1, max: 60, step: 0.5 })
                 )}
                 {targetObjects.some(obj => supportsBatchProp(obj, 'markerscale')) && (
                   renderNumberInput(`component-${group.id}`, 'markerscale', legendMarkerScale, (value) => patchComponentGroup(targetObjects.filter(obj => obj.kind === 'legend'), 'markerscale', value), { min: 0.1, max: 5, step: 0.1, displayLabel: '图例符号缩放' })
@@ -5281,8 +5422,24 @@ export function RightSidebar({
                 {targetObjects.some(obj => supportsBatchProp(obj, 'size_scale')) && (
                   renderNumberInput(`component-${group.id}`, 'size_scale', pointSizeScale, (value) => patchComponentGroup(targetObjects.filter(obj => obj.kind === 'collection'), 'size_scale', value), { min: 0.1, max: 5, step: 0.1, displayLabel: '散点比例缩放' })
                 )}
-                {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'fontweight')) && (
-                  renderSelectInput('字重', commonComponentProp(targetObjects, 'fontweight', 'normal') as string, ['normal', 'bold', 'semibold', 'light'], (value) => patchComponentGroup(targetObjects, 'fontweight', value))
+                {['points', 'errorbars'].includes(group.id) && targetObjects.some(obj => supportsBatchProp(obj, 'marker')) && pointMarker !== undefined && (
+                  renderSelectInput(
+                    'marker',
+                    String(pointMarker),
+                    pointMarkerOptions.includes(String(pointMarker))
+                      ? pointMarkerOptions
+                      : [String(pointMarker), ...pointMarkerOptions],
+                    (value) => patchComponentGroup(
+                      targetObjects.filter(obj => supportsBatchProp(obj, 'marker')),
+                      'marker',
+                      manifest.generatedBy === 'r_svg' ? Number(value) : value,
+                    ),
+                    `component-${group.id}`,
+                    'marker',
+                  )
+                )}
+                {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'fontweight') || supportsBatchProp(obj, 'tick_fontweight')) && (
+                  renderSelectInput('字重', commonComponentProp(targetObjects, group.id === 'axes' ? 'tick_fontweight' : 'fontweight', 'normal') as string, ['normal', 'bold', 'semibold', 'light'], (value) => patchComponentFontVariant(targetObjects, 'fontweight', value))
                 )}
                 {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'fontstyle')) && (
                   renderSelectInput('字形', commonComponentProp(targetObjects, 'fontstyle', 'normal') as string, ['normal', 'italic', 'oblique'], (value) => patchComponentGroup(targetObjects, 'fontstyle', value))

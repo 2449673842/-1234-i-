@@ -234,6 +234,29 @@ class TestRRenderer(unittest.TestCase):
         self.assertEqual(reordered["applied"][0]["gid"], "r.group.color.0.0")
         self.assertEqual(reordered["applied"][0]["resolvedGid"], "r.group.color.0.1")
 
+    def test_v2_identity_does_not_remap_from_an_unrelated_missing_gid_family(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5), group=c("A", "A", "B", "B"))
+p <- ggplot(df, aes(x, y, color=group)) + geom_point(size=3) + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        target = _object(baseline, "r.group.color.0.0")
+        patch = _backend_patch(target, "color", "#2CA02C")
+        patch["gid"] = "r.group.color.99.99"
+
+        rejected = _run_r_renderer(script, [patch])
+        self.assertTrue(rejected["conflict"])
+        self.assertEqual(rejected["applied"], [])
+        self.assertEqual(rejected["skipped"], [patch])
+        self.assertTrue(any(
+            warning.get("type") == "identity_mismatch"
+            and warning.get("gid") == patch["gid"]
+            for warning in rejected["warnings"]
+            if isinstance(warning, dict)
+        ))
+
     def test_v2_identity_rejects_duplicate_layer_candidates_before_apply(self):
         script = """
 library(ggplot2)
@@ -965,6 +988,443 @@ p
         self.assertIn("#2CA02C".lower(), result["svg"].lower())
         self.assertEqual(_object(result, "r.layer.1")["currentProps"]["linewidth"], 3)
 
+    def test_line_path_and_smooth_adapters_replay_visual_line_style(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:6, y=c(1, 3, 2, 5, 4, 6), group=rep(c("A", "B"), 3))
+p <- ggplot(df, aes(x, y)) +
+  geom_line(colour="#1F78B4", linewidth=0.7, linetype="dashed", alpha=0.8) +
+  geom_path(aes(group=group), colour="#33A02C", linewidth=0.9) +
+  geom_smooth(method="lm", se=TRUE, colour="#6A3D9A", linewidth=1.1, linetype="dotdash", alpha=0.6) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "color", "value": "#D62728", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "linewidth", "value": 2.2, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "linestyle", "value": "solid", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "alpha", "value": 0.45, "mode": "backend_patch"},
+            {"gid": "r.layer.1", "prop": "color", "value": "#2CA02C", "mode": "backend_patch"},
+            {"gid": "r.layer.2", "prop": "color", "value": "#FF7F0E", "mode": "backend_patch"},
+        ])
+        line = _object(result, "r.layer.0")
+        path = _object(result, "r.layer.1")
+        smooth = _object(result, "r.layer.2")
+
+        for obj, artist_class in ((line, "GeomLine"), (path, "GeomPath"), (smooth, "GeomSmooth")):
+            self.assertEqual(obj["source"]["artistClass"], artist_class)
+            self.assertEqual(obj["currentProps"]["adapterFamily"], "line")
+            self.assertIn("color", obj["editable"])
+            self.assertIn("linewidth", obj["editable"])
+            self.assertIn("linestyle", obj["editable"])
+            self.assertIn("alpha", obj["editable"])
+            self.assertNotIn("facecolor", obj["editable"])
+        self.assertEqual(line["currentProps"]["color"], "#D62728")
+        self.assertEqual(line["currentProps"]["linewidth"], 2.2)
+        self.assertEqual(line["currentProps"]["linestyle"], "solid")
+        self.assertEqual(line["currentProps"]["alpha"], 0.45)
+        self.assertEqual(path["currentProps"]["color"], "#2CA02C")
+        self.assertEqual(smooth["currentProps"]["color"], "#FF7F0E")
+        self.assertTrue(smooth["currentProps"]["smoothLayer"])
+        self.assertIn("#D62728".lower(), result["svg"].lower())
+        self.assertIn("#2CA02C".lower(), result["svg"].lower())
+        self.assertIn("#FF7F0E".lower(), result["svg"].lower())
+
+    def test_mapped_linewidth_and_linetype_line_layer_reports_mapping_but_replays_absolute_override(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:6, y=c(1, 2, 4, 3, 5, 6), group=rep(c("A", "B"), 3), weight=c(1, 2, 3, 4, 5, 6))
+p <- ggplot(df, aes(x, y)) +
+  geom_line(aes(linewidth=weight), colour="#1F78B4", linetype="solid") +
+  geom_line(aes(linetype=group), colour="#33A02C", linewidth=0.8) +
+  scale_linetype_manual(values=c(A="solid", B="dashed")) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        baseline_line = _object(baseline, "r.layer.0")
+        baseline_linetype = _object(baseline, "r.layer.1")
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "linewidth", "value": 2.4, "mode": "backend_patch"},
+            {"gid": "r.layer.1", "prop": "linestyle", "value": "dotted", "mode": "backend_patch"},
+        ])
+        line = _object(result, "r.layer.0")
+        linetype_line = _object(result, "r.layer.1")
+
+        self.assertTrue(baseline_line["currentProps"]["linewidthMapped"])
+        self.assertFalse(baseline_line["currentProps"]["linetypeMapped"])
+        self.assertTrue(baseline_linetype["currentProps"]["linetypeMapped"])
+        self.assertGreater(len(set(baseline_line["currentProps"]["linewidthValues"])), 1)
+        self.assertFalse(result["conflict"])
+        self.assertNotEqual(baseline["svg"], result["svg"])
+        self.assertEqual(line["currentProps"]["linewidth"], 2.4)
+        self.assertEqual(linetype_line["currentProps"]["linestyle"], "dotted")
+        self.assertEqual(line["currentProps"]["adapterFamily"], "line")
+        self.assertEqual(linetype_line["currentProps"]["adapterFamily"], "line")
+
+    def test_inherited_plot_mapping_flags_are_reported_for_line_adapter(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:6, y=c(1, 2, 4, 3, 5, 6), group=rep(c("A", "B"), 3), weight=c(1, 2, 3, 4, 5, 6))
+p <- ggplot(df, aes(x, y, group=group, colour=group, linewidth=weight)) +
+  geom_line() +
+  scale_colour_manual(values=c(A="#1F78B4", B="#33A02C")) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        baseline_line = _object(baseline, "r.layer.0")
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "color", "value": "#D62728", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "linewidth", "value": 2.1, "mode": "backend_patch"},
+        ])
+        line = _object(result, "r.layer.0")
+
+        self.assertTrue(baseline_line["currentProps"]["colorMapped"])
+        self.assertTrue(baseline_line["currentProps"]["linewidthMapped"])
+        self.assertGreater(len(set(baseline_line["currentProps"]["linewidthValues"])), 1)
+        self.assertFalse(result["conflict"])
+        self.assertEqual(line["currentProps"]["color"], "#D62728")
+        self.assertEqual(line["currentProps"]["linewidth"], 2.1)
+        self.assertIn("#D62728".lower(), result["svg"].lower())
+
+    def test_inherited_linetype_mapping_is_reported_for_line_adapter(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:6, y=c(1, 2, 4, 3, 5, 6), group=rep(c("A", "B"), 3))
+p <- ggplot(df, aes(x, y, group=group, linetype=group)) +
+  geom_line(colour="#33A02C", linewidth=0.8) +
+  scale_linetype_manual(values=c(A="solid", B="dashed")) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "linestyle", "value": "dotted", "mode": "backend_patch"},
+        ])
+        baseline_line = _object(baseline, "r.layer.0")
+        line = _object(result, "r.layer.0")
+
+        self.assertTrue(baseline_line["currentProps"]["linetypeMapped"])
+        self.assertFalse(result["conflict"])
+        self.assertEqual(line["currentProps"]["linestyle"], "dotted")
+        self.assertNotEqual(baseline["svg"], result["svg"])
+
+    def test_inherited_plot_mapping_flags_are_reported_for_point_adapter(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=1:4, group=rep(c("A", "B"), 2), weight=c(1, 2, 4, 8))
+p <- ggplot(df, aes(x, y, size=weight, shape=group, colour=group, fill=group)) +
+  geom_point(stroke=0.8) +
+  scale_shape_manual(values=c(A=21, B=22)) +
+  scale_colour_manual(values=c(A="#1F78B4", B="#33A02C")) +
+  scale_fill_manual(values=c(A="#A6CEE3", B="#FB9A99")) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        layer = _object(result, "r.layer.0")
+
+        self.assertTrue(layer["currentProps"]["sizeMapped"])
+        self.assertTrue(layer["currentProps"]["shapeMapped"])
+        self.assertTrue(layer["currentProps"]["colorMapped"])
+        self.assertTrue(layer["currentProps"]["fillMapped"])
+        self.assertTrue(layer["currentProps"]["fillSupported"])
+        self.assertIn("size_scale", layer["editable"])
+        self.assertIn("facecolor", layer["editable"])
+
+    def test_line_adapter_keeps_legacy_gid_and_identity_stable_across_style_edits(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+p <- ggplot(df, aes(x, y)) + geom_line(colour="#1F78B4", linewidth=0.8) + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        patched = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "color", "value": "#D62728", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "linewidth", "value": 1.9, "mode": "backend_patch"},
+        ])
+        baseline_line = _object(baseline, "r.layer.0")
+        patched_line = _object(patched, "r.layer.0")
+
+        self.assertEqual(patched["applied"][0]["gid"], "r.layer.0")
+        self.assertEqual(baseline_line["stableKey"], patched_line["stableKey"])
+        self.assertEqual(baseline_line["fingerprint"], patched_line["fingerprint"])
+        self.assertEqual(baseline_line["identity"], patched_line["identity"])
+        self.assertEqual(patched_line["currentProps"]["color"], "#D62728")
+        self.assertEqual(patched_line["currentProps"]["linewidth"], 1.9)
+
+    def test_shape_21_point_patch_preserves_fill_outline_stroke_alpha_and_absolute_size(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+p <- ggplot(df, aes(x, y)) +
+  geom_point(shape=21, size=4, fill="#A6CEE3", colour="#1F78B4", stroke=0.8, alpha=0.7) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "facecolor", "value": "#FB9A99", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "edgecolor", "value": "#D62728", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "linewidth", "value": 1.9, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "alpha", "value": 0.35, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "size", "value": 7, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "marker", "value": 24, "mode": "backend_patch"},
+        ])
+        layer = _object(result, "r.layer.0")
+
+        for prop in ("facecolor", "edgecolor", "linewidth", "alpha", "size", "marker"):
+            self.assertIn(prop, layer["editable"])
+        self.assertEqual(layer["currentProps"]["facecolor"], "#FB9A99")
+        self.assertEqual(layer["currentProps"]["edgecolor"], "#D62728")
+        self.assertEqual(layer["currentProps"]["linewidth"], 1.9)
+        self.assertEqual(layer["currentProps"]["alpha"], 0.35)
+        self.assertEqual(layer["currentProps"]["size"], 7)
+        self.assertEqual(layer["currentProps"]["marker"], 24)
+        self.assertIn("#FB9A99".lower(), result["svg"].lower())
+        self.assertIn("#D62728".lower(), result["svg"].lower())
+
+    def test_geom_jitter_identity_distinguishes_geom_from_position_jitter(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=rep(1:2, each=3), y=c(1, 2, 3, 2, 3, 4))
+p <- ggplot(df, aes(x, y)) + geom_jitter(width=0.08, height=0, size=3) + theme_classic()
+p
+"""
+        ordinary_script = script.replace(
+            "geom_jitter(width=0.08, height=0, size=3)",
+            "geom_point(size=3)",
+        )
+        jitter = _object(_run_r_renderer(script), "r.layer.0")
+        ordinary = _object(_run_r_renderer(ordinary_script), "r.layer.0")
+
+        self.assertEqual(jitter["source"]["artistClass"], "GeomPoint")
+        self.assertEqual(jitter["source"]["adapterClass"], "GeomJitter")
+        self.assertEqual(jitter["currentProps"]["positionClass"], "PositionJitter")
+        self.assertIn("PositionJitter", jitter["identity"]["relation"]["layerKey"])
+        self.assertNotEqual(jitter["stableKey"], ordinary["stableKey"])
+        self.assertNotEqual(jitter["fingerprint"], ordinary["fingerprint"])
+
+    def test_size_scale_patch_preserves_relative_size_ratios_for_mapped_point_sizes(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=1:4, weight=c(1, 2, 4, 8))
+p <- ggplot(df, aes(x, y, size=weight)) + geom_point() + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        scaled = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "size_scale", "value": 2, "mode": "backend_patch"},
+        ])
+        baseline_layer = _object(baseline, "r.layer.0")
+        scaled_layer = _object(scaled, "r.layer.0")
+
+        self.assertIn("size_scale", scaled_layer["editable"])
+        self.assertEqual(scaled_layer["currentProps"]["size_scale"], 2)
+        self.assertNotEqual(baseline["svg"], scaled["svg"])
+        baseline_sizes = baseline_layer["currentProps"]["sizes"]
+        scaled_sizes = scaled_layer["currentProps"]["sizes"]
+        self.assertEqual(len(baseline_sizes), len(scaled_sizes))
+        self.assertGreater(len(set(baseline_sizes)), 1)
+        for baseline_size, scaled_size in zip(baseline_sizes, scaled_sizes):
+            self.assertAlmostEqual(scaled_size / baseline_size, 2, places=5)
+
+    def test_absolute_size_patch_and_size_scale_patch_are_distinct_point_operations(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=1:4, weight=c(1, 2, 4, 8))
+p <- ggplot(df, aes(x, y, size=weight)) + geom_point() + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        absolute = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "size", "value": 8, "mode": "backend_patch"},
+        ])
+        scaled = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "size_scale", "value": 2, "mode": "backend_patch"},
+        ])
+        absolute_layer = _object(absolute, "r.layer.0")
+        scaled_layer = _object(scaled, "r.layer.0")
+        baseline_layer = _object(baseline, "r.layer.0")
+
+        self.assertIn("size_scale", absolute_layer["currentProps"])
+        self.assertIn("size_scale", scaled_layer["currentProps"])
+        self.assertIn("sizes", absolute_layer["currentProps"])
+        self.assertIn("sizes", scaled_layer["currentProps"])
+        self.assertEqual(absolute_layer["currentProps"]["size"], 8)
+        self.assertEqual(absolute_layer["currentProps"]["size_scale"], 1)
+        self.assertEqual(scaled_layer["currentProps"]["size"], baseline_layer["currentProps"]["size"])
+        self.assertEqual(scaled_layer["currentProps"]["size_scale"], 2)
+        self.assertEqual(len(set(absolute_layer["currentProps"]["sizes"])), 1)
+        self.assertGreater(len(set(scaled_layer["currentProps"]["sizes"])), 1)
+
+    def test_shape_19_and_shape_21_expose_fill_outline_boundary(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:3, y=c(2, 4, 3))
+p <- ggplot(df, aes(x, y)) +
+  geom_point(shape=19, size=4, colour="#1F78B4") +
+  geom_point(shape=21, size=4, fill="#A6CEE3", colour="#D62728", stroke=0.9) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        solid_point = _object(result, "r.layer.0")
+        filled_outline_point = _object(result, "r.layer.1")
+
+        self.assertIn("color", solid_point["editable"])
+        self.assertIn("marker", solid_point["editable"])
+        self.assertNotIn("facecolor", solid_point["editable"])
+        self.assertNotIn("edgecolor", solid_point["editable"])
+        self.assertNotIn("linewidth", solid_point["editable"])
+        self.assertIn("facecolor", filled_outline_point["editable"])
+        self.assertIn("edgecolor", filled_outline_point["editable"])
+        self.assertIn("linewidth", filled_outline_point["editable"])
+        self.assertIn("marker", filled_outline_point["editable"])
+        solid_capabilities = {item["prop"]: item for item in solid_point["propertyCapabilities"]}
+        fillable_capabilities = {item["prop"]: item for item in filled_outline_point["propertyCapabilities"]}
+        self.assertNotIn("facecolor", solid_capabilities)
+        for prop in ("marker", "size", "size_scale", "color", "alpha"):
+            self.assertEqual(solid_capabilities[prop]["patchMode"], "backend_patch")
+        for prop in ("facecolor", "edgecolor", "linewidth"):
+            self.assertEqual(fillable_capabilities[prop]["patchMode"], "backend_patch")
+
+    def test_point_adapter_keeps_legacy_r_layer_gid_and_identityless_patch(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+p <- ggplot(df, aes(x, y)) + geom_point(size=3) + theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "color", "value": "#2CA02C", "mode": "backend_patch"},
+        ])
+        layer = _object(result, "r.layer.0")
+
+        self.assertFalse(result["conflict"])
+        self.assertEqual(result["applied"][0]["gid"], "r.layer.0")
+        self.assertNotIn("resolvedGid", result["applied"][0])
+        self.assertEqual(layer["currentProps"]["adapterFamily"], "point")
+        self.assertEqual(layer["currentProps"]["color"], "#2CA02C")
+        self.assertIn("#2CA02C".lower(), result["svg"].lower())
+
+    def test_legacy_shape_19_facecolor_patch_migrates_to_visible_point_color(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+p <- ggplot(df, aes(x, y)) + geom_point(size=3) + theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "facecolor", "value": "#2CA02C", "mode": "backend_patch"},
+        ])
+        layer = _object(result, "r.layer.0")
+
+        self.assertFalse(result["conflict"])
+        self.assertNotIn("facecolor", layer["editable"])
+        self.assertEqual(layer["currentProps"]["color"], "#2CA02C")
+        self.assertEqual(result["applied"][0]["prop"], "facecolor")
+        self.assertTrue(any(
+            warning.get("type") == "legacy_prop_alias"
+            and warning.get("gid") == "r.layer.0"
+            and warning.get("fromProp") == "facecolor"
+            and warning.get("toProp") == "color"
+            for warning in result["warnings"]
+            if isinstance(warning, dict)
+        ))
+        self.assertIn("#2CA02C".lower(), result["svg"].lower())
+
+    def test_mapped_fillable_point_shape_supports_facecolor_patch(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5), group=rep(c("A", "B"), 2))
+p <- ggplot(df, aes(x, y, shape=group)) +
+  geom_point(size=4, fill="#A6CEE3", colour="#1F78B4", stroke=0.8) +
+  scale_shape_manual(values=c(A=21, B=22)) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "facecolor", "value": "#FB9A99", "mode": "backend_patch"},
+        ])
+        layer = _object(result, "r.layer.0")
+
+        self.assertFalse(result["conflict"])
+        self.assertTrue(layer["currentProps"]["fillSupported"])
+        self.assertIn("facecolor", layer["editable"])
+        self.assertEqual(layer["currentProps"]["facecolor"], "#FB9A99")
+        self.assertEqual(sorted(layer["currentProps"]["markerValues"]), [21, 22])
+        self.assertIn("#FB9A99".lower(), result["svg"].lower())
+
+    def test_mapped_mixed_point_shapes_do_not_expose_fill_until_marker_is_unified(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5), group=rep(c("A", "B"), 2))
+p <- ggplot(df, aes(x, y, shape=group)) +
+  geom_point(size=4, fill="#A6CEE3", colour="#1F78B4", stroke=0.8) +
+  scale_shape_manual(values=c(A=19, B=21)) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        patched = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "marker", "value": 21, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "facecolor", "value": "#FB9A99", "mode": "backend_patch"},
+        ])
+        baseline_layer = _object(baseline, "r.layer.0")
+        patched_layer = _object(patched, "r.layer.0")
+
+        self.assertFalse(baseline_layer["currentProps"]["fillSupported"])
+        self.assertNotIn("facecolor", baseline_layer["editable"])
+        self.assertFalse(patched["conflict"])
+        self.assertTrue(patched_layer["currentProps"]["fillSupported"])
+        self.assertEqual(patched_layer["currentProps"]["marker"], 21)
+        self.assertEqual(patched_layer["currentProps"]["facecolor"], "#FB9A99")
+
+    def test_same_batch_marker_upgrade_then_facecolor_targets_fill(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+p <- ggplot(df, aes(x, y)) + geom_point(shape=19, size=4, colour="#1F78B4") + theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "marker", "value": 21, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "facecolor", "value": "#FB9A99", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "edgecolor", "value": "#D62728", "mode": "backend_patch"},
+        ])
+        layer = _object(result, "r.layer.0")
+
+        self.assertFalse(result["conflict"])
+        self.assertEqual(layer["currentProps"]["marker"], 21)
+        self.assertTrue(layer["currentProps"]["fillSupported"])
+        self.assertEqual(layer["currentProps"]["facecolor"], "#FB9A99")
+        self.assertEqual(layer["currentProps"]["edgecolor"], "#D62728")
+        self.assertIn("#FB9A99".lower(), result["svg"].lower())
+        self.assertIn("#D62728".lower(), result["svg"].lower())
+
+    def test_point_color_edgecolor_alias_confirms_latest_value_only(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+p <- ggplot(df, aes(x, y)) +
+  geom_point(shape=21, size=4, fill="#A6CEE3", colour="#1F78B4", stroke=0.8) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "color", "value": "#111111", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "edgecolor", "value": "#D62728", "mode": "backend_patch"},
+        ])
+        layer = _object(result, "r.layer.0")
+
+        self.assertFalse(result["conflict"])
+        self.assertTrue(result["applied"][0].get("superseded"))
+        self.assertEqual(layer["currentProps"]["color"], "#D62728")
+        self.assertEqual(layer["currentProps"]["edgecolor"], "#D62728")
+        self.assertIn("#D62728".lower(), result["svg"].lower())
+
     def test_manual_scale_palette_patch(self):
         script = """
 library(ggplot2)
@@ -1205,33 +1665,576 @@ p
     def test_boxplot_and_violin_layers_are_semantic_containers(self):
         script = """
 library(ggplot2)
-df <- data.frame(group=rep(c("A", "B"), each=10), value=c(1:10, 3:12))
+df <- data.frame(
+  group=rep(c("A", "B"), each=10),
+  value=c(1, 2, 2, 3, 3, 4, 4, 5, 5, 20, 3, 4, 4, 5, 5, 6, 6, 7, 7, 22)
+)
 p <- ggplot(df, aes(group, value, fill=group)) +
-  geom_boxplot(alpha=0.7) +
-  geom_violin(alpha=0.3) +
+  geom_boxplot(alpha=0.7, outlier.shape=21, outlier.fill="white") +
+  geom_violin(alpha=0.3, draw_quantiles=0.5) +
   theme_classic()
 p
 """
         result = _run_r_renderer(script, [
             {"gid": "r.layer.0", "prop": "box_color", "value": "#2CA02C", "mode": "backend_patch"},
-            {"gid": "r.layer.0", "prop": "median_color", "value": "#AA0000", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "color", "value": "#AA0000", "mode": "backend_patch"},
             {"gid": "r.layer.0", "prop": "linewidth", "value": 2, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "outlier_color", "value": "#DE2D26", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "outlier_fill", "value": "#FEE0D2", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "outlier_shape", "value": 24, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "outlier_size", "value": 2.6, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "outlier_stroke", "value": 0.8, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "outlier_alpha", "value": 0.65, "mode": "backend_patch"},
             {"gid": "r.layer.1", "prop": "facecolor", "value": "#9467BD", "mode": "backend_patch"},
             {"gid": "r.layer.1", "prop": "edgecolor", "value": "#111111", "mode": "backend_patch"},
         ])
         box = _object(result, "r.layer.0")
         violin = _object(result, "r.layer.1")
 
+        self.assertFalse(result["conflict"])
         self.assertEqual(box["kind"], "boxplot_container")
         self.assertIn("box_color", box["editable"])
-        self.assertIn("median_color", box["editable"])
+        self.assertNotIn("median_color", box["editable"])
+        self.assertNotIn("median_color", box["currentProps"])
+        self.assertEqual(box["currentProps"]["adapterFamily"], "boxplot")
+        self.assertEqual(
+            box["currentProps"]["componentRoles"],
+            ["box_body", "median", "whiskers", "staples", "outliers"],
+        )
         self.assertEqual(box["currentProps"]["box_color"], "#2CA02C")
-        self.assertEqual(box["currentProps"]["median_color"], "#AA0000")
+        self.assertEqual(box["currentProps"]["color"], "#AA0000")
         self.assertEqual(box["currentProps"]["linewidth"], 2)
+        self.assertEqual(box["currentProps"]["outlier_color"], "#DE2D26")
+        self.assertEqual(box["currentProps"]["outlier_fill"], "#FEE0D2")
+        self.assertEqual(box["currentProps"]["outlier_shape"], 24)
+        self.assertEqual(box["currentProps"]["outlier_size"], 2.6)
+        self.assertEqual(box["currentProps"]["outlier_stroke"], 0.8)
+        self.assertEqual(box["currentProps"]["outlier_alpha"], 0.65)
+        for prop in (
+            "outlier_color", "outlier_fill", "outlier_shape",
+            "outlier_size", "outlier_stroke", "outlier_alpha",
+        ):
+            self.assertIn(prop, box["editable"])
         self.assertEqual(violin["kind"], "violinplot_container")
         self.assertIn("facecolor", violin["editable"])
+        self.assertNotIn("color", violin["editable"])
+        self.assertNotIn("color", violin["currentProps"])
+        self.assertNotIn("quantile_color", violin["editable"])
+        self.assertNotIn("quantile_linewidth", violin["editable"])
         self.assertEqual(violin["currentProps"]["facecolor"], "#9467BD")
         self.assertEqual(violin["currentProps"]["edgecolor"], "#111111")
+        self.assertEqual(violin["currentProps"]["adapterFamily"], "violin")
+        self.assertEqual(violin["currentProps"]["componentRoles"], ["body", "quantile_lines"])
+        self.assertEqual(violin["currentProps"]["quantileCount"], 1)
+        distribution_groups = [
+            group for group in result["manifest"]["groups"]
+            if group.get("aesthetic") == "fill"
+        ]
+        self.assertTrue(distribution_groups)
+        self.assertTrue(all(group["kind"] == "distribution" for group in distribution_groups))
+        self.assertTrue(all(set(group["geomFamilies"]) == {"GeomBoxplot", "GeomViolin"} for group in distribution_groups))
+        fill_group = _object(result, "r.group.fill.0.0")
+        self.assertEqual(fill_group["currentProps"]["semanticKind"], "distribution")
+        self.assertEqual(set(fill_group["currentProps"]["geomFamilies"]), {"GeomBoxplot", "GeomViolin"})
+
+    def test_boxplot_legacy_median_color_alias_replays_as_outline_with_warning(self):
+        script = """
+library(ggplot2)
+df <- data.frame(group=rep(c("A", "B"), each=8), value=c(1:8, 3:10))
+p <- ggplot(df, aes(group, value, fill=group)) + geom_boxplot() + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        box = _object(baseline, "r.layer.0")
+        result = _run_r_renderer(script, [_backend_patch(box, "median_color", "#AA0000")])
+        rendered_box = _object(result, "r.layer.0")
+
+        self.assertFalse(result["conflict"])
+        self.assertNotIn("median_color", rendered_box["editable"])
+        self.assertNotIn("median_color", rendered_box["currentProps"])
+        self.assertEqual(rendered_box["currentProps"]["color"], "#AA0000")
+        self.assertEqual(result["applied"][0]["prop"], "median_color")
+        self.assertTrue(any(
+            warning.get("type") == "legacy_prop_alias"
+            and warning.get("gid") == "r.layer.0"
+            and warning.get("fromProp") == "median_color"
+            and warning.get("toProp") == "color"
+            for warning in result["warnings"]
+            if isinstance(warning, dict)
+        ))
+
+    def test_boxplot_outlier_fill_requires_a_fillable_shape(self):
+        script = """
+library(ggplot2)
+df <- data.frame(group=rep(c("A", "B"), each=10), value=c(1, 2, 2, 3, 3, 4, 4, 5, 5, 20, 3, 4, 4, 5, 5, 6, 6, 7, 7, 22))
+p <- ggplot(df, aes(group, value)) + geom_boxplot() + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        box = _object(baseline, "r.layer.0")
+
+        self.assertEqual(box["currentProps"]["outlier_shape"], 19)
+        self.assertFalse(box["currentProps"]["outlierFillSupported"])
+        self.assertNotIn("outlier_fill", box["editable"])
+        self.assertNotIn("outlier_fill", [item["prop"] for item in box["propertyCapabilities"]])
+        self.assertNotIn("outlier_fill", baseline["manifest"]["coverageReport"]["byKind"]["boxplot_container"]["editableProps"])
+
+        rejected = _run_r_renderer(script, [_backend_patch(box, "outlier_fill", "#FEE0D2")])
+        self.assertTrue(rejected["conflict"])
+        self.assertTrue(any(
+            entry.get("prop") == "outlier_fill"
+            for entry in rejected["skipped"]
+            if isinstance(entry, dict)
+        ))
+
+    def test_boxplot_outlier_supported_style_changes_are_present_in_svg(self):
+        script = """
+library(ggplot2)
+df <- data.frame(group=rep(c("A", "B"), each=10), value=c(1, 2, 2, 3, 3, 4, 4, 5, 5, 20, 3, 4, 4, 5, 5, 6, 6, 7, 7, 22))
+p <- ggplot(df, aes(group, value)) + geom_boxplot(outlier.shape=21, outlier.fill="white") + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        box = _object(baseline, "r.layer.0")
+        color_patch = _run_r_renderer(script, [_backend_patch(box, "outlier_color", "#00AA55")])
+        shape_patch = _run_r_renderer(script, [_backend_patch(box, "outlier_shape", 24)])
+        size_patch = _run_r_renderer(script, [_backend_patch(box, "outlier_size", 4.2)])
+
+        self.assertIn("#00aa55", color_patch["svg"].lower())
+        self.assertNotEqual(baseline["svg"], shape_patch["svg"])
+        self.assertNotEqual(baseline["svg"], size_patch["svg"])
+
+    def test_boxplot_fill_edit_becomes_dormant_when_a_later_shape_is_not_fillable(self):
+        script = """
+library(ggplot2)
+df <- data.frame(group=rep(c("A", "B"), each=10), value=c(1, 2, 2, 3, 3, 4, 4, 5, 5, 20, 3, 4, 4, 5, 5, 6, 6, 7, 7, 22))
+p <- ggplot(df, aes(group, value)) + geom_boxplot(outlier.shape=21, outlier.fill="white") + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        box = _object(baseline, "r.layer.0")
+        fill_edit = _backend_patch(box, "outlier_fill", "#FEE0D2")
+        shape_edit = _backend_patch(box, "outlier_shape", 19)
+        result = _run_r_renderer(script, [fill_edit, shape_edit])
+        rendered_box = _object(result, "r.layer.0")
+
+        self.assertFalse(result["conflict"])
+        self.assertEqual(rendered_box["currentProps"]["outlier_shape"], 19)
+        self.assertFalse(rendered_box["currentProps"]["outlierFillSupported"])
+        self.assertNotIn("outlier_fill", rendered_box["editable"])
+        self.assertTrue(result["applied"][0].get("superseded"))
+
+    def test_violin_legacy_color_alias_replays_as_edgecolor_with_warning(self):
+        script = """
+library(ggplot2)
+df <- data.frame(group=rep(c("A", "B"), each=10), value=c(1:10, 3:12))
+p <- ggplot(df, aes(group, value, fill=group)) + geom_violin() + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        violin = _object(baseline, "r.layer.0")
+        result = _run_r_renderer(script, [_backend_patch(violin, "color", "#54278F")])
+        rendered_violin = _object(result, "r.layer.0")
+
+        self.assertFalse(result["conflict"])
+        self.assertNotIn("color", rendered_violin["editable"])
+        self.assertNotIn("color", rendered_violin["currentProps"])
+        self.assertEqual(rendered_violin["currentProps"]["edgecolor"], "#54278F")
+        self.assertTrue(any(
+            warning.get("type") == "legacy_prop_alias"
+            and warning.get("gid") == "r.layer.0"
+            and warning.get("fromProp") == "color"
+            and warning.get("toProp") == "edgecolor"
+            for warning in result["warnings"]
+            if isinstance(warning, dict)
+        ))
+
+    def test_ribbon_and_area_adapters_report_truthful_contract_and_replay_style(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  x=1:4,
+  y=c(1, 3, 2, 4),
+  ymin=c(0.7, 2.5, 1.6, 3.4),
+  ymax=c(1.4, 3.5, 2.5, 4.7)
+)
+p <- ggplot(df, aes(x=x)) +
+  geom_ribbon(
+    aes(ymin=ymin, ymax=ymax),
+    fill="#A6CEE3", colour="#1F78B4", linewidth=0.7, alpha=0.4
+  ) +
+  geom_area(
+    aes(y=y),
+    fill="#B2DF8A", colour="#33A02C", linewidth=0.5, alpha=0.5
+  ) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        ribbon = _object(baseline, "r.layer.0")
+        area = _object(baseline, "r.layer.1")
+        edits = [
+            _backend_patch(ribbon, "facecolor", "#FB9A99"),
+            _backend_patch(ribbon, "edgecolor", "#E31A1C"),
+            _backend_patch(ribbon, "linewidth", 1.25),
+            _backend_patch(ribbon, "alpha", 0.6),
+            _backend_patch(area, "facecolor", "#FDBF6F"),
+            _backend_patch(area, "edgecolor", "#FF7F00"),
+        ]
+        result = _run_r_renderer(script, edits)
+        rendered_ribbon = _object(result, "r.layer.0")
+        rendered_area = _object(result, "r.layer.1")
+
+        for obj, family, artist_class in (
+            (ribbon, "ribbon", "GeomRibbon"),
+            (area, "area", "GeomArea"),
+        ):
+            self.assertEqual(obj["kind"], "patch")
+            self.assertEqual(obj["source"]["artistClass"], artist_class)
+            self.assertEqual(obj["currentProps"]["adapterFamily"], family)
+            self.assertEqual(obj["currentProps"]["componentRoles"], ["body", "boundary_lines"])
+            self.assertEqual(set(obj["editable"]), {"facecolor", "edgecolor", "linewidth", "alpha"})
+            self.assertNotIn("ymin", obj["editable"])
+            self.assertNotIn("ymax", obj["editable"])
+            self.assertNotIn("baseline", obj["editable"])
+
+        self.assertFalse(result["conflict"])
+        self.assertEqual(rendered_ribbon["currentProps"]["facecolor"], "#FB9A99")
+        self.assertEqual(rendered_ribbon["currentProps"]["edgecolor"], "#E31A1C")
+        self.assertEqual(rendered_ribbon["currentProps"]["linewidth"], 1.25)
+        self.assertEqual(rendered_ribbon["currentProps"]["alpha"], 0.6)
+        self.assertEqual(rendered_area["currentProps"]["facecolor"], "#FDBF6F")
+        self.assertEqual(rendered_area["currentProps"]["edgecolor"], "#FF7F00")
+        self.assertEqual(rendered_ribbon["stableKey"], ribbon["stableKey"])
+        self.assertEqual(rendered_ribbon["fingerprint"], ribbon["fingerprint"])
+        self.assertEqual(rendered_ribbon["identity"], ribbon["identity"])
+        self.assertEqual(rendered_area["stableKey"], area["stableKey"])
+        self.assertEqual(rendered_area["fingerprint"], area["fingerprint"])
+        self.assertEqual(rendered_area["identity"], area["identity"])
+        self.assertIn("#FB9A99".lower(), result["svg"].lower())
+        self.assertIn("#E31A1C".lower(), result["svg"].lower())
+        self.assertIn("#FDBF6F".lower(), result["svg"].lower())
+        self.assertIn("#FF7F00".lower(), result["svg"].lower())
+
+    def test_ribbon_area_mapped_fill_groups_keep_band_semantics(self):
+        script = """
+library(ggplot2)
+ribbon_df <- data.frame(
+  x=rep(1:4, 2),
+  ymin=c(0.6, 1.4, 1.1, 2.0, 1.4, 2.2, 1.7, 2.8),
+  ymax=c(1.2, 2.1, 1.8, 2.8, 2.0, 3.0, 2.5, 3.6),
+  group=rep(c("A", "B"), each=4)
+)
+area_df <- data.frame(
+  x=rep(1:4, 2),
+  y=c(0.7, 1.2, 1.0, 1.6, 1.1, 1.7, 1.4, 2.1),
+  group=rep(c("A", "B"), each=4)
+)
+p <- ggplot() +
+  geom_ribbon(
+    data=ribbon_df,
+    aes(x=x, ymin=ymin, ymax=ymax, group=group, fill=group),
+    position="identity", alpha=0.35
+  ) +
+  geom_area(
+    data=area_df,
+    aes(x=x, y=y, group=group, fill=group),
+    position="identity", alpha=0.2
+  ) +
+  scale_fill_manual(values=c(A="#80B1D3", B="#FDB462")) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        layer_zero = _object(result, "r.layer.0")
+        layer_one = _object(result, "r.layer.1")
+        fill_groups = [group for group in result["manifest"]["groups"] if group.get("aesthetic") == "fill"]
+
+        self.assertEqual(layer_zero["currentProps"]["adapterFamily"], "ribbon")
+        self.assertEqual(layer_one["currentProps"]["adapterFamily"], "area")
+        self.assertTrue(layer_zero["currentProps"]["fillMapped"])
+        self.assertTrue(layer_one["currentProps"]["fillMapped"])
+        self.assertTrue(fill_groups)
+        self.assertTrue(all(group["kind"] == "band" for group in fill_groups))
+        self.assertTrue(all(set(group["geomFamilies"]) == {"GeomRibbon", "GeomArea"} for group in fill_groups))
+        self.assertTrue(all(set(group["layerIds"]) == {"r.layer.0", "r.layer.1"} for group in fill_groups))
+        self.assertTrue(all(group["groupId"] in layer_zero["identity"]["relation"]["groupIds"] for group in fill_groups))
+        self.assertTrue(all(group["groupId"] in layer_one["identity"]["relation"]["groupIds"] for group in fill_groups))
+
+    def test_band_style_edits_preserve_existing_fill_group_identity_for_later_palette_edits(self):
+        script = """
+library(ggplot2)
+bars <- data.frame(x=1:4, y=c(1, 2, 1.5, 2.5), group=c("A", "A", "B", "B"))
+band <- data.frame(
+  x=rep(5:8, 2),
+  ymin=c(0.6, 1.0, 0.8, 1.2, 1.1, 1.5, 1.3, 1.8),
+  ymax=c(1.2, 1.7, 1.5, 2.0, 1.8, 2.3, 2.1, 2.7),
+  group=rep(c("E", "F"), each=4)
+)
+area <- data.frame(
+  x=rep(5:8, 2),
+  y=c(0.5, 0.9, 0.7, 1.1, 1.0, 1.4, 1.2, 1.7),
+  group=rep(c("E", "F"), each=4)
+)
+p <- ggplot() +
+  geom_col(data=bars, aes(x=x, y=y, fill=group), width=0.5) +
+  geom_ribbon(
+    data=band,
+    aes(x=x, ymin=ymin, ymax=ymax, group=group, fill=group),
+    position="identity", alpha=0.3
+  ) +
+  geom_area(
+    data=area,
+    aes(x=x, y=y, group=group, fill=group),
+    position="identity", alpha=0.2
+  ) +
+  scale_fill_manual(values=c(A="#80B1D3", B="#FDB462", E="#92C5DE", F="#A6D96A")) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        baseline_group = _object(baseline, "r.group.fill.0.0")
+        style_edits = [
+            _backend_patch(_object(baseline, "r.layer.1"), "facecolor", "#8C510A"),
+            _backend_patch(_object(baseline, "r.layer.2"), "facecolor", "#8C510A"),
+        ]
+        styled = _run_r_renderer(script, style_edits)
+        styled_group = _object(styled, "r.group.fill.0.0")
+
+        self.assertEqual(styled_group["stableKey"], baseline_group["stableKey"])
+        self.assertEqual(styled_group["fingerprint"], baseline_group["fingerprint"])
+        self.assertEqual(styled_group["identity"], baseline_group["identity"])
+
+        palette_edit = _backend_patch(styled_group, "facecolor", "#FB9A99")
+        replayed = _run_r_renderer(script, [*style_edits, palette_edit])
+        self.assertFalse(replayed["conflict"])
+        self.assertEqual(_object(replayed, "r.group.fill.0.0")["currentProps"]["facecolor"], "#FB9A99")
+        self.assertIn("#FB9A99".lower(), replayed["svg"].lower())
+
+        dormant_group = _object(styled, "r.group.fill.0.2")
+        self.assertFalse(dormant_group["currentProps"]["scaleActive"])
+        dormant_palette_edit = _backend_patch(dormant_group, "facecolor", "#FF00FF")
+        rejected = _run_r_renderer(script, [*style_edits, dormant_palette_edit])
+        self.assertTrue(rejected["conflict"])
+        self.assertIn(dormant_palette_edit, rejected["skipped"])
+
+        earlier_palette_edit = _backend_patch(_object(baseline, "r.group.fill.0.2"), "facecolor", "#FF00FF")
+        rejected_reorder = _run_r_renderer(script, [earlier_palette_edit, *style_edits])
+        self.assertTrue(rejected_reorder["conflict"])
+        self.assertIn(earlier_palette_edit, rejected_reorder["skipped"])
+
+    def test_geom_col_adapter_reports_inherited_fill_and_color_mapping_and_replays_style(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=c("A", "B", "C", "D"), value=c(2, 4, 3, 5), group=c("G1", "G1", "G2", "G2"))
+p <- ggplot(df, aes(x, value, fill=group, colour=group)) +
+  geom_col(linewidth=0.4, alpha=0.8) +
+  scale_fill_manual(values=c(G1="#1F78B4", G2="#33A02C")) +
+  scale_colour_manual(values=c(G1="#222222", G2="#444444")) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        baseline_layer = _object(baseline, "r.layer.0")
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "facecolor", "value": "#FB9A99", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "edgecolor", "value": "#111111", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "linewidth", "value": 1.3, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "alpha", "value": 0.45, "mode": "backend_patch"},
+        ])
+        layer = _object(result, "r.layer.0")
+
+        self.assertEqual(baseline_layer["kind"], "patch")
+        self.assertEqual(baseline_layer["currentProps"]["adapterFamily"], "bar")
+        self.assertTrue(baseline_layer["currentProps"]["fillMapped"])
+        self.assertTrue(baseline_layer["currentProps"]["colorMapped"])
+        self.assertGreater(len(set(baseline_layer["currentProps"]["facecolorValues"])), 1)
+        self.assertIn("facecolor", layer["editable"])
+        self.assertIn("edgecolor", layer["editable"])
+        self.assertEqual(layer["currentProps"]["facecolor"], "#FB9A99")
+        self.assertEqual(layer["currentProps"]["edgecolor"], "#111111")
+        self.assertEqual(layer["currentProps"]["linewidth"], 1.3)
+        self.assertEqual(layer["currentProps"]["alpha"], 0.45)
+        self.assertIn("#FB9A99".lower(), result["svg"].lower())
+        self.assertIn("#111111".lower(), result["svg"].lower())
+
+    def test_bar_adapter_keeps_legacy_gid_and_identity_stable_across_style_edits(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=c("A", "B", "C"), value=c(2, 4, 3))
+p <- ggplot(df, aes(x, value)) + geom_col(fill="#1F78B4", colour="#222222", linewidth=0.5) + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        patched = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "facecolor", "value": "#D62728", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "linewidth", "value": 1.4, "mode": "backend_patch"},
+        ])
+        baseline_layer = _object(baseline, "r.layer.0")
+        patched_layer = _object(patched, "r.layer.0")
+
+        self.assertEqual(patched["applied"][0]["gid"], "r.layer.0")
+        self.assertEqual(baseline_layer["stableKey"], patched_layer["stableKey"])
+        self.assertEqual(baseline_layer["fingerprint"], patched_layer["fingerprint"])
+        self.assertEqual(baseline_layer["identity"], patched_layer["identity"])
+        self.assertEqual(patched_layer["currentProps"]["facecolor"], "#D62728")
+        self.assertEqual(patched_layer["currentProps"]["linewidth"], 1.4)
+
+    def test_geom_bar_stat_count_adapter_replays_style_and_keeps_identity_stable(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  x=c("A", "A", "B", "B", "C", "C"),
+  group=c("G1", "G2", "G1", "G1", "G2", "G2")
+)
+p <- ggplot(df, aes(x, fill=group)) +
+  geom_bar(colour="#222222", linewidth=0.5, alpha=0.8) +
+  scale_fill_manual(values=c(G1="#1F78B4", G2="#33A02C")) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        patched = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "facecolor", "value": "#CAB2D6", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "edgecolor", "value": "#111111", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "linewidth", "value": 1.2, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "alpha", "value": 0.5, "mode": "backend_patch"},
+        ])
+        baseline_layer = _object(baseline, "r.layer.0")
+        patched_layer = _object(patched, "r.layer.0")
+
+        self.assertEqual(baseline_layer["currentProps"]["adapterFamily"], "bar")
+        self.assertTrue(baseline_layer["currentProps"]["fillMapped"])
+        self.assertEqual(baseline_layer["currentProps"]["positionClass"], "PositionStack")
+        self.assertGreater(baseline_layer["currentProps"]["barCount"], 0)
+        self.assertEqual(patched["applied"][0]["gid"], "r.layer.0")
+        self.assertEqual(baseline_layer["stableKey"], patched_layer["stableKey"])
+        self.assertEqual(baseline_layer["fingerprint"], patched_layer["fingerprint"])
+        self.assertEqual(baseline_layer["identity"], patched_layer["identity"])
+        self.assertEqual(patched_layer["currentProps"]["facecolor"], "#CAB2D6")
+        self.assertEqual(patched_layer["currentProps"]["edgecolor"], "#111111")
+        self.assertEqual(patched_layer["currentProps"]["linewidth"], 1.2)
+        self.assertEqual(patched_layer["currentProps"]["alpha"], 0.5)
+        self.assertIn("#CAB2D6".lower(), patched["svg"].lower())
+        self.assertIn("#111111".lower(), patched["svg"].lower())
+
+    def test_errorbar_family_adapter_reports_components_and_replays_supported_styles(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  x=1:3,
+  y=c(2.2, 3.4, 2.9),
+  ymin=c(1.7, 2.8, 2.3),
+  ymax=c(2.8, 4.1, 3.6)
+)
+p <- ggplot(df, aes(x, y, ymin=ymin, ymax=ymax)) +
+  geom_errorbar(width=0.2, colour="#444444", linewidth=0.6) +
+  geom_linerange(colour="#D95F0E", linewidth=0.7) +
+  geom_pointrange(colour="#1F78B4", fill="#A6CEE3", shape=21, size=2.5, linewidth=0.8) +
+  geom_crossbar(width=0.3, colour="#222222", fill="#B2DF8A", linewidth=0.9) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        errorbar = _object(baseline, "r.layer.0")
+        linerange = _object(baseline, "r.layer.1")
+        pointrange = _object(baseline, "r.layer.2")
+        crossbar = _object(baseline, "r.layer.3")
+
+        self.assertEqual(errorbar["kind"], "errorbar_container")
+        self.assertEqual(errorbar["identity"]["scope"], "subplot")
+        self.assertEqual(errorbar["identity"]["relation"]["subplotId"], "subplot.0")
+        self.assertEqual(errorbar["currentProps"]["adapterFamily"], "errorbar")
+        self.assertEqual(errorbar["currentProps"]["componentRoles"], ["interval_line", "caps"])
+        self.assertTrue(errorbar["currentProps"]["hasCaps"])
+        self.assertFalse(errorbar["currentProps"]["hasPoint"])
+        self.assertEqual(errorbar["currentProps"]["capUnit"], "data")
+        self.assertIn("elinewidth", errorbar["editable"])
+        self.assertIn("capsize", errorbar["editable"])
+        self.assertNotIn("marker", errorbar["editable"])
+
+        self.assertEqual(linerange["currentProps"]["componentRoles"], ["interval_line"])
+        self.assertEqual(linerange["identity"]["relation"]["subplotId"], "subplot.0")
+        self.assertFalse(linerange["currentProps"]["hasCaps"])
+        self.assertNotIn("capsize", linerange["editable"])
+
+        self.assertEqual(pointrange["currentProps"]["componentRoles"], ["interval_line", "point"])
+        self.assertEqual(pointrange["identity"]["relation"]["subplotId"], "subplot.0")
+        self.assertTrue(pointrange["currentProps"]["hasPoint"])
+        self.assertIn("marker", pointrange["editable"])
+        self.assertIn("markersize", pointrange["editable"])
+
+        self.assertEqual(crossbar["currentProps"]["componentRoles"], ["interval_line", "caps", "crossbar"])
+        self.assertEqual(crossbar["identity"]["relation"]["subplotId"], "subplot.0")
+        self.assertTrue(crossbar["currentProps"]["hasCrossbar"])
+        self.assertIn("facecolor", crossbar["editable"])
+
+        result = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "color", "value": "#D62728", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "elinewidth", "value": 1.7, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "capsize", "value": 0.4, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "linestyle", "value": "dashed", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "alpha", "value": 0.5, "mode": "backend_patch"},
+            {"gid": "r.layer.1", "prop": "linewidth", "value": 1.4, "mode": "backend_patch"},
+            {"gid": "r.layer.2", "prop": "marker", "value": 24, "mode": "backend_patch"},
+            {"gid": "r.layer.2", "prop": "markersize", "value": 4.5, "mode": "backend_patch"},
+            {"gid": "r.layer.3", "prop": "facecolor", "value": "#CAB2D6", "mode": "backend_patch"},
+            {"gid": "r.layer.3", "prop": "capsize", "value": 0.45, "mode": "backend_patch"},
+        ])
+        patched_errorbar = _object(result, "r.layer.0")
+        patched_linerange = _object(result, "r.layer.1")
+        patched_pointrange = _object(result, "r.layer.2")
+        patched_crossbar = _object(result, "r.layer.3")
+
+        self.assertFalse(result["conflict"])
+        self.assertEqual(patched_errorbar["currentProps"]["color"], "#D62728")
+        self.assertEqual(patched_errorbar["currentProps"]["elinewidth"], 1.7)
+        self.assertEqual(patched_errorbar["currentProps"]["linewidth"], 1.7)
+        self.assertAlmostEqual(patched_errorbar["currentProps"]["capsize"], 0.4)
+        self.assertEqual(patched_errorbar["currentProps"]["linestyle"], "dashed")
+        self.assertEqual(patched_errorbar["currentProps"]["alpha"], 0.5)
+        self.assertEqual(patched_linerange["currentProps"]["elinewidth"], 1.4)
+        self.assertEqual(patched_pointrange["currentProps"]["marker"], 24)
+        self.assertEqual(patched_pointrange["currentProps"]["markersize"], 4.5)
+        self.assertEqual(patched_crossbar["currentProps"]["facecolor"], "#CAB2D6")
+        self.assertAlmostEqual(patched_crossbar["currentProps"]["capsize"], 0.45)
+        self.assertIn("#D62728".lower(), result["svg"].lower())
+        self.assertIn("#CAB2D6".lower(), result["svg"].lower())
+
+    def test_errorbar_adapter_keeps_group_panel_identity_stable_across_style_edits(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  x=c(1, 2, 1, 2),
+  y=c(2.2, 3.4, 2.8, 3.7),
+  ymin=c(1.8, 2.9, 2.4, 3.2),
+  ymax=c(2.7, 3.9, 3.3, 4.2),
+  group=rep(c("G1", "G2"), each=2)
+)
+p <- ggplot(df, aes(x, y, ymin=ymin, ymax=ymax, colour=group)) +
+  geom_errorbar(width=0.18, linewidth=0.6, position=position_dodge(width=0.25)) +
+  scale_colour_manual(values=c(G1="#1F78B4", G2="#33A02C")) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        patched = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "color", "value": "#D62728", "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "elinewidth", "value": 1.8, "mode": "backend_patch"},
+            {"gid": "r.layer.0", "prop": "capsize", "value": 0.3, "mode": "backend_patch"},
+        ])
+        baseline_layer = _object(baseline, "r.layer.0")
+        patched_layer = _object(patched, "r.layer.0")
+
+        self.assertTrue(baseline_layer["currentProps"]["colorMapped"])
+        self.assertEqual(baseline_layer["currentProps"]["positionClass"], "PositionDodge")
+        self.assertEqual(patched["applied"][0]["gid"], "r.layer.0")
+        self.assertEqual(baseline_layer["stableKey"], patched_layer["stableKey"])
+        self.assertEqual(baseline_layer["fingerprint"], patched_layer["fingerprint"])
+        self.assertEqual(baseline_layer["identity"], patched_layer["identity"])
+        self.assertEqual(patched_layer["currentProps"]["color"], "#D62728")
+        self.assertEqual(patched_layer["currentProps"]["elinewidth"], 1.8)
+        self.assertAlmostEqual(patched_layer["currentProps"]["capsize"], 0.3)
 
     def test_facet_manifest_and_strip_patch(self):
         script = """

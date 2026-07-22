@@ -107,12 +107,17 @@ export interface ManifestObjectRelation {
   subplotIds?: string[];
   layerId?: string;
   layerIds?: string[];
+  layerKey?: string;
   groupIds?: string[];
   scaleId?: string;
+  scaleKey?: string;
   guideId?: string;
+  guideKey?: string;
   aesthetic?: string;
   groupKey?: string;
   dataKey?: string;
+  facetKey?: string;
+  axisKey?: string;
   legendId?: string;
   legendTitleId?: string;
   legendTextId?: string;
@@ -303,8 +308,9 @@ export interface SemanticGroup {
   groupId: string;
   label: string;
   paletteId: string;
-  kind: "bar" | "line" | "scatter" | "contour" | "contourf";
+  kind: "bar" | "line" | "scatter" | "contour" | "contourf" | "boxplot" | "violin" | "distribution" | "ribbon" | "area" | "band";
   aesthetic?: string;
+  geomFamilies?: string[];
   scaleId?: string;
   layerIds?: string[];
   subplotIds?: string[];

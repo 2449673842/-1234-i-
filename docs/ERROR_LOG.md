@@ -1,7 +1,7 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-30 15:15:32 +08:00
+> 最后修改时间：2026-07-30 15:51:34 +08:00
 
 ---
 
@@ -30,6 +30,126 @@
 - 服务端 renderer 已返回权威 SVG/manifest 时，前端不得因 `applied` 列表省略 code patch 或将对象降为 local mode 而丢弃该结果。
 - code patch 验收必须同时验证请求、服务端响应和前端运行时 manifest；只验证 HTTP、payload 或 SVG 均不足以证明编辑状态一致。
 - 测试全局作用域前必须显式选择全局，不能依赖上一次对象选择前的隐式范围。
+
+---
+
+## 2026-07-23 01:14:18 +08:00 R Bar mapped override 身份漂移与 Errorbar 仅有通用整层样式
+
+**状态与级别**
+
+- 状态：本地候选已修复并通过 renderer、前端合同、capability matrix 和隔离浏览器回归；尚未推送、尚未部署。
+- 级别：P1 silent wrong edit / 旧项目兼容。整层 Bar 改色后关系身份可能漂移；Errorbar 若只按通用 layer 暴露 color/linewidth/alpha，组件中心无法正确表达端帽、Pointrange 点和 Crossbar 填充。
+
+**现象与根因**
+
+- 离散 scale 的 layer/group/subplot 关系原先依赖最终 rendered color 匹配。对 mapped Bar layer 写入整层 fill 后，built data 不再含原 palette 色，导致 groupIds/subplotIds 消失，identity scope 从 subplot 漂到 figure。
+- 未映射 scale 的独立 R layer 也没有直接读取 ggplot build 的 `PANEL`，因此实际位于单一 panel 的 Errorbar/Pointrange 会被标成 figure scope。
+- Errorbar family 之前共用 `layer_current_props()`，没有 `adapterFamily`、组件角色、mapped flags、capsize 单位、Pointrange marker/markersize 或 Crossbar fill 边界。
+- 前端 markersize 控件虽识别 `errorbar_container`，实际发补丁时又过滤掉该 kind；R capsize 还沿用 Python 点单位的 0.5 步进。
+
+**修复**
+
+- 最终 manifest 在身份生成前，从同一次重放、应用 editLog 前的可信 baseline manifest 恢复纯 layer/group/panel 关系；样式值仍来自编辑后的 ggplot。
+- 每个 R layer 同时从 built data `PANEL` 直接生成 subplotIds；单 panel 进入 subplot scope，多 panel 保留 plural relation，stableKey/fingerprint 算法不变。
+- 新增 Errorbar/Linerange/Pointrange/Crossbar adapter：按 geom 声明 interval line、caps、point、crossbar；开放真实可重放属性，并把旧 `linewidth` editLog 兼容映射到 `elinewidth`。
+- R capsize 标记 `capUnit=data`，组件中心使用 0.05 步进；Pointrange marker/markersize 补丁不再被前端过滤。
+- Bar 继续把整层样式与 `r.group.fill.*` 单组配色分开，避免把整层 override 冒充单组修改。
+
+**验证与防复发**
+
+- R renderer Errorbar 2/2、Bar/Point 复审定向、旧 identity/多 panel 7/7 和 R capability matrix 通过。
+- 前端 R Errorbar + Point strict resolver 6/6。
+- 隔离真实浏览器 12/12：Bar 整层 linewidth、单 fill group、Errorbar elinewidth/capsize、Pointrange marker/markersize、Draft、保存刷新、撤销、重做、导出和 0 console/page error 全部通过。
+- 后续任何 mapped layer 整层 override 都必须断言 style edit 前后 identity 全对象相等，不能只比较 stableKey/fingerprint；任何新 container adapter 都必须验证组件中心实际发出的 GID/prop，而不是只检查控件可见。
+
+---
+
+## 2026-07-23 00:21:34 +08:00 R inherited aes 映射漏报与 Bar/Col 缺少专用能力边界
+
+**状态与级别**
+
+- 状态：本地候选已修复并通过定向回归；尚未推送、尚未部署；R-WP4 当前只完成 Point/Jitter、Line/Path/Smooth 和 Bar/Col 子家族。
+- 级别：P1 能力声明与分组编辑正确性。manifest 若把继承自 plot-level 的映射误报为未映射，组件中心会给出错误能力判断；Bar/Col 若继续只走通用 patch layer，也无法区分整层样式与离散分组颜色。
+
+**现象与根因**
+
+- Point/Line adapter 初版只读取 `layer$mapping`，未把 `ggplot(data, aes(...))` 的 plot-level mapping 合并进 effective mapping，导致 inherited `color`、`linewidth`、`linetype`、`size` 或 `shape` 标志可能为 false。
+- Bar/Col 虽能通过旧通用 layer 写回基础 fill/edge，但缺少 `adapterFamily`、rendered fill 列表、position class 和 bar count，难以证明 stack/dodge 与 mapped fill 的真实边界。
+- 这类问题不会让 renderer 直接报错，因此只看 patch 200 或 SVG 是否变化无法发现；必须断言 manifest 映射标志、目标颜色和旧 identity 同时正确。
+
+**修复**
+
+- Point/Line/Bar current-props 统一使用 `r_effective_layer_mapping(layer, plot_mapping)`；manifest 构建显式传入 plot mapping。
+- 新增 Bar/Col adapter，保留旧 `r.layer.N`，支持整层 `facecolor`、`edgecolor`、`linewidth`、`alpha` 重放，并报告 `fillMapped`、`colorMapped`、`facecolorValues`、`positionClass` 和 `barCount`。
+- mapped fill 的单组颜色仍由已有 `r.group.fill.*` 离散 scale identity 修改；Bar layer adapter 只处理整层 override，避免一次改色误伤所有组却被当成单组成功。
+- manifest `unsupportedNotes` 同步列出 Point/Jitter、Line/Path/Smooth 和 Bar/Col 专用 adapter。
+
+**验证与防复发**
+
+- 相关 R renderer 定向 8/8：plot-level inherited Line color/linewidth/linetype、Point size/shape、GeomCol fill/color，Bar style replay、旧 `r.layer.0` GID 和 v2 identity/fingerprint 稳定均通过。
+- 颜色重放测试不仅比较 SVG 是否变化，还断言目标十六进制颜色确实进入最终 SVG。
+- 后续 adapter 必须同时覆盖 layer-local mapping 与 plot-level inherited mapping；分组图元必须明确区分 layer override 和 scale group edit，不允许仅凭整张 SVG 变化宣称分组编辑正确。
+
+---
+
+## 2026-07-22 23:48:55 +08:00 R Line/Path/Smooth 仍按通用 layer 读写导致映射样式证据不足
+
+**状态与级别**
+
+- 状态：本地候选已修复并通过定向和隔离浏览器回归；尚未推送、尚未部署；R-WP4 仅 Point/Jitter 与 Line/Path/Smooth 两个子家族进入候选。
+- 级别：P1 能力声明真实性。原有通用 line layer 能改基础线宽/颜色，但没有显式 adapterFamily，也没有证明 mapped linewidth/linetype、GeomPath 和 GeomSmooth 的边界，容易把“通用整层样式”误写成专用支持。
+
+**现象与根因**
+
+- `layer_current_props()` 主要读取静态 `aes_params`，对 `aes(linewidth=...)` 或 `aes(linetype=...)` 的渲染后状态缺少 manifest 诊断。
+- `GeomLine`、`GeomPath` 和 `GeomSmooth` 都落在通用 `line` kind，下游无法区分“普通线条样式已支持”和 “smooth ribbon / ribbon fill 专用编辑已支持”。
+- 测试初版曾把 mapped linewidth 与非 solid mapped linetype 放在同一个 `geom_line()`，触发 ggplot2 正常报错；这暴露了 fixture 必须遵守 ggplot2 本身约束，不能为了测试平台能力写出非法图。
+
+**修复**
+
+- 新增 R Line/Path/Smooth adapter 读取路径，保留旧 `r.layer.N` GID，同时输出 `adapterFamily=line`、`linewidthValues`、`linewidthMapped`、`linetypeMapped`、`colorMapped`、`positionClass` 和 `smoothLayer`。
+- Line/Path/Smooth replay 使用独立 `apply_line_layer_edits()`，支持 `color`、`linewidth`、`linestyle` 和 `alpha`，继续走 backend renderer 验证。
+- `GeomSmooth` 只作为线层样式 adapter 进入本阶段；不开放 `facecolor`，不把置信带填充、ribbon body 或 se 区间声明为已支持。
+- mapped linewidth 与 mapped linetype fixture 拆成两个合法 layer，避免 ggplot2 对非 solid linetype 下变化 linewidth 的限制干扰平台能力判断。
+
+**验证与防复发**
+
+- R renderer line 定向 5/5：旧 layer style、Line/Path/Smooth adapter、mapped linewidth/linetype 合法 fixture、旧 `r.layer.0` GID 和 style edit 下 identity/fingerprint 稳定。
+- 同轮 Point/Jitter 7/7：shape 21、mapped fillable shape、`color/edgecolor` alias 和 `size_scale` 未回退。
+- 隔离浏览器 `npm run test:r-semantic-smoke` 11/11：真实 UI 中 line linewidth、Point `size_scale`、marker、保存刷新、撤销、重做、导出状态和 0 console/page error 通过。
+- `npm run lint` 通过。
+- 后续处理 `GeomRibbon/Area` 或 smooth ribbon 时，必须新增独立 ribbon/body 语义和测试；不得借 Line/Path/Smooth 的 `smoothLayer` 标记声明置信带填充已可编辑。
+
+---
+
+## 2026-07-22 23:26:50 +08:00 R Point/Jitter shape 填充与颜色别名确认可能误判
+
+**状态与级别**
+
+- 状态：本地候选已修复并通过定向回归；尚未推送、尚未部署；R-WP4 仅 Point/Jitter 子家族进入候选，不代表全部常用 ggplot2 图元完成。
+- 级别：P1 silent wrong edit / false conflict 风险。映射 shape 或同批 marker 修改时，前端可显示补丁已应用，但 R renderer 可能写到错误 aesthetic，或旧 `color/edgecolor` 历史条目被后续值覆盖后仍被确认阶段误判为失败。
+
+**现象与根因**
+
+- `aes(shape=group)` 通过 scale 解析为 21-25 时，manifest 可从 built layer data 看到可填充 shape，但 apply 阶段只检查静态 `aes_params$shape`，导致 `facecolor` 可能写入 `colour` 而不是 `fill`。
+- 同一批补丁若从 shape 19 改为 21 并同时设置 `facecolor`，旧逻辑先处理颜色再处理 marker，导致填充色按旧 shape 19 写入错误目标。
+- `color` 与 `edgecolor` 对 ggplot point outline 采用 latest-value 语义，但确认阶段逐条检查 editLog；旧值被后续别名覆盖后，最终 SVG 正确也可能被判 `no_setter`。
+
+**修复**
+
+- R renderer 在 layer patch 前读取 ggplot build 后的 layer data，并将其传入 Point/Jitter adapter。
+- Point/Jitter apply 阶段先计算最终 marker，再根据最终 shape 或整层 mapped shape 判断是否支持 fill；shape 19 只开放可见 `color`，shape 21-25 才开放 `facecolor/edgecolor/linewidth`。
+- mixed mapped shape 19/21 默认不暴露 `facecolor`；用户明确把 marker 统一到 21-25 后再开放填充能力。
+- 确认阶段把 Point 的 `color/edgecolor` 归入同一个 outline alias 组；被后续同组 edit 覆盖的旧条目标记为 `superseded` 并视为已接受，不再误报冲突。
+
+**验证与防复发**
+
+- R renderer 定向 10/10：shape 21 fill/outline/stroke/alpha/absolute size、GeomJitter identity、mapped size `size_scale`、absolute size 与比例缩放分离、shape 19/21 能力边界、旧 shape 19 `facecolor` 迁移、mapped fillable shape、mapped mixed shape、同批 `marker + facecolor + edgecolor`、`color/edgecolor` latest-value alias。
+- 旧兼容定向 5/5：冻结旧 identity fixture、v2 layer remap、style edit 下 shadow identity 稳定、普通 layer style、manual scale palette。
+- 前端 R Point 协议 3/3：strict backend resolver、fillable 子集和 non-fillable 点层过滤。
+- 隔离浏览器 `npm run test:r-semantic-smoke` 11/11：真实 UI 中 Point `size_scale`、marker、保存刷新、撤销、重做、导出状态和 0 console/page error 通过。
+- `npm run lint` 与相关文件 `git diff --check` 通过。
+- 后续 R 点层改动必须同时覆盖 mapped shape、同批 marker+facecolor、mixed shape、alias latest-value 和 `size_scale` 比例保持；不得只用静态 `aes_params` 证明 replay 正确。
 
 ---
 
@@ -3742,3 +3862,71 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - R renderer 54/54、runtime diagnostics 6/6、runtime consistency、identity v2 compatibility、renderer image contract、lint 和 diff-check 通过。
 - 修复后独立复审 APPROVE，0 HIGH/MEDIUM。后续修改 R renderer、Docker 依赖、字体或 lock 时，必须同步更新 SHA 合同并重新构建镜像；不得仅复用同名 tag 宣称 parity。
 - `data:audit`：25 用户、125 项目、283 项目文件、111 导出资产、0 issue；自动化继续使用随机端口、临时 DB/data 和本轮容器。
+
+---
+
+## 2026-07-23 01:52:31 +08:00 R Boxplot 的“中位线颜色”实际修改整体轮廓，Boxplot/Violin 缺少专用组件合同
+
+**状态与级别**
+
+- 状态：已修复并通过定向 renderer、前端合同和隔离真实浏览器验证；未推送、未部署。
+- 级别：P1 silent wrong edit 与旧项目兼容。用户选择“中位线颜色”时，旧实现实际修改箱体边框、须线等整体轮廓；接口成功但视觉作用范围错误。
+
+**根因**
+
+- `GeomBoxplot` 与 `GeomViolin` 只被识别为容器，样式仍走通用 layer 写回，没有专用 adapter、组件角色或属性边界。
+- ggplot2 当前固定候选不能跨版本稳定设置独立 median/whisker/staple 颜色；旧代码却把 `median_color` 写入 `aes_params$colour`，同时在 editable、propertyCapabilities 和组件中心继续宣称为独立能力。
+- Boxplot outlier 的 colour/fill/shape/size/stroke/alpha 属于真实 `geom_params`，旧 manifest 未读取或开放这些稳定属性。Violin 的 quantile lines 也没有独立稳定 setter，不应按外观伪造。
+
+**修复**
+
+- Boxplot 新增专用 adapter，声明 `box_body/median/whiskers/staples/outliers` 组件角色；开放整体 `color/linewidth/alpha`、箱体 `box_color` 和六类 outlier 属性。
+- `outlier_fill` 仅在 outlier shape 为 21-25 时进入 editable/propertyCapabilities；后续把 shape 改为不可填充类型时，旧 fill 编辑保持 dormant，不错误套用到实心点。
+- 新 manifest、能力矩阵和 R 组件中心不再暴露 `median_color`。旧 editLog 继续重放，但只迁移为整体 `color`，返回 `legacy_prop_alias`；原持久化 prop 不改写，stableKey 和 v2 structural fingerprint 算法不变。
+- Violin 新增专用 adapter，声明 `body/quantile_lines` 边界；琴身 fill/outline/linewidth/alpha 可编辑，旧 `color` 映射到 `edgecolor` 并返回 `legacy_prop_alias`，quantile 独立属性保持只读。
+- 旧无 `propertyCapabilities` 的 R manifest 也在前端隐藏 `median_color`，避免升级后继续显示误导控件；后台兼容路径仍保留。
+- Boxplot/Violin 共用 fill scale 时输出 `distribution` 分组和 `geomFamilies`；样式覆盖移除 scale 使用后，仅恢复可信 baseline 的结构关系，不恢复被替换的旧样式。
+
+**验证与防复发**
+
+- `tests.test_r_renderer` 定向 6/6：现代 Boxplot/Violin 属性、条件化 outlier fill、outlier 写回、dormant fill、quantile 只读元数据、旧 `median_color -> color` 和旧 Violin `color -> edgecolor` warning 通过。
+- `rBoxViolinEditingContract.test.ts` 7/7：现代与旧 manifest 的 UI 权威、fill/outline 分离、条件化 `outlier_fill`、outlier strict backend patch、Violin alias 和 quantile setter 拒绝通过。
+- `npm run test:r-semantic-smoke` 12/12：同一隔离 fixture 真实操作 Boxplot outlier、Violin outline/linewidth，并完成 Draft、保存刷新、撤销、重做、分组配色和导出；console/page error 为 0。
+- 首次浏览器重跑的 11/12 是测试定位假失败：`page.locator('svg').first()` 选中了页面图标而非绘图 SVG。改为稳定画布选择器 `[data-scifigure-canvas-svg="true"] > svg` 后 12/12 通过，产品编辑链路未发生失败。
+- `npm run lint` 与相关文件 `git diff --check` 通过。后续任何组件属性只有在 renderer 可读、可写、可确认并能通过旧项目重放时才能进入 editable/propertyCapabilities/UI；不得用通用 layer override 冒充独立子组件 setter。
+- 独立 `gpt-5.5 high` 审查 APPROVE、0 HIGH/MEDIUM。保留 LOW 测试边界：Playwright 未直接编辑 `outlier_fill`，但 renderer 与前端合同已验证；layer-level fill override 后 palette 优先级沿用现有规则，不扩张为本家族的新承诺。
+
+---
+
+## 2026-07-23 04:01:45 +08:00 R Ribbon/Area 整层改色导致 fill group 身份漂移，配色测试把业务冲突误判为成功
+
+**状态与级别**
+
+- 状态：已修复并通过 renderer、前端合同、R identity/patch 权威和隔离真实浏览器验证；未推送、未部署。
+- 级别：P1 编辑持久化与旧项目兼容。用户先修改 Ribbon/Area 整层填充，再在配色中心修改 fill group 时，界面可能发出请求但服务端原子拒绝，导出中缺少该次配色。
+
+**根因**
+
+- Ribbon/Area 的 layer-level `facecolor` override 会移除原 mapped fill 使用，ggplot 最终构建出的 fill scale 训练键由 A-F 缩短为 A-D。
+- R v2 group fingerprint 把 `scaleKey/guideKey` 作为结构关系；最终 manifest 使用缩短后的键，下一批 palette patch 携带的 fingerprint 无法匹配从原脚本重建的 baseline manifest，因此 renderer 返回 `identity_mismatch`、`renderer_ack_missing` 和 `renderer_skipped`。
+- 恢复 baseline 结构身份后，已被整层 override 覆盖的 scale group 仍可能保留在 manifest 中；如果把这类休眠 group 当作 superseded 成功，图例颜色和数据图元会不一致并产生 silent wrong edit。
+- 浏览器 smoke 的 `R3-palette-center` 只验证请求体和 HTTP 2xx。服务端冲突响应为了前端统一处理仍是 HTTP 200，测试因此假报 PASS；后续导出才暴露 editLog 没有 group patch。
+- R identity 唯一匹配还允许任意 missing GID 跨家族 remap；复制真实 identity 后可从伪造 GID 跳到真实 group，违反 fail-closed 边界。
+
+**修复**
+
+- `restore_baseline_scale_semantics()` 从本次原始脚本的 baseline group object 恢复 `scaleId/scaleKey/guideId/guideKey/legendId/aesthetic/groupKey`，保证 style edit 不改变结构 fingerprint；currentProps、palette color 和其他样式仍使用编辑后的值。
+- group currentProps 增加 `scaleActive`。休眠 scale group 无论出现在 layer override 之前还是之后都由 renderer 返回 conflict，不作为 superseded 成功；服务端原子拒绝整批且不持久化。
+- 独立审查发现项目 PUT 保存预检尚未镜像上述 `scaleActive=false` 规则。服务端现已在 capability 判断和事务写入前返回 `no_setter`，阻止构造 editLog 绕过 `/api/figure/patch`。
+- 浏览器测试直接等待并读取 `/api/figure/patch` 响应体，只有 HTTP 2xx 且 `status=success` 才认定应用成功；失败 warning 进入报告。
+- 服务端和 R renderer 增加 remap 门禁：请求 GID 必须先存在于当前 manifest，且请求对象与候选对象属于同一规范化 GID 家族。合法 ordinal 变化继续 remap；缺失或跨家族请求返回 conflict，且不写 revision、session、Figure、history、preview、export asset 或 snapshot。
+
+**验证与防复发**
+
+- 最新复验中 Boxplot/Violin 与 Ribbon/Area renderer 定向 9/9 通过；覆盖合法 factor reorder remap、同族 missing GID 拒绝、休眠 group 两种 edit 顺序冲突和 band palette 后续编辑。
+- `rRibbonAreaEditingContract.test.ts` 3/3；与 Boxplot/Violin 合计 10/10。
+- `npm run test:r-semantic-smoke` 12/12：Ribbon/Area 组件编辑、color/fill group 配色、保存刷新、撤销重做和导出 bundle 均通过，console/page error 为 0。
+- `npm run test:r-identity-v2-compatibility` 通过；合法旧 group 重排继续返回非持久化 `resolvedGid`，missing GID、现存跨家族 GID、unsupported prop、语义漂移和歧义候选均零持久化拒绝。
+- `npm run test:r-patch-authority` 11 场景通过，新增休眠 scale group 项目 PUT 返回 409/`no_setter` 且 session、Figure、history、cache、导出资产和快照均不变；`npm run lint`、`npm run build` 和相关 `git diff --check` 通过。
+- 最终独立 `gpt-5.5 high` 代码审查 `APPROVE`、架构审查 `CLEAR`，无 HIGH/MEDIUM。
+- 后续任何测试“应用成功”必须核对业务 `status`、返回 `applied` 和持久 editLog，不能只看 HTTP 状态；任何 R identity remap 必须同时满足请求 GID 存在、唯一结构证据和同 GID 家族。

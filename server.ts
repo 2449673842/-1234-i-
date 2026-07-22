@@ -3644,6 +3644,20 @@ ${inner}
     return true;
   }
 
+  function rGidRemapFamily(value: unknown): string | null {
+    const gid = typeof value === 'string' ? value : '';
+    if (!/^(?:r\.|axis\.[xy]\.|[xy]tick\.|legend(?:_title|_text)?\.|title\.|xlabel\.|ylabel\.|grid\.|spine\.|subplot\.|facet\.strip\.)/.test(gid)) {
+      return null;
+    }
+    return gid.replace(/\d+/g, '#');
+  }
+
+  function canRemapRGid(requestedGid: unknown, resolvedGid: unknown): boolean {
+    const requestedFamily = rGidRemapFamily(requestedGid);
+    const resolvedFamily = rGidRemapFamily(resolvedGid);
+    return requestedFamily !== null && requestedFamily === resolvedFamily;
+  }
+
   function resolveRManifestObject(manifest: any, patch: any) {
     const objects = Array.isArray(manifest?.objects) ? manifest.objects : [];
     const direct = objects.find((object: any) => String(object?.id || '') === String(patch?.gid || '')) || null;
@@ -3667,10 +3681,21 @@ ${inner}
     }
     const candidates = objects.filter((object: any) => matchesRIdentityEvidence(object, evidence));
     if (candidates.length === 1) {
+      const candidateGid = String(candidates[0]?.id || '');
+      if (
+        candidateGid !== String(patch?.gid || '')
+        && (!direct || !canRemapRGid(patch?.gid, candidateGid))
+      ) {
+        return {
+          object: null,
+          status: 'identity_not_found',
+          candidateGids: [candidateGid],
+        };
+      }
       return {
         object: candidates[0],
-        status: candidates[0]?.id === patch?.gid ? 'exact' : 'remapped',
-        candidateGids: [String(candidates[0]?.id || '')],
+        status: candidateGid === patch?.gid ? 'exact' : 'remapped',
+        candidateGids: [candidateGid],
       };
     }
     return {
@@ -3741,6 +3766,17 @@ ${inner}
       const object = rResolution.object;
       if (!object) {
         reject('missing_gid', `Manifest is missing gid ${gid}.`);
+        continue;
+      }
+      if (
+        manifest.generatedBy === 'r_svg'
+        && String(object.id || '').startsWith('r.group.')
+        && object.currentProps?.scaleActive === false
+      ) {
+        reject(
+          'no_setter',
+          `${gid}.${prop} is dormant behind a layer-level style override and cannot keep data and legend output consistent.`,
+        );
         continue;
       }
       const capability = Array.isArray(object.propertyCapabilities)

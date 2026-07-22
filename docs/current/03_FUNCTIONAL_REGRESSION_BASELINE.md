@@ -1,9 +1,9 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-22 20:34:28 +08:00
-> 证据截止时间：2026-07-22 20:34:28 +08:00
-> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 固定候选与旧项目兼容收尾，以及 R-WP0-WP3 隔离基线、patch 权威、identity v2、旧项目兼容和运行时 parity
+> 最后修改时间：2026-07-30 15:51:34 +08:00
+> 证据截止时间：2026-07-30 15:51:34 +08:00
+> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 固定候选与旧项目兼容收尾，以及 R-WP0-WP3 隔离基线、patch 权威、identity v2、旧项目兼容和运行时 parity，R-WP4 Point/Jitter、Line/Path/Smooth、Bar/Col、Errorbar family、Boxplot/Violin、Ribbon/Area 本地候选
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -25,7 +25,7 @@
 
 ## 2. 当前证据快照
 
-2026-07-22 当前候选已经获得的最新证据：
+2026-07-23 当前候选已经获得的最新证据：
 
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
@@ -56,8 +56,14 @@
 | 网络图/路径图/SEM 显式语义 | 通过 | 七类专用 role、完整关系签名、科学结构只读、组件/配色隔离、Draft/backend replay、跨 Figure、导出和恢复均通过 |
 | Python 特殊 axes | 通过当前固定运行时门禁 | polar、3D、inset、secondary、parasite 和自定义投影分类；Python 10 项中 8 通过，Cartopy/brokenaxes 因未安装跳过且不得宣称支持 |
 | R-WP0/WP1 基线与 patch 权威 | 已由 R-WP2 继承 | 静态旧 identity/editLog fixture、服务端 mode 权威、renderer acknowledgement 和失败批次零持久化继续作为不可回退合同；历史 expected failure 不再代表当前状态 |
-| R-WP2 identity v2 与旧项目兼容 | 通过本地候选门禁 | R renderer 51/51；layer 数据内容摘要区分同列不同 subset，guide 标题/类型不合并，唯一派生键文本稳定、重复无键文本 unsupported；API 返回 remap `resolvedGid` 且不污染持久 editLog；旧项目编辑、刷新、导出和快照恢复通过 |
+| R-WP2 identity v2 与旧项目兼容 | 通过本地候选门禁 | R renderer 51/51；layer 数据内容摘要区分同列不同 subset，guide 标题/类型不合并，唯一派生键文本稳定、重复无键文本 unsupported；API 返回 remap `resolvedGid` 且不污染持久 editLog；旧项目编辑、刷新、导出和快照恢复通过。本轮复核要求请求 GID 先存在于当前 manifest，并且只在同规范化 GID 家族内唯一 remap；合法 group/layer/tick 序号变化继续允许，missing GID 和现存跨家族 GID 即使复制有效 identity 也冲突且零持久化；`test:r-identity-v2-compatibility` 通过 |
 | R-WP3 运行时与生产一致性 | 通过本地候选门禁 | R renderer 54/54、diagnostics 6/6；生产候选 R 4.5.0/ggplot2 3.5.1 与关键依赖、字体、locale、设备固定；37 个语义对象在本地/直接 Docker/Web Docker 一致；同名文件隔离、源码 SHA 和 stale image fail closed 通过 |
+| R-WP4 Point/Jitter | 本地候选 | R renderer 定向 10/10、旧兼容定向 5/5、前端 R Point 协议 3/3、隔离浏览器 R semantic 11/11、lint 和 diff-check 通过；覆盖 mapped shape、shape 19/21-25 能力边界、同批 marker+facecolor、`color/edgecolor` latest-value alias、`size_scale` 比例保持、保存刷新、撤销重做和导出状态 |
+| R-WP4 Line/Path/Smooth | 本地候选 | R renderer 定向覆盖 layer-local 与 plot-level inherited mapped linewidth/linetype/color；同轮 Point/Jitter/Bar inherited mapping 8/8、隔离浏览器 R semantic 11/11、lint 通过；旧 `r.layer.N` GID、style edit 下 v2 identity/fingerprint、真实 UI 保存刷新、撤销重做和导出状态保持稳定 |
+| R-WP4 Bar/Col | 本地候选 | GeomCol + StatCount GeomBar、Point/Bar 复审和旧身份定向通过；覆盖 inherited fill/color、整层样式、PositionStack/Dodge、bar count、mapped override 后 layer-group-panel relation 稳定；隔离浏览器 12/12 覆盖组件 linewidth、单 fill group、保存刷新、撤销重做和导出 |
+| R-WP4 Errorbar family | 本地候选 | renderer 2/2、R/Point 前端合同 6/6、相关 capability matrix 5/5、旧身份/多 panel 7/7、隔离浏览器 12/12；覆盖四类 geom 的主线/端帽/点/Crossbar 组件角色、数据单位 capsize、Pointrange marker/markersize、旧 linewidth alias、subplot relation、Draft/历史/导出 |
+| R-WP4 Boxplot/Violin | 本地候选 | renderer 6/6、前端合同 7/7、隔离浏览器 12/12、lint 和 diff-check 通过，独立 `gpt-5.5 high` 审查 APPROVE、0 HIGH/MEDIUM；Boxplot 声明 body/median/whiskers/staples/outliers 关系，整体线色、箱体填充和六类 outlier 样式分离，`outlier_fill` 仅对 shape 21-25 开放；旧 `median_color` 仅兼容迁移到整体轮廓并告警；Violin 声明 body/quantile-lines 边界且不开放虚假 quantile setter，旧 `color` 兼容迁移到 `edgecolor`；共享 fill scale 保留 `distribution` 分组关系，Draft、保存刷新、撤销重做、分组配色和导出一致 |
+| R-WP4 Ribbon/Area | 本地候选 | 最新 renderer 定向 9/9、前端合同 10/10、隔离浏览器 12/12、R patch authority 11 场景和 identity v2 compatibility 通过；保留旧 `r.layer.N`、`kind=patch`、GeomRibbon/GeomArea role 和 v2 identity，仅开放 `facecolor/edgecolor/linewidth/alpha`，区间、边界拆分、堆叠和 Smooth 置信带保持只读。整层 fill override 导致 scale 训练键缩短时，从同次原始脚本 baseline 恢复 scale/guide 结构身份而不恢复旧样式；`scaleActive=false` 的休眠 group 在任一 edit 顺序、patch 入口和项目 PUT 保存入口均冲突拒绝且零持久化。配色中心响应必须为业务 `status=success`，组颜色已进入 editLog、刷新、撤销重做和导出 bundle；最终独立审查 `APPROVE/CLEAR`、无 HIGH/MEDIUM |
 | patch/全渲染事务保护 | 通过 | standalone patch、standalone full render 与项目 full render 均由服务端按返回 manifest/renderer 决定；拒绝批次不改变 revision、session、项目脚本、Figure、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |

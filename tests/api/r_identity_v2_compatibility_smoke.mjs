@@ -464,8 +464,20 @@ async function main() {
 
     const missingGidPatch = {
       ...secondEdit,
-      gid: 'missing.r.identity.v2.patch.gid',
+      gid: 'r.group.color.99.99',
       value: '#111111',
+    };
+    const postRestorePreview = await jsonRequest(`/api/projects/${projectId}/figures?includePreview=1`, token);
+    assert(postRestorePreview.response.ok && postRestorePreview.data?.status === 'success', `post-restore R preview refresh failed: ${JSON.stringify(postRestorePreview.data)}`);
+    const postRestoreFigure = postRestorePreview.data?.figures?.find((figure) => figure.figureId === 'fig_1');
+    const existingCrossFamilyObject = postRestoreFigure?.manifest?.objects?.find((object) => (
+      String(object?.id || '').startsWith('r.layer.')
+    ));
+    assert(existingCrossFamilyObject?.id, 'restored R manifest has no existing cross-family layer gid');
+    const existingCrossFamilyGidPatch = {
+      ...secondEdit,
+      gid: existingCrossFamilyObject.id,
+      value: '#181818',
     };
     const unsupportedPropPatch = {
       ...secondEdit,
@@ -487,6 +499,7 @@ async function main() {
     };
     const restoredRevision = Number(readDatabaseState(projectId).figure?.revision || revision);
     await assertRejectedWithoutPersistence(token, projectId, exportAsset.assetId, missingGidPatch, restoredRevision, 'legacy R missing gid rejection');
+    await assertRejectedWithoutPersistence(token, projectId, exportAsset.assetId, existingCrossFamilyGidPatch, restoredRevision, 'legacy R existing cross-family gid rejection');
     await assertRejectedWithoutPersistence(token, projectId, exportAsset.assetId, unsupportedPropPatch, restoredRevision, 'legacy R unsupported prop rejection');
     await assertRejectedWithoutPersistence(token, projectId, exportAsset.assetId, identityDriftPatch, restoredRevision, 'legacy R semantic identity drift rejection');
 
@@ -542,7 +555,7 @@ async function main() {
         'export captured both legacy edits in a restorable snapshot',
         'tampered snapshot restore rejected without persistence',
         'snapshot restore returned to export-time legacy edits and checkpointed later edits',
-        'missing gid, unsupported prop, and semantic identity drift were rejected without persistence',
+        'missing gid, existing cross-family gid, unsupported prop, and semantic identity drift were rejected without persistence',
         'ambiguous v2 layer identity was rejected before standalone session persistence',
       ],
     }, null, 2));

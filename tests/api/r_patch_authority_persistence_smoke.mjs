@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
+import { projectFigureSaveBase } from '../helpers/project_save_hash.mjs';
 
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
 
@@ -228,6 +229,28 @@ function readDatabaseState(projectId, standaloneSessionId, exportAssetId) {
   }
 }
 
+function markPersistedGroupDormant(projectId, groupId) {
+  const database = new Database(process.env.SCIFIGURE_DB_PATH);
+  try {
+    const row = database.prepare(`
+      SELECT manifest
+      FROM project_figures
+      WHERE project_id = ? AND figure_index = 0
+    `).get(projectId);
+    const manifest = parseJson(row?.manifest, null);
+    const target = manifest?.objects?.find((object) => object?.id === groupId);
+    assert(target, `could not find ${groupId} in persisted R manifest`);
+    target.currentProps = { ...(target.currentProps || {}), scaleActive: false };
+    database.prepare(`
+      UPDATE project_figures
+      SET manifest = ?
+      WHERE project_id = ? AND figure_index = 0
+    `).run(JSON.stringify(manifest), projectId);
+  } finally {
+    database.close();
+  }
+}
+
 async function createProject(token) {
   const created = await jsonRequest('/api/projects', token, {
     method: 'POST',
@@ -341,6 +364,43 @@ async function assertProjectRejectedWithoutPersistence(token, projectId, standal
     assert(!apiFigure.editLog?.some((entry) => isSamePatch(entry, patch)), `${label} leaked into project API editLog: ${JSON.stringify(apiFigure.editLog)}`);
     assert(!JSON.stringify(apiFigure.history || {}).includes(patch.gid), `${label} leaked gid into project API history: ${JSON.stringify(apiFigure.history)}`);
   }
+}
+
+async function assertDormantGroupProjectSaveRejected(token, projectId, standaloneSessionId, exportAssetId, patch) {
+  markPersistedGroupDormant(projectId, patch.gid);
+  const before = readDatabaseState(projectId, standaloneSessionId, exportAssetId);
+  const figure = before.figure;
+  const dormantObject = figure?.manifest?.objects?.find((object) => object?.id === patch.gid);
+  assert(dormantObject?.currentProps?.scaleActive === false, 'dormant group marker was not persisted for save preflight');
+
+  const dormantPatch = {
+    ...patch,
+    value: '#FF00FF',
+    ...identityFields(dormantObject),
+  };
+  const attempt = await jsonRequest(`/api/projects/${projectId}`, token, {
+    method: 'PUT',
+    body: JSON.stringify({
+      name: 'R patch authority dormant group rejection',
+      figures: [{
+        figureId: 'fig_1',
+        ...projectFigureSaveBase(figure),
+        revision: figure.revision,
+        editLog: [...(figure.editLog || []), dormantPatch],
+      }],
+    }),
+  });
+  assert(
+    attempt.response.status === 409
+      && attempt.data?.status === 'conflict'
+      && attempt.data?.warnings?.some((warning) => warning?.type === 'no_setter' && warning?.gid === dormantPatch.gid),
+    `dormant R group project save was not rejected: ${attempt.response.status} ${JSON.stringify(attempt.data)}`,
+  );
+  assertSameState(
+    'dormant R group project save rejection',
+    before,
+    readDatabaseState(projectId, standaloneSessionId, exportAssetId),
+  );
 }
 
 async function assertAuthoritativeSuccess(token, {
@@ -574,6 +634,13 @@ async function main() {
       [mixedBatchValidPatch, mixedBatchRejectedPatch],
       projectRevision,
     );
+    await assertDormantGroupProjectSaveRejected(
+      token,
+      projectId,
+      standalone.sessionId,
+      exportAssetId,
+      groupColorPatch,
+    );
 
     console.log(JSON.stringify({
       status: 'PASS',
@@ -592,6 +659,7 @@ async function main() {
         'R identity mismatch patch rejected without persistence',
         'R setter acknowledgement failure rejected without persistence',
         'R mixed valid/rejected batch rejected atomically without persistence',
+        'R dormant scale-group project save rejected without persistence',
       ],
     }, null, 2));
   } finally {
