@@ -4,6 +4,8 @@
 > 最后修改时间：2026-07-21 23:13:21 +08:00
 > 部署状态：未推送、未部署；未访问或停止本机 3000
 
+> 后续状态（2026-07-22 09:24:42 +08:00）：R-WP2 已完成结构 fingerprint v2 和旧无版本兼容，WP1 留下的 group ordinal 漂移阻断已关闭。renderer remap 的 `resolvedGid` 现在由 API 返回，但不会污染持久 editLog。最新证据见 `R_WP2_IDENTITY_V2_EVIDENCE.md`；本文件保留 WP1 当时的事务证据，不回写其历史测试数量。
+
 ## 1. 本轮结论
 
 R patch 不再信任客户端声明的 `local_patch/backend_patch`。服务端从当前可信 manifest 的 `propertyCapabilities` 计算实际 mode；没有可信 manifest 的 standalone 会话一律进入 R backend renderer 验证。

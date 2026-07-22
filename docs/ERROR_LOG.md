@@ -3690,3 +3690,55 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `npm run lint -- --no-cache` 与定向 `git diff --check` 通过。
 - 本机 3000 监听进程为当前仓库 `tsx server.ts`；直接读取其 Vite 模块确认包含 `project-create-script-drop-zone` 和统一 `readDroppedScript` 实现。
 - 后续页面文案宣称可拖放时，浏览器验收必须以文案对应的可见区域作为 drop target，不能只验证同页另一个隐藏或远端入口。
+
+---
+
+## 2026-07-22 09:24:42 +08:00 R identity v2 仍可能误映射 subset、无键文本和并行 guide，API 丢失 remap acknowledgement
+
+**状态与级别**
+
+- 状态：独立审查发现后已修复，R renderer 定向回归和隔离 API 生命周期通过；等待最终独立复审，未推送、未部署。
+- 级别：P0/P1 编辑正确性与旧项目兼容。错误会把历史样式静默应用到新的科学数据子集或错误文本/图例对象，或让前端无法知道 renderer 实际重映射到哪个 GID。
+
+**根因**
+
+- layer 数据作用域只比较列名；`subset(group == "A")` 与 `subset(group == "B")` 列结构相同，旧 fingerprint 无法区分。
+- 无显式 id 的文本仅标记 conditional，但 renderer 实际只拒绝 unsupported，单行内容漂移或重复文本仍可能按 ordinal 重放。
+- guide identity 只依赖 mapping/aesthetic，未纳入 guide 标题和类型；同一变量的 color/fill 并行 guide 可能被错误合并。
+- R renderer 已返回 `resolvedGid`，但服务端响应被请求 `newEdits` 覆盖；前端看不到 remap acknowledgement。
+
+**修复**
+
+- layer fingerprint 加入规范化数据内容摘要；同列不同 subset/filter 发生身份变化并在旧 patch 应用前拒绝。
+- 无显式文本 id 时使用 `panel+x+y+label` 派生结构键；唯一候选稳定重放，重复且无法唯一证明的文本全部 capability 标记为 unsupported。重建文本 layer 时冻结原始 layer identity。
+- guide key 同时包含 aesthetic、guide 类型和真实标题；同标题 color/fill 可按既有合并规则共享，不同标题保持独立。
+- API 返回 renderer `applied` acknowledgement，包括 `resolvedGid`；数据库/session/history/export snapshot 仍持久化规范 merged editLog，不保存响应辅助字段。
+
+**验证与防复发**
+
+- `tests/test_r_renderer.py` 当前 51 项，覆盖 layer subset 漂移、单行文本内容漂移、重复文本拒绝、guide 标题隔离、合并 color/fill identity 和 fingerprint 样式稳定。
+- `test:r-identity-v2-compatibility` 证明旧 identity 编辑、刷新、factor reorder remap、第二次编辑、导出、篡改恢复拒绝和 snapshot 恢复；响应含 `resolvedGid`，持久 editLog 不含该字段。
+- 后续 identity 不能只比较 schema/列名；conditional replay 必须有明确额外门禁，不能仅靠标签宣称；renderer acknowledgement 与 durable editLog 必须分开建模。
+
+---
+
+## 2026-07-22 20:02:52 +08:00 R 本地/Docker 文件、镜像源码、字体和传递依赖不完全可重复
+
+**状态与级别**
+
+- 状态：R-WP3 已修复，定向运行时、Docker/Web parity 和独立复审通过；未推送、未部署。
+- 级别：P0/P1 运行时一致性。错误可表现为同名数据文件读错、Web 使用陈旧 renderer、构建时发生未审计下载，或相同直接依赖解析出不同传递版本。
+
+**根因与修复**
+
+- 本地 R staging 曾把不同目录下的同名文件压平成同一 basename；现在保留相对子目录，并与 Docker 一样使用序号前缀镜像，重复文件 fixture 在两条 Web 路径均得到独立的 `3 / 30` 结果。
+- Docker parity 只确认固定 tag 存在，不能证明 tag 包含当前 `r_renderer.R`；现在构建时核对源码 SHA 并写入镜像标签，服务端首个 R Docker 请求校验标签，不一致返回 `renderer_image_stale` 且不启动容器。
+- `ttf-mscorefonts-installer` 会触发外部字体下载，无法与 Debian 包一样完全锁定；本次集成为满足既有“实际 Times New Roman”不可回退基线而保留该受控例外，并在构建与 runtime inventory 中验证真实解析路径，禁止用 Liberation Serif 冒充。
+- `requirements.txt` 只固定直接 Python 依赖；现新增完整 `requirements.renderer.lock`，构建使用固定 lock SHA、`--require-hashes` 和 `--only-binary=:all:`。基础镜像走 DaoCloud 固定 digest，Debian 与 PyPI 走阿里云镜像。两个哈希绑定文件由 `.gitattributes` 固定为 LF，避免 Windows 自动换行在重新检出后制造伪 SHA 漂移。
+
+**验证与防复发**
+
+- `test:r-runtime-parity`：37 个语义对象、本地/直接 Docker/Web Docker parity、同名文件隔离、stale image 拒绝、禁网/只读/低权限和零容器泄漏通过。
+- R renderer 54/54、runtime diagnostics 6/6、runtime consistency、identity v2 compatibility、renderer image contract、lint 和 diff-check 通过。
+- 修复后独立复审 APPROVE，0 HIGH/MEDIUM。后续修改 R renderer、Docker 依赖、字体或 lock 时，必须同步更新 SHA 合同并重新构建镜像；不得仅复用同名 tag 宣称 parity。
+- `data:audit`：25 用户、125 项目、283 项目文件、111 导出资产、0 issue；自动化继续使用随机端口、临时 DB/data 和本轮容器。

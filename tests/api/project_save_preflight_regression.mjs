@@ -1,4 +1,5 @@
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { projectFigureSaveBase } from '../helpers/project_save_hash.mjs';
 
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
@@ -92,6 +93,95 @@ function matchingEntry(figure, patch) {
   ));
 }
 
+function readFigurePersistence(projectId) {
+  const database = new Database(process.env.SCIFIGURE_DB_PATH, { readonly: true });
+  try {
+    const figure = database.prepare(`
+      SELECT session_id, revision, edit_log, history
+      FROM project_figures
+      WHERE project_id = ? AND figure_index = 0
+    `).get(projectId);
+    assert(figure?.session_id, `missing persisted figure for ${projectId}`);
+    const session = database.prepare(`
+      SELECT id, revision, edit_log, updated_at
+      FROM sessions
+      WHERE id = ?
+    `).get(figure.session_id);
+    assert(session?.id, `missing persisted session for ${projectId}`);
+    return { figure, session };
+  } finally {
+    database.close();
+  }
+}
+
+function assertFigurePersistenceUnchanged(before, after, label) {
+  assert(
+    JSON.stringify(after) === JSON.stringify(before),
+    `${label} changed project figure/session persistence:\nbefore=${JSON.stringify(before)}\nafter=${JSON.stringify(after)}`,
+  );
+}
+
+function replaceDurableEditLog(projectId, editLog) {
+  const database = new Database(process.env.SCIFIGURE_DB_PATH);
+  try {
+    const figure = database.prepare(`
+      SELECT session_id
+      FROM project_figures
+      WHERE project_id = ? AND figure_index = 0
+    `).get(projectId);
+    assert(figure?.session_id, `missing persisted figure for ${projectId}`);
+    const serialized = JSON.stringify(editLog);
+    database.prepare(`
+      UPDATE project_figures
+      SET edit_log = ?
+      WHERE project_id = ? AND figure_index = 0
+    `).run(serialized, projectId);
+    database.prepare(`
+      UPDATE sessions
+      SET edit_log = ?
+      WHERE id = ?
+    `).run(serialized, figure.session_id);
+  } finally {
+    database.close();
+  }
+}
+
+function replaceDurableHistory(projectId, history) {
+  const database = new Database(process.env.SCIFIGURE_DB_PATH);
+  try {
+    database.prepare(`
+      UPDATE project_figures
+      SET history = ?
+      WHERE project_id = ? AND figure_index = 0
+    `).run(JSON.stringify(history), projectId);
+  } finally {
+    database.close();
+  }
+}
+
+async function assertRejectedSaveWithoutPersistence({ token, projectId, figure, editLog, label }) {
+  const before = readFigurePersistence(projectId);
+  const attempt = await jsonRequest(`/api/projects/${projectId}`, token, {
+    method: 'PUT',
+    body: JSON.stringify({
+      name: 'Project save preflight',
+      figures: [{
+        figureId: 'fig_1',
+        ...projectFigureSaveBase(figure),
+        revision: figure.revision,
+        editLog,
+      }],
+    }),
+  });
+  assert(
+    attempt.response.status === 409 && attempt.data?.status === 'conflict',
+    `${label} was accepted: ${attempt.response.status} ${JSON.stringify(attempt.data)}`,
+  );
+  const after = readFigurePersistence(projectId);
+  assertFigurePersistenceUnchanged(before, after, label);
+  return attempt;
+}
+
 async function main() {
   assertIsolatedEnvironment();
   const token = await register();
@@ -158,6 +248,84 @@ async function main() {
   const persistedValid = matchingEntry(validFigure, lyingLocalPatch);
   assert(persistedValid, 'valid PUT edit was not persisted');
   assert(persistedValid.mode === 'backend_patch', `PUT trusted client mode: ${JSON.stringify(persistedValid)}`);
+
+  const forgedStableKeyPatch = {
+    ...persistedValid,
+    stableKey: `${persistedValid.stableKey || line.id}.forged`,
+  };
+  await assertRejectedSaveWithoutPersistence({
+    token,
+    projectId,
+    figure: validFigure,
+    editLog: [forgedStableKeyPatch],
+    label: 'same-value forged stableKey save',
+  });
+
+  const driftedIdentityPatch = {
+    ...persistedValid,
+    identity: {
+      ...(persistedValid.identity || {}),
+      seriesKey: `${persistedValid.identity?.seriesKey || line.id}.drifted`,
+    },
+  };
+  await assertRejectedSaveWithoutPersistence({
+    token,
+    projectId,
+    figure: validFigure,
+    editLog: [driftedIdentityPatch],
+    label: 'same-value drifted identity save',
+  });
+
+  const partialIdentityPatch = {
+    ...persistedValid,
+    identity: persistedValid.identity?.semanticKey
+      ? { semanticKey: persistedValid.identity.semanticKey }
+      : {},
+  };
+  delete partialIdentityPatch.fingerprint;
+  delete partialIdentityPatch.fingerprintVersion;
+  await assertRejectedSaveWithoutPersistence({
+    token,
+    projectId,
+    figure: validFigure,
+    editLog: [partialIdentityPatch],
+    label: 'same-value partial identity save',
+  });
+
+  const identitylessLegacyPatch = {
+    op: 'set',
+    mode: 'local_patch',
+    gid: persistedValid.gid,
+    prop: persistedValid.prop,
+    value: persistedValid.value,
+  };
+  const beforeIdentitylessSave = readFigurePersistence(projectId);
+  const identitylessSave = await jsonRequest(`/api/projects/${projectId}`, token, {
+    method: 'PUT',
+    body: JSON.stringify({
+      name: 'Project save preflight',
+      figures: [{
+        figureId: 'fig_1',
+        ...projectFigureSaveBase(validFigure),
+        revision: validFigure.revision,
+        editLog: [identitylessLegacyPatch],
+      }],
+    }),
+  });
+  assert(identitylessSave.response.ok && identitylessSave.data?.status === 'success', `unique identityless legacy save failed: ${JSON.stringify(identitylessSave.data)}`);
+  const afterIdentitylessSave = readFigurePersistence(projectId);
+  assertFigurePersistenceUnchanged(beforeIdentitylessSave, afterIdentitylessSave, 'unique identityless legacy save');
+  const afterIdentitylessReload = await jsonRequest(`/api/projects/${projectId}`, token);
+  const identitylessFigure = figureFrom(afterIdentitylessReload.data?.project);
+  const canonicalIdentitylessEntry = matchingEntry(identitylessFigure, identitylessLegacyPatch);
+  assert(canonicalIdentitylessEntry, 'unique identityless legacy save removed the durable entry');
+  assert(
+    canonicalIdentitylessEntry.stableKey === persistedValid.stableKey
+      && canonicalIdentitylessEntry.fingerprint === persistedValid.fingerprint
+      && canonicalIdentitylessEntry.fingerprintVersion === persistedValid.fingerprintVersion
+      && JSON.stringify(canonicalIdentitylessEntry.identity) === JSON.stringify(persistedValid.identity),
+    `unique identityless legacy save weakened durable identity: ${JSON.stringify(canonicalIdentitylessEntry)}`,
+  );
 
   const cleared = await jsonRequest(`/api/projects/${projectId}`, token, {
     method: 'PUT',
@@ -312,6 +480,57 @@ async function main() {
   assert(Number(noManifestFigure.revision || 1) === noManifestRevision, 'no-manifest rejected PUT changed revision');
   assert(JSON.stringify(noManifestFigure.editLog || []) === noManifestEditLog, 'no-manifest rejected PUT changed editLog');
 
+  const ambiguousEntryA = { ...persistedValid };
+  const ambiguousEntryB = {
+    ...persistedValid,
+    stableKey: `${persistedValid.stableKey || line.id}.ambiguous`,
+    fingerprint: `${persistedValid.fingerprint || line.id}.ambiguous`,
+  };
+  replaceDurableEditLog(projectId, [ambiguousEntryA, ambiguousEntryB]);
+  const ambiguousReload = await jsonRequest(`/api/projects/${projectId}`, token);
+  assert(ambiguousReload.response.ok && ambiguousReload.data?.status === 'success', 'could not load ambiguous legacy fixture');
+  const ambiguousFigure = figureFrom(ambiguousReload.data.project);
+  await assertRejectedSaveWithoutPersistence({
+    token,
+    projectId,
+    figure: ambiguousFigure,
+    editLog: [identitylessLegacyPatch],
+    label: 'ambiguous identityless legacy save',
+  });
+
+  const repeatedHistory = {
+    past: [
+      { label: 'repeat one', timestamp: 1, editLog: [persistedValid] },
+      { label: 'repeat two', timestamp: 2, editLog: [persistedValid] },
+    ],
+    future: [],
+  };
+  replaceDurableEditLog(projectId, [persistedValid]);
+  replaceDurableHistory(projectId, repeatedHistory);
+  const repeatedHistoryReload = await jsonRequest(`/api/projects/${projectId}`, token);
+  assert(repeatedHistoryReload.response.ok && repeatedHistoryReload.data?.status === 'success', 'could not load repeated-history fixture');
+  const repeatedHistoryFigure = figureFrom(repeatedHistoryReload.data.project);
+  const beforeRepeatedHistorySave = readFigurePersistence(projectId);
+  const repeatedHistorySave = await jsonRequest(`/api/projects/${projectId}`, token, {
+    method: 'PUT',
+    body: JSON.stringify({
+      name: 'Project save preflight',
+      figures: [{
+        figureId: 'fig_1',
+        ...projectFigureSaveBase(repeatedHistoryFigure),
+        revision: repeatedHistoryFigure.revision,
+        editLog: [persistedValid],
+        history: repeatedHistory,
+      }],
+    }),
+  });
+  assert(repeatedHistorySave.response.ok && repeatedHistorySave.data?.status === 'success', `repeated identical history save failed: ${JSON.stringify(repeatedHistorySave.data)}`);
+  assertFigurePersistenceUnchanged(
+    beforeRepeatedHistorySave,
+    readFigurePersistence(projectId),
+    'repeated identical history save',
+  );
+
   console.log(JSON.stringify({
     status: 'PASS',
     checks: [
@@ -320,6 +539,10 @@ async function main() {
       'rejected project PUT does not change revision or editLog',
       'history cannot bypass project PUT preflight',
       'new project PUT edits are rejected when the trusted manifest is unavailable',
+      'same-value forged or partial identity metadata is rejected atomically',
+      'unique identityless legacy saves preserve canonical durable identity without session writes',
+      'ambiguous identityless legacy saves are rejected atomically',
+      'repeated history snapshots with one durable identity remain compatible and write-free',
     ],
   }, null, 2));
 }

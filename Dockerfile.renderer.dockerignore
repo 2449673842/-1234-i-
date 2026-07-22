@@ -1,5 +1,6 @@
 *
 !Dockerfile.renderer
 !requirements.txt
+!requirements.renderer.lock
 !renderer/
 !renderer/**

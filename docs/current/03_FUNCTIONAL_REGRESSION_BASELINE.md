@@ -1,9 +1,9 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-21 15:21:24 +08:00
-> 证据截止时间：2026-07-21 15:20:55 +08:00
-> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 固定候选及旧项目兼容收尾、导出快照 v4、能力报告、渲染诊断与逐域默认启用，以及 R-WP0 隔离 fixture/旧 identity 基线
+> 最后修改时间：2026-07-22 20:34:28 +08:00
+> 证据截止时间：2026-07-22 20:34:28 +08:00
+> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 固定候选与旧项目兼容收尾，以及 R-WP0-WP3 隔离基线、patch 权威、identity v2、旧项目兼容和运行时 parity
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -25,7 +25,7 @@
 
 ## 2. 当前证据快照
 
-2026-07-21 当前候选已经获得的最新证据：
+2026-07-22 当前候选已经获得的最新证据：
 
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
@@ -55,7 +55,9 @@
 | `quiver/streamplot` 专用语义 | 通过 | 专用父对象/role、旧 GID 兼容、内部 child 只读、可信关系映射、图例联动、结构只读、跨 Figure、导出和恢复均通过 |
 | 网络图/路径图/SEM 显式语义 | 通过 | 七类专用 role、完整关系签名、科学结构只读、组件/配色隔离、Draft/backend replay、跨 Figure、导出和恢复均通过 |
 | Python 特殊 axes | 通过当前固定运行时门禁 | polar、3D、inset、secondary、parasite 和自定义投影分类；Python 10 项中 8 通过，Cartopy/brokenaxes 因未安装跳过且不得宣称支持 |
-| R-WP0 基线与旧版兼容 fixture | 基线通过，兼容阻断已固定 | R renderer 32 个正向测试通过；旧 group editLog 遇到语义漂移仍可能按 ordinal GID 误应用，已固化为 1 个 `expectedFailure`，R-WP2 未关闭前不得宣称 R identity v2 兼容完成；15 个 R capability fixture、浏览器 6/6、安全与隔离门禁通过 |
+| R-WP0/WP1 基线与 patch 权威 | 已由 R-WP2 继承 | 静态旧 identity/editLog fixture、服务端 mode 权威、renderer acknowledgement 和失败批次零持久化继续作为不可回退合同；历史 expected failure 不再代表当前状态 |
+| R-WP2 identity v2 与旧项目兼容 | 通过本地候选门禁 | R renderer 51/51；layer 数据内容摘要区分同列不同 subset，guide 标题/类型不合并，唯一派生键文本稳定、重复无键文本 unsupported；API 返回 remap `resolvedGid` 且不污染持久 editLog；旧项目编辑、刷新、导出和快照恢复通过 |
+| R-WP3 运行时与生产一致性 | 通过本地候选门禁 | R renderer 54/54、diagnostics 6/6；生产候选 R 4.5.0/ggplot2 3.5.1 与关键依赖、字体、locale、设备固定；37 个语义对象在本地/直接 Docker/Web Docker 一致；同名文件隔离、源码 SHA 和 stale image fail closed 通过 |
 | patch/全渲染事务保护 | 通过 | standalone patch、standalone full render 与项目 full render 均由服务端按返回 manifest/renderer 决定；拒绝批次不改变 revision、session、项目脚本、Figure、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |
@@ -65,7 +67,8 @@
 | 扩展拖拽 | 10/10 通过 | 真实 Ctrl 三选、累计确认、取消、只读命中、annotation 和 R native 保护 |
 | Python cache | 通过 | 首次 miss、同语义重复 hit、值变化 miss；只信任本进程已确认 key |
 | 生产构建 | 通过 | 保留既有 bundle 体积和 CJS `import.meta` 警告 |
-| 数据完整性 | 0 个错误 | 25 用户、121 项目、263 项目文件、103 导出资产；23 条历史测试账号警告未删除 |
+| 数据完整性 | 集成前审计 0 个错误，最终门禁待复核 | R-WP3 自动化使用临时 DB/data；部署前必须重新运行只读 `npm run data:audit` 并以新计数更新本行 |
+| 展厅/MCP/脚本拖放候选 | 定向门禁通过 | 展厅单元 5/5、展厅隔离浏览器、MCP origin/产物安全 4/4、MCP 真实 UI、全工作区 `.py/.R` 拖放和 TypeScript 通过；预览只使用固定模拟数据，未访问 3000、Docker 或真实项目 |
 
 本轮还重新运行了编辑、R、跨 Figure、历史、导出、页面、组合、安全和隔离 smoke。所有请求均使用随机 `127.0.0.1` 端口和临时数据库；未访问 3000，未修改 Docker/WSL。
 

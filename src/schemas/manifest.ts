@@ -453,6 +453,8 @@ export interface RenderDiagnostic {
 export interface RenderDiagnostics {
   determinismWarnings: RenderDiagnostic[];
   layoutWarnings: RenderDiagnostic[];
+  warningDiagnostics?: RenderDiagnostic[];
+  runtimeInventory?: Record<string, unknown>;
   layoutDiagnosticsMs?: number;
 }
 
@@ -469,6 +471,9 @@ export interface RenderResponse {
   timingBreakdown?: RendererPerformanceV1;
   determinismWarnings?: RenderDiagnostic[];
   layoutWarnings?: RenderDiagnostic[];
+  warningDiagnostics?: RenderDiagnostic[];
+  runtimeInventory?: Record<string, unknown>;
+  diagnostic?: RenderDiagnostic | null;
   diagnostics?: RenderDiagnostics;
   performance?: RenderPerformanceV1;
   cache?: RenderCacheStatus;

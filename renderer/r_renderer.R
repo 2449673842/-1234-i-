@@ -1,9 +1,22 @@
 suppressWarnings({
   if (!requireNamespace("jsonlite", quietly = TRUE)) {
-    cat('{"status":"error","message":"R dependency missing: jsonlite. Please install it with install.packages(\\"jsonlite\\")."}')
+    cat('{"status":"error","message":"R dependency missing: jsonlite. Please install it with install.packages(\\"jsonlite\\").","diagnostic":{"schemaVersion":"1.0","type":"missing_package","category":"missing_package","kind":"missing_package","severity":"error","message":"jsonlite is required by the R renderer.","suggestion":"Install the required R package in the renderer environment or remove the dependency.","conditionClass":[],"details":{"source":"r_renderer","package":"jsonlite"}}}')
     quit(status = 0)
   }
 })
+
+# Keep collation deterministic without overriding the Docker UTF-8 character type locale.
+invisible(try(Sys.setlocale(category = "LC_COLLATE", locale = "C"), silent = TRUE))
+
+emit_json <- function(value, digits = NA) {
+  json <- jsonlite::toJSON(
+    value,
+    auto_unbox = TRUE,
+    null = "null",
+    digits = digits
+  )
+  writeLines(enc2utf8(as.character(json)), con = stdout(), sep = "", useBytes = TRUE)
+}
 
 args <- commandArgs(trailingOnly = TRUE)
 payload_file <- NULL
@@ -14,17 +27,406 @@ for (i in seq_along(args)) {
 }
 
 if (is.null(payload_file) || !file.exists(payload_file)) {
-  cat(jsonlite::toJSON(list(status = "error", message = "payload file is required"), auto_unbox = TRUE))
+  emit_json(list(
+    status = "error",
+    message = "payload file is required",
+    diagnostic = list(
+      schemaVersion = "1.0",
+      type = "missing_file",
+      category = "missing_file",
+      kind = "missing_file",
+      severity = "error",
+      message = "payload file is required",
+      suggestion = "Provide the renderer payload file before starting the R job.",
+      conditionClass = list(),
+      details = list(source = "r_renderer", path = payload_file)
+    ),
+    warningDiagnostics = list()
+  ))
   quit(status = 0)
+}
+
+safe_runtime_string <- function(value) {
+  if (is.null(value) || length(value) == 0 || is.na(value[[1]])) return(NULL)
+  text <- as.character(value[[1]])
+  if (!nzchar(text)) return(NULL)
+  text
+}
+
+safe_runtime_path <- function(value) {
+  text <- safe_runtime_string(value)
+  if (is.null(text)) return(NULL)
+  tryCatch(
+    normalizePath(text, winslash = "/", mustWork = FALSE),
+    error = function(e) text
+  )
+}
+
+safe_runtime_package <- function(package_name) {
+  installed <- requireNamespace(package_name, quietly = TRUE)
+  version <- if (installed) {
+    tryCatch(as.character(utils::packageVersion(package_name)), error = function(e) NULL)
+  } else {
+    NULL
+  }
+  list(installed = installed, version = version)
+}
+
+runtime_font_inventory <- function() {
+  candidates <- c(
+    "Times New Roman", "Arial", "DejaVu Sans", "SimHei",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans CJK", "FreeSans"
+  )
+  families <- character()
+  font_table <- NULL
+  provider <- "none"
+  if (requireNamespace("systemfonts", quietly = TRUE)) {
+    provider <- "systemfonts"
+    font_table <- tryCatch(systemfonts::system_fonts(), error = function(e) NULL)
+    families <- if (is.data.frame(font_table) && "family" %in% names(font_table)) {
+      unique(as.character(font_table$family))
+    } else {
+      character()
+    }
+  }
+  if (length(families) == 0) {
+    provider <- "grDevices::pdfFonts"
+    families <- tryCatch(names(grDevices::pdfFonts()), error = function(e) character())
+  }
+  normalized <- tolower(trimws(families))
+  declared_aliases <- list("Times" = c("Times New Roman", "Liberation Serif", "FreeSerif"))
+  exact_matches <- setNames(vapply(candidates, function(candidate) {
+    tolower(trimws(candidate)) %in% normalized
+  }, logical(1)), candidates)
+  resolved_families <- setNames(lapply(candidates, function(candidate) {
+    if (!is.data.frame(font_table) || !all(c("path", "family") %in% names(font_table))) return(NULL)
+    matched_path <- tryCatch({
+      matched <- systemfonts::match_fonts(candidate)
+      if (is.data.frame(matched) && nrow(matched) > 0) as.character(matched$path[[1]]) else NULL
+    }, error = function(e) NULL)
+    if (is.null(matched_path) || !nzchar(matched_path)) return(NULL)
+    normalized_paths <- vapply(font_table$path, safe_runtime_path, character(1))
+    matched_rows <- which(normalized_paths == safe_runtime_path(matched_path))
+    if (length(matched_rows) == 0) return(NULL)
+    safe_runtime_string(font_table$family[[matched_rows[[1]]]])
+  }), candidates)
+  matches <- setNames(vapply(candidates, function(candidate) {
+    if (isTRUE(exact_matches[[candidate]])) return(TRUE)
+    resolved <- resolved_families[[candidate]]
+    allowed <- declared_aliases[[candidate]]
+    !is.null(resolved) && length(allowed) > 0 && tolower(resolved) %in% tolower(allowed)
+  }, logical(1)), candidates)
+  list(
+    provider = provider,
+    availableFamilyCount = length(unique(families)),
+    candidates = as.list(matches),
+    exactCandidates = as.list(exact_matches),
+    resolvedFamilies = resolved_families,
+    declaredAliases = declared_aliases
+  )
+}
+
+runtime_environment_contract <- function() {
+  list(
+    home = safe_runtime_path(Sys.getenv("HOME", unset = "")),
+    userProfile = safe_runtime_path(Sys.getenv("USERPROFILE", unset = "")),
+    tmpdir = safe_runtime_path(Sys.getenv("TMPDIR", unset = "")),
+    tmp = safe_runtime_path(Sys.getenv("TMP", unset = "")),
+    temp = safe_runtime_path(Sys.getenv("TEMP", unset = "")),
+    tz = safe_runtime_string(Sys.getenv("TZ", unset = "")),
+    rUser = safe_runtime_path(Sys.getenv("R_USER", unset = "")),
+    xdgCacheHome = safe_runtime_path(Sys.getenv("XDG_CACHE_HOME", unset = ""))
+  )
+}
+
+collect_runtime_inventory <- function() {
+  required_packages <- c("jsonlite")
+  optional_packages <- c("ggplot2", "svglite", "readxl", "systemfonts", "textshaping")
+  package_names <- c(required_packages, optional_packages)
+  packages <- lapply(package_names, safe_runtime_package)
+  names(packages) <- package_names
+  missing_required <- required_packages[!vapply(packages[required_packages], function(item) isTRUE(item$installed), logical(1))]
+  rscript_candidates <- unique(c(
+    Sys.getenv("SCIFIGURE_RSCRIPT_BIN", unset = ""),
+    Sys.getenv("RSCRIPT_BIN", unset = ""),
+    Sys.which("Rscript"),
+    file.path(R.home("bin"), if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript")
+  ))
+  rscript_candidates <- rscript_candidates[nzchar(rscript_candidates)]
+  locale_categories <- c("LC_COLLATE", "LC_CTYPE", "LC_MONETARY", "LC_NUMERIC", "LC_TIME")
+  locale_info <- setNames(lapply(locale_categories, function(category) {
+    tryCatch(safe_runtime_string(Sys.getlocale(category = category)), error = function(e) NULL)
+  }), locale_categories)
+  list(
+    schemaVersion = "1.0",
+    executable = list(
+      rscript = if (length(rscript_candidates) > 0) safe_runtime_path(rscript_candidates[[1]]) else NULL,
+      candidates = as.list(vapply(rscript_candidates, safe_runtime_path, character(1)))
+    ),
+    r = list(
+      version = as.character(R.version$version.string),
+      platform = as.character(R.version$platform),
+      arch = as.character(R.version$arch),
+      os = as.character(R.version$os),
+      home = safe_runtime_path(R.home())
+    ),
+    packages = packages,
+    libraryPaths = as.list(vapply(.libPaths(), safe_runtime_path, character(1))),
+    locale = list(
+      all = safe_runtime_string(Sys.getlocale()),
+      categories = locale_info,
+      lang = safe_runtime_string(Sys.getenv("LANG", unset = "")),
+      lcAll = safe_runtime_string(Sys.getenv("LC_ALL", unset = "")),
+      charset = tryCatch(as.list(localeToCharset()), error = function(e) list()),
+      nativeEncoding = safe_runtime_string(l10n_info()[["codepage"]]),
+      contract = list(collate = "C", ctypeEncoding = "UTF-8")
+    ),
+    timezone = safe_runtime_string(Sys.timezone()),
+    environment = runtime_environment_contract(),
+    workingDirectory = safe_runtime_path(getwd()),
+    temporaryDirectory = safe_runtime_path(tempdir()),
+    graphics = list(
+      activeDevice = tryCatch(as.character(names(grDevices::dev.cur())), error = function(e) NULL),
+      preferredSvgDevice = if (isTRUE(packages$svglite$installed)) "svglite" else "grDevices::svg"
+    ),
+    fonts = runtime_font_inventory(),
+    checks = list(
+      ok = length(missing_required) == 0,
+      missingRequiredPackages = as.list(missing_required)
+    )
+  )
+}
+
+runtime_condition_message <- function(condition, fallback = "") {
+  if (is.null(condition)) return(fallback)
+  message <- tryCatch(conditionMessage(condition), error = function(e) "")
+  if (length(message) == 0 || is.na(message[[1]])) fallback else as.character(message[[1]])
+}
+
+runtime_condition_classes <- function(condition) {
+  if (is.null(condition)) return(character())
+  classes <- tryCatch(class(condition), error = function(e) character())
+  if (is.null(classes)) character() else as.character(classes)
+}
+
+runtime_condition_call <- function(condition) {
+  call <- tryCatch(conditionCall(condition), error = function(e) NULL)
+  if (is.null(call)) return(NULL)
+  text <- tryCatch(paste(deparse(call), collapse = " "), error = function(e) "")
+  if (!nzchar(text)) NULL else text
+}
+
+runtime_extract_token <- function(message, pattern) {
+  match <- tryCatch(regexec(pattern, message, ignore.case = TRUE, perl = TRUE), error = function(e) NULL)
+  if (is.null(match)) return(NULL)
+  groups <- regmatches(message, match)[[1]]
+  if (length(groups) < 2 || !nzchar(groups[[2]])) NULL else groups[[2]]
+}
+
+runtime_clean_token <- function(value) {
+  if (is.null(value) || length(value) == 0 || is.na(value[[1]])) return(NULL)
+  token <- trimws(as.character(value[[1]]))
+  token <- sub("^[^[:alnum:]_.-]+", "", token, perl = TRUE)
+  token <- sub("[^[:alnum:]_.-].*$", "", token, perl = TRUE)
+  if (!nzchar(token)) NULL else token
+}
+
+runtime_clean_path <- function(value) {
+  if (is.null(value) || length(value) == 0 || is.na(value[[1]])) return(NULL)
+  path <- trimws(as.character(value[[1]]))
+  path <- gsub("^[[:space:]'\"`]+|[[:space:]'\"`]+$", "", path, perl = TRUE)
+  if (!nzchar(path)) NULL else path
+}
+
+runtime_extract_missing_symbol <- function(message) {
+  token <- runtime_extract_token(message, "object[[:space:]]+(.+?)[[:space:]]+not found")
+  if (is.null(token)) token <- runtime_extract_token(message, "column[[:space:]]+(.+?)[[:space:]]+not found")
+  if (is.null(token)) token <- runtime_extract_token(message, "function[[:space:]]+(.+?)[[:space:]]+not found")
+  runtime_clean_token(token)
+}
+
+runtime_extract_missing_package <- function(message) {
+  if (grepl("there is no package called", message, ignore.case = TRUE, perl = TRUE)) {
+    candidate <- sub("^.*there is no package called", "", message, ignore.case = TRUE, perl = TRUE)
+    return(runtime_clean_token(candidate))
+  }
+  token <- runtime_extract_token(message, "package[[:space:]]+(.+?)[[:space:]]+is not available")
+  runtime_clean_token(token)
+}
+
+runtime_extract_missing_path <- function(message) {
+  token <- runtime_extract_token(message, "cannot open file[[:space:]]+['\"]([^'\"]+)['\"]")
+  if (is.null(token)) token <- runtime_extract_token(message, "cannot open file[[:space:]]+(.+)")
+  if (is.null(token)) token <- runtime_extract_token(message, "file[[:space:]]+(.+?)[[:space:]]+(does not exist|not found)")
+  token <- runtime_clean_path(token)
+  if (!is.null(token)) {
+    token <- sub("[[:space:]]*:[[:space:]]*(no such file.*|permission denied.*|access is denied.*)$", "", token, ignore.case = TRUE, perl = TRUE)
+  }
+  token
+}
+
+runtime_data_summary <- function(payload) {
+  data_payload <- tryCatch(payload$dataPayload, error = function(e) NULL)
+  custom_data <- tryCatch(data_payload$custom_data, error = function(e) NULL)
+  if (is.null(custom_data)) custom_data <- data_payload
+
+  row_count <- 0L
+  columns <- character()
+  if (is.data.frame(custom_data)) {
+    row_count <- nrow(custom_data)
+    columns <- names(custom_data)
+  } else if (is.list(custom_data)) {
+    row_count <- length(custom_data)
+    if (length(custom_data) > 0 && is.list(custom_data[[1]])) {
+      columns <- names(custom_data[[1]])
+    }
+  }
+  list(rowCount = row_count, columns = as.list(as.character(columns)))
+}
+
+runtime_condition_category <- function(condition, message = runtime_condition_message(condition)) {
+  lower_message <- tolower(message)
+  classes <- tolower(runtime_condition_classes(condition))
+
+  if (
+    grepl("parse error|syntax error|unexpected", lower_message, perl = TRUE) ||
+    any(classes %in% c("parseerror", "parse_error"))
+  ) {
+    return("syntax_error")
+  }
+  if (grepl("permission denied|access is denied|operation not permitted|not permitted", lower_message, perl = TRUE)) {
+    return("permission_denied")
+  }
+  if (
+    any(classes %in% c("packagenotfounderror", "packageerror")) ||
+    grepl("there is no package called|package .* is not available", lower_message, perl = TRUE)
+  ) {
+    return("missing_package")
+  }
+  if (
+    grepl(
+      "object .* not found|undefined columns selected|column .* not found|can't subset columns|cannot subset columns|\\$ operator is invalid",
+      lower_message,
+      perl = TRUE
+    )
+  ) {
+    return("missing_data")
+  }
+  if (
+    grepl("no such file or directory|cannot open (file|the connection)|does not exist|file .* not found", lower_message, perl = TRUE)
+  ) {
+    return("missing_file")
+  }
+  "runtime_error"
+}
+
+runtime_is_font_warning <- function(condition) {
+  message <- tolower(runtime_condition_message(condition))
+  grepl(
+    "font.*(not found|missing|unavailable)|(not found|missing|unavailable).*font",
+    message,
+    perl = TRUE
+  )
+}
+
+runtime_diagnostic_suggestion <- function(category) {
+  suggestions <- c(
+    syntax_error = "Check R syntax and the reported line/column before rendering.",
+    missing_package = "Install the required R package in the renderer environment or remove the dependency.",
+    missing_data = "Check the uploaded data columns and objects referenced by the R script.",
+    missing_file = "Provide the file through the renderer payload or use a declared local input.",
+    permission_denied = "Check renderer permissions and the requested path before rendering.",
+    missing_font = "Use an installed font or provide a configured fallback font.",
+    runtime_error = "Inspect the R condition and call context, then correct the script or input.",
+    `default` = "Inspect the R condition and call context, then correct the script or input."
+  )
+  suggestion <- suggestions[[category]]
+  if (is.null(suggestion)) suggestions[["default"]] else suggestion
+}
+
+runtime_diagnostic <- function(condition = NULL, payload = NULL, category = NULL, severity = "error", message = NULL) {
+  condition_message <- if (is.null(message)) runtime_condition_message(condition) else as.character(message)
+  if (is.null(category)) {
+    category <- runtime_condition_category(condition, condition_message)
+    if (identical(category, "missing_file") && exists("warnings_collected", inherits = TRUE)) {
+      prior_warnings <- get("warnings_collected", inherits = TRUE)
+      if (any(grepl("permission denied|access is denied|operation not permitted|not permitted", prior_warnings, ignore.case = TRUE, perl = TRUE))) {
+        category <- "permission_denied"
+      }
+    }
+  }
+
+  details <- list(source = "r_renderer")
+  if (identical(category, "syntax_error")) {
+    location <- regexec(":([0-9]+):([0-9]+):", condition_message, perl = TRUE)
+    groups <- regmatches(condition_message, location)[[1]]
+    if (length(groups) >= 3) {
+      details$line <- suppressWarnings(as.integer(groups[[2]]))
+      details$column <- suppressWarnings(as.integer(groups[[3]]))
+    }
+  }
+  if (identical(category, "missing_package")) {
+    package_name <- runtime_extract_missing_package(condition_message)
+    function_name <- runtime_extract_token(condition_message, "could not find function[[:space:]]+(.+)")
+    if (!is.null(package_name)) details$package <- package_name
+    if (!is.null(function_name)) details[["function"]] <- runtime_clean_token(function_name)
+  }
+  if (identical(category, "missing_data")) {
+    symbol <- runtime_extract_missing_symbol(condition_message)
+    if (!is.null(symbol)) details$symbol <- symbol
+    details$data <- runtime_data_summary(payload)
+  }
+  if (identical(category, "missing_file") || identical(category, "permission_denied")) {
+    path_message <- condition_message
+    if (exists("warnings_collected", inherits = TRUE)) {
+      prior_warnings <- get("warnings_collected", inherits = TRUE)
+      if (length(prior_warnings) > 0) path_message <- paste(c(prior_warnings, condition_message), collapse = "\n")
+    }
+    path <- runtime_extract_missing_path(path_message)
+    if (!is.null(path)) details$path <- path
+  }
+  if (identical(category, "missing_font")) {
+    font_family <- runtime_extract_token(condition_message, "font[[:space:]]+family[[:space:]]+(.+?)[[:space:]]+not found")
+    if (!is.null(font_family)) details$fontFamily <- runtime_clean_token(font_family)
+  }
+
+  classes <- runtime_condition_classes(condition)
+  call <- runtime_condition_call(condition)
+  diagnostic <- list(
+    schemaVersion = "1.0",
+    type = category,
+    category = category,
+    kind = category,
+    severity = severity,
+    message = condition_message,
+    suggestion = runtime_diagnostic_suggestion(category),
+    conditionClass = as.list(classes),
+    details = details
+  )
+  if (!is.null(call)) diagnostic$call <- call
+  diagnostic
 }
 
 payload <- jsonlite::fromJSON(payload_file, simplifyVector = TRUE)
 raw_payload <- jsonlite::fromJSON(payload_file, simplifyVector = FALSE)
 script <- payload$script
 if (is.null(script) || !nzchar(script)) {
-  cat(jsonlite::toJSON(list(status = "error", message = "R script is required"), auto_unbox = TRUE))
+  emit_json(list(
+    status = "error",
+    message = "R script is required",
+    diagnostic = runtime_diagnostic(
+      condition = NULL,
+      payload = payload,
+      category = "runtime_error",
+      message = "R script is required"
+    ),
+    warningDiagnostics = list(),
+    runtimeInventory = collect_runtime_inventory()
+  ))
   quit(status = 0)
 }
+
+runtime_inventory <- collect_runtime_inventory()
 
 render_options <- payload$renderOptions
 width <- 7
@@ -34,7 +436,26 @@ if (!is.null(render_options$height_in)) height <- as.numeric(render_options$heig
 
 tmp_svg <- tempfile(fileext = ".svg")
 warnings_collected <- character()
+runtime_warning_diagnostics <- list()
 renderer_patch_warnings <- list()
+
+add_runtime_warning_diagnostic <- function(condition) {
+  if (!runtime_is_font_warning(condition)) return(invisible(NULL))
+  diagnostic <- runtime_diagnostic(
+    condition = condition,
+    payload = payload,
+    category = "missing_font",
+    severity = "warning"
+  )
+  key <- paste(diagnostic$type, diagnostic$message, sep = "\u001f")
+  existing_keys <- vapply(runtime_warning_diagnostics, function(item) {
+    paste(item$type, item$message, sep = "\u001f")
+  }, character(1))
+  if (!key %in% existing_keys) {
+    runtime_warning_diagnostics[[length(runtime_warning_diagnostics) + 1]] <<- diagnostic
+  }
+  invisible(NULL)
+}
 
 add_warning_once <- function(message) {
   warnings_collected <<- unique(c(warnings_collected, message))
@@ -65,7 +486,9 @@ as_edit_entries <- function(edit_log) {
   list()
 }
 
-edit_entries <- as_edit_entries(raw_payload$editLog)
+requested_edit_entries <- as_edit_entries(raw_payload$editLog)
+edit_entries <- requested_edit_entries
+r_edit_resolution <- list(accepted = edit_entries, rejected = list(), warnings = list())
 
 latest_value <- function(gid, prop, fallback) {
   value <- fallback
@@ -436,6 +859,7 @@ text_layer_rows <- function(plot_obj) {
     if (is.null(source_data) || inherits(source_data, "waiver")) source_data <- plot_obj$data
     source_data <- tryCatch(as.data.frame(source_data), error = function(e) NULL)
     stable_keys <- NULL
+    stable_key_source <- NULL
     if (!is.null(source_data) && nrow(source_data) == nrow(data)) {
       key_candidates <- c(".scifigure_id", "scifigure_id", "id", "ID", "key", "label_id")
       for (key_name in key_candidates) {
@@ -443,8 +867,27 @@ text_layer_rows <- function(plot_obj) {
         values <- as.character(source_data[[key_name]])
         if (length(values) == nrow(data) && all(!is.na(values) & nzchar(values)) && length(unique(values)) == length(values)) {
           stable_keys <- values
+          stable_key_source <- if (identical(key_name, ".scifigure_id") && all(startsWith(values, "semantic:"))) "derived" else "source"
           break
         }
+      }
+    }
+    if (is.null(stable_keys)) {
+      derived_keys <- vapply(seq_len(nrow(data)), function(row_index) {
+        row <- data[row_index, , drop = FALSE]
+        identity_payload <- list(
+          panel = as.character(row$PANEL %||% 1),
+          x = as.character(row$x %||% ""),
+          y = as.character(row$y %||% ""),
+          label = as.character(row$label %||% "")
+        )
+        canonical <- jsonlite::toJSON(identity_payload, auto_unbox = TRUE, null = "null", digits = NA)
+        encoded <- jsonlite::base64_enc(charToRaw(enc2utf8(canonical)))
+        paste0("semantic:", gsub("[+/=]", "_", encoded, perl = TRUE))
+      }, character(1))
+      if (length(derived_keys) == nrow(data) && all(nzchar(derived_keys)) && length(unique(derived_keys)) == length(derived_keys)) {
+        stable_keys <- derived_keys
+        stable_key_source <- "derived"
       }
     }
     for (row_index in seq_len(nrow(data))) {
@@ -453,6 +896,7 @@ text_layer_rows <- function(plot_obj) {
         rowIndex = row_index,
         geom = geom,
         dataKey = if (!is.null(stable_keys)) stable_keys[[row_index]] else NULL,
+        dataKeySource = stable_key_source,
         data = data[row_index, , drop = FALSE]
       )
     }
@@ -468,7 +912,9 @@ text_data_key_token <- function(value) {
 
 text_row_gid <- function(item) {
   token <- text_data_key_token(item$dataKey)
-  if (!is.null(token)) return(paste0("r.text.", item$layerIndex - 1, ".", token))
+  if (!is.null(token) && !identical(item$dataKeySource, "derived")) {
+    return(paste0("r.text.", item$layerIndex - 1, ".", token))
+  }
   paste0("r.text.", item$layerIndex - 1, ".", item$rowIndex - 1)
 }
 
@@ -868,7 +1314,10 @@ apply_text_layer_edits <- function(plot_obj) {
 
   for (layer_key in names(edited_by_layer)) {
     layer_index <- as.integer(layer_key)
-    geom <- geom_class(plot_obj$layers[[layer_index]])
+    source_layer <- plot_obj$layers[[layer_index]]
+    geom <- geom_class(source_layer)
+    frozen_identity_key <- source_layer$.scifigure_identity_key %||%
+      r_layer_structure_signature(source_layer, plot_obj$mapping)
     layer_data <- inverse_text_position_scales(edited_by_layer[[layer_key]], position_context)
     keep_cols <- intersect(
       c(".scifigure_id", "x", "y", "label", "colour", "color", "size", "alpha", "family", "fontface", "angle", "hjust", "vjust", "lineheight"),
@@ -877,7 +1326,7 @@ apply_text_layer_edits <- function(plot_obj) {
     layer_data <- layer_data[, keep_cols, drop = FALSE]
     names(layer_data)[names(layer_data) == "colour"] <- "colour"
     if (geom == "GeomLabel") {
-      plot_obj$layers[[layer_index]] <- ggplot2::geom_label(
+      replacement_layer <- ggplot2::geom_label(
         data = layer_data,
         mapping = ggplot2::aes(x = x, y = y, label = label),
         inherit.aes = FALSE,
@@ -888,7 +1337,7 @@ apply_text_layer_edits <- function(plot_obj) {
         alpha = layer_data$alpha %||% NA
       )
     } else {
-      plot_obj$layers[[layer_index]] <- ggplot2::geom_text(
+      replacement_layer <- ggplot2::geom_text(
         data = layer_data,
         mapping = ggplot2::aes(x = x, y = y, label = label),
         inherit.aes = FALSE,
@@ -899,6 +1348,8 @@ apply_text_layer_edits <- function(plot_obj) {
         alpha = layer_data$alpha %||% NA
       )
     }
+    replacement_layer$.scifigure_identity_key <- frozen_identity_key
+    plot_obj$layers[[layer_index]] <- replacement_layer
   }
 
   plot_obj
@@ -1007,6 +1458,61 @@ find_continuous_colour_scales <- function(plot_obj) {
   scales
 }
 
+r_aesthetic_mapping_signature <- function(plot_obj, kind) {
+  aliases <- if (identical(kind, "color")) c("colour", "color") else kind
+  signatures <- character()
+  collect_mapping <- function(mapping) {
+    if (is.null(mapping) || length(mapping) == 0) return()
+    for (alias in aliases) {
+      if (!is.null(mapping[[alias]])) signatures <<- c(signatures, r_expression_label(mapping[[alias]]))
+    }
+  }
+  collect_mapping(plot_obj$mapping)
+  for (layer in plot_obj$layers %||% list()) {
+    collect_mapping(r_effective_layer_mapping(layer, plot_obj$mapping))
+  }
+  signatures <- sort(unique(signatures[nzchar(signatures)]))
+  if (length(signatures) == 0) return(paste0("unmapped-", kind))
+  paste(signatures, collapse = "\u001f")
+}
+
+r_scale_structure_key <- function(scale_obj, kind, keys = character(), mapping_key = "") {
+  scale_classes <- paste(class(scale_obj), collapse = "/")
+  transform_name <- as.character(scale_obj$trans$name %||% "identity")
+  canonical_keys <- paste(sort(unique(as.character(keys))), collapse = "\u001f")
+  paste("ggplot-scale", kind, mapping_key, scale_classes, transform_name, canonical_keys, sep = ":")
+}
+
+r_guide_title_signature <- function(scale_obj, plot_obj, kind, mapping_key) {
+  guide_obj <- scale_obj$guide %||% NULL
+  guide_title <- if (is.list(guide_obj) || is.environment(guide_obj)) guide_obj$title %||% NULL else NULL
+  scale_title <- scale_obj$name %||% NULL
+  title <- guide_title
+  if (is.null(title) || inherits(title, "waiver") || !nzchar(r_expression_label(title))) title <- scale_title
+  if (is.null(title) || inherits(title, "waiver") || !nzchar(r_expression_label(title))) {
+    aliases <- if (identical(kind, "color")) c("colour", "color") else kind
+    for (alias in aliases) {
+      candidate <- plot_obj$labels[[alias]] %||% NULL
+      if (!is.null(candidate) && nzchar(r_expression_label(candidate))) {
+        title <- candidate
+        break
+      }
+    }
+  }
+  resolved <- r_expression_label(title)
+  if (!nzchar(resolved)) resolved <- mapping_key
+  gsub("[\r\n\t ]+", " ", resolved, perl = TRUE)
+}
+
+r_guide_type_signature <- function(scale_obj) {
+  guide_obj <- scale_obj$guide %||% NULL
+  if (is.null(guide_obj) || inherits(guide_obj, "waiver")) return("legend")
+  if (is.character(guide_obj)) return(paste(guide_obj, collapse = "+"))
+  classes <- class(guide_obj)
+  if (length(classes) == 0) return("legend")
+  paste(classes, collapse = "/")
+}
+
 discrete_scale_catalog <- function(plot_obj) {
   built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
   built_plot <- if (!is.null(built) && !is.null(built$plot)) built$plot else plot_obj
@@ -1039,11 +1545,28 @@ discrete_scale_catalog <- function(plot_obj) {
 
     ordinal <- kind_ordinals[[kind]] %||% 0L
     kind_ordinals[[kind]] <- ordinal + 1L
+    mapping_key <- r_aesthetic_mapping_signature(built_plot, kind)
+    scale_key <- r_scale_structure_key(scale_obj, kind, keys, mapping_key)
+    guide_title_key <- r_guide_title_signature(scale_obj, built_plot, kind, mapping_key)
+    guide_type_key <- r_guide_type_signature(scale_obj)
+    guide_key <- paste(
+      "ggplot-guide",
+      mapping_key,
+      guide_title_key,
+      guide_type_key,
+      paste(sort(unique(keys)), collapse = "\u001f"),
+      sep = ":"
+    )
     entries[[length(entries) + 1]] <- list(
       kind = kind,
       ordinal = ordinal,
       scaleIndex = scale_index,
       scaleId = paste0("r.scale.", kind, ".", ordinal),
+      scaleKey = scale_key,
+      guideKey = guide_key,
+      guideTitleKey = guide_title_key,
+      guideTypeKey = guide_type_key,
+      mappingKey = mapping_key,
       scale = scale_obj,
       keys = keys,
       labels = labels,
@@ -1141,6 +1664,8 @@ detect_discrete_scale_semantics <- function(plot_obj) {
         scaleId = entry$scaleId,
         guideId = "legend.0",
         legendId = "legend.0",
+        scaleKey = entry$scaleKey,
+        guideKey = entry$guideKey,
         aesthetic = kind,
         groupKey = group_key,
         source = list(artistClass = "ggplot_scale_discrete", axesIndex = 0)
@@ -1317,59 +1842,49 @@ apply_continuous_scale_edits <- function(plot_obj) {
 
 apply_legend_text_edits <- function(plot_obj) {
   if (!inherits(plot_obj, "ggplot")) return(plot_obj)
-  if (is.null(plot_obj$scales) || length(plot_obj$scales$scales) == 0) return(plot_obj)
+  catalog <- discrete_scale_catalog(plot_obj)
+  if (length(catalog$entries) == 0) return(plot_obj)
+  semantic_items <- legend_item_semantics(plot_obj)
+  if (length(semantic_items) == 0) return(plot_obj)
 
-  label_index <- 0L
-  for (scale_index in seq_along(plot_obj$scales$scales)) {
-    scale_obj <- plot_obj$scales$scales[[scale_index]]
-    kind <- scale_kind(scale_obj)
-    if (is.null(kind) || is_continuous_colour_scale(scale_obj)) next
-
-    labels <- NULL
-    if (!is.null(scale_obj$get_labels)) {
-      labels <- tryCatch(scale_obj$get_labels(), error = function(e) NULL)
-    }
-    if (is.null(labels) || length(labels) == 0) {
-      labels <- scale_obj$labels
-    }
-    if (is.null(labels) || length(labels) == 0) {
-      labels <- scale_obj$range$range
-    }
-    labels <- as.character(labels %||% character())
-    if (length(labels) == 0) next
-
+  for (entry in catalog$entries) {
     changed <- FALSE
-    next_labels <- labels
+    next_labels <- entry$labels
     for (i in seq_along(next_labels)) {
-      gid <- paste0("legend_text.0.", label_index)
+      merge_key <- paste(entry$guideKey, entry$keys[[i]], entry$labels[[i]], sep = ":")
+      item_index <- which(vapply(
+        semantic_items,
+        function(item) identical(item$mergeKey, merge_key),
+        logical(1)
+      ))
+      if (length(item_index) == 0) next
+      gid <- paste0("legend_text.0.", item_index[[1]] - 1L)
       if (has_edit(gid, "text")) {
         next_labels[[i]] <- latest_string(gid, "text", next_labels[[i]])
         changed <- TRUE
       }
-      label_index <- label_index + 1L
     }
     if (changed) {
-      scale_name <- scale_obj$name %||% plot_obj$labels[[kind]] %||% ggplot2::waiver()
-      values <- scale_palette_values(scale_obj)
-      if (!is.null(values)) {
-        breaks <- names(values)
-        if (is.null(breaks) || any(!nzchar(breaks))) {
-          breaks <- labels
-        }
-        if (length(breaks) == length(next_labels)) {
-          names(next_labels) <- breaks
-        }
-        if (kind == "fill") {
-          plot_obj <- suppressMessages(plot_obj + ggplot2::scale_fill_manual(values = values, breaks = breaks, labels = next_labels, name = scale_name))
-        } else {
-          plot_obj <- suppressMessages(plot_obj + ggplot2::scale_colour_manual(values = values, breaks = breaks, labels = next_labels, name = scale_name))
-        }
+      values <- entry$colors
+      names(values) <- entry$keys
+      scale_args <- list(
+        values = values,
+        breaks = entry$keys,
+        labels = next_labels,
+        limits = entry$keys
+      )
+      scale_name <- entry$scale$name
+      if (!is.null(scale_name) && length(scale_name) > 0 && !inherits(scale_name, "waiver")) {
+        scale_args$name <- scale_name
+      }
+      if (!is.null(entry$scale$na.value)) scale_args$na.value <- entry$scale$na.value
+      if (!is.null(entry$scale$drop)) scale_args$drop <- entry$scale$drop
+      if (!is.null(entry$scale$na.translate)) scale_args$na.translate <- entry$scale$na.translate
+      if (!is.null(entry$scale$guide) && !inherits(entry$scale$guide, "waiver")) scale_args$guide <- entry$scale$guide
+      if (entry$kind == "fill") {
+        plot_obj <- suppressMessages(plot_obj + do.call(ggplot2::scale_fill_manual, scale_args))
       } else {
-        if (kind == "fill") {
-          plot_obj <- suppressMessages(plot_obj + ggplot2::scale_fill_discrete(labels = next_labels, name = scale_name))
-        } else {
-          plot_obj <- suppressMessages(plot_obj + ggplot2::scale_colour_discrete(labels = next_labels, name = scale_name))
-        }
+        plot_obj <- suppressMessages(plot_obj + do.call(ggplot2::scale_colour_manual, scale_args))
       }
     }
   }
@@ -1727,51 +2242,54 @@ manifest_text_object <- function(id, label, text, style) {
   )
 }
 
-legend_item_labels <- function(plot_obj) {
-  built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
-  scale_list <- NULL
-  if (!is.null(built) && !is.null(built$plot) && !is.null(built$plot$scales)) {
-    scale_list <- built$plot$scales$scales
-  }
-  if (is.null(scale_list)) {
-    scale_list <- plot_obj$scales$scales %||% list()
-  }
-  if (length(scale_list) == 0) return(character())
-
-  labels <- character()
-  for (scale_obj in scale_list) {
-    kind <- scale_kind(scale_obj)
-    if (is.null(kind) || is_continuous_colour_scale(scale_obj)) next
-
-    scale_labels <- NULL
-    if (!is.null(scale_obj$get_labels)) {
-      scale_labels <- tryCatch(scale_obj$get_labels(), error = function(e) NULL)
+legend_item_semantics <- function(plot_obj) {
+  catalog <- discrete_scale_catalog(plot_obj)
+  items <- list()
+  for (entry in catalog$entries) {
+    for (i in seq_along(entry$keys)) {
+      key <- as.character(entry$keys[[i]])
+      label <- as.character(entry$labels[[i]])
+      merge_key <- paste(entry$guideKey, key, label, sep = ":")
+      existing_index <- which(vapply(items, function(item) identical(item$mergeKey, merge_key), logical(1)))
+      if (length(existing_index) > 0) {
+        item_index <- existing_index[[1]]
+        items[[item_index]]$aesthetics <- sort(unique(c(items[[item_index]]$aesthetics, entry$kind)))
+        items[[item_index]]$scaleKeys <- sort(unique(c(items[[item_index]]$scaleKeys, entry$scaleKey)))
+        next
+      }
+      items[[length(items) + 1]] <- list(
+        mergeKey = merge_key,
+        guideKey = entry$guideKey,
+        aesthetics = entry$kind,
+        scaleKeys = entry$scaleKey,
+        key = key,
+        label = label
+      )
     }
-    if (is.null(scale_labels) || length(scale_labels) == 0) {
-      scale_labels <- scale_obj$labels
-    }
-    if (is.null(scale_labels) || length(scale_labels) == 0) {
-      scale_labels <- scale_obj$range$range
-    }
-    scale_labels <- as.character(scale_labels %||% character())
-    scale_labels <- scale_labels[!is.na(scale_labels) & nzchar(scale_labels)]
-    labels <- c(labels, scale_labels)
   }
-  unique(labels)
+  items
 }
 
-manifest_legend_text_objects <- function(plot_obj, legend_title, legend_style) {
+legend_item_labels <- function(plot_obj) {
+  items <- legend_item_semantics(plot_obj)
+  if (length(items) == 0) return(character())
+  vapply(items, function(item) item$label, character(1))
+}
+
+manifest_legend_text_objects <- function(plot_obj, legend_title, legend_style, legend_guide_key = "ggplot-guide:discrete") {
   objects <- list()
   title_style <- style_for_gid("legend_title.0", legend_style)
   if (nzchar(legend_title)) {
     objects[[length(objects) + 1]] <- manifest_text_object("legend_title.0", "legend_title", legend_title, title_style)
     objects[[length(objects)]]$role <- "legend_title"
+    objects[[length(objects)]]$guideKey <- legend_guide_key
     objects[[length(objects)]]$source <- list(artistClass = "ggplot_legend_title", axesIndex = 0)
   }
 
-  labels <- legend_item_labels(plot_obj)
-  if (length(labels) == 0) return(objects)
-  for (i in seq_along(labels)) {
+  items <- legend_item_semantics(plot_obj)
+  if (length(items) == 0) return(objects)
+  for (i in seq_along(items)) {
+    label <- items[[i]]$label
     gid <- paste0("legend_text.0.", i - 1)
     text_weight <- latest_string(gid, "fontweight", legend_style$fontweight)
     text_style <- latest_string(gid, "fontstyle", legend_style$fontstyle)
@@ -1783,10 +2301,18 @@ manifest_legend_text_objects <- function(plot_obj, legend_title, legend_style) {
       fontstyle = text_style,
       face = font_face(text_weight, text_style)
     )
-    obj <- manifest_text_object(gid, "legend_text", latest_string(gid, "text", labels[[i]]), style)
-    obj$currentProps$originalText <- labels[[i]]
+    obj <- manifest_text_object(gid, "legend_text", latest_string(gid, "text", label), style)
+    obj$currentProps$originalText <- label
     obj$editable <- list("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color")
     obj$role <- "legend_text"
+    obj$dataKey <- if (length(items[[i]]$aesthetics) == 1) {
+      paste("legend", items[[i]]$aesthetics[[1]], items[[i]]$key, sep = ":")
+    } else {
+      paste("legend", items[[i]]$guideKey, items[[i]]$key, sep = ":")
+    }
+    obj$aesthetic <- paste(items[[i]]$aesthetics, collapse = "+")
+    obj$scaleKey <- paste(items[[i]]$scaleKeys, collapse = "|")
+    obj$guideKey <- items[[i]]$guideKey
     obj$source <- list(artistClass = "ggplot_legend_text", axesIndex = 0, zorder = i)
     objects[[length(objects) + 1]] <- obj
   }
@@ -1827,9 +2353,82 @@ manifest_axis_object <- function(id, label, style, plot_obj = NULL) {
   )
 }
 
-manifest_layer_object <- function(layer, index) {
+r_expression_label <- function(value) {
+  if (is.null(value)) return("")
+  if (requireNamespace("rlang", quietly = TRUE)) {
+    labelled <- tryCatch(rlang::as_label(value), error = function(e) NULL)
+    if (!is.null(labelled) && nzchar(labelled)) return(as.character(labelled))
+  }
+  paste(deparse(value, width.cutoff = 500L), collapse = "")
+}
+
+r_mapping_signature <- function(mapping) {
+  if (is.null(mapping) || length(mapping) == 0) return("inherit")
+  mapping_names <- sort(names(mapping))
+  paste(vapply(mapping_names, function(name) {
+    paste0(name, "=", r_expression_label(mapping[[name]]))
+  }, character(1)), collapse = "|")
+}
+
+r_effective_layer_mapping <- function(layer, plot_mapping = NULL) {
+  layer_mapping <- layer$mapping %||% list()
+  if (!isTRUE(layer$inherit.aes)) return(layer_mapping)
+  effective <- plot_mapping %||% list()
+  if (length(layer_mapping) > 0) {
+    for (name in names(layer_mapping)) effective[[name]] <- layer_mapping[[name]]
+  }
+  effective
+}
+
+r_layer_data_scope_signature <- function(layer) {
+  cached <- layer$.scifigure_data_scope_signature %||% NULL
+  if (!is.null(cached) && nzchar(as.character(cached))) return(as.character(cached))
+  layer_data <- layer$data
+  if (is.null(layer_data) || inherits(layer_data, "waiver")) return("plot-data")
+  data_frame <- tryCatch(as.data.frame(layer_data), error = function(e) NULL)
+  if (is.null(data_frame)) return(paste("layer-data", class(layer_data)[[1]] %||% "unknown", sep = ":"))
+  column_names <- sort(names(data_frame))
+  canonical_frame <- data_frame[, column_names, drop = FALSE]
+  structure <- list(
+    rows = nrow(canonical_frame),
+    columns = lapply(column_names, function(name) list(
+      name = name,
+      type = typeof(canonical_frame[[name]]),
+      class = as.list(class(canonical_frame[[name]])),
+      levels = if (is.factor(canonical_frame[[name]])) as.list(levels(canonical_frame[[name]])) else NULL,
+      values = as.list(canonical_frame[[name]])
+    ))
+  )
+  canonical <- jsonlite::toJSON(structure, auto_unbox = TRUE, null = "null", na = "string", digits = NA)
+  digest_path <- tempfile("scifigure-r-layer-scope-", fileext = ".json")
+  on.exit(try(unlink(digest_path), silent = TRUE), add = TRUE)
+  writeBin(charToRaw(enc2utf8(canonical)), digest_path)
+  digest <- unname(as.character(tools::md5sum(digest_path)[[1]]))
+  signature <- paste("layer-data", nrow(canonical_frame), paste(column_names, collapse = ","), digest, sep = ":")
+  layer$.scifigure_data_scope_signature <- signature
+  signature
+}
+
+r_layer_structure_signature <- function(layer, plot_mapping = NULL) {
+  frozen_identity_key <- layer$.scifigure_identity_key %||% NULL
+  if (!is.null(frozen_identity_key) && nzchar(as.character(frozen_identity_key))) {
+    return(as.character(frozen_identity_key))
+  }
+  paste(
+    geom_class(layer),
+    class(layer$stat)[[1]] %||% "StatIdentity",
+    class(layer$position)[[1]] %||% "PositionIdentity",
+    if (isTRUE(layer$inherit.aes)) "inherit" else "isolated",
+    r_mapping_signature(r_effective_layer_mapping(layer, plot_mapping)),
+    r_layer_data_scope_signature(layer),
+    sep = ":"
+  )
+}
+
+manifest_layer_object <- function(layer, index, plot_mapping = NULL) {
   geom <- geom_class(layer)
   gid <- paste0("r.layer.", index - 1)
+  layer_key <- r_layer_structure_signature(layer, plot_mapping)
   kind <- layer_kind(geom)
   props <- layer_current_props(layer, gid)
   editable <- switch(
@@ -1863,7 +2462,13 @@ manifest_layer_object <- function(layer, index) {
     editable = editable,
     currentProps = current_props,
     role = paste0("ggplot_", geom),
-    source = list(artistClass = geom, axesIndex = 0, zorder = index)
+    layerKey = layer_key,
+    source = list(
+      artistClass = geom,
+      axesIndex = 0,
+      zorder = index,
+      layerSignature = layer_key
+    )
   )
 }
 
@@ -1882,6 +2487,30 @@ facet_label_from_row <- function(row) {
   }, character(1))
   parts <- parts[nzchar(parts)]
   paste(parts, collapse = ", ")
+}
+
+facet_key_from_row <- function(row) {
+  label <- facet_label_from_row(row)
+  if (nzchar(label)) return(label)
+  row_value <- row$ROW %||% 1L
+  col_value <- row$COL %||% 1L
+  row_index <- suppressWarnings(as.integer(row_value[[1]]))
+  col_index <- suppressWarnings(as.integer(col_value[[1]]))
+  paste0("row=", row_index, ",col=", col_index)
+}
+
+facet_panel_key_map <- function(plot_obj) {
+  if (!is_faceted_plot(plot_obj)) return(c("1" = "root"))
+  built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
+  layout <- built$layout$layout %||% NULL
+  if (is.null(layout) || nrow(layout) == 0) return(character())
+  keys <- vapply(
+    seq_len(nrow(layout)),
+    function(i) facet_key_from_row(layout[i, , drop = FALSE]),
+    character(1)
+  )
+  names(keys) <- as.character(layout$PANEL)
+  keys
 }
 
 manifest_single_subplot_object <- function(plot_obj, layout_bounds = list()) {
@@ -1907,6 +2536,7 @@ manifest_single_subplot_object <- function(plot_obj, layout_bounds = list()) {
       unsupportedReason = "ggplot panel bounds are measured from the rendered SVG and are reference-only; independent panel geometry remains controlled by the ggplot gtable."
     ),
     role = "ggplot_panel",
+    facetKey = "root",
     source = list(artistClass = "ggplot_panel", axesIndex = 0)
   )
 }
@@ -1925,6 +2555,7 @@ manifest_facet_objects <- function(plot_obj) {
     row_index <- as.integer(row$ROW[[1]])
     col_index <- as.integer(row$COL[[1]])
     label <- facet_label_from_row(row)
+    facet_key <- facet_key_from_row(row)
     list(
       id = paste0("subplot.", panel - 1),
       kind = "subplot",
@@ -1941,6 +2572,7 @@ manifest_facet_objects <- function(plot_obj) {
         unsupportedReason = "ggplot facet panels use shared gtable layout; independent panel bounds are not equivalent to Matplotlib axes bounds."
       ),
       role = "ggplot_facet_panel",
+      facetKey = facet_key,
       source = list(artistClass = "ggplot_facet_panel", axesIndex = panel - 1)
     )
   })
@@ -1973,11 +2605,13 @@ manifest_text_layer_objects <- function(plot_obj) {
   ranges <- panel_ranges(plot_obj)
   position_context <- text_position_context(plot_obj)
   position_support <- text_position_support(plot_obj, position_context)
+  panel_keys <- facet_panel_key_map(plot_obj)
 
   lapply(rows, function(item) {
     data <- item$data
     gid <- text_row_edit_gid(item)
     manifest_gid <- text_row_gid(item)
+    layer_key <- r_layer_structure_signature(plot_obj$layers[[item$layerIndex]], plot_obj$mapping)
     panel <- as.integer(data$PANEL %||% 1)
     range <- ranges[[as.character(panel)]]
     frac <- coord_to_axes_fraction(position_context, panel, data$x, data$y)
@@ -2003,11 +2637,15 @@ manifest_text_layer_objects <- function(plot_obj) {
       data_x = as.numeric(raw_position$x),
       data_y = as.numeric(raw_position$y),
       dataKey = item$dataKey,
-      identityStability = if (!is.null(item$dataKey)) "stable" else "conditional",
+      identityStability = if (!is.null(item$dataKey)) "stable" else "unsupported",
       identityStabilityReason = if (!is.null(item$dataKey)) {
-        "Stable data key supplied by the text layer source data."
+        if (identical(item$dataKeySource, "source")) {
+          "Stable data key supplied by the text layer source data."
+        } else {
+          "Stable semantic key derived from the original text label, coordinates, and panel."
+        }
       } else {
-        "Stable while the ggplot text layer row order is unchanged; code patches that add, remove, or reorder rows may remap this object."
+        "No unique source or semantic row key is available; replay is disabled to prevent ordinal remapping."
       }
     )
     if (isTRUE(position_support$supported)) {
@@ -2028,7 +2666,9 @@ manifest_text_layer_objects <- function(plot_obj) {
       role = "ggplot_text_annotation",
       annotationId = manifest_gid,
       subplotId = paste0("subplot.", panel - 1),
+      facetKey = panel_keys[[as.character(panel)]] %||% "root",
       layerId = paste0("r.layer.", item$layerIndex - 1),
+      layerKey = layer_key,
       groupKey = as.character(data$group %||% item$rowIndex),
       dataKey = item$dataKey,
       aesthetic = "label",
@@ -2184,6 +2824,9 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
     heatmap_gid <- paste0("r.heatmap.", kind, ".", scale_index)
     colorbar_gid <- paste0("r.colorbar.", kind, ".", scale_index)
     scale_id <- paste0("r.scale.", kind, ".continuous.", scale_index)
+    mapping_key <- r_aesthetic_mapping_signature(plot_obj, kind)
+    scale_key <- r_scale_structure_key(scale_obj, kind, character(), mapping_key)
+    guide_key <- paste("ggplot-colorbar", scale_key, sep = ":")
     usage <- continuous_scale_layer_usage(plot_obj, built, kind)
     if (length(usage$layerIds) == 0) next
     subplot_ids <- usage$subplotIds
@@ -2209,6 +2852,8 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
         subplotIds = subplot_ids,
         scaleId = scale_id,
         guideId = colorbar_gid,
+        scaleKey = scale_key,
+        guideKey = guide_key,
         aesthetic = kind,
         source = list(artistClass = "ggplot_heatmap_scale", axesIndex = 0, zorder = scale_index)
       )
@@ -2242,6 +2887,8 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
       subplotIds = subplot_ids,
       scaleId = scale_id,
       guideId = colorbar_gid,
+      scaleKey = scale_key,
+      guideKey = guide_key,
       aesthetic = kind,
       source = list(artistClass = "ggplot_continuous_legend", axesIndex = 0, zorder = scale_index)
     )
@@ -2602,22 +3249,34 @@ r_manifest_legend_id <- function(id) {
   NULL
 }
 
-r_manifest_exact_field <- function(obj, name) {
-  if (!is.list(obj)) return(NULL)
-  obj[[name, exact = TRUE]]
+r_manifest_string_values <- function(value) {
+  if (is.null(value) || length(value) == 0) return(character())
+  values <- tryCatch(
+    as.character(unlist(value, recursive = TRUE, use.names = FALSE)),
+    error = function(e) character()
+  )
+  values <- trimws(values[!is.na(values)])
+  unique(values[nzchar(values)])
 }
 
-r_manifest_scalar_field <- function(obj, name) {
-  value <- r_manifest_exact_field(obj, name)
-  if (is.null(value) || length(value) == 0) return(NULL)
-  scalar <- as.character(value[[1]])
-  if (length(scalar) == 0 || is.na(scalar[[1]]) || !nzchar(scalar[[1]])) return(NULL)
-  scalar[[1]]
+r_manifest_scalar_string <- function(value) {
+  values <- r_manifest_string_values(value)
+  if (length(values) == 1) values[[1]] else NULL
+}
+
+r_manifest_relation_scalar <- function(relation, key, value) {
+  scalar <- r_manifest_scalar_string(value)
+  if (!is.null(scalar)) relation[[key]] <- scalar
+  relation
 }
 
 r_manifest_subplot_id <- function(obj) {
-  subplot_id <- r_manifest_scalar_field(obj, "subplotId")
-  if (!is.null(subplot_id)) return(subplot_id)
+  explicit_subplot_ids <- r_manifest_string_values(obj[["subplotId"]])
+  if (length(explicit_subplot_ids) == 1) return(explicit_subplot_ids[[1]])
+  if (length(explicit_subplot_ids) > 1) return(NULL)
+  plural_subplot_ids <- r_manifest_string_values(obj[["subplotIds"]])
+  if (length(plural_subplot_ids) == 1) return(plural_subplot_ids[[1]])
+  if (length(plural_subplot_ids) > 1) return(NULL)
   id <- as.character(obj$id %||% "")
   if (grepl("^subplot\\.", id)) return(id)
   tick_match <- regexec("^[xy]tick\\.([0-9]+)\\.", id)
@@ -2651,31 +3310,44 @@ r_manifest_identity <- function(obj) {
   figure_level <- grepl("^(title|xlabel|ylabel|axis\\.[xy]|legend\\.0$|grid|spine\\.)", id)
   scope <- if (!is.null(legend_id) || grepl("^r\\.group\\.", id)) "container" else if (figure_level) "figure" else if (!is.null(subplot_id)) "subplot" else "figure"
   relation <- list()
-  parent_id <- r_manifest_scalar_field(obj, "parentId")
-  if (!is.null(parent_id)) relation$parentId <- parent_id
-  if (!is.null(subplot_id) && !figure_level) relation$subplotId <- subplot_id
-  for (field in c("subplotIds", "layerIds", "groupIds", "mappableIds")) {
-    values <- r_manifest_exact_field(obj, field)
-    if (!is.null(values) && length(values) > 0) {
-      relation[[field]] <- as.list(unique(as.character(unlist(values, recursive = TRUE, use.names = FALSE))))
-    }
+  relation <- r_manifest_relation_scalar(relation, "parentId", obj[["parentId"]])
+  if (!is.null(subplot_id) && !figure_level) relation[["subplotId"]] <- subplot_id
+  explicit_subplot_ids <- unique(c(
+    r_manifest_string_values(obj[["subplotIds"]]),
+    if (length(r_manifest_string_values(obj[["subplotId"]])) > 1) r_manifest_string_values(obj[["subplotId"]]) else character()
+  ))
+  if (length(explicit_subplot_ids) > 0) relation[["subplotIds"]] <- as.list(explicit_subplot_ids)
+  for (key in c(
+    "layerId", "layerKey", "scaleId", "scaleKey", "guideId", "guideKey",
+    "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey"
+  )) {
+    relation <- r_manifest_relation_scalar(relation, key, obj[[key]])
   }
-  for (field in c("layerId", "scaleId", "guideId", "aesthetic", "groupKey", "dataKey",
-                  "colorbarId", "mappableId", "annotationId", "arrowId", "textId")) {
-    value <- r_manifest_scalar_field(obj, field)
-    if (!is.null(value)) relation[[field]] <- value
+  layer_ids <- r_manifest_string_values(obj[["layerIds"]])
+  if (length(layer_ids) > 0) {
+    relation[["layerIds"]] <- as.list(layer_ids)
+    if (is.null(relation[["layerId"]]) && length(layer_ids) == 1) relation[["layerId"]] <- layer_ids[[1]]
   }
-  if (!is.null(legend_id)) relation$legendId <- legend_id
-  explicit_legend_id <- r_manifest_scalar_field(obj, "legendId")
-  if (!is.null(explicit_legend_id)) relation$legendId <- explicit_legend_id
-  semantic_scope <- relation$subplotId %||% if (length(relation$subplotIds %||% list()) == 1) relation$subplotIds[[1]] else "figure"
+  group_ids <- r_manifest_string_values(obj[["groupIds"]])
+  if (length(group_ids) > 0) relation[["groupIds"]] <- as.list(group_ids)
+  if (!is.null(legend_id)) relation[["legendId"]] <- legend_id
+  for (key in c("legendId", "colorbarId", "mappableId", "annotationId", "arrowId", "textId")) {
+    relation <- r_manifest_relation_scalar(relation, key, obj[[key]])
+  }
+  mappable_ids <- r_manifest_string_values(obj[["mappableIds"]])
+  if (length(mappable_ids) > 0) relation[["mappableIds"]] <- as.list(mappable_ids)
+  semantic_scope <- relation[["subplotId"]] %||% if (length(relation[["subplotIds"]] %||% list()) == 1) relation[["subplotIds"]][[1]] else "figure"
   semantic_key <- paste(role, semantic_scope, sep = ":")
   if (grepl("^r\\.group\\.", id)) {
     semantic_key <- paste("ggplot_group", relation$aesthetic %||% "unknown", relation$groupKey %||% id, sep = ":")
-  } else if (grepl("^r\\.text\\.", id) && !is.null(relation$dataKey)) {
-    semantic_key <- paste("ggplot_text", relation$layerId %||% "layer", semantic_scope, relation$dataKey, sep = ":")
   } else if (grepl("^r\\.layer\\.", id)) {
-    semantic_key <- paste(role, "layer", obj$source$zorder %||% id, sep = ":")
+    semantic_key <- paste(role, "layer", relation$layerKey %||% obj$source$layerSignature %||% role, sep = ":")
+  } else if (kind == "subplot") {
+    semantic_key <- paste("ggplot_panel", relation$facetKey %||% "root", sep = ":")
+  } else if (grepl("^r\\.text\\.", id) && !is.null(relation$dataKey)) {
+    semantic_key <- paste("ggplot_text", relation$layerKey %||% "layer", relation$facetKey %||% "root", relation$dataKey, sep = ":")
+  } else if (!is.null(relation$dataKey) && role %in% c("legend_text", "xtick", "ytick")) {
+    semantic_key <- paste(role, relation$facetKey %||% "root", relation$dataKey, sep = ":")
   }
   identity <- list(
     semanticKey = semantic_key,
@@ -2687,11 +3359,46 @@ r_manifest_identity <- function(obj) {
     identity$seriesKey <- if (grepl("^r\\.group\\.", id)) {
       paste("r-series", relation$aesthetic %||% "unknown", relation$groupKey %||% id, sep = ":")
     } else {
-      paste("r-series", id, sep = ":")
+      paste("r-series", semantic_key, sep = ":")
     }
   }
   if (length(relation) > 0) identity$relation <- relation
   identity
+}
+
+r_structural_relation <- function(identity) {
+  relation <- identity$relation %||% list()
+  stable_fields <- c(
+    "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey",
+    "layerKey", "scaleKey", "guideKey"
+  )
+  relation[intersect(stable_fields, names(relation))]
+}
+
+r_manifest_stable_key <- function(obj, identity) {
+  paste(
+    "r",
+    as.character(obj$kind %||% "component"),
+    as.character(identity$semanticKey %||% obj$role %||% "object"),
+    as.character(identity$seriesKey %||% "singleton"),
+    sep = ":"
+  )
+}
+
+r_manifest_structural_fingerprint <- function(obj, identity, stable_key) {
+  structure <- list(
+    kind = as.character(obj$kind %||% "component"),
+    role = as.character(obj$role %||% obj$kind %||% "component"),
+    stableKey = stable_key,
+    semanticKey = identity$semanticKey %||% NULL,
+    seriesKey = identity$seriesKey %||% NULL,
+    coordinateSpace = identity$coordinateSpace %||% "none",
+    relation = r_structural_relation(identity),
+    artistClass = as.character(obj$source$artistClass %||% "unknown")
+  )
+  canonical <- jsonlite::toJSON(structure, auto_unbox = TRUE, null = "null", digits = NA)
+  encoded <- jsonlite::base64_enc(charToRaw(enc2utf8(canonical)))
+  paste0("r-v2:", gsub("[\\r\\n\\t ]+", "", encoded, perl = TRUE))
 }
 
 r_manifest_derived_effects <- function(prop) {
@@ -2710,8 +3417,8 @@ r_manifest_property_capabilities <- function(obj) {
   lapply(editable, function(prop) {
     scopes <- c("object")
     if (!is.null(obj$role) && !prop %in% c("position", "anchor_position")) scopes <- c(scopes, "group")
-    scale_scoped <- !is.null(relation$scaleId)
-    if (!scale_scoped && (!is.null(relation$subplotId) || length(relation$subplotIds %||% list()) > 0)) {
+    scale_scoped <- !is.null(relation[["scaleId"]])
+    if (!scale_scoped && (!is.null(relation[["subplotId"]]) || length(relation[["subplotIds"]] %||% list()) > 0)) {
       scopes <- c(scopes, "subplot")
     }
     if (!prop %in% c("position", "left", "bottom", "width", "height")) scopes <- c(scopes, "figure")
@@ -2719,13 +3426,13 @@ r_manifest_property_capabilities <- function(obj) {
     if (identical(as.character(obj$kind %||% ""), "subplot") && prop == "aspect") {
       scopes <- c("figure")
     }
-    row_identity_conditional <- grepl("^r\\.text\\.", as.character(obj$id %||% "")) && is.null(relation$dataKey)
+    row_identity_unsupported <- grepl("^r\\.text\\.", as.character(obj$id %||% "")) && is.null(relation$dataKey)
     capability <- list(
       prop = as.character(prop),
       patchMode = "backend_patch",
       scopes = as.list(unique(scopes)),
       preview = if (prop == "position") "approximate" else "none",
-      replay = if (prop == "position" || row_identity_conditional) "conditional" else "stable"
+      replay = if (row_identity_unsupported) "unsupported" else if (prop == "position") "conditional" else "stable"
     )
     if (prop == "position") {
       capability$coordinateSpace <- identity$coordinateSpace %||% "none"
@@ -2742,6 +3449,9 @@ r_manifest_property_capabilities <- function(obj) {
 
 attach_r_manifest_shadow_metadata <- function(obj) {
   obj$identity <- r_manifest_identity(obj)
+  obj$stableKey <- r_manifest_stable_key(obj, obj$identity)
+  obj$fingerprintVersion <- 2L
+  obj$fingerprint <- r_manifest_structural_fingerprint(obj, obj$identity, obj$stableKey)
   obj$colorbarId <- NULL
   obj$mappableId <- NULL
   obj$mappableIds <- NULL
@@ -2750,13 +3460,18 @@ attach_r_manifest_shadow_metadata <- function(obj) {
   obj$textId <- NULL
   obj$layerId <- NULL
   obj$layerIds <- NULL
+  obj$layerKey <- NULL
   obj$groupIds <- NULL
   obj$scaleId <- NULL
+  obj$scaleKey <- NULL
   obj$guideId <- NULL
+  obj$guideKey <- NULL
   obj$legendId <- NULL
   obj$aesthetic <- NULL
   obj$groupKey <- NULL
   obj$dataKey <- NULL
+  obj$facetKey <- NULL
+  obj$axisKey <- NULL
   obj$propertyCapabilities <- r_manifest_property_capabilities(obj)
   obj
 }
@@ -2789,6 +3504,167 @@ identity_manifest_value <- function(identity, field) {
   unwrap_manifest_value(identity[[field]])
 }
 
+r_identity_relation_value <- function(identity) {
+  relation <- identity_manifest_value(identity, "relation")
+  relation <- unwrap_manifest_value(relation)
+  if (is.data.frame(relation) && nrow(relation) == 1) return(as.list(relation[1, , drop = FALSE]))
+  if (!is.list(relation)) return(list())
+  relation
+}
+
+r_stable_relation_value <- function(identity) {
+  relation <- r_identity_relation_value(identity)
+  stable_fields <- c(
+    "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey",
+    "layerKey", "scaleKey", "guideKey"
+  )
+  relation[intersect(stable_fields, names(relation))]
+}
+
+r_normalize_structural_fingerprint <- function(value) {
+  fingerprint <- as.character(unwrap_manifest_value(value) %||% "")
+  if (!startsWith(fingerprint, "r-v2:")) return(fingerprint)
+  gsub("[\\r\\n\\t ]+", "", fingerprint, perl = TRUE)
+}
+
+r_identity_json_equal <- function(actual, expected) {
+  identical(
+    jsonlite::toJSON(unwrap_manifest_value(actual), auto_unbox = TRUE, null = "null", digits = NA),
+    jsonlite::toJSON(unwrap_manifest_value(expected), auto_unbox = TRUE, null = "null", digits = NA)
+  )
+}
+
+r_entry_identity_evidence <- function(entry) {
+  fingerprint_version <- suppressWarnings(as.integer(unwrap_manifest_value(entry$fingerprintVersion)))
+  evidence <- list()
+  if (present_manifest_value(entry$stableKey)) evidence$stableKey <- as.character(unwrap_manifest_value(entry$stableKey))
+  if (
+    length(fingerprint_version) == 1 && !is.na(fingerprint_version) && fingerprint_version == 2 &&
+    present_manifest_value(entry$fingerprint)
+  ) {
+    evidence$fingerprint <- as.character(unwrap_manifest_value(entry$fingerprint))
+  }
+  for (field in c("semanticKey", "seriesKey")) {
+    value <- identity_manifest_value(entry$identity, field)
+    if (present_manifest_value(value)) evidence[[field]] <- as.character(value)
+  }
+  relation <- r_stable_relation_value(entry$identity)
+  if (length(relation) > 0) evidence$relation <- relation
+  evidence
+}
+
+r_object_matches_identity_evidence <- function(object, evidence) {
+  if (!is.null(evidence$stableKey) && !identical(evidence$stableKey, as.character(object$stableKey %||% ""))) return(FALSE)
+  if (!is.null(evidence$fingerprint) && !identical(
+    r_normalize_structural_fingerprint(evidence$fingerprint),
+    r_normalize_structural_fingerprint(object$fingerprint)
+  )) return(FALSE)
+  if (!is.null(evidence$semanticKey) && !identical(evidence$semanticKey, as.character(identity_manifest_value(object$identity, "semanticKey") %||% ""))) return(FALSE)
+  if (!is.null(evidence$seriesKey) && !identical(evidence$seriesKey, as.character(identity_manifest_value(object$identity, "seriesKey") %||% ""))) return(FALSE)
+  if (!is.null(evidence$relation)) {
+    actual_relation <- r_stable_relation_value(object$identity)
+    for (field in names(evidence$relation)) {
+      if (!field %in% names(actual_relation) || !r_identity_json_equal(actual_relation[[field]], evidence$relation[[field]])) return(FALSE)
+    }
+  }
+  TRUE
+}
+
+resolve_r_edit_entries <- function(manifest, entries) {
+  objects <- manifest$objects %||% list()
+  object_by_id <- setNames(objects, vapply(objects, function(obj) as.character(obj$id %||% ""), character(1)))
+  accepted <- list()
+  rejected <- list()
+  warnings <- list()
+
+  reject_entry <- function(entry, patch_index, type, gid, prop, message, extra = list()) {
+    warnings[[length(warnings) + 1]] <<- c(list(
+      type = type,
+      gid = gid,
+      prop = prop,
+      patchIndex = patch_index,
+      message = message
+    ), extra)
+    rejected[[length(rejected) + 1]] <<- entry
+  }
+
+  for (index in seq_along(entries)) {
+    entry <- entries[[index]]
+    gid <- as.character(unwrap_manifest_value(entry$gid) %||% "")
+    prop <- as.character(unwrap_manifest_value(entry$prop) %||% "")
+    if (!nzchar(gid) || !nzchar(prop) || identical(gid, "global")) {
+      resolved <- entry
+      resolved[[".__requestedEntry"]] <- entry
+      resolved[[".__patchIndex"]] <- index - 1L
+      accepted[[length(accepted) + 1]] <- resolved
+      next
+    }
+
+    exact_object <- object_by_id[[gid]]
+    evidence <- r_entry_identity_evidence(entry)
+    if (length(evidence) == 0) {
+      legacy_axis_gid <- if (grepl("^axis\\.[xy]\\.[0-9]+$", gid)) {
+        sub("^axis\\.([xy])\\.[0-9]+$", "axis.\\1.0", gid)
+      } else {
+        NULL
+      }
+      if (is.null(exact_object) && !is.null(legacy_axis_gid)) {
+        exact_object <- object_by_id[[legacy_axis_gid]]
+      }
+      if (is.null(exact_object)) {
+        reject_entry(entry, index - 1L, "missing_gid", gid, prop, paste0("R manifest is missing gid ", gid, "."))
+        next
+      }
+      resolved <- entry
+      resolved[[".__requestedEntry"]] <- entry
+      resolved[[".__patchIndex"]] <- index - 1L
+      if (!identical(as.character(exact_object$id), gid)) {
+        resolved[[".__resolvedGid"]] <- as.character(exact_object$id)
+        resolved$gid <- as.character(exact_object$id)
+      }
+      accepted[[length(accepted) + 1]] <- resolved
+      next
+    }
+
+    candidates <- Filter(function(object) {
+      r_object_matches_identity_evidence(object, evidence)
+    }, objects)
+    if (length(candidates) == 0) {
+      reject_entry(
+        entry,
+        index - 1L,
+        "identity_mismatch",
+        gid,
+        prop,
+        paste0(gid, " identity does not uniquely match any current R manifest object."),
+        list(expected = evidence)
+      )
+      next
+    }
+    if (length(candidates) > 1) {
+      reject_entry(
+        entry,
+        index - 1L,
+        "ambiguous_identity",
+        gid,
+        prop,
+        paste0(gid, " identity matches multiple current R manifest objects."),
+        list(candidateGids = as.list(vapply(candidates, function(object) as.character(object$id), character(1))))
+      )
+      next
+    }
+
+    resolved <- entry
+    resolved[[".__requestedEntry"]] <- entry
+    resolved[[".__patchIndex"]] <- index - 1L
+    resolved[[".__resolvedGid"]] <- as.character(candidates[[1]]$id)
+    resolved$gid <- as.character(candidates[[1]]$id)
+    accepted[[length(accepted) + 1]] <- resolved
+  }
+
+  list(accepted = accepted, rejected = rejected, warnings = warnings)
+}
+
 manifest_values_equal <- function(prop, actual, expected) {
   actual <- unwrap_manifest_value(actual)
   expected <- unwrap_manifest_value(expected)
@@ -2809,12 +3685,12 @@ manifest_values_equal <- function(prop, actual, expected) {
   )
 }
 
-confirm_r_edit_entries <- function(manifest, entries) {
+confirm_r_edit_entries <- function(manifest, entries, resolution = list(rejected = list(), warnings = list())) {
   objects <- manifest$objects %||% list()
   object_by_id <- setNames(objects, vapply(objects, function(obj) as.character(obj$id %||% ""), character(1)))
   applied <- list()
-  rejected <- list()
-  warnings <- renderer_patch_warnings
+  rejected <- resolution$rejected %||% list()
+  warnings <- c(resolution$warnings %||% list(), renderer_patch_warnings)
 
   forced_warning_for <- function(gid, prop) {
     any(vapply(renderer_patch_warnings, function(item) {
@@ -2837,38 +3713,41 @@ confirm_r_edit_entries <- function(manifest, entries) {
 
   for (index in seq_along(entries)) {
     entry <- entries[[index]]
+    requested_entry <- entry[[".__requestedEntry"]] %||% entry
+    patch_index <- suppressWarnings(as.integer(entry[[".__patchIndex"]] %||% (index - 1L)))
     gid <- as.character(unwrap_manifest_value(entry$gid) %||% "")
+    requested_gid <- as.character(unwrap_manifest_value(requested_entry$gid) %||% gid)
     prop <- as.character(unwrap_manifest_value(entry$prop) %||% "")
     if (!nzchar(gid)) {
-      reject_entry(entry, index - 1, "missing_gid", gid, prop, "R patch is missing a gid.")
+      reject_entry(requested_entry, patch_index, "missing_gid", requested_gid, prop, "R patch is missing a gid.")
       next
     }
     if (!nzchar(prop)) {
-      reject_entry(entry, index - 1, "unsupported_prop", gid, prop, "R patch is missing a property name.")
+      reject_entry(requested_entry, patch_index, "unsupported_prop", requested_gid, prop, "R patch is missing a property name.")
       next
     }
     if (forced_warning_for(gid, prop)) {
-      rejected[[length(rejected) + 1]] <- entry
+      rejected[[length(rejected) + 1]] <- requested_entry
       next
     }
 
     if (identical(gid, "global")) {
       field <- manifest$globals[[prop]]
       if (is.null(field)) {
-        reject_entry(entry, index - 1, "unsupported_prop", gid, prop, paste0("R global property is not declared: ", prop, "."))
+        reject_entry(requested_entry, patch_index, "unsupported_prop", requested_gid, prop, paste0("R global property is not declared: ", prop, "."))
         next
       }
       if (!manifest_values_equal(prop, field$value, entry$value)) {
-        reject_entry(entry, index - 1, "no_setter", gid, prop, paste0("R renderer did not confirm ", gid, ".", prop, "."))
+        reject_entry(requested_entry, patch_index, "no_setter", requested_gid, prop, paste0("R renderer did not confirm ", requested_gid, ".", prop, "."))
         next
       }
-      applied[[length(applied) + 1]] <- entry
+      applied[[length(applied) + 1]] <- requested_entry
       next
     }
 
     object <- object_by_id[[gid]]
     if (is.null(object)) {
-      reject_entry(entry, index - 1, "missing_gid", gid, prop, paste0("R manifest is missing gid ", gid, "."))
+      reject_entry(requested_entry, patch_index, "missing_gid", requested_gid, prop, paste0("R manifest is missing gid ", gid, "."))
       next
     }
     editable <- as.character(unlist(object$editable %||% list(), use.names = FALSE))
@@ -2878,13 +3757,13 @@ confirm_r_edit_entries <- function(manifest, entries) {
         !identical(as.character(capability$replay %||% ""), "unsupported")
     }, logical(1)))
     if (!supported) {
-      reject_entry(entry, index - 1, "unsupported_prop", gid, prop, paste0(gid, ".", prop, " is not replayable in the R manifest."))
+      reject_entry(requested_entry, patch_index, "unsupported_prop", requested_gid, prop, paste0(gid, ".", prop, " is not replayable in the R manifest."))
       next
     }
 
     entry_stable_key <- unwrap_manifest_value(entry$stableKey)
     if (present_manifest_value(entry_stable_key) && !identical(as.character(entry_stable_key), as.character(object$stableKey %||% ""))) {
-      reject_entry(entry, index - 1, "identity_mismatch", gid, prop, paste0(gid, " stableKey does not match the R manifest object."), list(field = "stableKey"))
+      reject_entry(requested_entry, patch_index, "identity_mismatch", requested_gid, prop, paste0(gid, " stableKey does not match the R manifest object."), list(field = "stableKey"))
       next
     }
     entry_fingerprint_version <- suppressWarnings(as.integer(unwrap_manifest_value(entry$fingerprintVersion)))
@@ -2892,27 +3771,34 @@ confirm_r_edit_entries <- function(manifest, entries) {
       length(entry_fingerprint_version) == 1 && !is.na(entry_fingerprint_version) && entry_fingerprint_version == 2 &&
       identical(as.integer(object$fingerprintVersion %||% 0), 2) &&
       present_manifest_value(entry$fingerprint) &&
-      !identical(as.character(unwrap_manifest_value(entry$fingerprint)), as.character(object$fingerprint %||% ""))
+      !identical(
+        r_normalize_structural_fingerprint(entry$fingerprint),
+        r_normalize_structural_fingerprint(object$fingerprint)
+      )
     ) {
-      reject_entry(entry, index - 1, "identity_mismatch", gid, prop, paste0(gid, " fingerprint does not match the R manifest object."), list(field = "fingerprint"))
+      reject_entry(requested_entry, patch_index, "identity_mismatch", requested_gid, prop, paste0(gid, " fingerprint does not match the R manifest object."), list(field = "fingerprint"))
       next
     }
+    identity_rejected <- FALSE
     for (identity_field in c("semanticKey", "seriesKey")) {
       expected_identity <- identity_manifest_value(object$identity, identity_field)
       actual_identity <- identity_manifest_value(entry$identity, identity_field)
       if (present_manifest_value(actual_identity) && !identical(as.character(actual_identity), as.character(expected_identity %||% ""))) {
-        reject_entry(entry, index - 1, "identity_mismatch", gid, prop, paste0(gid, " identity.", identity_field, " does not match the R manifest object."), list(field = paste0("identity.", identity_field)))
+        reject_entry(requested_entry, patch_index, "identity_mismatch", requested_gid, prop, paste0(gid, " identity.", identity_field, " does not match the R manifest object."), list(field = paste0("identity.", identity_field)))
+        identity_rejected <- TRUE
         break
       }
     }
-    if (length(rejected) > 0 && identical(rejected[[length(rejected)]], entry)) next
+    if (identity_rejected) next
 
     current_value <- object$currentProps[[prop]]
     if (!manifest_values_equal(prop, current_value, entry$value)) {
-      reject_entry(entry, index - 1, "no_setter", gid, prop, paste0("R renderer did not confirm ", gid, ".", prop, "."))
+      reject_entry(requested_entry, patch_index, "no_setter", requested_gid, prop, paste0("R renderer did not confirm ", gid, ".", prop, "."))
       next
     }
-    applied[[length(applied) + 1]] <- entry
+    acknowledgement <- requested_entry
+    if (!identical(requested_gid, gid)) acknowledgement$resolvedGid <- gid
+    applied[[length(applied) + 1]] <- acknowledgement
   }
 
   list(
@@ -2959,6 +3845,18 @@ build_ggplot_manifest <- function(plot_obj, svg = "") {
   grid_width <- latest_numeric("grid.0", "linewidth", 0.5)
   grid_style_str <- latest_string("grid.0", "linestyle", "solid")
   grid_alpha <- latest_numeric("grid.0", "alpha", 1.0)
+  discrete_catalog <- discrete_scale_catalog(plot_obj)
+  discrete_guide_keys <- sort(unique(vapply(
+    discrete_catalog$entries,
+    function(entry) as.character(entry$guideKey %||% ""),
+    character(1)
+  )))
+  discrete_guide_keys <- discrete_guide_keys[nzchar(discrete_guide_keys)]
+  legend_guide_key <- if (length(discrete_guide_keys) > 0) {
+    paste(discrete_guide_keys, collapse = "|")
+  } else {
+    "ggplot-guide:discrete"
+  }
 
   objects <- list(
     manifest_text_object("title.0", "figure_title", title_text, title_style),
@@ -2992,6 +3890,7 @@ build_ggplot_manifest <- function(plot_obj, svg = "") {
         alpha = legend_alpha
       ),
       role = "legend",
+      guideKey = legend_guide_key,
       source = list(artistClass = "ggplot_legend", axesIndex = 0)
     ),
     list(
@@ -3034,11 +3933,12 @@ build_ggplot_manifest <- function(plot_obj, svg = "") {
   objects[[length(objects) + 1]] <- manifest_spine_object("spine.left.0", "left")
   objects[[length(objects) + 1]] <- manifest_spine_object("spine.top.0", "top")
   objects[[length(objects) + 1]] <- manifest_spine_object("spine.right.0", "right")
-  objects <- c(objects, manifest_legend_text_objects(plot_obj, legend_title, legend_style))
+  objects <- c(objects, manifest_legend_text_objects(plot_obj, legend_title, legend_style, legend_guide_key))
   
   # Inject individual xtick and ytick objects into objects list
   built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
   if (!is.null(built) && !is.null(built$layout) && !is.null(built$layout$panel_params)) {
+    panel_keys <- facet_panel_key_map(plot_obj)
     get_axis_labels <- function(axis_param) {
       labels <- NULL
       if (is.list(axis_param) || is.environment(axis_param)) {
@@ -3080,6 +3980,9 @@ build_ggplot_manifest <- function(plot_obj, svg = "") {
               rotation = latest_numeric(id, "rotation", x_tick_style$rotation)
             ),
             role = "xtick",
+            dataKey = paste0("x:", x_labels[[i]]),
+            facetKey = panel_keys[[as.character(p_idx)]] %||% "root",
+            axisKey = "x",
             source = list(artistClass = "ggplot_tick_label", axesIndex = p_idx - 1)
           )
         }
@@ -3104,6 +4007,9 @@ build_ggplot_manifest <- function(plot_obj, svg = "") {
               rotation = latest_numeric(id, "rotation", y_tick_style$rotation)
             ),
             role = "ytick",
+            dataKey = paste0("y:", y_labels[[i]]),
+            facetKey = panel_keys[[as.character(p_idx)]] %||% "root",
+            axisKey = "y",
             source = list(artistClass = "ggplot_tick_label", axesIndex = p_idx - 1)
           )
         }
@@ -3112,7 +4018,10 @@ build_ggplot_manifest <- function(plot_obj, svg = "") {
   }
 
   if (length(plot_obj$layers) > 0) {
-    layer_objects <- lapply(seq_along(plot_obj$layers), function(i) manifest_layer_object(plot_obj$layers[[i]], i))
+    layer_objects <- lapply(
+      seq_along(plot_obj$layers),
+      function(i) manifest_layer_object(plot_obj$layers[[i]], i, plot_obj$mapping)
+    )
     objects <- c(objects, layer_objects)
   }
   text_layer_objects <- manifest_text_layer_objects(plot_obj)
@@ -3319,6 +4228,10 @@ result <- tryCatch({
     setwd(payload$cwd)
   }
   on.exit(setwd(oldwd), add = TRUE)
+  runtime_inventory$workingDirectory <- safe_runtime_path(getwd())
+  runtime_inventory$temporaryDirectory <- safe_runtime_path(tempdir())
+  runtime_inventory$timezone <- safe_runtime_string(Sys.timezone())
+  runtime_inventory$environment <- runtime_environment_contract()
 
   if (requireNamespace("svglite", quietly = TRUE)) {
     svglite::svglite(file = tmp_svg, width = width, height = height)
@@ -3337,6 +4250,14 @@ result <- tryCatch({
       if (exists(name, envir = env, inherits = FALSE)) {
         obj <- get(name, envir = env)
         if (inherits(obj, "ggplot")) {
+          source_entries <- edit_entries
+          source_patch_warnings <- renderer_patch_warnings
+          edit_entries <- list()
+          baseline_manifest <- build_ggplot_manifest(obj, "")
+          edit_entries <- source_entries
+          renderer_patch_warnings <- source_patch_warnings
+          r_edit_resolution <- resolve_r_edit_entries(baseline_manifest, source_entries)
+          edit_entries <- r_edit_resolution$accepted
           obj <- apply_ggplot_edits(obj)
           assign(name, obj, envir = env)
           print(obj)
@@ -3346,6 +4267,7 @@ result <- tryCatch({
     }
   }, warning = function(w) {
     warnings_collected <<- c(warnings_collected, conditionMessage(w))
+    add_runtime_warning_diagnostic(w)
     invokeRestart("muffleWarning")
   })
   timing_breakdown$scriptExecutionMs <- max(0, round(monotonic_ms() - script_execution_started_ms))
@@ -3406,7 +4328,7 @@ result <- tryCatch({
   }
   timing_breakdown$svgPostprocessMs <- max(0, round(monotonic_ms() - svg_postprocess_started_ms))
   timing_breakdown$totalMs <- max(0, round(monotonic_ms() - render_started_ms))
-  patch_confirmation <- confirm_r_edit_entries(manifest, edit_entries)
+  patch_confirmation <- confirm_r_edit_entries(manifest, edit_entries, r_edit_resolution)
 
   list(
     status = "success",
@@ -3417,6 +4339,9 @@ result <- tryCatch({
     skipped = patch_confirmation$skipped,
     conflict = patch_confirmation$conflict,
     warnings = c(as.list(warnings_collected), patch_confirmation$warnings),
+    diagnostic = if (length(runtime_warning_diagnostics) > 0) runtime_warning_diagnostics[[1]] else NULL,
+    warningDiagnostics = runtime_warning_diagnostics,
+    runtimeInventory = runtime_inventory,
     timingMs = timing_breakdown$totalMs,
     timingBreakdown = timing_breakdown
   )
@@ -3426,11 +4351,14 @@ result <- tryCatch({
     status = "error",
     message = paste("R script failed:", conditionMessage(e)),
     traceback = paste(utils::capture.output(traceback()), collapse = "\n"),
+    diagnostic = runtime_diagnostic(e, payload),
+    warningDiagnostics = runtime_warning_diagnostics,
+    runtimeInventory = runtime_inventory,
     timingMs = timing_breakdown$totalMs,
     timingBreakdown = timing_breakdown
   )
 })
 
 try(unlink(tmp_svg), silent = TRUE)
-cat(jsonlite::toJSON(result, auto_unbox = TRUE, null = "null", digits = NA))
+emit_json(result)
 quit(status = 0, save = "no", runLast = FALSE)

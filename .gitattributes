@@ -4,3 +4,5 @@ Dockerfile* text eol=lf
 ops/env/*.example text eol=lf
 ops/nginx/*.template text eol=lf
 ops/systemd/*.service text eol=lf
+requirements.renderer.lock text eol=lf
+renderer/r_renderer.R text eol=lf

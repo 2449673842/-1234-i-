@@ -6,6 +6,8 @@
 > 产品行为：未修改 R renderer、前端协议、数据库 schema 或运行服务  
 > 部署状态：未推送、未部署
 
+> 后续状态（2026-07-22 09:24:42 +08:00）：R-WP2 当前完整 renderer 为 51/51，已关闭本文件冻结的 ordinal group 漂移 `expectedFailure`，并补齐 layer subset、无键文本和 guide identity 漂移门禁。旧 fixture 继续原样保留；本文件仍作为升级前基线，不改写历史测试数量。
+
 ## 1. 兼容合同
 
 R 后续升级必须同时保护新能力和旧项目，不能把“当前新 fixture 可编辑”当成兼容证据。

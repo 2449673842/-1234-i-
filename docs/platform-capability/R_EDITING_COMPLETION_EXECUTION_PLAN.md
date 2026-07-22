@@ -1,8 +1,8 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0、R-WP1 本地候选完成；R-WP2 待开始
-> 最后修改时间：2026-07-21 23:13:21 +08:00
-> 当前部署状态：R-WP0/R-WP1 仅在本地完成并验证；未推送、未部署
+> 状态：R-WP0、R-WP1、R-WP2、R-WP3 本地候选完成；下一工作包为 R-WP4
+> 最后修改时间：2026-07-22 20:34:28 +08:00
+> 当前部署状态：R-WP0-R-WP3 仅在本地完成并验证；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 现状入口：`docs/R_COMPATIBILITY_PLAN.md`
 > 适用范围：R/ggplot2 渲染、语义图元、对象身份、patch 写回、Draft、历史、导出、复杂坐标、网络图/路径图/SEM 与生产一致性
@@ -54,20 +54,19 @@ R script + uploaded data
 | heatmap、连续 scale、colorbar | 基础可用 | R colorbar 物理位置和尺寸弱于 Matplotlib |
 | ggplot 文本标注选择和拖拽 | 已具备 | 只在可逆坐标和可证明身份下开放 |
 | `coord_flip`、X/Y log、圆内 polar | 已具备受控写回 | 圆外 polar 和未验证复杂坐标继续拒绝 |
-| 稳定数据键文本身份 | 已具备 | 无稳定键时仍是 conditional 身份 |
+| 文本身份 | 已具备受控 replay | 显式键或唯一 `panel+x+y+label` 派生键可稳定重放；重复且无法唯一识别的无键文本为 unsupported；位置仍按坐标能力单独判定 |
 | base R 图 | 可预览和导出 | 当前不提供 artist 级编辑 |
 
 最近阶段证据记录包括 R renderer 31/31、Python/R capability matrix、R semantic smoke、扩展拖拽、导出和生产构建。该证据是既有基线，不代表本计划中的新增能力已经实现；每个新工作包完成后必须重新取得新鲜证据。
 
-### 2.2 尚未完成的核心问题
+### 2.2 R-WP0-WP3 关闭后的剩余核心问题
 
-1. R 尚未完整对齐 Python 已建立的 patch 冲突零持久化、服务端能力权威和结构化 applied/skipped/conflict 合同。
-2. 当前 `fingerprintVersion=2` 主要落在 Python introspector，R 的 layer/group/panel/scale/guide/text 仍需独立的版本化结构身份方案。
-3. 本地可运行不等于服务器可重复运行；R 版本、包版本、字体、locale、图形设备和文件解析差异仍可能导致编译或视觉不一致。
-4. facet、guide、colorbar、boxplot、ribbon、contour、segment/curve 等对象的细粒度不统一。
-5. `ggrepel`、`ggnewscale`、`coord_sf`、第三方 grob 和 base R 没有专用 adapter。
-6. 网络图、路径图和 SEM 尚未形成 node/edge/arrow/coefficient/label 的专用语义协议。
-7. R 多 Figure、复杂项目回归、性能分段指标和用户可见能力报告仍不完整。
+R-WP1 已关闭服务端 patch 权威、结构化 acknowledgement 和失败批次零持久化；R-WP2 已关闭 layer/group/panel/scale/guide/tick/text 的结构 fingerprint v2 与旧无版本兼容；R-WP3 已固定生产候选 R/包/字体/locale/设备事实，并证明本地、直接 Docker 与 Web/API Docker 的关键语义 parity。剩余问题为：
+
+1. facet、guide、colorbar、boxplot、ribbon、contour、segment/curve 等对象的细粒度不统一。
+2. `ggrepel`、`ggnewscale`、`coord_sf`、第三方 grob 和 base R 没有专用 adapter。
+3. 网络图、路径图和 SEM 尚未形成 node/edge/arrow/coefficient/label 的专用语义协议。
+4. R 多 Figure、复杂项目回归、性能分段指标和用户可见能力报告仍不完整。
 
 ### 2.3 与当前 Python 专项的关系
 
@@ -75,9 +74,13 @@ standalone Python patch 的客户端 mode 绕过已经修复：无 `projectId/pr
 
 Python 专项修改共享协议时，R renderer、R semantic smoke 和导出回归仍是强制门禁；R 专项修改共享协议时，同样必须回归 Python，不允许以“只改 R”为理由跳过 Python 基线。
 
-2026-07-21 的 R-WP0 已冻结 15 个合成 capability fixture 和一份无 fingerprint 版本的静态旧 identity/editLog fixture。当前新鲜证据为 R renderer 32 个正向测试通过，另有 1 个“ordinal GID 相同但分组语义已变化”的明确 `expectedFailure`；该失败是 R-WP2 必须关闭的兼容阻断项。Python/R capability matrix 2/2、R semantic 浏览器 6/6（含 SVG 导出状态）、R 安全预检和数据审计 0 issue。详细清单见 `R_WP0_BASELINE_EVIDENCE.md`。该结论只完成 Baseline，不代表 R-WP1 至 R-WP10 已实现。
+2026-07-21 的 R-WP0 冻结了 15 个合成 capability fixture 和一份无 fingerprint 版本的静态旧 identity/editLog fixture。当时证据为 R renderer 32 个正向测试通过，另有 1 个 ordinal group 漂移 `expectedFailure`；该历史失败现已由 R-WP2 关闭，但 fixture 继续作为升级前证据保留。详细清单见 `R_WP0_BASELINE_EVIDENCE.md`。
 
-2026-07-21 的 R-WP1 已完成服务端 mode 权威、R renderer 结构化 acknowledgement、失败批次零持久化、项目 Figure 预览原子更新以及项目级 R 导出/快照路由修复。`test:r-patch-authority` 使用随机非 3000 端口和临时 data/DB，证明合法伪报 local 会转为 backend，missing/unsupported/identity mismatch 和 mixed failure 会整批拒绝，且既有导出资产与快照不变。R renderer 32 个正向测试和 R 浏览器 6/6 继续通过；一个 group ordinal 漂移仍是 R-WP2 的明确 expected failure。详细证据见 `R_WP1_PATCH_AUTHORITY_EVIDENCE.md`。
+2026-07-21 的 R-WP1 完成服务端 mode 权威、R renderer 结构化 acknowledgement、失败批次零持久化、项目 Figure 预览原子更新以及项目级 R 导出/快照路由修复。当时保留的 group ordinal 漂移已在 R-WP2 关闭；WP1 历史测试数量不回写，当前状态覆盖见下一段和 `R_WP2_IDENTITY_V2_EVIDENCE.md`。
+
+2026-07-22 的 R-WP2 已为 layer、group、panel/facet、scale、guide、tick 和 text 输出纯结构 `fingerprintVersion=2`，并为旧无版本 manifest/editLog 建立唯一候选兼容核验。layer 数据作用域包含规范数据内容摘要；guide identity 隔离标题和类型；唯一派生键文本可稳定重放，重复无键文本保持 unsupported。API 返回 renderer `resolvedGid`，但持久化 editLog 不包含该响应辅助字段。样式变化不改变 fingerprint；layer 插入、factor/facet/guide 重排可按结构键重映射；missing、结构漂移和多候选在应用前拒绝。完整 R renderer 当前为 51/51，项目刷新、导出和快照恢复由隔离 API smoke 证明。详细证据见 `R_WP2_IDENTITY_V2_EVIDENCE.md`。
+
+2026-07-22 的 R-WP3 已固定生产候选 Docker/Web 的 R 4.5.0、ggplot2 3.5.1、关键包、字体、locale、svglite 和组合镜像依赖；本地 Rscript 使用绝对路径、`--vanilla` 与每请求隔离目录。37 个关键语义对象在本地、直接 Docker 和 Web/API Docker 路径一致；不同目录下同名数据文件保持隔离。镜像构建与服务端请求同时核对 R renderer 源码 SHA，陈旧镜像结构化拒绝；完整 Python 传递依赖使用哈希锁。详细证据见 `R_WP3_RUNTIME_PARITY_EVIDENCE.md`。
 
 ## 3. 执行原则
 
@@ -316,6 +319,12 @@ legend/guide 增删和重排
 **回滚单位**
 
 - R runtime preflight、诊断和容器依赖清单；不改变编辑协议。
+
+**完成证据（2026-07-22）**
+
+- `test:r-runtime-parity` 证明本地、直接 Docker、Web/API Docker 的 37 个关键语义对象和 SVG 根几何一致，并覆盖同名文件隔离、stale image 拒绝和容器清理。
+- R renderer 54/54、runtime diagnostics 6/6、runtime consistency、identity v2 compatibility、镜像合同、lint 和 diff-check 通过。
+- 修复后独立复审 APPROVE，0 HIGH/MEDIUM；当前未推送、未部署。完整记录见 `R_WP3_RUNTIME_PARITY_EVIDENCE.md`。
 
 ### R-WP4：常用 ggplot2 图元家族精细化
 

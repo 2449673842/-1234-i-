@@ -19,6 +19,8 @@ import {
   specialAxesRelationSignature,
 } from './src/utils/specialAxesIdentity';
 import { blockingRRisks, scanRScriptRisks, type RRiskFinding } from './src/utils/rRiskScanner';
+import { scanRScriptDeterminism } from './src/utils/rDeterminismScanner';
+import { createUtf8StreamCollector } from './src/utils/utf8StreamCollector';
 import { planCompositionLayout } from './src/utils/compositionPlanner';
 import multer from 'multer';
 import fs from 'fs';
@@ -171,11 +173,19 @@ async function startServer() {
     const layoutSource = source?.layoutWarnings
       ?? direct?.layoutWarnings
       ?? stored?.layoutWarnings;
+    const warningDiagnosticsSource = source?.warningDiagnostics
+      ?? direct?.warningDiagnostics
+      ?? stored?.warningDiagnostics;
+    const runtimeInventorySource = source?.runtimeInventory
+      ?? direct?.runtimeInventory
+      ?? stored?.runtimeInventory;
     const layoutDiagnosticsSource = source?.timingBreakdown?.layoutDiagnosticsMs
       ?? direct?.layoutDiagnosticsMs
       ?? stored?.layoutDiagnosticsMs;
     const hasDiagnostics = Array.isArray(determinismSource)
       || Array.isArray(layoutSource)
+      || Array.isArray(warningDiagnosticsSource)
+      || Boolean(runtimeInventorySource && typeof runtimeInventorySource === 'object' && !Array.isArray(runtimeInventorySource))
       || Number.isFinite(Number(layoutDiagnosticsSource));
     if (!hasDiagnostics) return undefined;
 
@@ -183,6 +193,12 @@ async function startServer() {
     return {
       determinismWarnings: normalizeDiagnosticWarnings(determinismSource),
       layoutWarnings: normalizeDiagnosticWarnings(layoutSource),
+      ...(Array.isArray(warningDiagnosticsSource)
+        ? { warningDiagnostics: normalizeDiagnosticWarnings(warningDiagnosticsSource) }
+        : {}),
+      ...(runtimeInventorySource && typeof runtimeInventorySource === 'object' && !Array.isArray(runtimeInventorySource)
+        ? { runtimeInventory: runtimeInventorySource }
+        : {}),
       ...(Number.isFinite(layoutDiagnosticsMs)
         ? { layoutDiagnosticsMs: Math.max(0, Math.round(layoutDiagnosticsMs)) }
         : {}),
@@ -203,6 +219,25 @@ async function startServer() {
         ? figure.layoutWarnings
         : Array.isArray(storedLayoutWarnings) ? storedLayoutWarnings : [],
     };
+  }
+
+  function renderRuntimeFieldsFrom(source: any, manifest?: any): Record<string, unknown> {
+    const fields: Record<string, unknown> = {};
+    for (const key of [
+      'determinismWarnings',
+      'layoutWarnings',
+      'warningDiagnostics',
+      'runtimeInventory',
+      'diagnostic',
+      'timingMs',
+      'timingBreakdown',
+      'performance',
+    ]) {
+      if (source?.[key] !== undefined) fields[key] = source[key];
+    }
+    const diagnostics = renderDiagnosticsFrom(source, manifest);
+    if (diagnostics) fields.diagnostics = diagnostics;
+    return fields;
   }
 
   function getCachedRender(cacheKey: string) {
@@ -788,7 +823,7 @@ async function startServer() {
     const prepared: Record<string, string> = {};
     Object.entries(paths).forEach(([key, value]) => {
       const source = resolveAllowedRendererFile(value, safeCwd);
-      if (source) prepared[key] = path.basename(source);
+      if (source) prepared[key] = path.relative(safeCwd, source).replace(/\\/g, '/');
     });
     return prepared;
   }
@@ -2361,21 +2396,64 @@ ${inner}
     return /^win/.test(process.platform) ? 'python' : 'python3';
   }
 
-  function resolveRscriptBin(): string {
-    return process.env.RSCRIPT_BIN || process.env.R_BIN || 'Rscript';
+  let cachedRscriptBin: string | null = null;
+
+  function resolveExecutablePath(executableBin: string): string {
+    const candidate = String(executableBin || '').trim();
+    if (!candidate) return candidate;
+    if (path.isAbsolute(candidate) || candidate.includes('/') || candidate.includes('\\')) {
+      return fs.existsSync(candidate) ? path.resolve(candidate) : candidate;
+    }
+    const locator = process.platform === 'win32' ? 'where.exe' : 'which';
+    const located = spawnSync(locator, [candidate], {
+      encoding: 'utf-8',
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+      windowsHide: true,
+    });
+    const firstMatch = String(located.stdout || '')
+      .split(/\r?\n/)
+      .map(value => value.trim())
+      .find(Boolean);
+    return firstMatch || candidate;
   }
 
-  function buildProcessEnvForBin(executableBin: string): NodeJS.ProcessEnv {
-    const rendererTmp = path.join(os.tmpdir(), 'scifigure-renderer');
+  function resolveRscriptBin(): string {
+    if (cachedRscriptBin) return cachedRscriptBin;
+    const configured = process.env.RSCRIPT_BIN || process.env.R_BIN;
+    const condaRscript = 'C:\\Users\\SZC\\.conda\\envs\\Machine-learning\\Scripts\\Rscript.exe';
+    const candidate = configured
+      || (process.platform === 'win32' && fs.existsSync(condaRscript) ? condaRscript : 'Rscript');
+    cachedRscriptBin = resolveExecutablePath(candidate);
+    return cachedRscriptBin;
+  }
+
+  type RendererProcessEnvOptions = {
+    runtime?: 'python' | 'r' | 'docker';
+    runtimeTmp?: string;
+  };
+
+  function buildProcessEnvForBin(
+    executableBin: string,
+    options: RendererProcessEnvOptions = {},
+  ): NodeJS.ProcessEnv {
+    const rendererTmp = options.runtimeTmp || path.join(os.tmpdir(), 'scifigure-renderer');
+    const processTmp = options.runtimeTmp ? path.join(rendererTmp, 'tmp') : os.tmpdir();
+    const cacheDir = path.join(rendererTmp, 'cache');
     const mplConfigDir = path.join(rendererTmp, 'matplotlib');
+    fs.mkdirSync(processTmp, { recursive: true });
+    fs.mkdirSync(cacheDir, { recursive: true });
     fs.mkdirSync(mplConfigDir, { recursive: true });
     const env: NodeJS.ProcessEnv = {
       PATH: process.env.PATH || '',
       HOME: rendererTmp,
       USERPROFILE: rendererTmp,
-      TMPDIR: rendererTmp,
-      TMP: os.tmpdir(),
-      TEMP: os.tmpdir(),
+      R_USER: rendererTmp,
+      TMPDIR: processTmp,
+      TMP: processTmp,
+      TEMP: processTmp,
+      XDG_CACHE_HOME: cacheDir,
       MPLBACKEND: 'Agg',
       MPLCONFIGDIR: mplConfigDir,
       PYTHONIOENCODING: 'utf-8',
@@ -2386,9 +2464,24 @@ ${inner}
         if (process.env[key]) env[key] = process.env[key];
       });
     }
-    (['SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT', 'LANG', 'LC_ALL', 'R_HOME', 'R_LIBS_USER'] as const).forEach((key) => {
+    (['SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT', 'R_HOME', 'R_LIBS_USER'] as const).forEach((key) => {
       if (process.env[key]) env[key] = process.env[key];
     });
+    if (options.runtime === 'r') {
+      env.TZ = 'UTC';
+      env.LC_COLLATE = 'C';
+      env.SCIFIGURE_RSCRIPT_BIN = resolveExecutablePath(executableBin);
+      if (process.platform === 'win32') {
+        if (process.env.LANG) env.LANG = process.env.LANG;
+        if (process.env.LC_ALL) env.LC_ALL = process.env.LC_ALL;
+      } else {
+        env.LANG = 'C.UTF-8';
+        env.LC_ALL = 'C.UTF-8';
+      }
+    } else {
+      if (process.env.LANG) env.LANG = process.env.LANG;
+      if (process.env.LC_ALL) env.LC_ALL = process.env.LC_ALL;
+    }
     const normalizedBin = path.normalize(executableBin);
     const scriptsDir = path.basename(path.dirname(normalizedBin)).toLowerCase() === 'scripts'
       ? path.dirname(normalizedBin)
@@ -2557,22 +2650,128 @@ ${inner}
     return normalized;
   }
 
-  function copyAllowedRendererFiles(payload: any, filesDir: string): any {
+  function shouldBridgeDelimitedFileForR(filePath: string): boolean {
+    return /\.(csv|tsv|txt)$/i.test(filePath);
+  }
+
+  function writeRDelimitedSidecar(source: string, outputDir: string, mirroredName: string): string | null {
+    try {
+      const content = fs.readFileSync(source, 'utf-8');
+      const isTsv = /\.tsv$/i.test(source);
+      const parsed = Papa.parse<Record<string, unknown>>(content, {
+        header: true,
+        skipEmptyLines: true,
+        dynamicTyping: true,
+        delimiter: isTsv ? '\t' : undefined,
+        transformHeader: (header) => String(header || '').replace(/^\uFEFF/, '').trim(),
+      });
+      if (parsed.errors?.some((error) => error.type === 'Delimiter' || error.type === 'Quotes')) return null;
+      const columns = (parsed.meta.fields || []).map((field) => String(field));
+      if (!columns.length) return null;
+      const sidecarName = `${path.basename(mirroredName)}.scifigure-table.json`;
+      fs.writeFileSync(path.join(outputDir, sidecarName), JSON.stringify({
+        columns,
+        rows: parsed.data,
+      }), 'utf-8');
+      return sidecarName;
+    } catch {
+      return null;
+    }
+  }
+
+  type RendererImageContractError = Error & {
+    diagnosticType?: string;
+    diagnosticDetails?: Record<string, unknown>;
+  };
+
+  const verifiedRRendererImages = new Set<string>();
+
+  function rendererImageContractError(
+    type: string,
+    message: string,
+    details: Record<string, unknown>,
+  ): RendererImageContractError {
+    const error = new Error(message) as RendererImageContractError;
+    error.diagnosticType = type;
+    error.diagnosticDetails = details;
+    return error;
+  }
+
+  function expectedRRendererSourceSha(): string {
+    const configured = String(process.env.SCIFIGURE_R_RENDERER_EXPECTED_SHA256 || '').trim().toLowerCase();
+    if (configured) {
+      if (!/^[a-f0-9]{64}$/.test(configured)) {
+        throw rendererImageContractError(
+          'renderer_image_contract_invalid',
+          'SCIFIGURE_R_RENDERER_EXPECTED_SHA256 must be a lowercase 64-character SHA-256 value.',
+          { configuredValueLength: configured.length },
+        );
+      }
+      return configured;
+    }
+    const rendererPath = path.join(process.cwd(), 'renderer', 'r_renderer.R');
+    if (!fs.existsSync(rendererPath) || !fs.statSync(rendererPath).isFile()) {
+      throw rendererImageContractError(
+        'renderer_image_contract_invalid',
+        'Cannot verify the R renderer image because renderer/r_renderer.R is unavailable.',
+        {},
+      );
+    }
+    return crypto.createHash('sha256').update(fs.readFileSync(rendererPath)).digest('hex');
+  }
+
+  function verifyRRendererImageSource(image: string): void {
+    const expectedSha = expectedRRendererSourceSha();
+    const cacheKey = `${image}\u0000${expectedSha}`;
+    if (verifiedRRendererImages.has(cacheKey)) return;
+
+    const inspected = spawnSync('docker', [
+      'image', 'inspect', image,
+      '--format', '{{ index .Config.Labels "org.scifigure.renderer.r-source-sha256" }}',
+    ], {
+      encoding: 'utf-8',
+      env: buildProcessEnvForBin('docker'),
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    if (inspected.status !== 0) {
+      throw rendererImageContractError(
+        'renderer_image_unavailable',
+        `Cannot inspect the configured renderer image: ${image}.`,
+        { image, stderr: String(inspected.stderr || '').trim().slice(0, 600) },
+      );
+    }
+    const actualSha = String(inspected.stdout || '').trim().toLowerCase();
+    if (actualSha !== expectedSha) {
+      throw rendererImageContractError(
+        'renderer_image_stale',
+        `Configured renderer image ${image} does not match the current R renderer source.`,
+        { image, expectedSha, actualSha: actualSha || null },
+      );
+    }
+    verifiedRRendererImages.add(cacheKey);
+  }
+
+  function copyAllowedRendererFiles(payload: any, filesDir: string, runtime: 'python' | 'r' = 'python'): any {
     const nextPayload = { ...(payload || {}) };
     const uploadedPaths = nextPayload.uploaded_file_paths;
     const sourceCwd = typeof nextPayload.cwd === 'string' ? nextPayload.cwd : undefined;
     if (!uploadedPaths || typeof uploadedPaths !== 'object') {
+      if (runtime === 'r') nextPayload.csv_json_paths = {};
       delete nextPayload.cwd;
       return nextPayload;
     }
     const safeCwd = resolveSafeRendererCwd(sourceCwd);
     if (!safeCwd) {
       nextPayload.uploaded_file_paths = {};
+      if (runtime === 'r') nextPayload.csv_json_paths = {};
       delete nextPayload.cwd;
       return nextPayload;
     }
     const copiedBySource = new Map<string, string>();
+    const sidecarBySource = new Map<string, string | null>();
     const mapped: Record<string, string> = {};
+    const csvJsonPaths: Record<string, string> = {};
     Object.entries(uploadedPaths as Record<string, string>).forEach(([key, value]) => {
       const source = resolveAllowedRendererFile(value, safeCwd);
       if (!source) return;
@@ -2586,8 +2785,22 @@ ${inner}
       }
       mapped[key] = `/work/files/${copiedName}`;
       mapped[path.basename(value)] = `/work/files/${copiedName}`;
+      if (runtime === 'r' && shouldBridgeDelimitedFileForR(source)) {
+        if (!sidecarBySource.has(source)) {
+          sidecarBySource.set(source, writeRDelimitedSidecar(source, filesDir, copiedName));
+        }
+        const sidecarName = sidecarBySource.get(source);
+        if (sidecarName) {
+          const sidecarPath = `/work/files/${sidecarName}`;
+          csvJsonPaths[key] = sidecarPath;
+          csvJsonPaths[path.basename(value)] = sidecarPath;
+          csvJsonPaths[copiedName] = sidecarPath;
+          csvJsonPaths[path.basename(copiedName)] = sidecarPath;
+        }
+      }
     });
     nextPayload.uploaded_file_paths = mapped;
+    if (runtime === 'r') nextPayload.csv_json_paths = csvJsonPaths;
     nextPayload.cwd = '/work/files';
     return nextPayload;
   }
@@ -2605,6 +2818,7 @@ ${inner}
     const configuredRTimeout = Math.max(5_000, Math.min(120_000, Number(process.env.SCIFIGURE_R_TIMEOUT_MS || 45_000)));
     const timeoutMs = options.timeoutMs ?? (runtime === 'r' ? configuredRTimeout : scriptName === 'introspector.py' ? 45_000 : 20_000);
     const image = process.env.SCIFIGURE_RENDERER_IMAGE || 'scifigure-renderer:latest';
+    if (runtime === 'r') verifyRRendererImageSource(image);
     const containerName = `scifigure-render-${randomUUID().replace(/-/g, '')}`;
     const taskRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-render-task-'));
     const workDir = path.join(taskRoot, 'work');
@@ -2615,7 +2829,7 @@ ${inner}
       const filesDir = path.join(workDir, 'files');
       fs.mkdirSync(filesDir, { mode: 0o755 });
       fs.chmodSync(filesDir, 0o755);
-      const preparedPayload = copyAllowedRendererFiles(payload as any, filesDir);
+      const preparedPayload = copyAllowedRendererFiles(payload as any, filesDir, runtime);
       const payloadFile = path.join(workDir, 'payload.json');
       fs.writeFileSync(payloadFile, JSON.stringify(preparedPayload), 'utf-8');
       fs.chmodSync(payloadFile, 0o444);
@@ -2625,8 +2839,23 @@ ${inner}
     }
     const payloadStageMs = roundedDuration(payloadStageStartedAt);
     const command = runtime === 'r'
-      ? ['Rscript', '/opt/scifigure/renderer/r_renderer.R', '--payload-file', '/work/payload.json']
+      ? ['Rscript', '--vanilla', '/opt/scifigure/renderer/r_renderer.R', '--payload-file', '/work/payload.json']
       : ['python', `/opt/scifigure/renderer/${scriptName}`, '--payload-file', '/work/payload.json'];
+    const runtimeEnvArgs = runtime === 'r'
+      ? [
+        '--env', 'TZ=UTC',
+        '--env', 'LANG=C.UTF-8',
+        '--env', 'LC_ALL=C.UTF-8',
+        '--env', 'LC_COLLATE=C',
+        '--env', 'HOME=/tmp/scifigure/home',
+        '--env', 'USERPROFILE=/tmp/scifigure/home',
+        '--env', 'TMPDIR=/tmp/scifigure/tmp',
+        '--env', 'TMP=/tmp/scifigure/tmp',
+        '--env', 'TEMP=/tmp/scifigure/tmp',
+        '--env', 'XDG_CACHE_HOME=/tmp/scifigure/cache',
+        '--env', 'SCIFIGURE_RSCRIPT_BIN=/usr/bin/Rscript',
+      ]
+      : [];
     const args = [
       'run', '--rm', '--name', containerName, '--network', 'none', '--read-only',
       '--label', 'scifigure.managed=true', '--label', `scifigure.kind=${runtime}`,
@@ -2636,6 +2865,7 @@ ${inner}
       '--memory', String(process.env.SCIFIGURE_RENDER_MEMORY || '1g'),
       '--cpus', String(process.env.SCIFIGURE_RENDER_CPUS || '1'),
       '--tmpfs', '/tmp:rw,noexec,nosuid,size=256m',
+      ...runtimeEnvArgs,
       '--mount', `type=bind,src=${dockerMountPath(workDir)},dst=/work,readonly`,
       '--workdir', '/work/files',
       image,
@@ -2647,10 +2877,13 @@ ${inner}
       const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'], env: buildProcessEnvForBin('docker') });
       let stdout = '';
       let stderr = '';
+      const stdoutCollector = createUtf8StreamCollector();
+      const stderrCollector = createUtf8StreamCollector();
       let outputBytes = 0;
       let settled = false;
       const maxOutputMb = boundedNumber(options.maxOutputMb ?? process.env.SCIFIGURE_RENDER_OUTPUT_MB, 8, 1, 64);
       const maxOutputBytes = maxOutputMb * 1024 * 1024;
+
       const forceRemoveContainer = () => {
         spawnSync('docker', ['rm', '-f', containerName], {
           stdio: 'ignore',
@@ -2683,8 +2916,13 @@ ${inner}
           finishError(new Error(`Docker renderer output exceeded ${maxOutputMb} MB`));
           return;
         }
-        if (kind === 'stdout') stdout += data.toString();
-        else stderr += data.toString();
+        if (kind === 'stdout') {
+          stdoutCollector.append(data);
+          stdout = stdoutCollector.value();
+        } else {
+          stderrCollector.append(data);
+          stderr = stderrCollector.value();
+        }
       };
       const timer = setTimeout(() => {
         forceRemoveContainer();
@@ -2702,6 +2940,8 @@ ${inner}
         untrackAborter();
         if (settled) return;
         settled = true;
+        stdout = stdoutCollector.finish();
+        stderr = stderrCollector.finish();
         clearTimeout(timer);
         cleanup();
         if (code !== 0) {
@@ -2776,6 +3016,8 @@ ${inner}
 
       let stdout = '';
       let stderr = '';
+      const stdoutCollector = createUtf8StreamCollector();
+      const stderrCollector = createUtf8StreamCollector();
       let outputBytes = 0;
       let settled = false;
       let closed = false;
@@ -2831,8 +3073,13 @@ ${inner}
           reject(new Error(`Python process output exceeded ${maxOutputMb} MB [script=${scriptName}]`));
           return;
         }
-        if (kind === 'stdout') stdout += data.toString();
-        else stderr += data.toString();
+        if (kind === 'stdout') {
+          stdoutCollector.append(data);
+          stdout = stdoutCollector.value();
+        } else {
+          stderrCollector.append(data);
+          stderr = stderrCollector.value();
+        }
       };
 
       child.stdout.on('data', (d: Buffer) => captureOutput('stdout', d));
@@ -2852,6 +3099,8 @@ ${inner}
       child.on('close', (code) => {
         untrackAborter();
         closed = true;
+        stdout = stdoutCollector.finish();
+        stderr = stderrCollector.finish();
         if (sigkillTimer) clearTimeout(sigkillTimer);
         if (settled) return;
         settled = true;
@@ -2887,31 +3136,96 @@ ${inner}
     options: SpawnPythonOptions = {}
   ): Promise<any> {
     assertRendererDataPayload(payload);
+    const infrastructureDiagnostic = (
+      type: string,
+      message: string,
+      suggestion: string,
+      details: Record<string, unknown> = {},
+    ) => ({
+      schemaVersion: '1.0',
+      type,
+      category: type,
+      kind: type,
+      severity: 'error',
+      message,
+      suggestion,
+      conditionClass: [],
+      details: { source: 'server', ...details },
+    });
+    const infrastructureResult = (
+      type: string,
+      message: string,
+      suggestion: string,
+      details: Record<string, unknown> = {},
+    ) => ({
+      status: 'error',
+      message,
+      diagnostic: infrastructureDiagnostic(type, message, suggestion, details),
+    });
     const script = typeof (payload as any)?.script === 'string' ? (payload as any).script : '';
     const riskCheck = validateRScriptRisk(script, options.req);
+    const determinismWarnings = scanRScriptDeterminism(script);
     if (!riskCheck.ok) {
       return {
         status: 'error',
         message: riskCheck.message,
         riskFindings: riskCheck.findings,
+        determinismWarnings,
+        diagnostic: infrastructureDiagnostic(
+          'sandbox_rejected',
+          riskCheck.message,
+          '移除被沙箱禁止的网络、进程或越界文件操作后重试。',
+          { findings: riskCheck.findings },
+        ),
       };
     }
-    const appendRiskWarnings = (result: any) => {
-      if (!riskCheck.findings.length || !result || typeof result !== 'object') return result;
+    const appendRPreflight = (result: any) => {
+      if (!result || typeof result !== 'object') return result;
       return {
         ...result,
-        warnings: [
-          ...(Array.isArray(result.warnings) ? result.warnings : []),
-          {
-            type: 'r_risk_precheck',
-            mode: process.env.SCIFIGURE_R_RISK_ENFORCE === '1' ? 'block_high' : 'log_only',
-            findings: riskCheck.findings,
-          },
-        ],
+        determinismWarnings,
+        ...(riskCheck.findings.length > 0
+          ? {
+            warnings: [
+              ...(Array.isArray(result.warnings) ? result.warnings : []),
+              {
+                type: 'r_risk_precheck',
+                mode: process.env.SCIFIGURE_R_RISK_ENFORCE === '1' ? 'block_high' : 'log_only',
+                findings: riskCheck.findings,
+              },
+            ],
+          }
+          : {}),
       };
     };
     if (rendererMode() === 'docker') {
-      return appendRiskWarnings(await spawnDockerRenderer('r', 'r_renderer.R', payload, options));
+      try {
+        return appendRPreflight(await spawnDockerRenderer('r', 'r_renderer.R', payload, options));
+      } catch (error: any) {
+        const message = error?.message || String(error);
+        const lower = message.toLowerCase();
+        const type = typeof error?.diagnosticType === 'string'
+          ? error.diagnosticType
+          : lower.includes('timed out')
+          ? 'timeout'
+          : lower.includes('output exceeded')
+            ? 'resource_limit'
+            : lower.includes('failed to parse')
+              ? 'renderer_output_invalid'
+              : 'renderer_process_error';
+        return appendRPreflight(infrastructureResult(
+          type,
+          message,
+          type === 'renderer_image_stale'
+            ? '重建并部署与当前代码提交匹配的不可变 renderer 镜像后重试。'
+            : type === 'renderer_image_unavailable'
+              ? '检查固定 renderer 镜像是否已构建并可由当前 Docker daemon 读取。'
+              : type === 'timeout'
+            ? '简化脚本或数据，或在受控配置中提高 R 渲染超时。'
+            : '检查生产 renderer 运行时、资源限制和输出日志。',
+          { mode: 'docker', ...(error?.diagnosticDetails || {}) },
+        ));
+      }
     }
     const timeoutMs = options.timeoutMs
       ?? Math.max(5_000, Math.min(120_000, Number(process.env.SCIFIGURE_R_TIMEOUT_MS || 45_000)));
@@ -2919,41 +3233,14 @@ ${inner}
     const runtimeStartedAt = performance.now();
     const workSignal = requestWorkAbortSignal(options.req);
     if (workSignal?.aborted) throw new Error('R render request aborted before renderer start');
-    let mirrorDir: string | null = null;
-    const shouldBridgeCsvForR = (filePath: string) => /\.(csv|tsv|txt)$/i.test(filePath);
-    const bridgeCsvForR = (source: string, mirroredName: string): string | null => {
-      try {
-        const content = fs.readFileSync(source, 'utf-8');
-        const isTsv = /\.tsv$/i.test(source);
-        const parsed = Papa.parse<Record<string, unknown>>(content, {
-          header: true,
-          skipEmptyLines: true,
-          dynamicTyping: true,
-          delimiter: isTsv ? '\t' : undefined,
-          transformHeader: (header) => String(header || '').replace(/^\uFEFF/, '').trim(),
-        });
-        if (parsed.errors?.length) {
-          const blocking = parsed.errors.find((err) => err.type === 'Delimiter' || err.type === 'Quotes');
-          if (blocking) return null;
-        }
-        const columns = (parsed.meta.fields || []).map((field) => String(field));
-        if (!columns.length) return null;
-        const sidecarName = `${mirroredName}.scifigure-table.json`;
-        const sidecarPath = path.join(mirrorDir!, sidecarName);
-        fs.writeFileSync(sidecarPath, JSON.stringify({
-          columns,
-          rows: parsed.data,
-        }), 'utf-8');
-        return sidecarName;
-      } catch {
-        return null;
-      }
-    };
+    const jobDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-r-job-'));
+    const mirrorDir = path.join(jobDir, 'files');
+    fs.mkdirSync(mirrorDir, { recursive: true });
     const preparePayloadForR = (rawPayload: any) => {
       const nextPayload = { ...(rawPayload || {}) };
       const uploadedPaths = nextPayload.uploaded_file_paths;
       if (!uploadedPaths || typeof uploadedPaths !== 'object') {
-        delete nextPayload.cwd;
+        nextPayload.cwd = mirrorDir;
         return nextPayload;
       }
 
@@ -2961,11 +3248,10 @@ ${inner}
       if (!safeCwd) {
         nextPayload.uploaded_file_paths = {};
         nextPayload.csv_json_paths = {};
-        delete nextPayload.cwd;
+        nextPayload.cwd = mirrorDir;
         return nextPayload;
       }
 
-      mirrorDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scifigure-r-files-'));
       const mirroredPaths: Record<string, string> = {};
       const csvJsonPaths: Record<string, string> = {};
       const copiedBySource = new Map<string, string>();
@@ -2976,17 +3262,15 @@ ${inner}
         if (!source) return;
         let mirroredName = copiedBySource.get(source);
         if (!mirroredName) {
-          mirroredName = path.basename(source);
-          const dest = path.join(mirrorDir!, mirroredName);
-          if (!fs.existsSync(dest)) {
-            fs.copyFileSync(source, dest);
-          }
+          mirroredName = `${copiedBySource.size}_${path.basename(source)}`;
+          const dest = path.join(mirrorDir, mirroredName);
+          fs.copyFileSync(source, dest);
           copiedBySource.set(source, mirroredName);
         }
         mirroredPaths[key] = mirroredName;
-        if (shouldBridgeCsvForR(source)) {
+        if (shouldBridgeDelimitedFileForR(source)) {
           if (!bridgedBySource.has(source)) {
-            bridgedBySource.set(source, bridgeCsvForR(source, mirroredName));
+            bridgedBySource.set(source, writeRDelimitedSidecar(source, mirrorDir, mirroredName));
           }
           const sidecarName = bridgedBySource.get(source);
           if (sidecarName) {
@@ -3006,36 +3290,77 @@ ${inner}
       return nextPayload;
     };
     const payloadStageStartedAt = performance.now();
-    const rPayload = preparePayloadForR(payload as any);
-    const payloadFile = path.join(os.tmpdir(), `scifigure-r-payload-${randomUUID()}.json`);
-    fs.writeFileSync(payloadFile, JSON.stringify(rPayload), 'utf-8');
+    const payloadFile = path.join(jobDir, 'payload.json');
+    try {
+      const rPayload = preparePayloadForR(payload as any);
+      fs.writeFileSync(payloadFile, JSON.stringify(rPayload), 'utf-8');
+    } catch (error) {
+      try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch { /* best-effort temp cleanup */ }
+      throw error;
+    }
     const payloadStageMs = roundedDuration(payloadStageStartedAt);
 
     return new Promise((resolve, reject) => {
       const rscriptBin = resolveRscriptBin();
       const scriptPath = path.join(process.cwd(), 'renderer', 'r_renderer.R');
       const processStartedAt = performance.now();
-      const child = spawn(rscriptBin, [scriptPath, '--payload-file', payloadFile], {
+      const child = spawn(rscriptBin, ['--vanilla', scriptPath, '--payload-file', payloadFile], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: buildProcessEnvForBin(rscriptBin),
+        cwd: jobDir,
+        env: buildProcessEnvForBin(rscriptBin, { runtime: 'r', runtimeTmp: jobDir }),
       });
 
       let stdout = '';
       let stderr = '';
+      const stdoutCollector = createUtf8StreamCollector();
+      const stderrCollector = createUtf8StreamCollector();
       let outputBytes = 0;
       let settled = false;
       let closed = false;
       let sigkillTimer: NodeJS.Timeout | null = null;
       let untrackAborter = () => {};
+      let deferredTerminalResult: any = null;
       const maxOutputMb = boundedNumber(options.maxOutputMb ?? process.env.SCIFIGURE_RENDER_OUTPUT_MB, 8, 1, 64);
       const maxOutputBytes = maxOutputMb * 1024 * 1024;
 
-      const cleanupPayload = () => {
-        try { fs.unlinkSync(payloadFile); } catch { /* temp file already gone */ }
-        if (mirrorDir) {
-          try { fs.rmSync(mirrorDir, { recursive: true, force: true }); } catch { /* temp mirror already gone */ }
-          mirrorDir = null;
-        }
+      const localInfrastructureResult = (
+        type: string,
+        message: string,
+        suggestion: string,
+        details: Record<string, unknown> = {},
+      ) => attachRuntimePerformance(appendRPreflight(infrastructureResult(
+        type,
+        message,
+        suggestion,
+        { mode: 'local', label, jobId: path.basename(jobDir), ...details },
+      )), {
+        mode: 'local',
+        payloadStageMs,
+        processMs: roundedDuration(processStartedAt),
+        totalMs: roundedDuration(runtimeStartedAt),
+      });
+
+      let cleanupComplete = false;
+      let cleanupPromise: Promise<void> | null = null;
+      const cleanupPayload = (): Promise<void> => {
+        if (cleanupComplete) return Promise.resolve();
+        if (cleanupPromise) return cleanupPromise;
+        cleanupPromise = (async () => {
+          for (let attempt = 0; attempt < 8; attempt += 1) {
+            try {
+              fs.rmSync(jobDir, { recursive: true, force: true });
+              cleanupComplete = true;
+              return;
+            } catch (error: any) {
+              const retryable = ['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(error?.code);
+              if (!retryable || attempt === 7) return;
+              await new Promise(resolveDelay => setTimeout(resolveDelay, 100 * (attempt + 1)));
+            }
+          }
+        })().finally(() => {
+          if (!cleanupComplete) cleanupPromise = null;
+        });
+        return cleanupPromise;
       };
 
       const killChild = () => {
@@ -3058,56 +3383,89 @@ ${inner}
       workSignal?.addEventListener('abort', onRequestAborted, { once: true });
 
       const timer = setTimeout(() => {
-        killChild();
+        if (settled) return;
+        const message = `R process timed out (${Math.round(timeoutMs / 1000)}s)${stderr ? ` stderr=${stderr.slice(0, 400)}` : ''}`;
+        deferredTerminalResult = localInfrastructureResult(
+          'timeout',
+          message,
+          '简化脚本或数据，或在受控配置中提高 R 渲染超时。',
+          { timeoutMs },
+        );
         settled = true;
-        cleanupPayload();
+        killChild();
+        void cleanupPayload();
         removeAbortListeners();
-        reject(new Error(`R process timed out (${Math.round(timeoutMs / 1000)}s)${stderr ? ` stderr=${stderr.slice(0, 400)}` : ''}`));
       }, timeoutMs);
 
       const captureOutput = (kind: 'stdout' | 'stderr', data: Buffer) => {
         if (settled) return;
         outputBytes += data.length;
         if (outputBytes > maxOutputBytes) {
-          killChild();
+          deferredTerminalResult = localInfrastructureResult(
+            'resource_limit',
+            `R process output exceeded ${maxOutputMb} MB`,
+            '减少脚本控制台输出，不要在渲染过程打印大量数据。',
+            { maxOutputMb },
+          );
           settled = true;
+          killChild();
           clearTimeout(timer);
-          cleanupPayload();
+          void cleanupPayload();
           removeAbortListeners();
-          reject(new Error(`R process output exceeded ${maxOutputMb} MB`));
           return;
         }
-        if (kind === 'stdout') stdout += data.toString();
-        else stderr += data.toString();
+        if (kind === 'stdout') {
+          stdoutCollector.append(data);
+          stdout = stdoutCollector.value();
+        } else {
+          stderrCollector.append(data);
+          stderr = stderrCollector.value();
+        }
       };
 
       child.stdout.on('data', (d: Buffer) => captureOutput('stdout', d));
       child.stderr.on('data', (d: Buffer) => captureOutput('stderr', d));
 
-      child.on('error', (err: any) => {
+      child.on('error', async (err: any) => {
         untrackAborter();
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         if (sigkillTimer) clearTimeout(sigkillTimer);
-        cleanupPayload();
+        await cleanupPayload();
         removeAbortListeners();
         if (err?.code === 'ENOENT') {
-          reject(new Error('Rscript not found. Please install R and ensure Rscript is available in PATH, or set RSCRIPT_BIN.'));
+          resolve(localInfrastructureResult(
+            'runtime_missing',
+            'Rscript not found. Please install R and ensure Rscript is available in PATH, or set RSCRIPT_BIN.',
+            '配置可执行的 RSCRIPT_BIN，并确认该 R 环境包含 renderer 需要的包。',
+            { executable: rscriptBin },
+          ));
           return;
         }
-        reject(err);
+        resolve(localInfrastructureResult(
+          'renderer_process_error',
+          err?.message || String(err),
+          '检查 Rscript 可执行文件、依赖库和本地运行权限。',
+          { executable: rscriptBin, code: err?.code || null },
+        ));
       });
 
-      child.on('close', (code) => {
+      child.on('close', async (code) => {
         untrackAborter();
         closed = true;
+        stdout = stdoutCollector.finish();
+        stderr = stderrCollector.finish();
+        if (sigkillTimer) clearTimeout(sigkillTimer);
+        await cleanupPayload();
+        removeAbortListeners();
+        if (deferredTerminalResult) {
+          resolve(deferredTerminalResult);
+          return;
+        }
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        if (sigkillTimer) clearTimeout(sigkillTimer);
-        cleanupPayload();
-        removeAbortListeners();
         const processMs = roundedDuration(processStartedAt);
         if (code !== 0) {
           if (stdout.trim().startsWith('{')) {
@@ -3119,7 +3477,7 @@ ${inner}
                 `R process exited with code ${code} after producing JSON output.`,
               ];
               const outputParseMs = roundedDuration(outputParseStartedAt);
-              resolve(attachRuntimePerformance(appendRiskWarnings(parsed), {
+              resolve(attachRuntimePerformance(appendRPreflight(parsed), {
                 mode: 'local',
                 payloadStageMs,
                 processMs,
@@ -3131,12 +3489,17 @@ ${inner}
               // Fall through to the explicit non-zero exit error below.
             }
           }
-          reject(new Error(`R exited ${code}: ${stderr}`));
+          resolve(localInfrastructureResult(
+            'renderer_process_error',
+            `R exited ${code}: ${stderr}`,
+            '检查 R renderer 启动日志、R 版本和已安装包。',
+            { exitCode: code, executable: rscriptBin },
+          ));
           return;
         }
         const outputParseStartedAt = performance.now();
         try {
-          const parsed = appendRiskWarnings(JSON.parse(stdout));
+          const parsed = appendRPreflight(JSON.parse(stdout));
           const outputParseMs = roundedDuration(outputParseStartedAt);
           resolve(attachRuntimePerformance(parsed, {
             mode: 'local',
@@ -3146,7 +3509,11 @@ ${inner}
             totalMs: roundedDuration(runtimeStartedAt),
           }));
         } catch (e) {
-          reject(new Error(`Failed to parse R JSON output: ${e}\nSTDERR:\n${stderr}\nSTDOUT:\n${stdout.slice(0, 400)}`));
+          resolve(localInfrastructureResult(
+            'renderer_output_invalid',
+            `Failed to parse R JSON output: ${e}\nSTDERR:\n${stderr}\nSTDOUT:\n${stdout.slice(0, 400)}`,
+            '检查 renderer 是否向 stdout 写入了 JSON 之外的内容。',
+          ));
         }
       });
     });
@@ -3173,7 +3540,8 @@ ${inner}
         return null;
       }
     }
-    return typeof value === 'object' ? value : null;
+    if (typeof value === 'object') return value;
+    return null;
   }
 
   function buildPatchConflictResponse(session: any, requestId: string, rejected: any[], warnings: any[]) {
@@ -3218,6 +3586,100 @@ ${inner}
     });
   }
 
+  const STABLE_R_RELATION_FIELDS = [
+    'aesthetic',
+    'groupKey',
+    'dataKey',
+    'facetKey',
+    'axisKey',
+    'layerKey',
+    'scaleKey',
+    'guideKey',
+  ];
+
+  function normalizeRStructuralFingerprint(value: unknown): unknown {
+    if (typeof value !== 'string' || !value.startsWith('r-v2:')) return value;
+    return value.replace(/[\r\n\t ]+/g, '');
+  }
+
+  function rPatchIdentityEvidence(patch: any) {
+    const relation = patch?.identity?.relation;
+    const stableRelation = relation && typeof relation === 'object'
+      ? Object.fromEntries(
+          STABLE_R_RELATION_FIELDS
+            .filter(field => relation[field] !== undefined)
+            .map(field => [field, relation[field]]),
+        )
+      : {};
+    return {
+      ...(patch?.stableKey !== undefined ? { stableKey: patch.stableKey } : {}),
+      ...(patch?.fingerprintVersion === 2 && patch?.fingerprint !== undefined
+        ? { fingerprint: patch.fingerprint }
+        : {}),
+      ...(patch?.identity?.semanticKey !== undefined
+        ? { semanticKey: patch.identity.semanticKey }
+        : {}),
+      ...(patch?.identity?.seriesKey !== undefined
+        ? { seriesKey: patch.identity.seriesKey }
+        : {}),
+      ...(Object.keys(stableRelation).length > 0 ? { relation: stableRelation } : {}),
+    };
+  }
+
+  function matchesRIdentityEvidence(object: any, evidence: any) {
+    if (evidence.stableKey !== undefined && evidence.stableKey !== object?.stableKey) return false;
+    if (
+      evidence.fingerprint !== undefined
+      && normalizeRStructuralFingerprint(evidence.fingerprint) !== normalizeRStructuralFingerprint(object?.fingerprint)
+    ) return false;
+    if (evidence.semanticKey !== undefined && evidence.semanticKey !== object?.identity?.semanticKey) return false;
+    if (evidence.seriesKey !== undefined && evidence.seriesKey !== object?.identity?.seriesKey) return false;
+    if (evidence.relation) {
+      for (const [field, value] of Object.entries(evidence.relation)) {
+        if (stableStringifyForExport(object?.identity?.relation?.[field]) !== stableStringifyForExport(value)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  function resolveRManifestObject(manifest: any, patch: any) {
+    const objects = Array.isArray(manifest?.objects) ? manifest.objects : [];
+    const direct = objects.find((object: any) => String(object?.id || '') === String(patch?.gid || '')) || null;
+    if (manifest?.generatedBy !== 'r_svg') {
+      return { object: direct, status: direct ? 'exact' : 'missing', candidateGids: [] as string[] };
+    }
+    const evidence = rPatchIdentityEvidence(patch);
+    if (Object.keys(evidence).length === 0) {
+      const legacyAxisGid = /^axis\.[xy]\.\d+$/.test(String(patch?.gid || ''))
+        ? String(patch.gid).replace(/^(axis\.[xy]\.)\d+$/, (_match: string, prefix: string) => `${prefix}0`)
+        : null;
+      const legacyAxisObject = !direct && legacyAxisGid
+        ? objects.find((object: any) => String(object?.id || '') === legacyAxisGid) || null
+        : null;
+      const legacyObject = direct || legacyAxisObject;
+      return {
+        object: legacyObject,
+        status: direct ? 'legacy_gid' : legacyAxisObject ? 'legacy_alias' : 'missing',
+        candidateGids: legacyAxisObject ? [String(legacyAxisObject.id)] : [],
+      };
+    }
+    const candidates = objects.filter((object: any) => matchesRIdentityEvidence(object, evidence));
+    if (candidates.length === 1) {
+      return {
+        object: candidates[0],
+        status: candidates[0]?.id === patch?.gid ? 'exact' : 'remapped',
+        candidateGids: [String(candidates[0]?.id || '')],
+      };
+    }
+    return {
+      object: null,
+      status: candidates.length === 0 ? 'identity_not_found' : 'identity_ambiguous',
+      candidateGids: candidates.map((candidate: any) => String(candidate?.id || '')),
+    };
+  }
+
   function precheckManifestPatches(
     manifestValue: unknown,
     patches: any[],
@@ -3256,7 +3718,27 @@ ${inner}
         continue;
       }
 
-      const object = objectById.get(gid);
+      const rResolution = manifest.generatedBy === 'r_svg'
+        ? resolveRManifestObject(manifest, patch)
+        : {
+          object: objectById.get(gid) || null,
+          status: objectById.has(gid) ? 'exact' : 'missing',
+          candidateGids: [] as string[],
+        };
+      if (rResolution.status === 'identity_not_found') {
+        reject('identity_mismatch', `${gid} identity does not match any current R manifest object.`, {
+          field: 'identity',
+        });
+        continue;
+      }
+      if (rResolution.status === 'identity_ambiguous') {
+        reject('ambiguous_identity', `${gid} identity matches multiple current R manifest objects.`, {
+          field: 'identity',
+          candidateGids: rResolution.candidateGids,
+        });
+        continue;
+      }
+      const object = rResolution.object;
       if (!object) {
         reject('missing_gid', `Manifest is missing gid ${gid}.`);
         continue;
@@ -3285,13 +3767,26 @@ ${inner}
         patch.fingerprintVersion === 2
         && object.fingerprintVersion === 2
         && patch.fingerprint !== undefined
-        && patch.fingerprint !== object.fingerprint
+        && (manifest.generatedBy === 'r_svg'
+          ? normalizeRStructuralFingerprint(patch.fingerprint) !== normalizeRStructuralFingerprint(object.fingerprint)
+          : patch.fingerprint !== object.fingerprint)
         && !isCompatibleContourChildSnapshotFingerprint(patch, object, prop)
       ) {
         reject('identity_mismatch', `${gid} fingerprint does not match.`, { field: 'fingerprint' });
       }
       if (patch.identity?.seriesKey !== undefined && patch.identity.seriesKey !== object.identity?.seriesKey) {
         reject('identity_mismatch', `${gid} identity.seriesKey does not match.`, { field: 'identity.seriesKey' });
+      }
+      if (
+        manifest.generatedBy === 'r_svg'
+        && patch.identity?.semanticKey !== undefined
+        && patch.identity.semanticKey !== object.identity?.semanticKey
+      ) {
+        reject('identity_mismatch', `${gid} identity.semanticKey does not match the manifest object.`, {
+          field: 'identity.semanticKey',
+          expected: object.identity?.semanticKey ?? null,
+          actual: patch.identity.semanticKey,
+        });
       }
       if (requiresDiagramRelationIdentity(object)) {
         const expectedRelation = diagramRelationSignature(object.identity);
@@ -3359,6 +3854,50 @@ ${inner}
       && left?.fingerprint === right?.fingerprint
       && left?.fingerprintVersion === right?.fingerprintVersion
       && stableStringifyForExport(left?.identity) === stableStringifyForExport(right?.identity);
+  }
+
+  function hasProjectEditIdentityMetadata(entry: any): boolean {
+    return entry?.stableKey !== undefined
+      || entry?.fingerprint !== undefined
+      || entry?.fingerprintVersion !== undefined
+      || entry?.identity !== undefined;
+  }
+
+  function projectEditIdentitySignature(entry: any): string {
+    return stableStringifyForExport({
+      stableKey: entry?.stableKey,
+      fingerprint: entry?.fingerprint,
+      fingerprintVersion: entry?.fingerprintVersion,
+      identity: entry?.identity,
+    });
+  }
+
+  function reconcileKnownProjectEdit(patch: any, knownEditLog: any[]) {
+    if (patch?.type === 'code_patch') {
+      return { patch, status: 'new' as const, candidates: [] as any[] };
+    }
+    const candidates = knownEditLog.filter(existing => sameProjectEditValue(existing, patch));
+    if (candidates.length === 0) {
+      return { patch, status: 'new' as const, candidates };
+    }
+
+    if (!hasProjectEditIdentityMetadata(patch)) {
+      const candidatesByIdentity = new Map<string, any>();
+      candidates.forEach(candidate => {
+        const signature = projectEditIdentitySignature(candidate);
+        if (!candidatesByIdentity.has(signature)) candidatesByIdentity.set(signature, candidate);
+      });
+      const identityCandidates = [...candidatesByIdentity.values()];
+      return identityCandidates.length === 1
+        ? { patch: identityCandidates[0], status: 'known' as const, candidates: identityCandidates }
+        : { patch, status: 'ambiguous' as const, candidates: identityCandidates };
+    }
+
+    const exactCandidates = candidates.filter(existing => sameProjectEditIdentity(existing, patch));
+    if (exactCandidates.length > 0) {
+      return { patch: exactCandidates[0], status: 'known' as const, candidates: [exactCandidates[0]] };
+    }
+    return { patch, status: 'identity_mismatch' as const, candidates };
   }
 
   function isCompatibleKnownLegacyContourChildEdit(
@@ -3491,6 +4030,10 @@ ${inner}
           gid: entry?.gid,
           prop: entry?.prop,
           value: entry?.value,
+          stableKey: entry?.stableKey,
+          fingerprint: entry?.fingerprint,
+          fingerprintVersion: entry?.fingerprintVersion,
+          identity: entry?.identity,
         })
     )).sort();
     return stableStringifyForExport(canonicalize(left)) === stableStringifyForExport(canonicalize(right));
@@ -3502,16 +4045,45 @@ ${inner}
     incomingPatches: any[],
     knownEditLog: any[] = existingEditLog,
   ) {
-    const normalizedPatches = normalizeProjectFigurePatchModes(figRow, incomingPatches);
+    const reconciledPatches = incomingPatches.map(patch => reconcileKnownProjectEdit(patch, knownEditLog));
+    const normalizedPatches = normalizeProjectFigurePatchModes(
+      figRow,
+      reconciledPatches.map(result => result.patch),
+    );
+    const identityWarnings: any[] = [];
+    reconciledPatches.forEach((result, patchIndex) => {
+      if (result.status === 'identity_mismatch') {
+        const patch = incomingPatches[patchIndex];
+        identityWarnings.push({
+          type: 'identity_mismatch',
+          gid: typeof patch?.gid === 'string' ? patch.gid : '',
+          prop: typeof patch?.prop === 'string' ? patch.prop : '',
+          patchIndex,
+          field: 'identity',
+          message: '同值编辑携带的身份元数据与已持久化条目不一致，本次保存未写入。',
+        });
+        return;
+      }
+      if (result.status === 'ambiguous') {
+        const patch = incomingPatches[patchIndex];
+        identityWarnings.push({
+          type: 'ambiguous_identity',
+          gid: typeof patch?.gid === 'string' ? patch.gid : '',
+          prop: typeof patch?.prop === 'string' ? patch.prop : '',
+          patchIndex,
+          candidateCount: result.candidates.length,
+          message: '无身份编辑匹配多个已持久化条目，无法安全确定目标，本次保存未写入。',
+        });
+      }
+    });
     const manifest = parseManifestValue(figRow?.manifest);
     if (manifest) {
-      const precheck = precheckManifestPatches(manifest, normalizedPatches);
-      const warnings = precheck.warnings.filter((warning: any) => {
-        const patch = typeof warning?.patchIndex === 'number'
-          ? normalizedPatches[warning.patchIndex]
-          : null;
-        return !knownEditLog.some(existing => sameProjectEditValue(existing, patch));
+      const precheck = precheckProjectFigurePatches(figRow, normalizedPatches);
+      const filteredWarnings = precheck.warnings.filter((warning: any) => {
+        const patchIndex = typeof warning?.patchIndex === 'number' ? warning.patchIndex : -1;
+        return patchIndex < 0 || reconciledPatches[patchIndex]?.status !== 'known';
       });
+      const warnings = [...identityWarnings, ...filteredWarnings];
       const rejectedIndexes = new Set(
         warnings
           .map((warning: any) => warning.patchIndex)
@@ -3521,22 +4093,28 @@ ${inner}
         patches: normalizedPatches,
         ok: warnings.length === 0,
         warnings,
-        rejected: normalizedPatches.filter((_: any, index: number) => rejectedIndexes.has(index)),
+        rejected: incomingPatches.filter((_: any, index: number) => rejectedIndexes.has(index)),
       };
     }
 
-    const warnings: any[] = [];
-    const rejected: any[] = [];
-    normalizedPatches.forEach((patch: any, patchIndex: number) => {
-      if (knownEditLog.some(existing => sameProjectEditValue(existing, patch))) return;
+    // A save request cannot safely validate a new edit without a trusted
+    // manifest. Existing entries remain readable; new entries must wait for a
+    // renderer pass instead of being persisted on client claims alone.
+    const warnings: any[] = [...identityWarnings];
+    const rejected: any[] = identityWarnings
+      .map(warning => incomingPatches[warning.patchIndex])
+      .filter(Boolean);
+    normalizedPatches.forEach((patch: any, index: number) => {
+      if (reconciledPatches[index]?.status === 'known') return;
+      if (reconciledPatches[index]?.status === 'identity_mismatch' || reconciledPatches[index]?.status === 'ambiguous') return;
       warnings.push({
         type: 'manifest_unavailable',
         gid: typeof patch?.gid === 'string' ? patch.gid : '',
         prop: typeof patch?.prop === 'string' ? patch.prop : '',
-        patchIndex,
+        patchIndex: index,
         message: '当前 Figure 没有可信 manifest，新增编辑必须先经过 renderer 验证。',
       });
-      rejected.push(patch);
+      rejected.push(incomingPatches[index]);
     });
     return { patches: normalizedPatches, ok: warnings.length === 0, warnings, rejected };
   }
@@ -3690,6 +4268,13 @@ ${inner}
       });
     }
     return warnings;
+  }
+
+  function selectRendererAppliedEdits(rendererResult: any, requestedEdits: any[]) {
+    const applied = Array.isArray(rendererResult?.applied) ? rendererResult.applied : [];
+    return requestedEdits.map((edit: any) => (
+      applied.find((entry: any) => sameProjectEditValue(entry, edit)) || edit
+    ));
   }
 
   function collectRendererReplayConflictsByFigure(
@@ -3850,6 +4435,8 @@ ${inner}
           });
           let stdout = '';
           let stderr = '';
+          const stdoutCollector = createUtf8StreamCollector();
+          const stderrCollector = createUtf8StreamCollector();
           let outputBytes = 0;
           let settled = false;
           let closed = false;
@@ -3881,8 +4468,13 @@ ${inner}
               finishError(new Error(`表格解析输出超过 ${maxOutputMb} MB`));
               return;
             }
-            if (kind === 'stdout') stdout += chunk.toString();
-            else stderr += chunk.toString();
+            if (kind === 'stdout') {
+              stdoutCollector.append(chunk);
+              stdout = stdoutCollector.value();
+            } else {
+              stderrCollector.append(chunk);
+              stderr = stderrCollector.value();
+            }
           };
           child.stdout.on('data', (chunk: Buffer) => capture('stdout', chunk));
           child.stderr.on('data', (chunk: Buffer) => capture('stderr', chunk));
@@ -3892,6 +4484,8 @@ ${inner}
           });
           child.on('close', (code) => {
             closed = true;
+            stdout = stdoutCollector.finish();
+            stderr = stderrCollector.finish();
             if (settled) return;
             if (code !== 0) {
               finishError(new Error(`表格解析进程退出码 ${code}: ${stderr.slice(0, 800)}`));
@@ -4328,7 +4922,28 @@ ${inner}
         return;
       }
 
-      const object = snapshotManifestObject(manifest, gid);
+      const rResolution = resolveRManifestObject(manifest, entry);
+      if (rResolution.status === 'identity_not_found') {
+        issues.push({
+          type: 'identity_mismatch',
+          figureId,
+          gid,
+          prop,
+          message: `${figureId} 快照目标 ${gid} 的 R 语义身份已变化。`,
+        });
+        return;
+      }
+      if (rResolution.status === 'identity_ambiguous') {
+        issues.push({
+          type: 'ambiguous_identity',
+          figureId,
+          gid,
+          prop,
+          message: `${figureId} 快照目标 ${gid} 匹配多个 R 对象，已停止恢复。`,
+        });
+        return;
+      }
+      const object = rResolution.object || snapshotManifestObject(manifest, gid);
       if (!object) {
         issues.push({
           type: 'missing_gid',
@@ -4389,7 +5004,9 @@ ${inner}
         && object.fingerprintVersion === 2
         && entry.fingerprint !== undefined
         && object.fingerprint !== undefined
-        && entry.fingerprint !== object.fingerprint
+        && (manifest.generatedBy === 'r_svg'
+          ? normalizeRStructuralFingerprint(entry.fingerprint) !== normalizeRStructuralFingerprint(object.fingerprint)
+          : entry.fingerprint !== object.fingerprint)
         && !isCompatibleContourChildSnapshotFingerprint(entry, object, prop)
       ) {
         issues.push({
@@ -4410,6 +5027,21 @@ ${inner}
           gid,
           prop,
           message: `${figureId} 快照目标 ${gid} 的 seriesKey 已变化。`,
+        });
+        return;
+      }
+      if (
+        manifest?.generatedBy === 'r_svg'
+        && entry.identity?.semanticKey !== undefined
+        && object.identity?.semanticKey !== undefined
+        && entry.identity.semanticKey !== object.identity.semanticKey
+      ) {
+        issues.push({
+          type: 'identity_mismatch',
+          figureId,
+          gid,
+          prop,
+          message: `${figureId} 快照目标 ${gid} 的 semanticKey 已变化。`,
         });
         return;
       }
@@ -4456,6 +5088,7 @@ ${inner}
       const type = String(warning.type || '').toLowerCase();
       return type === 'missing_gid'
         || type === 'identity_mismatch'
+        || type === 'ambiguous_identity'
         || type === 'unsupported_prop'
         || type === 'no_setter'
         || type.startsWith('unsupported_')
@@ -5454,9 +6087,12 @@ ${inner}
           validatedRPatchCacheKeys.add(cacheKey);
           cacheWriteMs = roundedDuration(cacheWriteStartedAt);
         }
+        const rendererAppliedEdits = result.status === 'success'
+          ? selectRendererAppliedEdits(result, newEdits)
+          : [];
         const response = attachServerPerformance({
           ...result,
-          applied: result.status === 'success' ? newEdits : [],
+          applied: rendererAppliedEdits,
           rejected: result.status === 'success' ? [] : newEdits,
           requestId,
           cache: { hit: false, key: cacheKey },
@@ -6364,6 +7000,7 @@ ${inner}
         nextEditLog: any[];
         nextRevision: number;
         nextHistory: { past: any[]; future: any[] };
+        persistFigureState: boolean;
       }> = [];
       const rejected: any[] = [];
       const warnings: any[] = [];
@@ -6487,7 +7124,18 @@ ${inner}
             nextHistory = existingHistory;
             nextRevision = currentRevision;
           }
-          figurePlans.push({ figureId, row, session, nextEditLog, nextRevision, nextHistory });
+          const persistFigureState = editLogChanged
+            || historyChanged
+            || nextRevision !== currentRevision;
+          figurePlans.push({
+            figureId,
+            row,
+            session,
+            nextEditLog,
+            nextRevision,
+            nextHistory,
+            persistFigureState,
+          });
         });
       }
 
@@ -6527,7 +7175,8 @@ ${inner}
           getDb().prepare('UPDATE projects SET name = ?, updated_at = datetime(\'now\') WHERE id = ? AND user_id = ?')
             .run(name, req.params.id, userId);
         }
-        figurePlans.forEach(({ row, session, nextEditLog, nextRevision, nextHistory }) => {
+        figurePlans.forEach(({ row, session, nextEditLog, nextRevision, nextHistory, persistFigureState }) => {
+          if (!persistFigureState) return;
           saveSession(
             row.session_id,
             userId,
@@ -6917,6 +7566,7 @@ ${inner}
               skipped: rResult.skipped || [],
               conflict: rResult.conflict === true,
               language: 'r',
+              ...renderRuntimeFieldsFrom(rResult, rResult.manifest),
             }
           : rResult;
       } else {
@@ -7209,6 +7859,7 @@ ${inner}
                     manifest: rResult.manifest,
                     codeSlice: null,
                   }],
+                  ...renderRuntimeFieldsFrom(rResult, rResult.manifest),
                 }
               : rResult;
           } else {

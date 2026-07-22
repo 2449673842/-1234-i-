@@ -94,4 +94,22 @@ describe('render diagnostics normalization', () => {
       layoutDiagnosticsMs: 0,
     });
   });
+
+  it('preserves R warning diagnostics and runtime inventory when present', () => {
+    const response: RenderResponse = {
+      status: 'success',
+      sessionId: 'session-r',
+      svg: '<svg />',
+      manifest: makeManifest(),
+      revision: 1,
+      timingMs: 1,
+      warningDiagnostics: [{ type: 'font_warning', message: 'fallback' }],
+      runtimeInventory: { schemaVersion: '1.0', timezone: 'UTC' },
+    };
+
+    expect(normalizeRenderResponse(response).diagnostics).toMatchObject({
+      warningDiagnostics: response.warningDiagnostics,
+      runtimeInventory: response.runtimeInventory,
+    });
+  });
 });

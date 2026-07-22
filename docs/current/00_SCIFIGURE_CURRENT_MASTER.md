@@ -3,7 +3,7 @@
 > 状态：当前有效  
 > 更新时间：2026-07-30 07:03:06 +08:00
 > 证据截止时间：2026-07-30 07:03:06 +08:00
-> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 capability 权威、组件能力/Draft 收敛、旧 contour 精确兼容、旧项目完整重渲染、文本自动 Draft/立即应用竞态、导出快照 v4、local->backend 缺失 manifest 对账、无标签 collection 身份、统一能力报告、性能诊断、默认启用与逐域回滚，以及 R-WP0 合成 fixture、测试隔离和静态旧 identity/editLog 基线；候选尚未部署
+> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 capability 权威、组件能力/Draft 收敛、旧项目兼容、导出快照、统一能力报告、性能诊断和逐域回滚，以及 R-WP0-WP3 的隔离基线、patch 权威、结构身份 v2、旧项目兼容和运行时 parity；候选尚未部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
 
@@ -154,6 +154,9 @@ WP10 已达到当前计划范围的本地候选条件：普通编辑、字体、
 
 2026-07-21 兼容收尾：项目完整重渲染现在统一从 Figure、session 和受控单 Figure 旧 spec fallback 解析 durable editLog。已持久化的空文本/隐藏对象和旧轴字体属性可按当前 renderer 能力继续重放，但客户端不能以相同 `gid/prop/value` 弱化或伪造已知 `stableKey/fingerprint/identity`；任何差异均冲突且保持项目、session、history、preview 零写入。Matplotlib 文本统一走 backend renderer，文本键入即时进入当前 Figure Draft，改回已提交值会删除 no-op Draft；旧请求返回时不会清除期间产生的新文本。定向证据包括 `special-axes-api`、Python 完整语义工作流 B0E/B0F/B0G、RightSidebar/property mode 242/242、R semantic 5/5、patch rejection、lint、build 和 diff-check。当前改动仍未推送或部署。
 
+2026-07-21 20:28 兼容门禁再收紧：旧 `line.visible` 不再因新 manifest 省略 capability 而阻断整个项目。只有数据库中已持久化且值与身份完全一致的历史记录可受控重放；当前导出快照升级为 v5 并保存服务端签名，签名前 v4 仍可恢复，缺少签名的 v5 必须拒绝且零写入。隔离 API 已用更敏感的隐藏线 `visible=false` 证明旧项目可打开、继续编辑、导出、后续编辑、恢复 v4/v5 快照和刷新，未保存的相反值仍冲突。旧项目全生命周期现已成为 Gate L，不得用新项目测试或 HTTP 200 替代。同一轮还修复明确子图中图例精确目标与 mixed scatter 颜色子集合并；`matchColor` 现会贯穿 Draft、应用请求和服务端压缩，连续两次 scoped 改色的真实浏览器请求均按当前颜色替换，不再覆盖 collection 内其它分组。普通 `axes.patch.N` 选中、`size_scale` 实际比例回读，以及支持 Escape/焦点返回的日志弹窗也已通过。当前仍未推送或部署。
+
+2026-07-22 R-WP2/WP3 收敛：R layer 身份现在包含规范数据内容摘要，同列名的不同 subset/filter 不再静默复用旧样式；guide identity 同时区分 aesthetic、类型和标题；无显式键文本只有在 `panel+x+y+label` 唯一时才稳定重放，重复候选明确 unsupported。生产候选 Docker/Web 已固定 R 4.5.0、ggplot2 3.5.1、关键包、字体、locale 和 svglite；本地、直接 Docker 与 Web/API Docker 的 37 个关键语义对象及 SVG 根几何一致。镜像源码 SHA 不匹配时会结构化拒绝。R renderer 54/54，runtime diagnostics 6/6，独立复审 APPROVE、0 HIGH/MEDIUM。
 ## 4. 用户数据红线
 
 本地 `data/` 中的数据库、项目、上传文件和导出资产是仍需使用的真实数据。
@@ -229,9 +232,9 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 | 能力 | 当前状态 | 说明 |
 |---|---|---|
 | 公开宣传页与注册门禁 | 已实现，邮箱生产通道待配置 | 匿名访问先进入宣传页；启用邮箱验证后，新账号必须完成六位验证码验证才会获得会话；现有账号兼容迁移 |
-| 图形能力展厅 | 本地候选 | 作为帮助中心同级站内页面展示带能力边界的模拟数据样例；没有未经真实验收的样例被标为稳定支持 |
+| 图形能力展厅 | 本地候选 | 作为帮助中心同级站内页面展示 11 个带能力边界的固定模拟数据样例；没有未经真实验收的样例被标为稳定支持 |
 | Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选 WP6 六个复杂对象家族已有专用语义，其中网络图/路径图/SEM 依赖显式关系声明，不承诺按外观自动识别任意第三方图示；完成全部门禁和部署前不视为线上能力 |
-| R 渲染与语义编辑 | R-WP0 基线完成 | ggplot2 主链路可用；15 个合成 fixture、静态旧 identity/editLog、浏览器编辑与 SVG 导出已固定，R-WP1 零错误持久化和 R-WP2 identity v2 尚未开始 |
+| R 渲染与语义编辑 | R-WP0-WP3 本地候选完成 | ggplot2 主链路可用；patch mode 由服务端权威决定，失败批次零持久化；结构 identity v2 与旧记录兼容已验证；生产候选 R/包/字体/locale/设备已固定并通过本地/Docker/Web parity；下一工作包为 R-WP4 常用图元家族 |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |
 | 字体/颜色/线条编辑 | 已实现 | 支持单对象、语义分组、整图和跨 Figure 作用域 |
@@ -383,6 +386,8 @@ docs/platform-capability/UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md
 该方案采用增量协议、影子比对、按能力域切换和成功后提交，避免为了补图元识别或编辑功能而破坏现有选择、拖拽、保存和按 Figure 渲染链路。
 
 `UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md` 专门处理属性编辑、布局中心、组件中心、配色中心和字体中心的交叉属性与精细度不一致。网页统一版已完成 PropertyDescriptor、capability projection、严格 resolver 和共同 Draft 语义的主要迁移；2026-07-16 候选继续补齐数值自动暂存、字体格式刷、选中子图自动跟随、图例间距、散点比例缩放和保持尺寸的垂直行间距。旧项目兼容路径和 legacy 控件尚未删除。
+
+`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。R-WP0-WP3 已完成本地候选；下一阶段从 R-WP4 开始逐个完善常用 ggplot2 图元，再进入网络图、路径图和 SEM 专用语义扩展。
 
 当前专项方案已补充“能力增强列车”：每项能力必须依次证明 renderer 事实、对象身份、属性能力、目标解析、PatchPlan、Figure 事务、项目级持久化以及 Python/R/真实项目回归。禁止从协议设计直接跳到默认启用。
 

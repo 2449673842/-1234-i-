@@ -45,6 +45,12 @@ export function normalizeRenderDiagnostics(value: Partial<RenderDiagnostics> | u
   return {
     determinismWarnings: normalizeDiagnosticWarnings(value?.determinismWarnings),
     layoutWarnings: normalizeDiagnosticWarnings(value?.layoutWarnings),
+    ...(Array.isArray(value?.warningDiagnostics)
+      ? { warningDiagnostics: normalizeDiagnosticWarnings(value.warningDiagnostics) }
+      : {}),
+    ...(value?.runtimeInventory && typeof value.runtimeInventory === 'object'
+      ? { runtimeInventory: value.runtimeInventory as Record<string, unknown> }
+      : {}),
     ...(Number.isFinite(layoutDiagnosticsMs)
       ? { layoutDiagnosticsMs: Math.max(0, Math.round(layoutDiagnosticsMs)) }
       : {}),
@@ -407,6 +413,8 @@ export function normalizeRenderResponse(response: RenderResponse, figureId = 'fi
     diagnostics: response.diagnostics ?? response.manifest.renderDiagnostics ?? {
       determinismWarnings: response.determinismWarnings,
       layoutWarnings: response.layoutWarnings,
+      warningDiagnostics: response.warningDiagnostics,
+      runtimeInventory: response.runtimeInventory,
       layoutDiagnosticsMs: response.timingBreakdown?.layoutDiagnosticsMs,
     },
   });

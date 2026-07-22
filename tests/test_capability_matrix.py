@@ -85,10 +85,12 @@ def run_r_fixture(script: str):
         payload_path = handle.name
     try:
         process = subprocess.run(
-            [rscript_bin(), str(R_RENDERER), "--payload-file", payload_path],
+            [rscript_bin(), "--vanilla", str(R_RENDERER), "--payload-file", payload_path],
             cwd=PROJECT_ROOT,
             env=r_process_env(),
             text=True,
+            encoding="utf-8",
+            errors="strict",
             capture_output=True,
             timeout=45,
         )

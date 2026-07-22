@@ -1,4 +1,5 @@
-FROM python:3.12-slim
+# Preserve the validated Python/R production runtime and make every source explicit.
+FROM docker.m.daocloud.io/library/python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
 
 ARG DEBIAN_MIRROR=https://mirrors.aliyun.com/debian
 ARG DEBIAN_SECURITY_MIRROR=https://mirrors.aliyun.com/debian-security
@@ -8,24 +9,58 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MPLBACKEND=Agg \
-    MPLCONFIGDIR=/tmp/matplotlib
+    MPLCONFIGDIR=/tmp/scifigure/matplotlib \
+    TZ=UTC \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    HOME=/tmp/scifigure/home \
+    TMPDIR=/tmp/scifigure/tmp \
+    XDG_CACHE_HOME=/tmp/scifigure/cache \
+    SCIFIGURE_PYTHON_VERSION=3.12.13 \
+    SCIFIGURE_MATPLOTLIB_VERSION=3.11.1 \
+    SCIFIGURE_NUMPY_VERSION=2.5.1 \
+    SCIFIGURE_R_VERSION=4.5.0 \
+    SCIFIGURE_R_GGPLOT2_VERSION=3.5.1 \
+    SCIFIGURE_R_JSONLITE_VERSION=1.9.1 \
+    SCIFIGURE_R_READXL_VERSION=1.4.5 \
+    SCIFIGURE_R_SVGLITE_VERSION=2.1.3 \
+    SCIFIGURE_R_SYSTEMFONTS_VERSION=1.2.1 \
+    SCIFIGURE_R_TEXTSHAPING_VERSION=0.3.7 \
+    SCIFIGURE_R_SVG_DEVICE=svglite \
+    SCIFIGURE_R_FONT_FAMILIES=Times_New_Roman,NotoSansCJK_SC,FreeSans
 
-RUN sed -i \
-      -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
-      -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
-      /etc/apt/sources.list.d/debian.sources \
-    && apt-get update && apt-get install -y --no-install-recommends \
-    r-base \
-    r-cran-ggplot2 \
-    r-cran-jsonlite \
-    r-cran-readxl \
-    r-cran-svglite \
-    libcairo2 \
-    fontconfig \
-    fonts-liberation \
-    fonts-noto-cjk \
-    fonts-freefont-ttf \
-    && rm -rf /var/lib/apt/lists/*
+RUN install -d -m 0755 \
+        /tmp/scifigure/home \
+        /tmp/scifigure/tmp \
+        /tmp/scifigure/matplotlib \
+        /tmp/scifigure/cache \
+    && sed -i \
+        -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+        -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        r-base=4.5.0-3 \
+        r-cran-ggplot2=3.5.1+dfsg-1 \
+        r-cran-jsonlite=1.9.1+dfsg-1 \
+        r-cran-readxl=1.4.5-1 \
+        r-cran-svglite=2.1.3-2 \
+        r-cran-systemfonts=1.2.1-1 \
+        r-cran-textshaping=0.3.7-2 \
+        libcairo2=1.18.4-1+b1 \
+        fontconfig=2.15.0-2.3 \
+        fonts-liberation=1:2.1.5-3 \
+        fonts-noto-cjk=1:20240730+repack1-1 \
+        fonts-freefont-ttf=20211204+svn4273-2 \
+    && test -r /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc \
+    && rm -rf /var/lib/apt/lists/* \
+    && test -r /usr/share/fonts/truetype/freefont/FreeSans.ttf \
+    && test -r /usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf
+
+COPY renderer/fontconfig-local.conf /etc/fonts/conf.d/52-scifigure-font-alias.conf
+RUN fc-cache -f \
+    && fc-match -f '%{family}\n' 'Noto Sans CJK SC' | grep -qi 'Noto Sans CJK SC' \
+    && fc-match -f '%{family}\n' 'FreeSans' | grep -qi 'FreeSans'
 
 RUN sed -i -E 's/^Components: main$/Components: main contrib/' /etc/apt/sources.list.d/debian.sources \
     && apt-get update \
@@ -36,12 +71,46 @@ RUN sed -i -E 's/^Components: main$/Components: main contrib/' /etc/apt/sources.
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/scifigure
-COPY requirements.txt ./
-RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements.txt
-COPY renderer/fontconfig-local.conf /etc/fonts/conf.d/52-scifigure-font-alias.conf
-RUN fc-cache -f \
-    && fc-match -f '%{family}\n' 'Times New Roman' | grep -qi 'Times New Roman'
+COPY requirements.txt requirements.renderer.lock ./
+ARG SCIFIGURE_PYTHON_LOCK_SHA256=0633f3c17e123431076d7618469ecbe2d9fcdc8e910de3ad738bacaf6e0319d8
+RUN test "$(sha256sum requirements.renderer.lock | cut -d ' ' -f1)" = "${SCIFIGURE_PYTHON_LOCK_SHA256}" \
+    && pip install --no-cache-dir --only-binary=:all: --require-hashes --index-url "${PIP_INDEX_URL}" -r requirements.renderer.lock
+LABEL org.opencontainers.image.title="SciFigure renderer" \
+      org.scifigure.renderer.base="docker.m.daocloud.io/library/python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de" \
+      org.scifigure.renderer.debian="trixie" \
+      org.scifigure.renderer.python="3.12.13" \
+      org.scifigure.renderer.python-packages="matplotlib=3.11.1;numpy=2.5.1;pandas=3.0.3;Pillow=12.3.0;CairoSVG=2.9.0;scipy=1.18.0;seaborn=0.13.2;openpyxl=3.1.5;xlrd=2.0.2" \
+      org.scifigure.renderer.r="4.5.0" \
+      org.scifigure.renderer.r-packages="ggplot2=3.5.1;jsonlite=1.9.1;readxl=1.4.5;svglite=2.1.3;systemfonts=1.2.1;textshaping=0.3.7" \
+      org.scifigure.renderer.svg-device="svglite" \
+      org.scifigure.renderer.font-files="/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman.ttf;/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc;/usr/share/fonts/truetype/freefont/FreeSans.ttf" \
+      org.scifigure.renderer.font-aliases="Times=Times New Roman" \
+      org.scifigure.renderer.python-lock-sha256="${SCIFIGURE_PYTHON_LOCK_SHA256}"
+ARG SCIFIGURE_R_RENDERER_SHA256=4d927ec00fb2788209e4773da86b707683c8c4d1b0d5c840d311fe8bc0ae7ae5
+LABEL org.scifigure.renderer.r-source-sha256="${SCIFIGURE_R_RENDERER_SHA256}"
 COPY renderer ./renderer
+RUN test "$(sha256sum /opt/scifigure/renderer/r_renderer.R | cut -d ' ' -f1)" = "${SCIFIGURE_R_RENDERER_SHA256}"
 
-RUN useradd --system --uid 65532 --home-dir /tmp --shell /usr/sbin/nologin renderer
+RUN groupadd --gid 65532 renderer \
+    && useradd --system --uid 65532 --gid 65532 --home-dir /tmp/scifigure/home --shell /usr/sbin/nologin renderer \
+    && install -d -o renderer -g renderer -m 0700 \
+        /tmp/scifigure/home \
+        /tmp/scifigure/tmp \
+        /tmp/scifigure/matplotlib \
+        /tmp/scifigure/cache
+
 USER 65532:65532
+
+# Validate Python, R, package, locale, temp, font, and SVG contracts in the built image.
+RUN python -c 'import sys, matplotlib, numpy; assert sys.version.split()[0] == "3.12.13"; assert matplotlib.__version__ == "3.11.1"; assert numpy.__version__ == "2.5.1"' \
+    && Rscript --vanilla \
+    -e 'expected <- c(ggplot2 = Sys.getenv("SCIFIGURE_R_GGPLOT2_VERSION"), jsonlite = Sys.getenv("SCIFIGURE_R_JSONLITE_VERSION"), readxl = Sys.getenv("SCIFIGURE_R_READXL_VERSION"), svglite = Sys.getenv("SCIFIGURE_R_SVGLITE_VERSION"), systemfonts = Sys.getenv("SCIFIGURE_R_SYSTEMFONTS_VERSION"), textshaping = Sys.getenv("SCIFIGURE_R_TEXTSHAPING_VERSION"))' \
+    -e 'if (!identical(as.character(getRversion()), Sys.getenv("SCIFIGURE_R_VERSION"))) stop("R version contract mismatch")' \
+    -e 'actual <- vapply(names(expected), function(pkg) as.character(utils::packageVersion(pkg)), character(1)); if (!all(unname(actual) == unname(expected))) stop(paste("R package contract mismatch:", paste(names(actual), actual, expected, sep = "=", collapse = ", ")))' \
+    -e 'if (!identical(Sys.getenv("TZ"), "UTC") || !identical(Sys.getenv("LANG"), "C.UTF-8") || !identical(Sys.getenv("LC_ALL"), "C.UTF-8") || !identical(Sys.getenv("HOME"), "/tmp/scifigure/home") || !identical(Sys.getenv("TMPDIR"), "/tmp/scifigure/tmp")) stop("renderer environment contract mismatch")' \
+    -e 'if (!grepl("UTF-8|UTF8", Sys.getlocale("LC_CTYPE"), ignore.case = TRUE)) stop("UTF-8 locale is unavailable"); tmp_root <- normalizePath(Sys.getenv("TMPDIR"), winslash = "/", mustWork = TRUE); if (!startsWith(normalizePath(tempdir(), winslash = "/", mustWork = TRUE), paste0(tmp_root, "/"))) stop("R tempdir escaped TMPDIR")' \
+    -e 'fonts <- systemfonts::system_fonts(); families <- unique(gsub("[^a-z0-9]", "", tolower(as.character(fonts$family)))); if (!all(c("timesnewroman", "notosanscjksc", "freesans") %in% families)) stop("font family contract mismatch"); times_path <- as.character(systemfonts::match_fonts("Times New Roman")$path[[1]]); if (!grepl("times(_new_roman)?(_regular)?\\.ttf$", basename(times_path), ignore.case = TRUE)) stop("Times New Roman font contract mismatch")' \
+    -e 'if (!identical(Sys.getenv("SCIFIGURE_R_SVG_DEVICE"), "svglite")) stop("SVG device contract mismatch"); probe <- tempfile(fileext = ".svg"); svglite::svglite(probe, width = 1, height = 1); grid::grid.newpage(); grid::grid.text("SciFigure 科研绘图", gp = grid::gpar(fontfamily = "FreeSans")); invisible(grDevices::dev.off()); if (!file.exists(probe) || is.na(file.info(probe)$size) || file.info(probe)$size <= 0) stop("svglite probe failed"); unlink(probe)'
+
+# Docker mounts a fresh /tmp tmpfs in production, so recreate private paths before exec.
+ENTRYPOINT ["/bin/sh", "-c", "umask 077; mkdir -p /tmp/scifigure/home /tmp/scifigure/tmp /tmp/scifigure/matplotlib /tmp/scifigure/cache; exec \"$@\"", "--"]
