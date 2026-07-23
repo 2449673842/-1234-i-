@@ -1155,6 +1155,339 @@ p
         self.assertEqual(patched_line["currentProps"]["color"], "#D62728")
         self.assertEqual(patched_line["currentProps"]["linewidth"], 1.9)
 
+    def test_segment_and_curve_adapters_preserve_endpoints_and_arrow_metadata_as_readonly_structure(self):
+        script = """
+library(ggplot2)
+library(grid)
+segments <- data.frame(
+  x=c(1, 2), y=c(1, 2), xend=c(2.5, 3.5), yend=c(2.2, 1.2),
+  label=c("segment one", "segment two")
+)
+curve <- data.frame(x=1.2, y=3.2, xend=3.8, yend=3.6, label="curve label")
+p <- ggplot() +
+  geom_segment(
+    data=segments,
+    aes(x=x, y=y, xend=xend, yend=yend),
+    colour="#1F78B4", linewidth=0.8, linetype="dashed", alpha=0.75,
+    lineend="round", linejoin="mitre",
+    arrow=arrow(length=unit(0.18, "in"), type="closed", ends="last")
+  ) +
+  geom_curve(
+    data=curve,
+    aes(x=x, y=y, xend=xend, yend=yend),
+    colour="#33A02C", linewidth=1.1, curvature=0.35, angle=75, ncp=8,
+    lineend="butt",
+    arrow=arrow(length=unit(4, "mm"), type="open", ends="both")
+  ) +
+  geom_text(data=segments[1, ], aes(x=xend, y=yend, label=label), nudge_y=0.15) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        segment = _object(result, "r.layer.0")
+        curve = _object(result, "r.layer.1")
+
+        self.assertEqual(segment["kind"], "line")
+        self.assertEqual(segment["role"], "ggplot_GeomSegment")
+        self.assertEqual(segment["source"]["adapterClass"], "GeomSegment")
+        self.assertEqual(segment["currentProps"]["adapterFamily"], "segment")
+        self.assertEqual(segment["currentProps"]["x"], [1, 2])
+        self.assertEqual(segment["currentProps"]["y"], [1, 2])
+        self.assertEqual(segment["currentProps"]["xend"], [2.5, 3.5])
+        self.assertEqual(segment["currentProps"]["yend"], [2.2, 1.2])
+        self.assertEqual(segment["currentProps"]["endpointCount"], 2)
+        self.assertEqual(segment["currentProps"]["lineend"], "round")
+        self.assertEqual(segment["currentProps"]["linejoin"], "mitre")
+        self.assertEqual(segment["currentProps"]["structureReadonly"], [
+            "x", "y", "xend", "yend", "lineend", "linejoin", "arrow",
+        ])
+        self.assertTrue(segment["currentProps"]["hasArrow"])
+        self.assertEqual(segment["currentProps"]["arrow"]["ends"], "last")
+        self.assertEqual(segment["currentProps"]["arrow"]["endsCode"], 2)
+        self.assertEqual(segment["currentProps"]["arrow"]["type"], "closed")
+        self.assertEqual(segment["currentProps"]["arrow"]["typeCode"], 2)
+        self.assertEqual(segment["currentProps"]["arrow"]["length"]["unit"], "inches")
+        self.assertAlmostEqual(segment["currentProps"]["arrow"]["length"]["value"], 0.18)
+        self.assertAlmostEqual(segment["currentProps"]["arrow"]["length"]["mm"], 4.572, places=3)
+
+        self.assertEqual(curve["kind"], "line")
+        self.assertEqual(curve["role"], "ggplot_GeomCurve")
+        self.assertEqual(curve["source"]["adapterClass"], "GeomCurve")
+        self.assertEqual(curve["currentProps"]["adapterFamily"], "curve")
+        self.assertEqual(curve["currentProps"]["curvature"], 0.35)
+        self.assertEqual(curve["currentProps"]["angle"], 75)
+        self.assertEqual(curve["currentProps"]["ncp"], 8)
+        self.assertEqual(curve["currentProps"]["lineend"], "butt")
+        self.assertEqual(curve["currentProps"]["arrow"]["ends"], "both")
+        self.assertEqual(curve["currentProps"]["arrow"]["type"], "open")
+        self.assertEqual(curve["currentProps"]["arrow"]["length"]["unit"], "mm")
+        self.assertAlmostEqual(curve["currentProps"]["arrow"]["length"]["mm"], 4.0, places=3)
+        self.assertEqual(curve["currentProps"]["structureReadonly"], [
+            "x", "y", "xend", "yend", "lineend", "curvature", "angle", "ncp", "arrow",
+        ])
+
+        for obj in (segment, curve):
+            self.assertEqual(obj["editable"], ["color", "linewidth", "linestyle", "alpha"])
+            self.assertFalse(any(
+                capability.get("prop") in obj["currentProps"]["structureReadonly"]
+                for capability in obj["propertyCapabilities"]
+            ))
+            relation = obj["identity"].get("relation", {})
+            self.assertNotIn("arrowId", relation)
+            self.assertNotIn("textId", relation)
+        self.assertFalse(any(
+            obj.get("role") in {"diagram_arrow", "annotation_arrow", "ggplot_segment_arrow", "ggplot_curve_arrow"}
+            for obj in _objects(result)
+        ))
+        self.assertEqual(result["svg"].count('data-fig-id="r.layer.0"'), 4)
+        self.assertEqual(result["svg"].count('data-fig-id="r.layer.1"'), 3)
+
+    def test_segment_curve_style_replay_preserves_structure_and_rejects_geometry_edits(self):
+        script = """
+library(ggplot2)
+library(grid)
+df <- data.frame(x=c(1, 2), y=c(1, 2), xend=c(2.5, 3.5), yend=c(2.2, 1.2))
+p <- ggplot(df) +
+  geom_segment(
+    aes(x=x, y=y, xend=xend, yend=yend),
+    colour="#1F78B4", linewidth=0.8, linetype="dashed", alpha=0.75,
+    lineend="round", linejoin="mitre",
+    arrow=arrow(length=unit(3, "mm"), type="closed", ends="first")
+  ) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        segment = _object(baseline, "r.layer.0")
+        baseline_structure = {
+            key: segment["currentProps"][key]
+            for key in ("x", "y", "xend", "yend", "lineend", "linejoin", "arrow")
+        }
+
+        patched = _run_r_renderer(script, [
+            _backend_patch(segment, "color", "#D62728"),
+            _backend_patch(segment, "linewidth", 2.1),
+            _backend_patch(segment, "linestyle", "solid"),
+            _backend_patch(segment, "alpha", 0.4),
+        ])
+        patched_segment = _object(patched, "r.layer.0")
+        self.assertFalse(patched["conflict"])
+        self.assertEqual(len(patched["applied"]), 4)
+        self.assertEqual(patched_segment["currentProps"]["color"], "#D62728")
+        self.assertEqual(patched_segment["currentProps"]["linewidth"], 2.1)
+        self.assertEqual(patched_segment["currentProps"]["linestyle"], "solid")
+        self.assertEqual(patched_segment["currentProps"]["alpha"], 0.4)
+        self.assertEqual(segment["stableKey"], patched_segment["stableKey"])
+        self.assertEqual(segment["fingerprint"], patched_segment["fingerprint"])
+        self.assertEqual(segment["identity"], patched_segment["identity"])
+        for key, value in baseline_structure.items():
+            self.assertEqual(patched_segment["currentProps"][key], value)
+
+        rejected = _run_r_renderer(script, [
+            _backend_patch(segment, "xend", [9, 10]),
+            _backend_patch(segment, "arrow", {"ends": "last"}),
+        ])
+        rejected_segment = _object(rejected, "r.layer.0")
+        self.assertTrue(rejected["conflict"])
+        self.assertEqual(rejected["applied"], [])
+        self.assertEqual(len(rejected["skipped"]), 2)
+        for key, value in baseline_structure.items():
+            self.assertEqual(rejected_segment["currentProps"][key], value)
+
+        legacy = _run_r_renderer(script, [
+            {"gid": "r.layer.0", "prop": "color", "value": "#2CA02C", "mode": "backend_patch"},
+            {
+                "gid": "r.layer.0",
+                "prop": "linewidth",
+                "value": 1.6,
+                "mode": "backend_patch",
+                "stableKey": segment["stableKey"],
+                "fingerprint": "legacy-style-sensitive-fingerprint",
+                "identity": segment["identity"],
+            },
+        ])
+        legacy_segment = _object(legacy, "r.layer.0")
+        self.assertFalse(legacy["conflict"])
+        self.assertEqual(len(legacy["applied"]), 2)
+        self.assertEqual(legacy_segment["currentProps"]["color"], "#2CA02C")
+        self.assertEqual(legacy_segment["currentProps"]["linewidth"], 1.6)
+        self.assertEqual(legacy_segment["identity"], segment["identity"])
+
+        valid_v2 = _run_r_renderer(script, [
+            _backend_patch(segment, "alpha", 0.55),
+        ])
+        self.assertFalse(valid_v2["conflict"])
+        self.assertEqual(_object(valid_v2, "r.layer.0")["currentProps"]["alpha"], 0.55)
+
+        invalid_v2_patch = _backend_patch(segment, "alpha", 0.2)
+        invalid_v2_patch["fingerprint"] = "r-v2:invalid-family-9-fingerprint"
+        invalid_v2 = _run_r_renderer(script, [invalid_v2_patch])
+        self.assertTrue(invalid_v2["conflict"])
+        self.assertEqual(invalid_v2["applied"], [])
+        self.assertEqual(len(invalid_v2["skipped"]), 1)
+        self.assertEqual(_object(invalid_v2, "r.layer.0")["currentProps"]["alpha"], segment["currentProps"]["alpha"])
+
+    def test_segment_curve_svg_identity_survives_prior_same_style_lines(self):
+        script = """
+library(ggplot2)
+library(grid)
+line_segment <- data.frame(x=1:3, y=c(1, 2, 1.5))
+line_curve <- data.frame(x=1:3, y=c(3, 2.5, 3.5))
+segment <- data.frame(x=4, y=1, xend=5.2, yend=2.1)
+curve <- data.frame(x=4, y=3, xend=5.2, yend=3.4)
+p <- ggplot() +
+  geom_line(data=line_segment, aes(x=x, y=y), inherit.aes=FALSE,
+            colour="#1F78B4", linewidth=0.8, linetype="solid") +
+  geom_line(data=line_curve, aes(x=x, y=y), inherit.aes=FALSE,
+            colour="#D95F02", linewidth=0.9, linetype="solid") +
+  geom_segment(data=segment, aes(x=x, y=y, xend=xend, yend=yend),
+               inherit.aes=FALSE, colour="#1F78B4", linewidth=0.8,
+               arrow=arrow(length=unit(3, "mm"), type="closed", ends="last")) +
+  geom_curve(data=curve, aes(x=x, y=y, xend=xend, yend=yend),
+             inherit.aes=FALSE, colour="#D95F02", linewidth=0.9,
+             arrow=arrow(length=unit(3, "mm"), type="open", ends="both")) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+
+        self.assertEqual(result["status"], "success", result)
+        self.assertEqual(result["svg"].count('<polyline data-fig-id="r.layer.0"'), 1)
+        self.assertEqual(result["svg"].count('<polyline data-fig-id="r.layer.1"'), 1)
+        self.assertEqual(result["svg"].count('<line data-fig-id="r.layer.2"'), 1)
+        self.assertEqual(result["svg"].count('<polygon data-fig-id="r.layer.2"'), 1)
+        self.assertEqual(result["svg"].count('<polyline data-fig-id="r.layer.3"'), 3)
+        self.assertIn('stroke: #1F78B4', result["svg"])
+        self.assertIn('stroke: #D95F02', result["svg"])
+
+    def test_segment_curve_svg_identity_ignores_non_drawable_na_rows(self):
+        script = """
+library(ggplot2)
+library(grid)
+segments <- data.frame(
+  x=c(1, 2), y=c(1, 2), xend=c(2.5, NA), yend=c(2.2, 1.2)
+)
+curves <- data.frame(
+  x=c(1.2, 2.2), y=c(3.2, 3.6), xend=c(3.8, 4.2), yend=c(3.6, NA)
+)
+p <- ggplot() +
+  geom_segment(
+    data=segments, aes(x=x, y=y, xend=xend, yend=yend),
+    colour="#1F78B4", linewidth=0.8,
+    arrow=arrow(length=unit(3, "mm"), type="closed", ends="last")
+  ) +
+  geom_curve(
+    data=curves, aes(x=x, y=y, xend=xend, yend=yend),
+    colour="#D95F02", linewidth=0.9, curvature=0.3,
+    arrow=arrow(length=unit(3, "mm"), type="open", ends="both")
+  ) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+
+        self.assertEqual(result["status"], "success", result)
+        self.assertEqual(result["svg"].count('data-fig-id="r.layer.0"'), 2)
+        self.assertEqual(result["svg"].count('data-fig-id="r.layer.1"'), 3)
+        self.assertNotIn('data-scifigure-unresolved-owner="r.layer.0"', result["svg"])
+        self.assertNotIn('data-scifigure-unresolved-owner="r.layer.1"', result["svg"])
+
+    def test_segment_svg_identity_survives_a_later_layer_with_the_same_style(self):
+        script = """
+library(ggplot2)
+segment <- data.frame(x=1, y=1, xend=2.5, yend=2.2)
+trend <- data.frame(x=1:3, y=c(3.0, 3.4, 3.1))
+p <- ggplot() +
+  geom_segment(data=segment, aes(x=x, y=y, xend=xend, yend=yend),
+               inherit.aes=FALSE, colour="#1F78B4", linewidth=0.8) +
+  geom_line(data=trend, aes(x=x, y=y), inherit.aes=FALSE,
+            colour="#1F78B4", linewidth=0.8) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+
+        self.assertEqual(result["svg"].count('<line data-fig-id="r.layer.0"'), 1)
+        self.assertEqual(result["svg"].count('<polyline data-fig-id="r.layer.1"'), 1)
+        self.assertNotIn('data-scifigure-unresolved-owner="r.layer.0"', result["svg"])
+
+    def test_mapped_segment_curve_styles_remain_scale_owned_and_reject_layer_overrides(self):
+        script = """
+library(ggplot2)
+segment_df <- data.frame(
+  x=c(1, 2, 1.5, 2.5), y=c(1, 2, 2.5, 1.5),
+  xend=c(2, 3, 2.5, 3.5), yend=c(2, 1, 3.2, 2.2),
+  group=c("A", "A", "B", "B"), weight=c(0.6, 0.9, 1.2, 1.5)
+)
+curve_df <- data.frame(
+  x=c(1, 2), y=c(3.5, 4), xend=c(2.5, 3.5), yend=c(4.1, 3.4),
+  group=c("A", "B"), opacity=c(0.35, 0.8)
+)
+p <- ggplot() +
+  geom_segment(
+    data=segment_df,
+    aes(x=x, y=y, xend=xend, yend=yend, colour=group, linewidth=weight, linetype=group),
+    alpha=0.7
+  ) +
+  geom_curve(
+    data=curve_df,
+    aes(x=x, y=y, xend=xend, yend=yend, alpha=opacity),
+    colour="#33A02C", linewidth=0.9, curvature=0.3
+  ) +
+  scale_colour_manual(values=c(A="#1F78B4", B="#E31A1C")) +
+  scale_linetype_manual(values=c(A="solid", B="dashed")) +
+  scale_linewidth_continuous(range=c(0.5, 1.5)) +
+  scale_alpha_continuous(range=c(0.3, 0.9)) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        segment = _object(baseline, "r.layer.0")
+        curve = _object(baseline, "r.layer.1")
+
+        self.assertTrue(segment["currentProps"]["colorMapped"])
+        self.assertTrue(segment["currentProps"]["linewidthMapped"])
+        self.assertTrue(segment["currentProps"]["linetypeMapped"])
+        self.assertFalse(segment["currentProps"]["alphaMapped"])
+        self.assertNotIn("color", segment["editable"])
+        self.assertNotIn("linewidth", segment["editable"])
+        self.assertNotIn("linestyle", segment["editable"])
+        self.assertIn("alpha", segment["editable"])
+
+        self.assertFalse(curve["currentProps"]["colorMapped"])
+        self.assertFalse(curve["currentProps"]["linewidthMapped"])
+        self.assertFalse(curve["currentProps"]["linetypeMapped"])
+        self.assertTrue(curve["currentProps"]["alphaMapped"])
+        self.assertIn("color", curve["editable"])
+        self.assertIn("linewidth", curve["editable"])
+        self.assertIn("linestyle", curve["editable"])
+        self.assertNotIn("alpha", curve["editable"])
+
+        mapped_props = [
+            _backend_patch(segment, "color", "#AA00AA"),
+            _backend_patch(segment, "linewidth", 2.5),
+            _backend_patch(segment, "linestyle", "dotted"),
+            _backend_patch(curve, "alpha", 0.1),
+        ]
+        rejected = _run_r_renderer(script, mapped_props)
+        self.assertTrue(rejected["conflict"])
+        self.assertEqual(rejected["applied"], [])
+        self.assertEqual(len(rejected["skipped"]), len(mapped_props))
+        self.assertEqual(_object(rejected, "r.layer.0")["currentProps"], segment["currentProps"])
+        self.assertEqual(_object(rejected, "r.layer.1")["currentProps"], curve["currentProps"])
+        self.assertNotIn("#aa00aa", rejected["svg"].lower())
+
+        fixed_props = _run_r_renderer(script, [
+            _backend_patch(segment, "alpha", 0.45),
+            _backend_patch(curve, "color", "#6A3D9A"),
+            _backend_patch(curve, "linewidth", 1.7),
+        ])
+        self.assertFalse(fixed_props["conflict"])
+        self.assertEqual(len(fixed_props["applied"]), 3)
+        self.assertEqual(_object(fixed_props, "r.layer.0")["currentProps"]["alpha"], 0.45)
+        self.assertEqual(_object(fixed_props, "r.layer.1")["currentProps"]["color"], "#6A3D9A")
+        self.assertEqual(_object(fixed_props, "r.layer.1")["currentProps"]["linewidth"], 1.7)
+
     def test_shape_21_point_patch_preserves_fill_outline_stroke_alpha_and_absolute_size(self):
         script = """
 library(ggplot2)
@@ -1550,6 +1883,77 @@ p
         self.assertNotIn('data-fig-id="r.group.color.0.1"', result["svg"])
         self.assertIn('data-fig-id="r.layer.0"', result["svg"])
 
+    def test_fixed_line_sharing_discrete_group_color_keeps_own_svg_gid(self):
+        script = """
+library(ggplot2)
+series <- data.frame(
+  x=rep(1:3, 2),
+  y=c(1.0, 1.5, 2.0, 2.2, 2.6, 3.1),
+  group=rep(c("A", "B"), each=3)
+)
+fixed <- data.frame(x=1:3, y=c(3.6, 3.8, 3.7), group="A")
+p <- ggplot(series, aes(x=x, y=y, colour=group, group=group)) +
+  geom_line(linewidth=0.7) +
+  geom_point(size=2.4) +
+  geom_line(data=fixed, aes(x=x, y=y), colour="#1F78B4", linewidth=0.9) +
+  scale_colour_manual(values=c(A="#1F78B4", B="#D62728")) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+
+        self.assertIn('data-fig-id="r.group.color.0.0"', result["svg"])
+        self.assertIn('data-fig-id="r.group.color.0.1"', result["svg"])
+        self.assertEqual(result["svg"].count('data-fig-id="r.layer.2"'), 1)
+
+    def test_css_default_black_uses_exact_ownership_or_fails_closed(self):
+        mapped_script = """
+library(ggplot2)
+df <- data.frame(
+  x=rep(1:3, 2),
+  y=c(1.0, 1.4, 1.8, 2.2, 2.7, 3.0),
+  group=rep(c("A", "B"), each=3)
+)
+p <- ggplot(df, aes(x=x, y=y, colour=group, group=group)) +
+  geom_line(linewidth=0.8) +
+  scale_colour_manual(values=c(A="#000000", B="#D62728")) +
+  theme_classic()
+p
+"""
+        mapped = _run_r_renderer(mapped_script)
+        self.assertIn('data-fig-id="r.group.color.0.0"', mapped["svg"])
+        self.assertIn('data-fig-id="r.group.color.0.1"', mapped["svg"])
+
+        ambiguous_script = """
+library(ggplot2)
+first <- data.frame(x=1:3, y=c(1.0, 1.4, 1.8))
+second <- data.frame(x=1:3, y=c(2.2, 2.7, 3.0))
+p <- ggplot() +
+  geom_line(data=first, aes(x=x, y=y), inherit.aes=FALSE) +
+  geom_line(data=second, aes(x=x, y=y), inherit.aes=FALSE) +
+  theme_classic()
+p
+"""
+        ambiguous = _run_r_renderer(ambiguous_script)
+        self.assertEqual(ambiguous["svg"].count('data-fig-id="r.layer.0"'), 1)
+        self.assertEqual(ambiguous["svg"].count('data-fig-id="r.layer.1"'), 1)
+
+    def test_ordered_svg_ownership_uses_geom_filtered_drawable_rows(self):
+        script = """
+library(ggplot2)
+missing <- data.frame(x=NA_real_, y=NA_real_)
+visible <- data.frame(x=1, y=1)
+p <- ggplot() +
+  geom_point(data=missing, aes(x=x, y=y), inherit.aes=FALSE, colour="#1F78B4", size=3) +
+  geom_point(data=visible, aes(x=x, y=y), inherit.aes=FALSE, colour="#1F78B4", size=3) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+
+        self.assertNotIn('data-fig-id="r.layer.0"', result["svg"])
+        self.assertEqual(result["svg"].count('data-fig-id="r.layer.1"'), 1)
+
     def test_discrete_group_patch_preserves_scale_order_labels_and_title(self):
         script = """
 library(ggplot2)
@@ -1803,6 +2207,35 @@ p
         self.assertIn("#00aa55", color_patch["svg"].lower())
         self.assertNotEqual(baseline["svg"], shape_patch["svg"])
         self.assertNotEqual(baseline["svg"], size_patch["svg"])
+
+    def test_boxplot_outlier_component_mismatch_does_not_consume_following_same_color_line(self):
+        scripts = [
+            """
+library(ggplot2)
+df <- data.frame(group=rep(c("A", "B"), each=10), value=c(1, 2, 2, 3, 3, 4, 4, 5, 5, 20, 3, 4, 4, 5, 5, 6, 6, 7, 7, 22))
+trend <- data.frame(x=c(0.8, 2.2), y=c(12, 18))
+p <- ggplot(df, aes(group, value)) +
+  geom_boxplot(colour="#1F78B4", fill="#A6CEE3", outlier.shape=NA) +
+  geom_line(data=trend, aes(x=x, y=y), inherit.aes=FALSE, colour="#1F78B4", linewidth=0.8) +
+  theme_classic()
+p
+""",
+            """
+library(ggplot2)
+df <- data.frame(group=rep(c("A", "B"), each=10), value=c(1, 2, 2, 3, 3, 4, 4, 5, 5, 20, 3, 4, 4, 5, 5, 6, 6, 7, 7, 22))
+trend <- data.frame(x=c(0.8, 2.2), y=c(12, 18))
+p <- ggplot(df, aes(group, value)) +
+  geom_boxplot(colour="#333333", fill="#A6CEE3", outlier.colour="#1F78B4", outlier.shape=19) +
+  geom_line(data=trend, aes(x=x, y=y), inherit.aes=FALSE, colour="#1F78B4", linewidth=0.8) +
+  theme_classic()
+p
+""",
+        ]
+
+        for script in scripts:
+            with self.subTest(script=script):
+                result = _run_r_renderer(script)
+                self.assertEqual(result["svg"].count('data-fig-id="r.layer.1"'), 1)
 
     def test_boxplot_fill_edit_becomes_dormant_when_a_later_shape_is_not_fillable(self):
         script = """
@@ -2194,6 +2627,33 @@ p
         self.assertIn("#E31A1C".lower(), result["svg"].lower())
         self.assertIn("#FDBF6F".lower(), result["svg"].lower())
         self.assertIn("#FF7F00".lower(), result["svg"].lower())
+
+    def test_ribbon_full_outline_component_mismatch_does_not_consume_following_same_color_line(self):
+        script = """
+library(ggplot2)
+band <- data.frame(
+  x=1:4,
+  ymin=c(1.0, 1.2, 1.1, 1.4),
+  ymax=c(1.8, 2.1, 2.0, 2.3),
+  group="A"
+)
+trend <- data.frame(x=1:4, y=c(2.5, 2.7, 2.6, 2.9))
+p <- ggplot() +
+  geom_ribbon(
+    data=band,
+    aes(x=x, ymin=ymin, ymax=ymax, fill=group, colour=group, group=group),
+    outline.type="full", alpha=0.35, linewidth=0.7
+  ) +
+  geom_line(data=trend, aes(x=x, y=y), colour="#1F78B4", linewidth=0.9) +
+  scale_colour_manual(values=c(A="#1F78B4")) +
+  scale_fill_manual(values=c(A="#A6CEE3")) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+
+        self.assertIn('data-fig-id="r.layer.0"', result["svg"])
+        self.assertEqual(result["svg"].count('data-fig-id="r.layer.1"'), 1)
 
     def test_ribbon_area_mapped_fill_groups_keep_band_semantics(self):
         script = """

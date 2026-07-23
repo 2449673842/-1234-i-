@@ -3,7 +3,7 @@
 > 状态：当前有效  
 > 更新时间：2026-07-30 16:08:23 +08:00
 > 证据截止时间：2026-07-30 16:08:23 +08:00
-> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 与 R-WP0-WP3 基线，以及 R-WP4 前六类图元的集成门禁；Step/Histogram/Freqpoly、Tile/Raster/Rect 和 Contour/ContourFilled 源分支能力已合入，当前批次集成复验待完成；候选尚未部署
+> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 与 R-WP0-WP3 基线，以及 R-WP4 九类图元家族源分支能力；当前批次集成复验待完成，候选尚未部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
 
@@ -234,7 +234,7 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 | 公开宣传页与注册门禁 | 已实现，邮箱生产通道待配置 | 匿名访问先进入宣传页；启用邮箱验证后，新账号必须完成六位验证码验证才会获得会话；现有账号兼容迁移；安全文案隐藏内部防护细节 |
 | 图形能力展厅 | 本地候选 | 作为帮助中心同级站内页面展示 11 个带能力边界的固定模拟数据样例，其中包含 LnRR 排序图和主项目结构 2 x 2 组合图；没有未经真实验收的样例被标为稳定支持 |
 | Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选 WP6 六个复杂对象家族已有专用语义，其中网络图/路径图/SEM 依赖显式关系声明，不承诺按外观自动识别任意第三方图示；完成全部门禁和部署前不视为线上能力 |
-| R 渲染与语义编辑 | R-WP0-WP3 完成；R-WP4 前六类集成门禁通过，新增统计/Tile/Contour 家族待复验 | 前六类已通过 renderer `85/85`、合同 `16/16`、隔离浏览器 `14/14`、patch authority 和 identity v2 compatibility。Step/Histogram/Freqpoly 与 Tile/Raster/Rect、Contour/ContourFilled 的专用 adapter 已合入；结构字段保持只读，mapped 样式由 scale/mappable 管理；当前批次门禁完成前不标记为集成通过；候选尚未部署 |
+| R 渲染与语义编辑 | R-WP0-WP3 完成；R-WP4 九类家族本地候选已合入，当前批次待复验 | ggplot2 主链路可用；patch mode 服务端权威、失败零持久化、identity v2 和运行时 parity 已验证。R-WP4 九类家族均有专用能力边界；最新 Segment/Curve 保留旧 GID/role，端点、曲率和 arrow 结构只读，mapped 样式归 scale 所有，不推断 arrow child 或文本关系。多个线家族统一改色或可见行混合 NA 行时，SVG 仍按 panel 绘制顺序保留各自 GID。完整 R renderer 111/111、隔离浏览器 14/14、家族权限和旧身份兼容通过；当前批次总门禁完成前不标记为生产能力，下一工作包为 R-WP5 |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |
 | 字体/颜色/线条编辑 | 已实现 | 支持单对象、语义分组、整图和跨 Figure 作用域 |
@@ -387,7 +387,7 @@ docs/platform-capability/UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md
 
 `UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md` 专门处理属性编辑、布局中心、组件中心、配色中心和字体中心的交叉属性与精细度不一致。网页统一版已完成 PropertyDescriptor、capability projection、严格 resolver 和共同 Draft 语义的主要迁移；2026-07-16 候选继续补齐数值自动暂存、字体格式刷、选中子图自动跟随、图例间距、散点比例缩放和保持尺寸的垂直行间距。旧项目兼容路径和 legacy 控件尚未删除。
 
-`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。R-WP0-WP3 和 R-WP4 前六类已完成本地集成候选门禁；Step/Histogram/Freqpoly、Tile/Raster/Rect 与 Contour/ContourFilled 的源分支能力已合入并等待当前批次复验。下一步整合 GeomSegment/Curve，再进入网络图、路径图和 SEM 专用语义扩展。
+`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。R-WP0-WP4 已完成本地候选；R-WP4 九类家族均已建立专用能力边界，最新 Segment/Curve 保留旧身份并将端点、曲率和 arrow 结构设为只读。下一步进入 R-WP5，收敛 scale、guide、facet 与布局关系；网络图、路径图和 SEM 专用语义仍按后续工作包推进。
 
 当前专项方案已补充“能力增强列车”：每项能力必须依次证明 renderer 事实、对象身份、属性能力、目标解析、PatchPlan、Figure 事务、项目级持久化以及 Python/R/真实项目回归。禁止从协议设计直接跳到默认启用。
 
@@ -543,3 +543,13 @@ npm run test:help-center-smoke
 `2026-07-12 14:24:55 +08:00` 帮助页增加面向用户的 Python/R AI 绘图提示词分享；知识产权、核心实现保护和公开边界另行记录在内部文档 `INTELLECTUAL_PROPERTY_PROTECTION_PLAN.md`，不进入用户帮助内容。
 
 `2026-07-12 14:57:42 +08:00` 恢复历史导出资产：账号 `2449673842@qq.com` 的 81 条导出记录全部确认归属正确，78 个原文件仍在，3 个缺失文件由数据库保存的 SVG 图形内容重建，最终达到 81/81 文件存在。资产库改为默认汇总当前账号全部项目，并支持按来源项目筛选。
+
+`2026-07-16 19:10:16 +08:00` 编辑中心子图作用域接入统一选择状态；真实 Figure/子图导出新增独立不可变编辑快照。恢复前执行所有权、完整性、Figure 结构和数据文件哈希校验，成功后保存当前检查点并重新加载目标 Figure；旧资产继续可下载但不虚报可恢复。
+
+`2026-07-17 17:44:15 +08:00` 阶段候选代码收敛为 `3faa789`：快照协议升级到 v2 并为每个 Figure 独立保存脚本，旧版多 Figure 快照安全拒绝恢复；旧 `workspace` 会话恢复保存、重新配置和导出入口；Monaco 改为站内同源加载。最终验证包括 140 个 Vitest 文件/889 项、Python 46/46、R 31/31、renderer 沙箱、完整 API/UI/导出矩阵、生产构建和数据审计 `0` 个问题。该提交尚未推送或部署。
+
+`2026-07-21 17:06:15 +08:00` 新增站内图形能力展厅候选和开发者浏览器验收 MCP。展厅复用现有公开页面、认证和帮助中心导航，不建立第二套网站；目录记录 fixture、证据状态、限制和固定模拟数据来源。新增预览只复用主项目常见图形结构，不读取 `data/` 或真实用户项目。MCP 只通过页面进行选择、属性修改、应用、撤销/重做、诊断、截图和导出，限制允许 origin、主画布、属性面板、导出页及临时产物目录，不具备数据库或 renderer 直写工具。
+
+同一候选把编辑器 `.py/.R` 拖放范围从代码面板扩展到整个工作区，预览页拖入脚本后自动切到代码页；不支持的文件仅记录提示，不覆盖当前脚本。当前定向证据为展厅单元 5/5、展厅隔离浏览器、MCP 安全 4/4、MCP 隔离真实 UI、脚本拖放隔离浏览器和 TypeScript 全部通过。该候选尚未提交、推送或部署，展厅“立即体验”仍进入现有项目创建流程，不代表免注册可编辑 Demo 已完成。
+
+`2026-07-24 00:53:29 +08:00` 完成 R-WP4 GeomSegment/Curve 本地候选。renderer 以专用 adapter 表达端点、曲率和 arrow 只读结构，并在真实 panel 内对 geom 实际可绘制行按图层绘制顺序绑定完整 body/arrow 序列；Step、Freqpoly、Segment 和 Curve 批量改为同色或可见行混合 NA 行时不再丢失 Segment/Curve 的 SVG GID。完整 R renderer 111/111、真实浏览器 14/14、家族 patch authority、identity v2 compatibility、lint、build 和 diff-check 通过。当前未推送、未部署，R-WP5 尚未开始。

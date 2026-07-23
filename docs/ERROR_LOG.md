@@ -4025,3 +4025,34 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `npm run test:r-semantic-smoke` 14/14，真实组件中心完成对象选择、只读控件检查、Draft、保存刷新、撤销重做、导出和快照恢复，console/page error 为 0。
 - `npm run lint`、`npm run build`、family 8 前端合同和 `git diff --check` 通过。后续新增 R layer adapter 必须同时证明真实 setter、mapped aesthetic ownership、结构只读、旧 identity replay 和浏览器事务链路；不得从通用 kind 猜测全部属性。
 - 2026-07-23 15:39:23 +08:00 独立 `gpt-5.5 high` 初审发现 mapped Tile/Rect/ContourFilled 的 `edgecolor` 仍可能覆盖 scale ownership。renderer 已在 currentProps readback、editable/propertyCapabilities 和 setter 三层 fail-closed；新增 mapped Tile/Rect/ContourFilled 回归证明冲突响应不改变 SVG、manifest、stableKey、fingerprint 或 identity。审查前全量 98/98；修复后 family 8 定向 6/6、家族 API、浏览器 14/14、lint、build、diff-check 通过，复审结论 `CLOSED`、无 HIGH/MEDIUM。
+
+---
+
+## 2026-07-24 00:35:27 +08:00 R Segment/Curve 批量统一改色后 SVG 身份丢失
+
+**状态与级别**
+
+- 状态：已修复并通过完整 renderer、隔离 API、真实浏览器、旧身份兼容和静态门禁；未推送、未部署。
+- 级别：P1 真实选择与重放一致性。用户把 Step、Freqpoly、Segment 和 Curve 等线图层批量改成同一种颜色后，Segment/Curve 的 manifest 样式已经成功持久化，但真实 SVG 被标为 `data-scifigure-unresolved-owner`，组件中心无法继续按原 GID 选择这些图元。
+
+**根因**
+
+- Segment/Curve 的 SVG 注入使用颜色、线型和预期 body/arrow 数量匹配图元，并要求 panel 内匹配候选总数与当前图层预期数量完全相等。
+- 图层批量统一改色后，当前 Segment/Curve 与后继 Curve 或其他线层共享颜色。后继图层尚未绑定 GID，因此也进入当前候选集；总数大于预期时当前图层 fail-closed，并把候选标为 unresolved。
+- 独立审查还发现 SVG 绑定路径直接使用未过滤的 built rows，而图层规划路径会先调用 ggplot geom 的 `handle_na()`。一个可见行加一个 NA 行会让绑定路径错误计算 body/arrow 数量并进入 unresolved。
+- manifest、patch acknowledgement 和 editLog 均正确，旧浏览器断言只在最终 SVG 样式证据阶段失败。这说明问题是 SVG owner 解析，不是 setter、身份 fingerprint 或持久化事务。
+
+**修复**
+
+- Segment/Curve 继续只在真实 panel clip group 内查找候选，并使用当前按图层顺序执行的注入流程。
+- 当前图层领取按 SVG 绘制顺序出现的最早 `row_count * (body + arrow)` 个匹配候选；解析出的 body/arrow 索引必须与这个最早候选前缀完全一致。这样后继同色图层不会阻断当前身份，也不能被当前图层跨序列偷认。
+- SVG 绑定与图层规划统一通过 `r_layer_drawable_data()` 使用 geom 实际可绘制行，再计算样式、行数和预期图元数量。
+- 匹配候选不足、body/arrow 顺序不完整或最早候选无法组成当前结构时仍返回 unresolved，保留 fail-closed 边界。
+- 回归把“存在后继同色线时必然 unresolved”的旧预期改为“Segment 与后继 Line 各自保留 GID”，并覆盖前继同色线、arrow 数量、真实 panel 过滤及 Segment/Curve 可见行混合 NA 行。
+
+**验证与防复发**
+
+- 完整 R renderer 分三段运行：37/37、37/37、37/37，共 111/111 通过；NA 行与同色前继/后继定向 3/3 通过。
+- `npm run test:r-semantic-smoke` 14/14。真实组件中心批量改色后，`r.layer.18` 在 SVG 中保留 4 个 Segment body/arrow 图元，`r.layer.19` 保留 3 个 Curve 图元；Draft、重绘、保存刷新、撤销重做、导出和快照恢复一致，console/page error 为 0。
+- `npm run test:r-segment-curve-authority` 与 `npm run test:r-identity-v2-compatibility` 通过；非法结构、mapped style override、mixed batch 和身份漂移继续原子拒绝且零持久化。
+- `npm run lint`、`npm run build` 和 `git diff --check` 通过。后续任何 SVG owner 逻辑不能只用“颜色唯一”证明身份；必须覆盖多个图层收敛为相同样式后的选择、重绘和导出证据。

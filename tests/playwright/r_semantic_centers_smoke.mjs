@@ -53,6 +53,7 @@ function assertIsolatedEnvironment() {
 
 const script = [
   'library(ggplot2)',
+  'library(grid)',
   'df <- data.frame(x=1:4, y=c(1, 3, 2, 5), group=c("A", "A", "B", "B"), facet=c("F1", "F1", "F2", "F2"), weight=c(1.2, 2.4, 3.6, 4.8))',
   'bars <- data.frame(x=1:4, y=c(0.45, 0.7, 0.55, 0.8), group=c("A", "A", "B", "B"))',
   'err <- data.frame(x=1:4, y=c(1.4, 3.1, 2.2, 4.7), ymin=c(1.0, 2.6, 1.7, 4.1), ymax=c(1.8, 3.6, 2.7, 5.3))',
@@ -66,6 +67,8 @@ const script = [
   'rect_data <- data.frame(xmin=c(18.1, 18.9), xmax=c(18.7, 19.5), ymin=c(1.1, 2.1), ymax=c(1.9, 2.9))',
   'contour_data <- expand.grid(x=seq(20, 22, length.out=11), y=seq(1, 3, length.out=11))',
   'contour_data$z <- with(contour_data, sin(x * 1.3) + cos(y * 2.1))',
+  'segment_data <- data.frame(x=c(23.0, 23.4), y=c(1.0, 2.2), xend=c(24.0, 24.5), yend=c(1.8, 1.4), label=c("segment A", "segment B"))',
+  'curve_data <- data.frame(x=23.0, y=3.0, xend=24.8, yend=3.4)',
   'p <- ggplot(df, aes(x, y, color=group)) +',
   '  geom_point(size=3, shape=21, fill="#FFFFFF", stroke=0.6) +',
   '  geom_point(aes(size=weight), shape=21, fill="#A6CEE3", stroke=0.7, alpha=0.8) +',
@@ -85,6 +88,9 @@ const script = [
   '  geom_rect(data=rect_data, aes(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax), inherit.aes=FALSE, fill="#FDAE6B", colour="#E6550D", linewidth=0.25, alpha=0.35) +',
   '  geom_contour(data=contour_data, aes(x=x, y=y, z=z), inherit.aes=FALSE, bins=5, colour="#54278F", linewidth=0.65, linetype="solid", alpha=0.9) +',
   '  geom_contour_filled(data=contour_data, aes(x=x, y=y, z=z), inherit.aes=FALSE, bins=5, fill="#CBC9E2", colour="#6A51A3", linewidth=0.3, alpha=0.55) +',
+  '  geom_segment(data=segment_data, aes(x=x, y=y, xend=xend, yend=yend), inherit.aes=FALSE, colour="#1B9E77", linewidth=0.8, linetype="dashed", alpha=0.8, lineend="round", linejoin="mitre", arrow=arrow(length=unit(3, "mm"), type="closed", ends="last")) +',
+  '  geom_curve(data=curve_data, aes(x=x, y=y, xend=xend, yend=yend), inherit.aes=FALSE, colour="#D95F02", linewidth=0.9, curvature=0.35, angle=75, ncp=8, lineend="butt", arrow=arrow(length=unit(0.15, "in"), type="open", ends="both")) +',
+  '  geom_text(data=segment_data[1, ], aes(x=xend, y=yend, label=label), inherit.aes=FALSE, nudge_y=0.18, size=3) +',
   '  scale_fill_manual(values=c(A="#80B1D3", B="#FDB462", C="#B3DE69", D="#FCCDE5", E="#92C5DE", F="#A6D96A")) +',
   '  labs(title="R Semantic Centers", x="R X Axis", y="R Y Axis") +',
   '  facet_wrap(~facet) +',
@@ -413,9 +419,20 @@ async function readFigureState(page) {
     return {
       revision: figure?.revision || null,
       editLog: figure?.editLog || [],
+      manifest: figure?.manifest || null,
       projectDrafts: state.projectDrafts || {},
     };
   });
+}
+
+async function readSvgGidStyles(page, gids) {
+  return page.evaluate((targetGids) => Object.fromEntries(targetGids.map((gid) => {
+    const nodes = Array.from(document.querySelectorAll(`[data-fig-id="${CSS.escape(gid)}"]`));
+    return [gid, {
+      count: nodes.length,
+      styles: nodes.map((node) => String(node.getAttribute('style') || '').toLowerCase()),
+    }];
+  })), gids);
 }
 
 function hasEdit(editLog, expected) {
@@ -610,6 +627,28 @@ async function prepareProject(page) {
         currentProps: obj.currentProps,
         source: obj.source,
       })),
+      segmentLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.currentProps?.adapterFamily === 'segment').map((obj) => ({
+        id: obj.id,
+        kind: obj.kind,
+        role: obj.role,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+        identity: obj.identity,
+        source: obj.source,
+      })),
+      curveLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.currentProps?.adapterFamily === 'curve').map((obj) => ({
+        id: obj.id,
+        kind: obj.kind,
+        role: obj.role,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+        identity: obj.identity,
+        source: obj.source,
+      })),
+      inferredArrowObjects: objects.filter((obj) => ['diagram_arrow', 'annotation_arrow', 'ggplot_segment_arrow', 'ggplot_curve_arrow'].includes(obj.role)).map((obj) => ({
+        id: obj.id,
+        role: obj.role,
+      })),
       lineLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.kind === 'line').map((obj) => ({
         id: obj.id,
         editable: obj.editable,
@@ -690,6 +729,11 @@ async function run() {
         && fixture.contourLayers.every((layer) => layer.kind === 'contour' && layer.role === 'ggplot_GeomContour' && layer.source?.adapterClass === 'GeomContour' && layer.editable?.includes('linewidth') && layer.editable?.includes('linestyle') && layer.editable?.includes('alpha') && Array.isArray(layer.currentProps?.levels) && !layer.editable?.includes('levels') && !layer.editable?.includes('bins') && !layer.editable?.includes('breaks'))
         && fixture.contourfLayers.length === 1
         && fixture.contourfLayers.every((layer) => layer.kind === 'contourf' && layer.role === 'ggplot_GeomContourFilled' && layer.source?.adapterClass === 'GeomContourFilled' && layer.editable?.includes('facecolor') && layer.editable?.includes('edgecolor') && layer.editable?.includes('linewidth') && layer.editable?.includes('linestyle') && layer.editable?.includes('alpha') && Array.isArray(layer.currentProps?.levels) && !layer.editable?.includes('levels') && !layer.editable?.includes('bins') && !layer.editable?.includes('breaks'))
+        && fixture.segmentLayers.length === 1
+        && fixture.segmentLayers.every((layer) => layer.kind === 'line' && layer.role === 'ggplot_GeomSegment' && layer.source?.adapterClass === 'GeomSegment' && layer.currentProps?.adapterFamily === 'segment' && layer.currentProps?.endpointCount === 2 && layer.currentProps?.lineend === 'round' && layer.currentProps?.linejoin === 'mitre' && layer.currentProps?.arrow?.ends === 'last' && layer.currentProps?.arrow?.type === 'closed' && ['x', 'y', 'xend', 'yend', 'arrow'].every((prop) => layer.currentProps?.structureReadonly?.includes(prop) && !layer.editable?.includes(prop)) && !layer.identity?.relation?.arrowId && !layer.identity?.relation?.textId)
+        && fixture.curveLayers.length === 1
+        && fixture.curveLayers.every((layer) => layer.kind === 'line' && layer.role === 'ggplot_GeomCurve' && layer.source?.adapterClass === 'GeomCurve' && layer.currentProps?.adapterFamily === 'curve' && Number(layer.currentProps?.curvature) === 0.35 && Number(layer.currentProps?.angle) === 75 && Number(layer.currentProps?.ncp) === 8 && layer.currentProps?.arrow?.ends === 'both' && layer.currentProps?.arrow?.type === 'open' && ['x', 'y', 'xend', 'yend', 'curvature', 'angle', 'ncp', 'arrow'].every((prop) => layer.currentProps?.structureReadonly?.includes(prop) && !layer.editable?.includes(prop)) && !layer.identity?.relation?.arrowId && !layer.identity?.relation?.textId)
+        && fixture.inferredArrowObjects.length === 0
         && fixture.fillGroups.some((group) => group.kind === 'distribution' && group.geomFamilies?.includes('GeomBoxplot') && group.geomFamilies?.includes('GeomViolin'))
         && fixture.fillGroups.some((group) => group.kind === 'band' && group.geomFamilies?.includes('GeomRibbon') && group.geomFamilies?.includes('GeomArea'))
         ? 'PASS' : 'FAIL',
@@ -705,17 +749,25 @@ async function run() {
     record('R1-font-center', fontOk ? 'PASS' : 'FAIL', `changed=${fontChanged}, draft=${fontDraft}, patches=${JSON.stringify(fontPatches)}`);
 
     await clickText(page, '组件中心');
-    const componentChanged = await setComponentNumberByGroup(page, 'lines', 'linewidth', 2.2);
+    const segmentSelected = await selectComponentObject(page, 'lines', fixture.segmentLayers[0]?.id);
+    const curveSelected = await selectComponentObject(page, 'lines', fixture.curveLayers[0]?.id);
+    const lineGroupSelected = await selectComponentGroup(page, 'lines');
+    const segmentCurveReadonlyControls = await countComponentParamControls(page, 'lines', ['x', 'y', 'xend', 'yend', 'curvature', 'angle', 'ncp', 'arrow']);
+    const componentChanged = await setNumberByParam(page, 'component-lines', 'linewidth', 2.2);
     const componentDraft = (await getBodyText(page)).includes('已暂存');
     const componentApply = componentChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const componentPatches = patchList(componentApply.patchBody);
-    const familyLineIds = [...fixture.stepLayers, ...fixture.freqpolyLayers].map((layer) => layer.id);
-    const componentOk = componentChanged
+    const familyLineIds = [...fixture.stepLayers, ...fixture.freqpolyLayers, ...fixture.segmentLayers, ...fixture.curveLayers].map((layer) => layer.id);
+    const componentOk = segmentSelected
+      && curveSelected
+      && lineGroupSelected
+      && Object.values(segmentCurveReadonlyControls).every((count) => count === 0)
+      && componentChanged
       && componentDraft
       && componentApply.successful
       && componentPatches.some((patch) => String(patch.gid).startsWith('r.layer.') && patch.prop === 'linewidth' && Number(patch.value) === 2.2)
       && familyLineIds.every((gid) => componentPatches.some((patch) => patch.gid === gid && patch.prop === 'linewidth' && Number(patch.value) === 2.2));
-    record('R2-component-center', componentOk ? 'PASS' : 'FAIL', `changed=${componentChanged}, draft=${componentDraft}, patches=${JSON.stringify(componentPatches)}`);
+    record('R2-component-center', componentOk ? 'PASS' : 'FAIL', `selection=${JSON.stringify({ segmentSelected, curveSelected, lineGroupSelected })}, readonly=${JSON.stringify(segmentCurveReadonlyControls)}, changed=${componentChanged}, draft=${componentDraft}, patches=${JSON.stringify(componentPatches)}`);
 
     await clickText(page, '组件中心');
     const pointSizeValue = 1.7;
@@ -885,6 +937,26 @@ async function run() {
       value: patch.value,
     }));
     const componentBatchState = await waitForEdits(page, componentBatchExpectedEdits);
+    const segmentCurveManifestColorOk = [...fixture.segmentLayers, ...fixture.curveLayers].every((layer) => {
+      const object = componentBatchState.manifest?.objects?.find((candidate) => candidate.id === layer.id);
+      return String(object?.currentProps?.color || '').toLowerCase() === '#08519c';
+    });
+    const segmentCurveSvgEvidence = await readSvgGidStyles(
+      page,
+      [...fixture.segmentLayers, ...fixture.curveLayers].map((layer) => layer.id),
+    );
+    const segmentSvgEvidence = segmentCurveSvgEvidence[fixture.segmentLayers[0]?.id] || { count: 0, styles: [] };
+    const curveSvgEvidence = segmentCurveSvgEvidence[fixture.curveLayers[0]?.id] || { count: 0, styles: [] };
+    const segmentCurveSvgOk = segmentSvgEvidence.count === 4
+      && curveSvgEvidence.count === 3
+      && [...segmentSvgEvidence.styles, ...curveSvgEvidence.styles].every((style) => style.includes('#08519c'));
+    const fillGroupSvgEvidence = await readSvgGidStyles(
+      page,
+      fixture.fillGroups.map((group) => group.groupId),
+    );
+    const fillGroupLineLeak = Object.values(fillGroupSvgEvidence).some((evidence) => (
+      evidence.styles.some((style) => style.includes('#08519c'))
+    ));
     const componentSvgAfter = await page.locator('[data-scifigure-canvas-svg="true"] > svg').first().evaluate((node) => node.outerHTML).catch(() => '');
     const errorbarProps = new Set(componentBatchPatches
       .filter((patch) => patch.prop !== 'linewidth')
@@ -902,7 +974,7 @@ async function run() {
         .map((patch) => patch.prop));
       return props.has('facecolor') && props.has('linewidth');
     });
-    const familyLineColorCoverage = [...fixture.stepLayers, ...fixture.freqpolyLayers].every((layer) => (
+    const familyLineColorCoverage = [...fixture.stepLayers, ...fixture.freqpolyLayers, ...fixture.segmentLayers, ...fixture.curveLayers].every((layer) => (
       componentBatchPatches.some((patch) => patch.gid === layer.id && patch.prop === 'color' && String(patch.value).toLowerCase() === '#08519c')
     ));
     const histogramPatchCoverage = fixture.histogramLayers.every((layer) => {
@@ -934,6 +1006,9 @@ async function run() {
       && ['edgecolor', 'linewidth'].every((prop) => violinProps.has(prop))
       && bandPatchCoverage
       && familyLineColorCoverage
+      && segmentCurveManifestColorOk
+      && segmentCurveSvgOk
+      && !fillGroupLineLeak
       && histogramPatchCoverage
       && componentSvgBefore !== componentSvgAfter
       && componentSvgAfter.toLowerCase().includes('#de2d26')
@@ -942,7 +1017,7 @@ async function run() {
       && componentSvgAfter.toLowerCase().includes('#fdd0a2')
       && componentBatchPatches.every((patch) => String(patch.gid).startsWith('r.layer.'))
       && componentBatchExpectedEdits.every((edit) => hasEdit(componentBatchState.editLog, edit));
-    record('R2d-r-layer-components', componentBatchOk ? 'PASS' : 'FAIL', `changed=${JSON.stringify({ barLineChanged, errorbarLineChanged, errorbarCapChanged, errorbarMarkerChanged, errorbarMarkerSizeChanged, legacyMedianControlHidden, familyLineColorChanged, familyPatchFillChanged, boxplotOutlierColorChanged, boxplotOutlierShapeChanged, boxplotOutlierSizeChanged, violinEdgeChanged, violinLineChanged, bandFillChanged, bandLineChanged })}, draft=${errorbarDraft}, patches=${JSON.stringify(componentBatchPatches)}`);
+    record('R2d-r-layer-components', componentBatchOk ? 'PASS' : 'FAIL', `changed=${JSON.stringify({ barLineChanged, errorbarLineChanged, errorbarCapChanged, errorbarMarkerChanged, errorbarMarkerSizeChanged, legacyMedianControlHidden, familyLineColorChanged, familyPatchFillChanged, boxplotOutlierColorChanged, boxplotOutlierShapeChanged, boxplotOutlierSizeChanged, violinEdgeChanged, violinLineChanged, bandFillChanged, bandLineChanged })}, segmentCurveManifestColorOk=${segmentCurveManifestColorOk}, segmentCurveSvg=${JSON.stringify(segmentCurveSvgEvidence)}, fillGroupLineLeak=${fillGroupLineLeak}, draft=${errorbarDraft}, patches=${JSON.stringify(componentBatchPatches)}`);
 
     const expectedCoreEdits = [
       ...pointSizeExpectedEdits,

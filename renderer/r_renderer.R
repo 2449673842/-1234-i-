@@ -781,6 +781,10 @@ is_line_adapter_layer <- function(layer) {
   geom_class(layer) %in% c("GeomLine", "GeomPath", "GeomSmooth", "GeomStep")
 }
 
+is_segment_curve_adapter_layer <- function(layer) {
+  geom_class(layer) %in% c("GeomSegment", "GeomCurve")
+}
+
 is_bar_adapter_layer <- function(layer) {
   geom_class(layer) %in% c("GeomCol", "GeomBar")
 }
@@ -857,6 +861,8 @@ layer_label <- function(geom, index) {
     GeomLine = "ggplot line layer",
     GeomPath = "ggplot path layer",
     GeomStep = "ggplot step layer",
+    GeomSegment = "ggplot segment layer",
+    GeomCurve = "ggplot curve layer",
     GeomHistogram = "ggplot histogram layer",
     GeomFreqpoly = "ggplot frequency polygon layer",
     GeomCol = "ggplot column layer",
@@ -1091,7 +1097,7 @@ apply_point_layer_edits <- function(layer, gid, built_data = NULL) {
   layer
 }
 
-line_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+line_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL, protect_mapped_styles = FALSE) {
   params <- layer_params(layer)
   default_aes <- layer$geom$default_aes %||% ggplot2::GeomLine$default_aes
   effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
@@ -1119,16 +1125,21 @@ line_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping
     param_value(params, c("alpha"), default_aes$alpha %||% 1)
   )))
   if (length(alpha_fallback) == 0 || !is.finite(alpha_fallback[[1]])) alpha_fallback <- 1
+  linewidth_mapped <- "linewidth" %in% names(effective_mapping) || "size" %in% names(effective_mapping)
+  linetype_mapped <- "linetype" %in% names(effective_mapping)
+  color_mapped <- any(c("colour", "color") %in% names(effective_mapping))
+  alpha_mapped <- "alpha" %in% names(effective_mapping)
 
   list(
-    color = latest_string(gid, "color", color_fallback),
-    linewidth = latest_numeric(gid, "linewidth", linewidth_fallback[[1]]),
+    color = if (protect_mapped_styles && color_mapped) color_fallback else latest_string(gid, "color", color_fallback),
+    linewidth = if (protect_mapped_styles && linewidth_mapped) linewidth_fallback[[1]] else latest_numeric(gid, "linewidth", linewidth_fallback[[1]]),
     linewidthValues = as.list(rendered_widths),
-    linestyle = latest_string(gid, "linestyle", linetype_fallback),
-    alpha = latest_numeric(gid, "alpha", alpha_fallback[[1]]),
-    linewidthMapped = "linewidth" %in% names(effective_mapping) || "size" %in% names(effective_mapping),
-    linetypeMapped = "linetype" %in% names(effective_mapping),
-    colorMapped = any(c("colour", "color") %in% names(effective_mapping)),
+    linestyle = if (protect_mapped_styles && linetype_mapped) linetype_fallback else latest_string(gid, "linestyle", linetype_fallback),
+    alpha = if (protect_mapped_styles && alpha_mapped) alpha_fallback[[1]] else latest_numeric(gid, "alpha", alpha_fallback[[1]]),
+    linewidthMapped = linewidth_mapped,
+    linetypeMapped = linetype_mapped,
+    colorMapped = color_mapped,
+    alphaMapped = alpha_mapped,
     positionClass = layer_position_class(layer),
     adapterFamily = "line",
     smoothLayer = identical(geom_class(layer), "GeomSmooth")
@@ -1151,6 +1162,116 @@ apply_line_layer_edits <- function(layer, gid) {
     params$linetype <- latest_string(gid, "linestyle", params$linetype %||% "solid")
   }
   if (has_edit(gid, "alpha")) {
+    params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
+  }
+
+  layer$aes_params <- params
+  layer
+}
+
+segment_curve_data_values <- function(built_data, name) {
+  if (is.null(built_data) || !name %in% names(built_data)) return(list())
+  values <- built_data[[name]]
+  if (is.factor(values)) values <- as.character(values)
+  manifest_readonly_parameter(unname(values))
+}
+
+segment_curve_arrow_metadata <- function(arrow) {
+  if (is.null(arrow) || length(arrow) == 0) return(list())
+
+  length_unit <- arrow$length %||% NULL
+  length_value <- suppressWarnings(as.numeric(length_unit))
+  if (length(length_value) == 0 || !is.finite(length_value[[1]])) length_value <- NA_real_
+  unit_name <- tryCatch(as.character(grid::unitType(length_unit))[[1]], error = function(e) "unknown")
+  length_mm <- tryCatch(
+    suppressWarnings(as.numeric(grid::convertUnit(length_unit, "mm", valueOnly = TRUE))[[1]]),
+    error = function(e) NA_real_
+  )
+  if (!is.finite(length_mm)) length_mm <- NA_real_
+
+  ends_code <- suppressWarnings(as.integer(arrow$ends %||% NA_integer_))
+  if (length(ends_code) == 0 || is.na(ends_code[[1]])) ends_code <- NA_integer_
+  type_code <- suppressWarnings(as.integer(arrow$type %||% NA_integer_))
+  if (length(type_code) == 0 || is.na(type_code[[1]])) type_code <- NA_integer_
+
+  ends_label <- switch(
+    as.character(ends_code[[1]]),
+    `1` = "first",
+    `2` = "last",
+    `3` = "both",
+    "unknown"
+  )
+  type_label <- switch(
+    as.character(type_code[[1]]),
+    `1` = "open",
+    `2` = "closed",
+    "unknown"
+  )
+
+  list(
+    angle = suppressWarnings(as.numeric(arrow$angle %||% 30)[[1]]),
+    length = list(
+      value = length_value[[1]],
+      unit = unit_name,
+      mm = length_mm
+    ),
+    ends = ends_label,
+    endsCode = ends_code[[1]],
+    type = type_label,
+    typeCode = type_code[[1]]
+  )
+}
+
+segment_curve_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  props <- line_layer_current_props(layer, gid, built_data, plot_mapping, protect_mapped_styles = TRUE)
+  geom <- geom_class(layer)
+  geom_params <- layer$geom_params %||% list()
+  arrow_metadata <- segment_curve_arrow_metadata(geom_params$arrow %||% NULL)
+  structure_readonly <- c("x", "y", "xend", "yend", "lineend")
+
+  props$adapterFamily <- if (identical(geom, "GeomCurve")) "curve" else "segment"
+  props$x <- segment_curve_data_values(built_data, "x")
+  props$y <- segment_curve_data_values(built_data, "y")
+  props$xend <- segment_curve_data_values(built_data, "xend")
+  props$yend <- segment_curve_data_values(built_data, "yend")
+  props$endpointCount <- if (is.null(built_data)) 0L else nrow(built_data)
+  props$lineend <- as.character(geom_params$lineend %||% "butt")[[1]]
+  props$hasArrow <- length(arrow_metadata) > 0
+  props$arrow <- arrow_metadata
+
+  if (identical(geom, "GeomCurve")) {
+    props$curvature <- suppressWarnings(as.numeric(geom_params$curvature %||% 0.5)[[1]])
+    props$angle <- suppressWarnings(as.numeric(geom_params$angle %||% 90)[[1]])
+    props$ncp <- suppressWarnings(as.integer(geom_params$ncp %||% 5)[[1]])
+    structure_readonly <- c(structure_readonly, "curvature", "angle", "ncp", "arrow")
+  } else {
+    props$linejoin <- as.character(geom_params$linejoin %||% "round")[[1]]
+    structure_readonly <- c(structure_readonly, "linejoin", "arrow")
+  }
+  props$structureReadonly <- as.list(structure_readonly)
+  props
+}
+
+apply_segment_curve_layer_edits <- function(layer, gid, plot_mapping = NULL) {
+  params <- layer$aes_params %||% list()
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  color_mapped <- any(c("colour", "color") %in% names(effective_mapping))
+  linewidth_mapped <- "linewidth" %in% names(effective_mapping) || "size" %in% names(effective_mapping)
+  linetype_mapped <- "linetype" %in% names(effective_mapping)
+  alpha_mapped <- "alpha" %in% names(effective_mapping)
+
+  if (!color_mapped && has_edit(gid, "color")) {
+    params$colour <- latest_string(gid, "color", params$colour %||% params$color %||% "black")
+  }
+  if (!linewidth_mapped && has_edit(gid, "linewidth")) {
+    line_width <- latest_numeric(gid, "linewidth", params$linewidth %||% params$size %||% 1)
+    params$linewidth <- line_width
+    params$size <- line_width
+  }
+  if (!linetype_mapped && has_edit(gid, "linestyle")) {
+    params$linetype <- latest_string(gid, "linestyle", params$linetype %||% "solid")
+  }
+  if (!alpha_mapped && has_edit(gid, "alpha")) {
     params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
   }
 
@@ -2012,6 +2133,10 @@ apply_layer_edits <- function(plot_obj, built_data_by_layer = list()) {
     }
     if (is_line_adapter_layer(plot_obj$layers[[i]])) {
       plot_obj$layers[[i]] <- apply_line_layer_edits(plot_obj$layers[[i]], gid)
+      next
+    }
+    if (is_segment_curve_adapter_layer(plot_obj$layers[[i]])) {
+      plot_obj$layers[[i]] <- apply_segment_curve_layer_edits(plot_obj$layers[[i]], gid, plot_obj$mapping)
       next
     }
     if (is_bar_adapter_layer(plot_obj$layers[[i]])) {
@@ -3715,6 +3840,7 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
   kind <- layer_kind(geom)
   point_adapter <- is_point_layer(layer)
   line_adapter <- is_line_adapter_layer(layer)
+  segment_curve_adapter <- is_segment_curve_adapter_layer(layer)
   bar_adapter <- is_bar_adapter_layer(layer)
   step_adapter <- is_step_adapter_layer(layer)
   histogram_adapter <- is_histogram_adapter_layer(layer)
@@ -3743,6 +3869,8 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
     point_layer_current_props(layer, gid, built_data, plot_mapping)
   } else if (line_adapter) {
     line_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (segment_curve_adapter) {
+    segment_curve_layer_current_props(layer, gid, built_data, plot_mapping)
   } else if (bar_adapter) {
     bar_layer_current_props(layer, gid, built_data, plot_mapping)
   } else if (errorbar_adapter) {
@@ -3798,11 +3926,19 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
       list("alpha")
     )
   }
+  if (segment_curve_adapter) {
+    editable <- c(
+      if (isTRUE(props$colorMapped)) list() else list("color"),
+      if (isTRUE(props$linewidthMapped)) list() else list("linewidth"),
+      if (isTRUE(props$linetypeMapped)) list() else list("linestyle"),
+      if (isTRUE(props$alphaMapped)) list() else list("alpha")
+    )
+  }
   current_props <- switch(
     kind,
     text = list(color = props$color, fontsize = props$size, alpha = props$alpha),
     collection = if (point_adapter) props else list(color = props$color, facecolor = props$facecolor, size = props$size, alpha = props$alpha),
-    line = if (line_adapter) props else list(color = props$color, linewidth = props$linewidth, linestyle = props$linestyle, alpha = props$alpha),
+    line = if (line_adapter || segment_curve_adapter) props else list(color = props$color, linewidth = props$linewidth, linestyle = props$linestyle, alpha = props$alpha),
     patch = if (bar_adapter || ribbon_area_adapter || tile_raster_rect_adapter) props else list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
     errorbar_container = if (errorbar_adapter) props else list(color = props$color, linewidth = props$linewidth, alpha = props$alpha),
     boxplot_container = if (boxplot_adapter) props else list(color = props$color, linewidth = props$linewidth, alpha = props$alpha, box_color = latest_string(gid, "box_color", props$facecolor)),
@@ -4508,44 +4644,163 @@ apply_svg_legend_text_edits <- function(svg, manifest) {
   svg
 }
 
+r_layer_mapped_scale_kinds <- function(layer, plot_mapping = NULL) {
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  fixed_params <- layer_params(layer)
+  color_mapped <- any(c("colour", "color") %in% names(effective_mapping)) &&
+    !any(c("colour", "color") %in% names(fixed_params))
+  fill_mapped <- "fill" %in% names(effective_mapping) && !"fill" %in% names(fixed_params)
+  c(
+    if (color_mapped) "color" else character(),
+    if (fill_mapped) "fill" else character()
+  )
+}
+
+r_layer_drawable_data <- function(layer, data) {
+  params <- layer$computed_geom_params %||% layer$geom_params %||% list()
+  filtered <- suppressWarnings(tryCatch(
+    layer$geom$handle_na(data, params),
+    error = function(e) NULL
+  ))
+  list(data = filtered %||% data, verified = !is.null(filtered))
+}
+
 layer_svg_plan <- function(plot_obj) {
   built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
   if (is.null(built) || is.null(built$data) || length(plot_obj$layers) == 0) return(list())
 
+  group_rows <- function(data) {
+    if ("group" %in% names(data)) match(unique(data$group), data$group) else seq_len(nrow(data))
+  }
+  style_values <- function(data, name) {
+    if (!name %in% names(data)) return(character())
+    values <- as.character(data[[name]])
+    unique(values[!is.na(values) & nzchar(values) & toupper(values) != "NA"])
+  }
+  visible_style_values <- function(values) {
+    values <- as.character(unlist(values, use.names = FALSE))
+    unique(values[!is.na(values) & nzchar(values) & toupper(values) != "NA"])
+  }
+
   plans <- list()
   for (i in seq_along(plot_obj$layers)) {
-    geom <- geom_class(plot_obj$layers[[i]])
+    layer <- plot_obj$layers[[i]]
+    geom <- geom_class(layer)
     kind <- layer_kind(geom)
     if (kind == "text") next
     data <- built$data[[i]]
     if (is.null(data) || nrow(data) == 0) next
-
-    tags <- switch(
-      kind,
-      collection = c("circle", "path"),
-      line = c("polyline", "path", "line"),
-      patch = c("rect", "polygon", "path"),
-      errorbar_container = c("polyline", "line", "path"),
-      c("path", "polyline", "circle", "rect", "polygon", "line")
-    )
-    count <- switch(
-      kind,
-      line = max(1L, length(unique(data$group %||% 1L))),
-      errorbar_container = max(1L, nrow(data)),
-      max(1L, nrow(data))
-    )
-    row_indices <- if (kind == "line" && "group" %in% names(data)) {
-      match(unique(data$group), data$group)
+    drawable <- r_layer_drawable_data(layer, data)
+    data <- drawable$data
+    if (is.null(data) || nrow(data) == 0) next
+    segment_curve <- is_segment_curve_adapter_layer(layer)
+    arrow <- layer$geom_params$arrow %||% NULL
+    arrow_ends <- suppressWarnings(as.integer(arrow$ends %||% NA_integer_))
+    arrow_count <- if (is.null(arrow)) {
+      0L
+    } else if (length(arrow_ends) > 0 && identical(arrow_ends[[1]], 3L)) {
+      2L
     } else {
-      seq_len(min(count, nrow(data)))
+      1L
+    }
+    elements_per_row <- if (segment_curve) 1L + arrow_count else 1L
+    grouped_rows <- group_rows(data)
+    tags <- switch(
+      geom,
+      GeomPoint = c("circle", "path", "polygon"),
+      GeomJitter = c("circle", "path", "polygon"),
+      GeomLine = c("polyline", "path", "line"),
+      GeomPath = c("polyline", "path", "line"),
+      GeomSmooth = c("polyline", "path", "line"),
+      GeomStep = c("polyline", "path", "line"),
+      GeomDensity = c("polyline", "path", "line"),
+      GeomFreqpoly = c("polyline", "path", "line"),
+      GeomSegment = c("line", "polyline", "path", "polygon"),
+      GeomCurve = c("polyline", "path", "line", "polygon"),
+      GeomCol = c("rect", "polygon", "path"),
+      GeomBar = c("rect", "polygon", "path"),
+      GeomTile = c("rect", "polygon", "path"),
+      GeomRect = c("rect", "polygon", "path"),
+      GeomRaster = c("image", "rect"),
+      GeomErrorbar = c("polyline", "line", "path"),
+      GeomErrorbarh = c("polyline", "line", "path"),
+      GeomLinerange = c("line", "polyline", "path"),
+      GeomPointrange = c("line", "polyline", "path", "circle", "polygon"),
+      GeomCrossbar = c("rect", "polyline", "line", "path", "polygon"),
+      GeomViolin = c("polygon", "path"),
+      GeomBoxplot = c("rect", "polygon"),
+      GeomRibbon = c("polygon", "path"),
+      GeomArea = c("polygon", "path"),
+      GeomContour = c("path", "polyline"),
+      GeomContourFilled = c("path", "polygon", "polyline"),
+      switch(
+        kind,
+        collection = c("circle", "path", "polygon"),
+        line = c("polyline", "path", "line"),
+        patch = c("rect", "polygon", "path"),
+        errorbar_container = c("polyline", "line", "path", "rect"),
+        c("path", "polyline", "circle", "rect", "polygon", "line")
+      )
+    )
+
+    if (segment_curve) {
+      count <- max(1L, nrow(data) * elements_per_row)
+    } else if (geom %in% c("GeomLine", "GeomPath", "GeomSmooth", "GeomStep", "GeomDensity", "GeomFreqpoly", "GeomContour", "GeomContourFilled")) {
+      count <- max(1L, length(grouped_rows))
+    } else if (geom %in% c("GeomErrorbar", "GeomErrorbarh")) {
+      count <- nrow(data) * 3L
+    } else if (identical(geom, "GeomPointrange")) {
+      count <- nrow(data) * 2L
+    } else if (identical(geom, "GeomLinerange")) {
+      count <- nrow(data)
+    } else if (identical(geom, "GeomCrossbar")) {
+      count <- nrow(data) * 2L
+    } else if (identical(geom, "GeomViolin")) {
+      count <- length(grouped_rows)
+    } else if (identical(geom, "GeomBoxplot")) {
+      count <- length(grouped_rows)
+    } else if (geom %in% c("GeomRibbon", "GeomArea")) {
+      count <- length(grouped_rows)
+    } else if (identical(geom, "GeomRaster")) {
+      panel_rows <- if ("PANEL" %in% names(data)) match(unique(data$PANEL), data$PANEL) else 1L
+      count <- length(panel_rows)
+    } else {
+      count <- max(1L, nrow(data))
     }
     plans[[length(plans) + 1]] <- list(
       gid = paste0("r.layer.", i - 1),
+      geom = geom,
       kind = kind,
       tags = tags,
       count = count,
-      row_indices = row_indices,
-      layer_index = i
+      layer_index = i,
+      segment_curve = segment_curve,
+      stroke_colors = visible_style_values(c(
+        style_values(data, "colour"),
+        if (identical(geom, "GeomBoxplot")) {
+          param_value(layer$geom_params %||% list(), c("outlier.colour", "outlier.color"), NULL)
+        } else {
+          NULL
+        }
+      )),
+      fill_colors = visible_style_values(c(
+        style_values(data, "fill"),
+        if (identical(geom, "GeomBoxplot")) {
+          param_value(layer$geom_params %||% list(), c("outlier.fill"), NULL)
+        } else {
+          NULL
+        }
+      )),
+      scale_kinds = r_layer_mapped_scale_kinds(layer, plot_obj$mapping),
+      linetypes = style_values(data, "linetype"),
+      allow_css_default_stroke = geom %in% c(
+        "GeomLine", "GeomPath", "GeomSmooth", "GeomStep", "GeomDensity", "GeomFreqpoly"
+      ),
+      selection_mode = if (isTRUE(drawable$verified) && geom %in% c(
+        "GeomPoint", "GeomJitter", "GeomLine", "GeomPath", "GeomSmooth", "GeomStep",
+        "GeomDensity", "GeomFreqpoly", "GeomCol", "GeomBar", "GeomTile", "GeomRect",
+        "GeomRaster", "GeomContour", "GeomContourFilled"
+      )) "ordered" else "exact"
     )
   }
   plans
@@ -4553,6 +4808,7 @@ layer_svg_plan <- function(plot_obj) {
 
 is_svg_data_candidate <- function(chunk) {
   if (grepl("\\bdata-fig-id\\s*=", chunk, perl = TRUE)) return(FALSE)
+  if (grepl("\\bdata-scifigure-unresolved-owner\\s*=", chunk, perl = TRUE)) return(FALSE)
   # Skip non-styled geometric helpers (like clip-path elements which lack inline style attribute)
   if (!grepl("\\bstyle\\s*=", chunk, perl = TRUE)) return(FALSE)
   # Skip panel/background rectangles: white fill with no stroke
@@ -4584,6 +4840,28 @@ is_svg_data_candidate <- function(chunk) {
   TRUE
 }
 
+mark_svg_records_unresolved <- function(svg, records, owner_gid) {
+  if (length(records) == 0 || !nzchar(owner_gid)) return(svg)
+  starts <- vapply(records, function(record) record$start, numeric(1))
+  records <- records[!duplicated(starts)]
+  records <- records[order(vapply(records, function(record) record$start, numeric(1)), decreasing = TRUE)]
+  for (record in records) {
+    if (!is_svg_data_candidate(record$chunk)) next
+    replacement <- sub(
+      "^<([A-Za-z0-9:_-]+)\\b",
+      paste0("<\\1 data-scifigure-unresolved-owner=\"", owner_gid, "\""),
+      record$chunk,
+      perl = TRUE
+    )
+    svg <- paste0(
+      substr(svg, 1, record$start - 1),
+      replacement,
+      substr(svg, record$start + record$len, nchar(svg))
+    )
+  }
+  svg
+}
+
 colors_equal <- function(c1, c2) {
   if (is.null(c1) || is.null(c2) || is.na(c1) || is.na(c2)) return(FALSE)
   if (identical(c1, c2)) return(TRUE)
@@ -4595,62 +4873,381 @@ colors_equal <- function(c1, c2) {
   return(all(rgb1 == rgb2))
 }
 
-get_element_group_gid <- function(layer_index, row_index, default_layer_gid, built_data, scale_catalog) {
-  if (length(built_data) < layer_index) {
-    return(default_layer_gid)
+svg_tag_style_value <- function(chunk, property) {
+  style_match <- regexec("\\bstyle\\s*=\\s*(['\"])(.*?)\\1", chunk, perl = TRUE)
+  style_parts <- regmatches(chunk, style_match)[[1]]
+  if (length(style_parts) < 3) return("")
+  value_match <- regexec(
+    paste0("(?i)(^|;)\\s*", regex_escape(property), "\\s*:\\s*([^;]+)"),
+    style_parts[[3]],
+    perl = TRUE
+  )
+  value_parts <- regmatches(style_parts[[3]], value_match)[[1]]
+  if (length(value_parts) < 3) "" else trimws(value_parts[[3]])
+}
+
+svg_tag_name <- function(chunk) {
+  parts <- regmatches(chunk, regexec("^<([A-Za-z0-9:_-]+)\\b", chunk, perl = TRUE))[[1]]
+  if (length(parts) < 2) "" else parts[[2]]
+}
+
+svg_geometry_tag_records <- function(svg, tags) {
+  if (length(tags) == 0) return(list())
+  pattern <- paste0("<(", paste(tags, collapse = "|"), ")\\b[^>]*>")
+  matches <- gregexpr(pattern, svg, perl = TRUE)[[1]]
+  if (length(matches) == 1 && matches[[1]] == -1) return(list())
+  lengths <- attr(matches, "match.length")
+  records <- list()
+  for (index in seq_along(matches)) {
+    start <- matches[[index]]
+    length_value <- lengths[[index]]
+    if (start < 0 || length_value <= 0) next
+    chunk <- substr(svg, start, start + length_value - 1)
+    records[[length(records) + 1]] <- list(
+      start = start,
+      len = length_value,
+      chunk = chunk,
+      tag = svg_tag_name(chunk)
+    )
   }
+  records
+}
 
-  data <- built_data[[layer_index]]
-  if (is.null(data) || nrow(data) < row_index) {
-    return(default_layer_gid)
+svg_panel_clip_ids <- function(svg) {
+  if (is.null(svg) || !nzchar(svg)) return(character())
+  viewbox_match <- regexec(
+    "viewBox\\s*=\\s*['\"]\\s*[-+0-9.eE]+\\s+[-+0-9.eE]+\\s+([-+0-9.eE]+)\\s+([-+0-9.eE]+)\\s*['\"]",
+    svg,
+    perl = TRUE
+  )
+  viewbox <- regmatches(svg, viewbox_match)[[1]]
+  if (length(viewbox) < 3) return(character())
+  total_width <- suppressWarnings(as.numeric(viewbox[[2]]))
+  total_height <- suppressWarnings(as.numeric(viewbox[[3]]))
+  if (!is.finite(total_width) || !is.finite(total_height)) return(character())
+
+  ids <- character()
+  for (block in svg_tags(svg, "<clipPath\\b[\\s\\S]*?</clipPath>")) {
+    rect_tags <- svg_tags(block, "<rect\\b[^>]*>")
+    if (length(rect_tags) == 0) next
+    rect <- rect_tags[[1]]
+    x <- svg_tag_number(rect, "x")
+    y <- svg_tag_number(rect, "y")
+    width <- svg_tag_number(rect, "width")
+    height <- svg_tag_number(rect, "height")
+    if (!all(is.finite(c(x, y, width, height))) || width <= 0 || height <= 0) next
+    if (x <= 0.5 && y <= 0.5 && width >= total_width * 0.98 && height >= total_height * 0.98) next
+    id_match <- regexec("\\bid\\s*=\\s*['\"]([^'\"]+)['\"]", block, perl = TRUE)
+    id_parts <- regmatches(block, id_match)[[1]]
+    if (length(id_parts) >= 2 && nzchar(id_parts[[2]])) ids <- c(ids, id_parts[[2]])
   }
+  unique(ids)
+}
 
-  row_data <- data[row_index, ]
-
-  candidates <- character()
-  for (entry in scale_catalog$entries %||% list()) {
-    kind <- entry$kind
-    val_in_data <- if (kind == "fill") row_data$fill else row_data$colour
-    if (is.null(val_in_data) || is.na(val_in_data)) next
-
-    for (j in seq_along(entry$colors)) {
-      group_id <- paste0("r.group.", kind, ".", entry$ordinal, ".", j - 1)
-      orig_color <- as.character(entry$colors[[j]])
-      current_color <- latest_string(group_id, if (kind == "fill") "facecolor" else "color", orig_color)
-      if (colors_equal(val_in_data, current_color)) {
-        candidates <- c(candidates, group_id)
+svg_panel_geometry_records <- function(svg, tags) {
+  panel_ids <- svg_panel_clip_ids(svg)
+  if (length(panel_ids) == 0 || length(tags) == 0) return(list())
+  records <- list()
+  for (panel_id in panel_ids) {
+    pattern <- paste0(
+      "<g\\b[^>]*clip-path\\s*=\\s*['\"]url\\(#",
+      regex_escape(panel_id),
+      "\\)['\"][^>]*>[\\s\\S]*?</g>"
+    )
+    matches <- gregexpr(pattern, svg, perl = TRUE)[[1]]
+    if (length(matches) == 1 && matches[[1]] == -1) next
+    lengths <- attr(matches, "match.length")
+    for (index in seq_along(matches)) {
+      start <- matches[[index]]
+      length_value <- lengths[[index]]
+      if (start < 0 || length_value <= 0) next
+      block <- substr(svg, start, start + length_value - 1)
+      block_records <- svg_geometry_tag_records(block, tags)
+      if (length(block_records) == 0) next
+      for (record in block_records) {
+        record$start <- record$start + start - 1
+        records[[length(records) + 1]] <- record
       }
     }
   }
+  if (length(records) == 0) return(list())
+  records[order(vapply(records, function(record) record$start, numeric(1)))]
+}
 
+svg_linetype_class <- function(value) {
+  text <- tolower(as.character(value %||% "solid")[[1]])
+  if (text %in% c("1", "solid")) return("solid")
+  if (text %in% c("2", "dashed")) return("dashed")
+  if (text %in% c("3", "dotted")) return("dotted")
+  if (text %in% c("4", "dotdash")) return("dotdash")
+  if (text %in% c("5", "longdash")) return("longdash")
+  if (text %in% c("6", "twodash")) return("twodash")
+  "unknown"
+}
+
+svg_tag_linetype_matches <- function(chunk, expected) {
+  expected_class <- svg_linetype_class(expected)
+  if (expected_class == "unknown") return(TRUE)
+  dash_value <- svg_tag_style_value(chunk, "stroke-dasharray")
+  has_dash <- nzchar(dash_value) && !tolower(dash_value) %in% c("none", "0", "0.00")
+  if (expected_class == "solid") !has_dash else has_dash
+}
+
+svg_tag_stroke_matches <- function(chunk, expected_color) {
+  stroke <- svg_tag_style_value(chunk, "stroke")
+  nzchar(stroke) && colors_equal(stroke, expected_color)
+}
+
+svg_tag_effective_stroke_value <- function(chunk) {
+  stroke <- svg_tag_style_value(chunk, "stroke")
+  if (nzchar(stroke)) return(stroke)
+  tag <- svg_tag_name(chunk)
+  if (
+    tag %in% c("line", "polyline", "path", "polygon", "circle", "rect") &&
+    !grepl("stroke\\s*:\\s*none", chunk, ignore.case = TRUE, perl = TRUE)
+  ) {
+    # svglite puts the default black stroke in its stylesheet rather than each tag.
+    return("#000000")
+  }
+  ""
+}
+
+svg_tag_stroke_matches_any <- function(chunk, expected_values) {
+  stroke <- svg_tag_style_value(chunk, "stroke")
+  svg_color_matches_any(stroke, expected_values)
+}
+
+svg_color_matches_any <- function(value, expected_values) {
+  if (!nzchar(value) || length(expected_values) == 0) return(FALSE)
+  any(vapply(expected_values, function(expected) colors_equal(value, expected), logical(1)))
+}
+
+svg_tag_linetype_matches_any <- function(chunk, expected_values) {
+  if (length(expected_values) == 0) return(TRUE)
+  any(vapply(expected_values, function(expected) svg_tag_linetype_matches(chunk, expected), logical(1)))
+}
+
+layer_svg_candidate_matches <- function(chunk, plan, allow_css_default_stroke = FALSE) {
+  tag <- svg_tag_name(chunk)
+  if (identical(plan$geom, "GeomRaster") && identical(tag, "image")) {
+    return(!grepl("\\bdata-fig-id\\s*=", chunk, perl = TRUE))
+  }
+  if (!is_svg_data_candidate(chunk)) return(FALSE)
+
+  stroke <- svg_tag_style_value(chunk, "stroke")
+  if (
+    allow_css_default_stroke &&
+    !nzchar(stroke) &&
+    colors_equal(svg_tag_effective_stroke_value(chunk), "#000000")
+  ) {
+    stroke <- "#000000"
+  }
+  fill <- svg_tag_style_value(chunk, "fill")
+  stroke_match <- svg_color_matches_any(stroke, plan$stroke_colors %||% character())
+  fill_match <- svg_color_matches_any(fill, plan$fill_colors %||% character())
+  no_style_signature <- length(plan$stroke_colors %||% character()) == 0 && length(plan$fill_colors %||% character()) == 0
+  if (no_style_signature) return(TRUE)
+
+  if (plan$kind %in% c("line", "contour", "errorbar_container")) {
+    return(stroke_match && svg_tag_linetype_matches_any(chunk, plan$linetypes %||% character()))
+  }
+  stroke_match || fill_match
+}
+
+segment_curve_rendered_values <- function(layer, built_data, name, param_names, fallback) {
+  values <- as.character(unlist(layer_data_values(built_data, name), use.names = FALSE))
+  values <- values[!is.na(values) & nzchar(values)]
+  if (length(values) == 0) {
+    params <- layer_params(layer)
+    value <- param_value(params, param_names, fallback)
+    values <- as.character(value %||% fallback)
+  }
+  values
+}
+
+segment_curve_arrow_count <- function(layer) {
+  arrow <- layer$geom_params$arrow %||% NULL
+  if (is.null(arrow) || length(arrow) == 0) return(0L)
+  ends <- suppressWarnings(as.integer(arrow$ends %||% NA_integer_))
+  if (length(ends) > 0 && identical(ends[[1]], 3L)) 2L else 1L
+}
+
+find_svg_style_candidate <- function(records, start_index, tags, color, linetype, require_linetype = TRUE) {
+  if (length(records) == 0) return(NA_integer_)
+  for (index in seq.int(max(1L, start_index), length(records))) {
+    record <- records[[index]]
+    if (!record$tag %in% tags || !is_svg_data_candidate(record$chunk)) next
+    if (!svg_tag_stroke_matches(record$chunk, color)) next
+    if (require_linetype && !svg_tag_linetype_matches(record$chunk, linetype)) next
+    return(index)
+  }
+  NA_integer_
+}
+
+segment_curve_svg_selection <- function(svg, layer, layer_index, built_data, scale_catalog, default_gid, plot_mapping = NULL) {
+  data <- built_data[[layer_index]] %||% NULL
+  if (is.null(data) || nrow(data) == 0) return(list(selections = list(), ambiguous_records = list()))
+  data <- r_layer_drawable_data(layer, data)$data
+  if (is.null(data) || nrow(data) == 0) return(list(selections = list(), ambiguous_records = list()))
+
+  geom <- geom_class(layer)
+  row_count <- nrow(data)
+  colors <- segment_curve_rendered_values(layer, data, "colour", c("colour", "color"), "black")
+  linetypes <- segment_curve_rendered_values(layer, data, "linetype", c("linetype"), "solid")
+  colors <- rep(colors, length.out = row_count)
+  linetypes <- rep(linetypes, length.out = row_count)
+  arrow_count <- segment_curve_arrow_count(layer)
+  body_tags <- if (identical(geom, "GeomSegment")) c("line", "polyline", "path") else c("polyline", "path", "line")
+  arrow_tags <- if (identical(geom, "GeomSegment")) c("polygon", "polyline", "path") else c("polyline", "path", "polygon")
+  records <- svg_panel_geometry_records(svg, unique(c(body_tags, arrow_tags)))
+  matching_records <- vapply(records, function(record) {
+    if (!is_svg_data_candidate(record$chunk)) return(FALSE)
+    stroke <- svg_tag_style_value(record$chunk, "stroke")
+    if (!svg_color_matches_any(stroke, colors)) return(FALSE)
+    body_match <- record$tag %in% body_tags && svg_tag_linetype_matches_any(record$chunk, linetypes)
+    arrow_match <- arrow_count > 0 && record$tag %in% arrow_tags
+    body_match || arrow_match
+  }, logical(1))
+  ambiguous_records <- records[matching_records]
+  expected_record_count <- row_count * (1L + arrow_count)
+  matching_indices <- which(matching_records)
+  if (length(matching_indices) < expected_record_count) {
+    return(list(selections = list(), ambiguous_records = ambiguous_records))
+  }
+  owned_indices <- matching_indices[seq_len(expected_record_count)]
+  selections <- list()
+  selected_indices <- integer()
+  cursor <- 1L
+
+  for (row_index in seq_len(row_count)) {
+    body_index <- find_svg_style_candidate(
+      records, cursor, body_tags, colors[[row_index]], linetypes[[row_index]], require_linetype = TRUE
+    )
+    if (is.na(body_index)) return(list(selections = list(), ambiguous_records = ambiguous_records))
+    row_selection <- list(body_index)
+    next_index <- body_index + 1L
+    if (arrow_count > 0) {
+      for (arrow_index in seq_len(arrow_count)) {
+        candidate_index <- find_svg_style_candidate(
+          records, next_index, arrow_tags, colors[[row_index]], linetypes[[row_index]], require_linetype = FALSE
+        )
+        if (is.na(candidate_index)) return(list(selections = list(), ambiguous_records = ambiguous_records))
+        row_selection <- c(row_selection, candidate_index)
+        next_index <- candidate_index + 1L
+      }
+    }
+    for (record_index in row_selection) {
+      selected_indices <- c(selected_indices, record_index)
+      selections[[length(selections) + 1]] <- list(
+        record = records[[record_index]],
+        gid = get_svg_candidate_group_gid(
+          records[[record_index]]$chunk,
+          default_gid,
+          scale_catalog,
+          r_layer_mapped_scale_kinds(layer, plot_mapping)
+        )
+      )
+    }
+    cursor <- next_index
+  }
+  if (!identical(selected_indices, owned_indices)) {
+    return(list(selections = list(), ambiguous_records = ambiguous_records))
+  }
+  list(selections = selections, ambiguous_records = list())
+}
+
+inject_segment_curve_layer_svg_ids <- function(svg, plot_obj, layer_index, built_data, scale_catalog) {
+  layer <- plot_obj$layers[[layer_index]]
+  if (!is_segment_curve_adapter_layer(layer)) return(svg)
+  default_gid <- paste0("r.layer.", layer_index - 1)
+  selection_result <- segment_curve_svg_selection(
+    svg, layer, layer_index, built_data, scale_catalog, default_gid, plot_obj$mapping
+  )
+  selections <- selection_result$selections %||% list()
+  if (length(selections) == 0) {
+    return(mark_svg_records_unresolved(svg, selection_result$ambiguous_records %||% list(), default_gid))
+  }
+  for (selection in rev(selections)) {
+    record <- selection$record
+    replacement <- sub(
+      "^<([A-Za-z0-9:_-]+)\\b",
+      paste0("<\\1 data-fig-id=\"", selection$gid, "\""),
+      record$chunk,
+      perl = TRUE
+    )
+    svg <- paste0(
+      substr(svg, 1, record$start - 1),
+      replacement,
+      substr(svg, record$start + record$len, nchar(svg))
+    )
+  }
+  svg
+}
+
+get_svg_candidate_group_gid <- function(chunk, default_layer_gid, scale_catalog, allowed_kinds = c("color", "fill")) {
+  allowed_kinds <- unique(as.character(unlist(allowed_kinds, use.names = FALSE)))
+  if (length(allowed_kinds) == 0) return(default_layer_gid)
+  candidates <- character()
+  for (entry in scale_catalog$entries %||% list()) {
+    if (!entry$kind %in% allowed_kinds) next
+    style_value <- if (entry$kind == "fill") {
+      svg_tag_style_value(chunk, "fill")
+    } else {
+      svg_tag_effective_stroke_value(chunk)
+    }
+    if (!nzchar(style_value) || tolower(style_value) %in% c("none", "transparent")) next
+    for (index in seq_along(entry$colors)) {
+      group_id <- paste0("r.group.", entry$kind, ".", entry$ordinal, ".", index - 1)
+      original_color <- as.character(entry$colors[[index]])
+      current_color <- latest_string(
+        group_id,
+        if (entry$kind == "fill") "facecolor" else "color",
+        original_color
+      )
+      if (colors_equal(style_value, current_color)) candidates <- c(candidates, group_id)
+    }
+  }
   candidates <- unique(candidates)
   if (length(candidates) == 1) candidates[[1]] else default_layer_gid
 }
 
-inject_next_svg_tag_attrs <- function(svg, tags, gid, count, row_indices, layer_index, built_data, scale_catalog) {
-  if (count <= 0 || length(tags) == 0 || !nzchar(gid)) return(svg)
-  tag_pattern <- paste(tags, collapse = "|")
-  pattern <- paste0("<(", tag_pattern, ")\\b[^>]*>")
-  matches <- gregexpr(pattern, svg, perl = TRUE)[[1]]
-  if (length(matches) == 1 && matches[[1]] == -1) return(svg)
-
-  match_lengths <- attr(matches, "match.length")
-  candidates <- list()
-  for (i in seq_along(matches)) {
-    start <- matches[[i]]
-    len <- match_lengths[[i]]
-    if (start < 0 || len <= 0) next
-    chunk <- substr(svg, start, start + len - 1)
-    if (!is_svg_data_candidate(chunk)) next
-    candidates[[length(candidates) + 1]] <- list(start = start, len = len, chunk = chunk)
-    if (length(candidates) >= count) break
+inject_next_svg_tag_attrs <- function(svg, plan, scale_catalog) {
+  if (plan$count <= 0 || length(plan$tags) == 0 || !nzchar(plan$gid)) return(svg)
+  records <- svg_panel_geometry_records(svg, plan$tags)
+  if (length(records) == 0) return(svg)
+  explicit_candidates <- list()
+  css_default_candidates <- list()
+  for (record in records) {
+    chunk <- record$chunk
+    candidate <- list(start = record$start, len = record$len, chunk = chunk)
+    if (layer_svg_candidate_matches(chunk, plan)) {
+      explicit_candidates[[length(explicit_candidates) + 1]] <- candidate
+      next
+    }
+    if (
+      isTRUE(plan$allow_css_default_stroke) &&
+      layer_svg_candidate_matches(chunk, plan, allow_css_default_stroke = TRUE)
+    ) {
+      css_default_candidates[[length(css_default_candidates) + 1]] <- candidate
+    }
   }
-  if (length(candidates) == 0) return(svg)
+  candidates <- explicit_candidates
+  if (length(candidates) != plan$count && isTRUE(plan$allow_css_default_stroke)) {
+    candidates <- c(explicit_candidates, css_default_candidates)
+  }
+  candidates <- candidates[order(vapply(candidates, function(candidate) candidate$start, numeric(1)))]
+  if (identical(plan$selection_mode, "ordered")) {
+    if (length(candidates) < plan$count) {
+      return(mark_svg_records_unresolved(svg, candidates, plan$gid))
+    }
+    candidates <- candidates[seq_len(plan$count)]
+  } else if (length(candidates) != plan$count) {
+    return(mark_svg_records_unresolved(svg, candidates, plan$gid))
+  }
 
   for (idx in rev(seq_along(candidates))) {
     candidate <- candidates[[idx]]
-    row_index <- if (length(row_indices) >= idx) row_indices[[idx]] else idx
-    resolved_gid <- get_element_group_gid(layer_index, row_index, gid, built_data, scale_catalog)
+    resolved_gid <- get_svg_candidate_group_gid(candidate$chunk, plan$gid, scale_catalog, plan$scale_kinds %||% character())
     replacement <- sub("^<([A-Za-z0-9:_-]+)\\b", paste0("<\\1 data-fig-id=\"", resolved_gid, "\""), candidate$chunk, perl = TRUE)
     svg <- paste0(
       substr(svg, 1, candidate$start - 1),
@@ -4667,7 +5264,11 @@ inject_svg_layer_data_ids <- function(svg, plot_obj) {
   built_data <- tryCatch(ggplot2::ggplot_build(plot_obj)$data, error = function(e) list())
   scale_catalog <- discrete_scale_catalog(plot_obj)
   for (plan in plans) {
-    svg <- inject_next_svg_tag_attrs(svg, plan$tags, plan$gid, plan$count, plan$row_indices, plan$layer_index, built_data, scale_catalog)
+    svg <- if (isTRUE(plan$segment_curve)) {
+      inject_segment_curve_layer_svg_ids(svg, plot_obj, plan$layer_index, built_data, scale_catalog)
+    } else {
+      inject_next_svg_tag_attrs(svg, plan, scale_catalog)
+    }
   }
   svg
 }

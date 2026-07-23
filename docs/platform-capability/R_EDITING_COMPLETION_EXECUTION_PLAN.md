@@ -1,6 +1,6 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0-R-WP3 与 R-WP4 前六类图元的本地集成候选门禁已通过；Step/Histogram/Freqpoly、Tile/Raster/Rect 与 Contour/ContourFilled 源分支能力已合入且当前批次复验待完成，下一图元家族为 GeomSegment/Curve
+> 状态：R-WP0-R-WP3 与 R-WP4 九类图元家族本地候选已合入当前集成分支；当前批次复验待完成，下一工作包为 R-WP5
 > 最后修改时间：2026-07-30 16:08:23 +08:00
 > 当前部署状态：R-WP0-R-WP4 已完成子家族仅在本地验证；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
@@ -338,7 +338,7 @@ legend/guide 增删和重排
 6. `GeomRibbon/Area`：置信区间带、边界线、fill 和 owner series。本地候选已实现：保留旧 `r.layer.N`、`kind=patch` 和 GeomRibbon/GeomArea role，增加 `adapterFamily=ribbon/area` 与 `body/boundary_lines` 关系，只开放 `facecolor/edgecolor/linewidth/alpha`；`x/y/ymin/ymax`、堆叠、边界拆分和 `GeomSmooth(se=TRUE)` 置信带保持只读。离散 fill group 使用 `ribbon/area/band` 语义，整层 style override 只恢复可信 baseline 的 scale/guide 结构身份，不恢复旧颜色；`scaleActive=false` 的休眠 group 保留用于身份诊断但拒绝编辑。
 7. `GeomStep/Histogram/Freqpoly`：bin/step 语义和连续系列身份。本地候选已实现：Step 保留 `GeomStep` role，Histogram/Freqpoly 分别保留旧 `GeomBar/GeomPath` role 和 `r.layer.N`，通过 `adapterClass=GeomHistogram/GeomFreqpoly` 区分统计层；只开放真实样式 setter，step direction、binwidth/bins、breaks/counts/density/yStat 等科学结构保持只读。离散 scale 身份恢复只接受唯一的一对一 `aesthetic + scaleId + groupKey`，重复结构键不再 first-wins 合并。
 8. `GeomTile/Raster/Rect/Contour`：mappable、scale、guide 和 panel 关系。本地候选已实现：Tile/Raster/Rect 保留旧 `kind=patch`、`r.layer.N` 和 role，Contour/ContourFilled 使用 `kind=contour/contourf`；mapped fill 由 scale/mappable 关系负责，不暴露虚假整层 `facecolor`，Raster 不开放边框 setter。连续 contour 可编辑 `cmap/vmin/vmax`，`levels/x/y/z/bins/breaks` 等科学结构保持只读；layer、mappable、scale、guide、colorbar 和 panel 使用显式双向关系。
-9. `GeomSegment/Curve`：线、箭头和端点语义，不自动与任意文本配对。
+9. `GeomSegment/Curve`：线、箭头和端点语义，不自动与任意文本配对。本地候选已实现：保留旧 `r.layer.N`、line kind 和 role，分别输出 `adapterFamily=segment/curve`；颜色、线宽、线型和透明度只在未被 mapping/scale 控制时开放，端点、曲率、箭头方向和箭头类型保持只读。箭头不伪装成独立 child，也不按距离推断文本关系；SVG 归属按 panel 内图层绘制顺序领取完整 body/arrow 结构，使多个线家族改成同色后仍保留各自 GID。
 
 每个家族必须完成：
 
@@ -445,7 +445,16 @@ fixture
 - 家族隔离 API smoke 证明客户端伪报 `local_patch` 会规范化为 `backend_patch`；合法样式 batch 成功，`levels/x/y/z/bins/breaks` 和 mixed batch 原子拒绝，revision、session、Figure、history、cache、导出锚点和快照均不变化；导出后继续编辑与快照恢复通过。
 - `npm run test:r-semantic-smoke` 14/14：真实组件中心完成 Tile/Raster/Rect 与 Contour/ContourFilled 选择、批量样式、只读结构控件核验、Draft、保存刷新、撤销重做、导出后继续编辑和快照恢复；console/page error 为 0。`npm run lint`、`npm run build`、合同测试和 `git diff --check` 通过。
 - 独立 `gpt-5.5 high` 初审发现 mapped Tile/Rect/ContourFilled 仍会开放整层 `edgecolor`，可能覆盖数据驱动 scale。renderer 现同时在 readback、editable/propertyCapabilities 和 setter 三层阻止 mapped edge override；被拒 patch 不再污染返回 manifest。新增三类 mapped-edge 回归后复审确认 `CLOSED`，最终无 HIGH/MEDIUM。
-- 当前仍未推送、未部署；R-WP4 还剩 GeomSegment/Curve，不得将本节解释为 R-WP4 全部完成。
+- 本节完成时 R-WP4 仍剩 GeomSegment/Curve；该历史状态已由下一节关闭。当前仍未推送、未部署。
+
+**GeomSegment/Curve 本地候选证据（2026-07-24 00:35:27 +08:00）**
+
+- Segment/Curve 使用专用 adapter，保留旧 `r.layer.N`、line kind、role、stableKey 和 v2 structural fingerprint。端点、`lineend/linejoin`、曲率、角度、控制点数量和 arrow 元数据仅作为只读结构；没有结构化来源时不生成 arrow child 或 text relation。
+- mapped `colour/linewidth/linetype/alpha` 继续由 scale 所有，非法 layer override 和 mixed batch 原子拒绝；项目与 standalone 请求中的客户端伪 `local_patch` 均由服务端规范化为 `backend_patch`。冲突请求不增加 revision，也不写 session、Figure、history、cache、导出锚点或快照。
+- SVG identity 只在真实 panel clip group 内绑定，并与图层规划统一使用 geom 实际可绘制行。当前图层按绘制顺序领取最早的完整 body/arrow 结构；候选不足或最早序列无法组成完整结构时继续 fail-closed。该规则修复了 Step/Freqpoly/Segment/Curve 批量改成同色后 Segment/Curve 被标为 unresolved，以及可见行混合 NA 行时错误 unresolved 的回归，同时不允许后继图层偷认当前图元。
+- 完整 R renderer 分三段并行复验为 `37/37 + 37/37 + 37/37 = 111/111`；NA 行与同色前继/后继的 Segment/Curve 定向回归 `3/3`。`npm run test:r-segment-curve-authority` 与 `npm run test:r-identity-v2-compatibility` 均通过。
+- `npm run test:r-semantic-smoke` 14/14：真实组件中心完成 Segment/Curve 选择、line 组批量改色、Draft、backend replay、保存刷新、撤销重做、导出后继续编辑和快照恢复；最终 SVG 中 `r.layer.18` 保留 4 个 body/arrow 图元，`r.layer.19` 保留 3 个图元，console/page error 为 0。
+- `npm run lint`、`npm run build` 和 `git diff --check` 通过；构建只保留既有大 chunk 和 CJS `import.meta` 警告。当前未推送、未部署，R-WP5 尚未开始。
 
 ### R-WP5：scale、guide、facet 与布局关系
 
