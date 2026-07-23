@@ -512,6 +512,33 @@ has_edit <- function(gid, prop) {
   FALSE
 }
 
+has_edit_for_any_gid <- function(gids, prop) {
+  gids <- as.character(unlist(gids, use.names = FALSE))
+  any(vapply(gids, function(gid) has_edit(gid, prop), logical(1)))
+}
+
+latest_value_for_gids <- function(gids, prop, fallback) {
+  candidates <- as.character(unlist(gids, use.names = FALSE))
+  value <- fallback
+  for (entry in edit_entries) {
+    if (as.character(entry$gid) %in% candidates && identical(as.character(entry$prop), prop)) {
+      value <- entry$value
+      if (is.list(value) && length(value) == 1 && is.null(names(value))) value <- value[[1]]
+    }
+  }
+  value
+}
+
+latest_numeric_for_gids <- function(gids, prop, fallback) {
+  value <- suppressWarnings(as.numeric(latest_value_for_gids(gids, prop, fallback)))
+  if (length(value) == 0 || !is.finite(value[[1]])) fallback else value[[1]]
+}
+
+latest_string_for_gids <- function(gids, prop, fallback) {
+  value <- latest_value_for_gids(gids, prop, fallback)
+  if (is.null(value) || length(value) == 0) fallback else as.character(value[[1]])
+}
+
 latest_numeric <- function(gid, prop, fallback) {
   value <- suppressWarnings(as.numeric(latest_value(gid, prop, fallback)))
   if (length(value) == 0 || is.na(value)) fallback else value
@@ -774,6 +801,18 @@ is_ribbon_area_adapter_layer <- function(layer) {
   geom_class(layer) %in% c("GeomRibbon", "GeomArea")
 }
 
+is_tile_raster_rect_adapter_layer <- function(layer) {
+  geom_class(layer) %in% c("GeomTile", "GeomRaster", "GeomRect")
+}
+
+is_contour_adapter_layer <- function(layer) {
+  geom_class(layer) %in% c("GeomContour", "GeomContourFilled")
+}
+
+is_contour_filled_adapter_layer <- function(layer) {
+  identical(geom_class(layer), "GeomContourFilled")
+}
+
 is_step_adapter_layer <- function(layer) {
   identical(geom_class(layer), "GeomStep")
 }
@@ -804,6 +843,8 @@ layer_kind <- function(geom) {
   if (geom %in% c("GeomBoxplot")) return("boxplot_container")
   if (geom %in% c("GeomViolin")) return("violinplot_container")
   if (geom %in% c("GeomCol", "GeomBar", "GeomTile", "GeomRaster", "GeomRect", "GeomRibbon", "GeomArea")) return("patch")
+  if (geom %in% c("GeomContour")) return("contour")
+  if (geom %in% c("GeomContourFilled")) return("contourf")
   if (geom %in% c("GeomErrorbar", "GeomErrorbarh", "GeomPointrange", "GeomLinerange", "GeomCrossbar")) return("errorbar_container")
   "unsupported"
 }
@@ -832,6 +873,11 @@ layer_label <- function(geom, index) {
     GeomRibbon = "ggplot ribbon layer",
     GeomArea = "ggplot area layer",
     GeomSmooth = "ggplot smooth layer",
+    GeomTile = "ggplot tile layer",
+    GeomRaster = "ggplot raster layer",
+    GeomRect = "ggplot rectangle layer",
+    GeomContour = "ggplot contour layer",
+    GeomContourFilled = "ggplot filled contour layer",
     paste("ggplot layer", index)
   )
   paste0(label, " ", index)
@@ -1753,6 +1799,192 @@ apply_ribbon_area_layer_edits <- function(layer, gid) {
   layer
 }
 
+style_string_or <- function(value, fallback) {
+  if (is.null(value) || length(value) == 0 || is.na(value[[1]])) return(fallback)
+  text <- as.character(value[[1]])
+  if (!nzchar(text) || identical(text, "NA")) fallback else text
+}
+
+tile_raster_rect_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  params <- layer_params(layer)
+  geom <- geom_class(layer)
+  default_aes <- layer$geom$default_aes %||% ggplot2::GeomTile$default_aes
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  rendered_fills <- as.character(unlist(layer_data_values(built_data, "fill"), use.names = FALSE))
+  rendered_fills <- unique(rendered_fills[!is.na(rendered_fills) & nzchar(rendered_fills)])
+  fill_fallback <- style_string_or(
+    first_present_value(as.list(rendered_fills), param_value(params, c("fill"), default_aes$fill %||% "#595959")),
+    "#595959"
+  )
+  edge_fallback <- style_string_or(
+    first_present_value(
+      layer_data_values(built_data, "colour"),
+      param_value(params, c("colour", "color"), default_aes$colour %||% "#000000")
+    ),
+    "#000000"
+  )
+  linewidth_fallback <- suppressWarnings(as.numeric(first_present_value(
+    c(layer_data_values(built_data, "linewidth"), layer_data_values(built_data, "size")),
+    param_value(params, c("linewidth", "size"), default_aes$linewidth %||% default_aes$size %||% 0.5)
+  )))
+  if (length(linewidth_fallback) == 0 || !is.finite(linewidth_fallback[[1]])) linewidth_fallback <- 0.5
+  alpha_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "alpha"),
+    param_value(params, c("alpha"), default_aes$alpha %||% 1)
+  )))
+  if (length(alpha_fallback) == 0 || !is.finite(alpha_fallback[[1]])) alpha_fallback <- 1
+  fill_mapped <- "fill" %in% names(effective_mapping)
+  color_mapped <- any(c("colour", "color") %in% names(effective_mapping))
+  edge_supported <- !identical(geom, "GeomRaster")
+
+  list(
+    facecolor = if (fill_mapped) fill_fallback else latest_string(gid, "facecolor", fill_fallback),
+    edgecolor = if (color_mapped) edge_fallback else latest_string(gid, "edgecolor", edge_fallback),
+    linewidth = latest_numeric(gid, "linewidth", linewidth_fallback[[1]]),
+    alpha = latest_numeric(gid, "alpha", alpha_fallback[[1]]),
+    facecolorValues = as.list(rendered_fills),
+    fillMapped = fill_mapped,
+    colorMapped = color_mapped,
+    alphaMapped = "alpha" %in% names(effective_mapping),
+    scaleControlled = fill_mapped,
+    edgeStyleSupported = edge_supported,
+    componentRoles = if (edge_supported) as.list(c("cells", "cell_edges")) else list("raster_pixels"),
+    positionClass = layer_position_class(layer),
+    adapterFamily = tolower(sub("^Geom", "", geom))
+  )
+}
+
+apply_tile_raster_rect_layer_edits <- function(layer, gid, plot_mapping = NULL) {
+  params <- layer$aes_params %||% list()
+  geom <- geom_class(layer)
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  fill_mapped <- "fill" %in% names(effective_mapping)
+  color_mapped <- any(c("colour", "color") %in% names(effective_mapping))
+  if (!fill_mapped && has_edit(gid, "facecolor")) {
+    params$fill <- latest_string(gid, "facecolor", params$fill %||% "#595959")
+  }
+  if (!identical(geom, "GeomRaster") && !color_mapped && has_edit(gid, "edgecolor")) {
+    params$colour <- latest_string(gid, "edgecolor", params$colour %||% params$color %||% "#000000")
+  }
+  if (!identical(geom, "GeomRaster") && has_edit(gid, "linewidth")) {
+    line_width <- latest_numeric(gid, "linewidth", params$linewidth %||% params$size %||% 0.5)
+    params$linewidth <- line_width
+    params$size <- line_width
+  }
+  if (has_edit(gid, "alpha")) {
+    params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
+  }
+  layer$aes_params <- params
+  layer
+}
+
+contour_layer_levels <- function(built_data = NULL) {
+  if (is.null(built_data) || !"level" %in% names(built_data)) return(list())
+  values <- as.character(built_data$level)
+  values <- unique(values[!is.na(values) & nzchar(values)])
+  as.list(values)
+}
+
+manifest_readonly_parameter <- function(value) {
+  if (is.null(value) || length(value) == 0) return(list())
+  if (is.function(value) || is.language(value) || is.expression(value)) {
+    return(paste(deparse(value, width.cutoff = 500L), collapse = " "))
+  }
+  if (is.atomic(value)) return(as.list(value))
+  if (is.list(value)) return(lapply(value, manifest_readonly_parameter))
+  as.character(value)
+}
+
+contour_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  params <- layer_params(layer)
+  geom <- geom_class(layer)
+  filled <- is_contour_filled_adapter_layer(layer)
+  default_aes <- layer$geom$default_aes %||% if (filled) ggplot2::GeomContourFilled$default_aes else ggplot2::GeomContour$default_aes
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  rendered_colors <- as.character(unlist(layer_data_values(built_data, "colour"), use.names = FALSE))
+  rendered_colors <- unique(rendered_colors[!is.na(rendered_colors) & nzchar(rendered_colors)])
+  rendered_fills <- as.character(unlist(layer_data_values(built_data, "fill"), use.names = FALSE))
+  rendered_fills <- unique(rendered_fills[!is.na(rendered_fills) & nzchar(rendered_fills)])
+  color_fallback <- style_string_or(
+    first_present_value(as.list(rendered_colors), param_value(params, c("colour", "color"), default_aes$colour %||% "#000000")),
+    "#000000"
+  )
+  fill_fallback <- style_string_or(
+    first_present_value(as.list(rendered_fills), param_value(params, c("fill"), default_aes$fill %||% "#595959")),
+    "#595959"
+  )
+  linewidth_fallback <- suppressWarnings(as.numeric(first_present_value(
+    c(layer_data_values(built_data, "linewidth"), layer_data_values(built_data, "size")),
+    param_value(params, c("linewidth", "size"), default_aes$linewidth %||% default_aes$size %||% 0.5)
+  )))
+  if (length(linewidth_fallback) == 0 || !is.finite(linewidth_fallback[[1]])) linewidth_fallback <- 0.5
+  alpha_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "alpha"),
+    param_value(params, c("alpha"), default_aes$alpha %||% 1)
+  )))
+  if (length(alpha_fallback) == 0 || !is.finite(alpha_fallback[[1]])) alpha_fallback <- 1
+  linetype_fallback <- style_string_or(
+    first_present_value(layer_data_values(built_data, "linetype"), param_value(params, c("linetype"), default_aes$linetype %||% "solid")),
+    "solid"
+  )
+  fill_mapped <- "fill" %in% names(effective_mapping) || (
+    filled && is.null(params$fill) && length(rendered_fills) > 1
+  )
+  color_mapped <- any(c("colour", "color") %in% names(effective_mapping))
+  stat_params <- layer$stat_params %||% list()
+
+  list(
+    color = if (color_mapped) color_fallback else latest_string(gid, "color", color_fallback),
+    facecolor = if (fill_mapped) fill_fallback else latest_string(gid, "facecolor", fill_fallback),
+    edgecolor = if (color_mapped) color_fallback else latest_string(gid, "edgecolor", color_fallback),
+    linewidth = latest_numeric(gid, "linewidth", linewidth_fallback[[1]]),
+    linestyle = latest_string(gid, "linestyle", linetype_fallback),
+    alpha = latest_numeric(gid, "alpha", alpha_fallback[[1]]),
+    colorValues = as.list(rendered_colors),
+    facecolorValues = as.list(rendered_fills),
+    levels = contour_layer_levels(built_data),
+    bins = stat_params$bins %||% NULL,
+    breaks = manifest_readonly_parameter(stat_params$breaks),
+    zMapped = "z" %in% names(effective_mapping),
+    fillMapped = fill_mapped,
+    colorMapped = color_mapped,
+    scaleControlled = if (filled) fill_mapped else color_mapped,
+    componentRoles = if (filled) as.list(c("filled_bands", "boundary_lines")) else list("isolines"),
+    positionClass = layer_position_class(layer),
+    adapterFamily = if (filled) "contourf" else "contour"
+  )
+}
+
+apply_contour_layer_edits <- function(layer, gid, plot_mapping = NULL) {
+  params <- layer$aes_params %||% list()
+  filled <- is_contour_filled_adapter_layer(layer)
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  fill_mapped <- "fill" %in% names(effective_mapping)
+  color_mapped <- any(c("colour", "color") %in% names(effective_mapping))
+  if (!filled && !color_mapped && has_edit(gid, "color")) {
+    params$colour <- latest_string(gid, "color", params$colour %||% params$color %||% "#000000")
+  }
+  if (filled && !fill_mapped && has_edit(gid, "facecolor")) {
+    params$fill <- latest_string(gid, "facecolor", params$fill %||% "#595959")
+  }
+  if (filled && !color_mapped && has_edit(gid, "edgecolor")) {
+    params$colour <- latest_string(gid, "edgecolor", params$colour %||% params$color %||% "#000000")
+  }
+  if (has_edit(gid, "linewidth")) {
+    line_width <- latest_numeric(gid, "linewidth", params$linewidth %||% params$size %||% 0.5)
+    params$linewidth <- line_width
+    params$size <- line_width
+  }
+  if (has_edit(gid, "linestyle")) {
+    params$linetype <- latest_string(gid, "linestyle", params$linetype %||% "solid")
+  }
+  if (has_edit(gid, "alpha")) {
+    params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
+  }
+  layer$aes_params <- params
+  layer
+}
+
 layer_current_props <- function(layer, gid) {
   params <- layer_params(layer)
   props <- list(
@@ -1800,6 +2032,14 @@ apply_layer_edits <- function(plot_obj, built_data_by_layer = list()) {
     }
     if (is_ribbon_area_adapter_layer(plot_obj$layers[[i]])) {
       plot_obj$layers[[i]] <- apply_ribbon_area_layer_edits(plot_obj$layers[[i]], gid)
+      next
+    }
+    if (is_tile_raster_rect_adapter_layer(plot_obj$layers[[i]])) {
+      plot_obj$layers[[i]] <- apply_tile_raster_rect_layer_edits(plot_obj$layers[[i]], gid, plot_obj$mapping)
+      next
+    }
+    if (is_contour_adapter_layer(plot_obj$layers[[i]])) {
+      plot_obj$layers[[i]] <- apply_contour_layer_edits(plot_obj$layers[[i]], gid, plot_obj$mapping)
       next
     }
     params <- plot_obj$layers[[i]]$aes_params
@@ -2773,18 +3013,29 @@ apply_continuous_scale_edits <- function(plot_obj) {
     current_vmax <- if (is.finite(limits[[2]])) limits[[2]] else NA_real_
     current_label <- as.character(scale_obj$name %||% plot_obj$labels[[kind]] %||% kind)
     current_colors <- sample_scale_colors(scale_obj)
+    usage <- continuous_scale_layer_usage(
+      plot_obj,
+      tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL),
+      kind
+    )
+    layer_gids <- as.character(unlist(usage$layerIds %||% list(), use.names = FALSE))
+    contour_gids <- Filter(function(layer_gid) {
+      layer_index <- suppressWarnings(as.integer(sub("^r\\.layer\\.", "", layer_gid))) + 1L
+      layer_index >= 1L && layer_index <= length(plot_obj$layers) && is_contour_adapter_layer(plot_obj$layers[[layer_index]])
+    }, layer_gids)
+    scale_edit_gids <- c(heatmap_gid, contour_gids)
 
-    scale_changed <- has_edit(heatmap_gid, "cmap") ||
-      has_edit(heatmap_gid, "vmin") ||
-      has_edit(heatmap_gid, "vmax") ||
+    scale_changed <- has_edit_for_any_gid(scale_edit_gids, "cmap") ||
+      has_edit_for_any_gid(scale_edit_gids, "vmin") ||
+      has_edit_for_any_gid(scale_edit_gids, "vmax") ||
       has_edit(heatmap_gid, "alpha")
     label_changed <- has_edit(colorbar_gid, "label")
 
     if (scale_changed || label_changed) {
-      cmap <- latest_string(heatmap_gid, "cmap", "custom")
-      colors <- if (has_edit(heatmap_gid, "cmap")) cmap_colors(cmap) else current_colors
-      vmin <- latest_numeric(heatmap_gid, "vmin", current_vmin)
-      vmax <- latest_numeric(heatmap_gid, "vmax", current_vmax)
+      cmap <- latest_string_for_gids(scale_edit_gids, "cmap", "custom")
+      colors <- if (has_edit_for_any_gid(scale_edit_gids, "cmap")) cmap_colors(cmap) else current_colors
+      vmin <- latest_numeric_for_gids(scale_edit_gids, "vmin", current_vmin)
+      vmax <- latest_numeric_for_gids(scale_edit_gids, "vmax", current_vmax)
       label <- latest_string(colorbar_gid, "label", current_label)
       scale_limits <- NULL
       if (is.finite(vmin) && is.finite(vmax)) {
@@ -3472,6 +3723,9 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
   boxplot_adapter <- is_boxplot_adapter_layer(layer)
   violin_adapter <- is_violin_adapter_layer(layer)
   ribbon_area_adapter <- is_ribbon_area_adapter_layer(layer)
+  tile_raster_rect_adapter <- is_tile_raster_rect_adapter_layer(layer)
+  contour_adapter <- is_contour_adapter_layer(layer)
+  contour_filled_adapter <- is_contour_filled_adapter_layer(layer)
   panel_ids <- if (!is.null(built_data) && "PANEL" %in% names(built_data)) {
     values <- suppressWarnings(as.integer(built_data$PANEL))
     values <- unique(values[is.finite(values) & values >= 1])
@@ -3499,6 +3753,10 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
     violin_layer_current_props(layer, gid, built_data, plot_mapping)
   } else if (ribbon_area_adapter) {
     ribbon_area_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (tile_raster_rect_adapter) {
+    tile_raster_rect_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (contour_adapter) {
+    contour_layer_current_props(layer, gid, built_data, plot_mapping)
   } else {
     layer_current_props(layer, gid)
   }
@@ -3519,18 +3777,38 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
     errorbar_container = if (errorbar_adapter) errorbar_layer_editable(props) else list("color", "linewidth", "alpha"),
     boxplot_container = if (boxplot_adapter) boxplot_layer_editable(props) else list("color", "linewidth", "alpha", "box_color"),
     violinplot_container = list("facecolor", "edgecolor", "linewidth", "alpha"),
+    contour = if (contour_adapter && !contour_filled_adapter) {
+      c(if (isTRUE(props$colorMapped)) list() else list("color"), list("linewidth", "linestyle", "alpha"))
+    } else list(),
+    contourf = if (contour_filled_adapter) {
+      c(
+        if (isTRUE(props$fillMapped)) list() else list("facecolor"),
+        if (isTRUE(props$colorMapped)) list() else list("edgecolor"),
+        list("linewidth", "linestyle", "alpha")
+      )
+    } else list(),
     unsupported = list(),
     list()
   )
+  if (tile_raster_rect_adapter) {
+    editable <- c(
+      if (isTRUE(props$fillMapped)) list() else list("facecolor"),
+      if (isTRUE(props$edgeStyleSupported) && !isTRUE(props$colorMapped)) list("edgecolor") else list(),
+      if (isTRUE(props$edgeStyleSupported)) list("linewidth") else list(),
+      list("alpha")
+    )
+  }
   current_props <- switch(
     kind,
     text = list(color = props$color, fontsize = props$size, alpha = props$alpha),
     collection = if (point_adapter) props else list(color = props$color, facecolor = props$facecolor, size = props$size, alpha = props$alpha),
     line = if (line_adapter) props else list(color = props$color, linewidth = props$linewidth, linestyle = props$linestyle, alpha = props$alpha),
-    patch = if (bar_adapter || ribbon_area_adapter) props else list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
+    patch = if (bar_adapter || ribbon_area_adapter || tile_raster_rect_adapter) props else list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
     errorbar_container = if (errorbar_adapter) props else list(color = props$color, linewidth = props$linewidth, alpha = props$alpha),
     boxplot_container = if (boxplot_adapter) props else list(color = props$color, linewidth = props$linewidth, alpha = props$alpha, box_color = latest_string(gid, "box_color", props$facecolor)),
     violinplot_container = if (violin_adapter) props else list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
+    contour = props,
+    contourf = props,
     unsupported = list(unsupportedReason = paste0("No stable SciFigure write-back adapter for ggplot geom class ", geom, ".")),
     list()
   )
@@ -3914,6 +4192,12 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
     subplot_ids <- usage$subplotIds
     if (length(subplot_ids) == 0 && !is_faceted_plot(plot_obj)) subplot_ids <- list("subplot.0")
     has_heatmap <- length(usage$heatmapLayerIds) > 0
+    layer_ids <- as.character(unlist(usage$layerIds, use.names = FALSE))
+    contour_layer_ids <- Filter(function(layer_id) {
+      layer_index <- suppressWarnings(as.integer(sub("^r\\.layer\\.", "", layer_id))) + 1L
+      layer_index >= 1L && layer_index <= length(plot_obj$layers) && is_contour_adapter_layer(plot_obj$layers[[layer_index]])
+    }, layer_ids)
+    scale_edit_gids <- c(heatmap_gid, contour_layer_ids)
 
     if (has_heatmap) {
       objects[[length(objects) + 1]] <- list(
@@ -3922,9 +4206,9 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
         label = paste0("ggplot heatmap ", kind, " scale"),
         editable = list("cmap", "vmin", "vmax", "alpha"),
         currentProps = list(
-          cmap = latest_string(heatmap_gid, "cmap", "custom"),
-          vmin = latest_numeric(heatmap_gid, "vmin", current_vmin),
-          vmax = latest_numeric(heatmap_gid, "vmax", current_vmax),
+          cmap = latest_string_for_gids(scale_edit_gids, "cmap", "custom"),
+          vmin = latest_numeric_for_gids(scale_edit_gids, "vmin", current_vmin),
+          vmax = latest_numeric_for_gids(scale_edit_gids, "vmax", current_vmax),
           alpha = latest_numeric(heatmap_gid, "alpha", 1),
           scale = kind
         ),
@@ -3958,9 +4242,9 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
         bottom = latest_numeric(colorbar_gid, "bottom", colorbar_bounds$bottom),
         width = latest_numeric(colorbar_gid, "width", colorbar_bounds$width),
         height = latest_numeric(colorbar_gid, "height", colorbar_bounds$height),
-        vmin = latest_numeric(heatmap_gid, "vmin", current_vmin),
-        vmax = latest_numeric(heatmap_gid, "vmax", current_vmax),
-        cmap = latest_string(heatmap_gid, "cmap", "custom")
+        vmin = latest_numeric_for_gids(scale_edit_gids, "vmin", current_vmin),
+        vmax = latest_numeric_for_gids(scale_edit_gids, "vmax", current_vmax),
+        cmap = latest_string_for_gids(scale_edit_gids, "cmap", "custom")
       ),
       role = "ggplot_colorbar",
       mappableId = mappable_id,
@@ -3974,6 +4258,68 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
       aesthetic = kind,
       source = list(artistClass = "ggplot_continuous_legend", axesIndex = 0, zorder = scale_index)
     )
+  }
+  objects
+}
+
+link_family8_continuous_relations <- function(objects, continuous_objects) {
+  if (length(objects) == 0 || length(continuous_objects) == 0) return(objects)
+  object_index_by_id <- setNames(seq_along(objects), vapply(
+    objects,
+    function(object) as.character(object$id %||% ""),
+    character(1)
+  ))
+  continuous_ids <- vapply(
+    continuous_objects,
+    function(object) as.character(object$id %||% ""),
+    character(1)
+  )
+  for (colorbar in continuous_objects) {
+    if (!identical(as.character(colorbar$kind %||% ""), "colorbar")) next
+    colorbar_id <- as.character(colorbar$id %||% "")
+    layer_ids <- as.character(unlist(colorbar$layerIds %||% list(), use.names = FALSE))
+    if (!nzchar(colorbar_id) || length(layer_ids) == 0) next
+    heatmap_id <- as.character(colorbar$mappableId %||% "")
+    has_heatmap_object <- nzchar(heatmap_id) && heatmap_id %in% continuous_ids && startsWith(heatmap_id, "r.heatmap.")
+    scale_gids <- c(
+      if (has_heatmap_object) heatmap_id else character(),
+      layer_ids
+    )
+    for (layer_id in layer_ids) {
+      layer_index <- if (layer_id %in% names(object_index_by_id)) object_index_by_id[[layer_id]] else NULL
+      if (is.null(layer_index)) next
+      object <- objects[[layer_index]]
+      geom <- as.character(object$source$artistClass %||% "")
+      if (!geom %in% c("GeomTile", "GeomRaster", "GeomRect", "GeomContour", "GeomContourFilled")) next
+
+      object$scaleId <- colorbar$scaleId
+      object$guideId <- colorbar_id
+      object$colorbarId <- colorbar_id
+      object$mappableId <- if (has_heatmap_object) heatmap_id else layer_id
+      if (geom %in% c("GeomContour", "GeomContourFilled")) {
+        object$scaleKey <- colorbar$scaleKey
+        object$guideKey <- colorbar$guideKey
+        object$aesthetic <- colorbar$aesthetic
+        object$currentProps$scaleControlled <- TRUE
+        object$currentProps$cmap <- latest_string_for_gids(scale_gids, "cmap", object$currentProps$cmap %||% "custom")
+        object$currentProps$vmin <- latest_numeric_for_gids(scale_gids, "vmin", object$currentProps$vmin %||% NA_real_)
+        object$currentProps$vmax <- latest_numeric_for_gids(scale_gids, "vmax", object$currentProps$vmax %||% NA_real_)
+        object$editable <- unique(c(object$editable %||% list(), "cmap", "vmin", "vmax"))
+      }
+      objects[[layer_index]] <- object
+    }
+
+    if (length(layer_ids) > 0) {
+      for (object_index in seq_along(objects)) {
+        object <- objects[[object_index]]
+        if (!as.character(object$id %||% "") %in% layer_ids) next
+        geom <- as.character(object$source$artistClass %||% "")
+        if (!geom %in% c("GeomTile", "GeomRaster", "GeomRect", "GeomContour", "GeomContourFilled")) next
+        object$currentProps$scaleControlled <- TRUE
+        objects[[object_index]] <- object
+      }
+    }
+
   }
   objects
 }
@@ -4378,7 +4724,7 @@ r_manifest_coordinate_space <- function(obj) {
   kind <- as.character(obj$kind %||% "")
   if (grepl("^legend", id)) return("container")
   if (kind %in% c("subplot", "colorbar")) return("figure")
-  if (kind %in% c("line", "collection", "patch", "heatmap", "errorbar_container", "boxplot_container", "violinplot_container")) return("data")
+  if (kind %in% c("line", "collection", "patch", "heatmap", "contour", "contourf", "errorbar_container", "boxplot_container", "violinplot_container")) return("data")
   if (!is.null(r_manifest_subplot_id(obj))) return("axes")
   "none"
 }
@@ -4437,7 +4783,7 @@ r_manifest_identity <- function(obj) {
     scope = scope,
     coordinateSpace = r_manifest_coordinate_space(obj)
   )
-  if (grepl("^r\\.(layer|group|heatmap)\\.", id) || kind %in% c("line", "collection", "patch", "heatmap", "errorbar_container", "boxplot_container", "violinplot_container")) {
+  if (grepl("^r\\.(layer|group|heatmap)\\.", id) || kind %in% c("line", "collection", "patch", "heatmap", "contour", "contourf", "errorbar_container", "boxplot_container", "violinplot_container")) {
     identity$seriesKey <- if (grepl("^r\\.group\\.", id)) {
       paste("r-series", relation$aesthetic %||% "unknown", relation$groupKey %||% id, sep = ":")
     } else {
@@ -5640,6 +5986,7 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
   }
   objects <- restore_baseline_manifest_relations(objects, baseline_manifest)
   continuous_colorbar_objects <- manifest_continuous_colorbar_objects(plot_obj, layout_bounds)
+  objects <- link_family8_continuous_relations(objects, continuous_colorbar_objects)
   if (length(continuous_colorbar_objects) > 0) {
     objects <- c(objects, continuous_colorbar_objects)
   }
@@ -5683,7 +6030,9 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
     legend = list(count = kind_count("legend"), editableProps = list("title", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "visible", "loc", "ncol", "markerscale", "handletextpad", "labelspacing", "columnspacing", "borderpad", "facecolor", "edgecolor", "linewidth", "alpha")),
     collection = list(count = kind_count("collection"), editableProps = list("color", "facecolor", "edgecolor", "linewidth", "size", "size_scale", "marker", "alpha")),
     line = list(count = kind_count("line"), editableProps = list("color", "linewidth", "linestyle", "alpha")),
-    patch = list(count = kind_count("patch"), editableProps = list("facecolor", "edgecolor", "linewidth", "alpha")),
+    patch = list(count = kind_count("patch"), editableProps = kind_editable_props("patch", list("facecolor", "edgecolor", "linewidth", "alpha"))),
+    contour = list(count = kind_count("contour"), editableProps = kind_editable_props("contour", list("color", "linewidth", "linestyle", "alpha"))),
+    contourf = list(count = kind_count("contourf"), editableProps = kind_editable_props("contourf", list("facecolor", "edgecolor", "linewidth", "linestyle", "alpha"))),
     errorbar_container = list(count = kind_count("errorbar_container"), editableProps = list("color", "elinewidth", "linestyle", "alpha", "capsize", "marker", "markersize", "facecolor")),
     boxplot_container = list(count = kind_count("boxplot_container"), editableProps = kind_editable_props("boxplot_container", list("color", "linewidth", "alpha", "box_color", "outlier_color", "outlier_shape", "outlier_size", "outlier_stroke", "outlier_alpha"))),
     violinplot_container = list(count = kind_count("violinplot_container"), editableProps = kind_editable_props("violinplot_container", list("facecolor", "edgecolor", "linewidth", "alpha"))),
@@ -5720,7 +6069,7 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
       unsupportedArtists = unsupported_artists
     ),
     unsupportedNotes = list(
-      "R ggplot2 semantic editing currently covers labels, theme text, Point/Jitter, Line/Path/Smooth, Bar/Col, Errorbar/Linerange/Pointrange/Crossbar, and Boxplot/Violin layer adapters, whole-layer geom styles, manual color/fill scales, facet panel discovery, and continuous heatmap/colorbar scales.",
+      "R ggplot2 semantic editing currently covers labels, theme text, Point/Jitter, Line/Path/Smooth, Bar/Col, Errorbar/Linerange/Pointrange/Crossbar, Boxplot/Violin, Ribbon/Area, Step/Histogram/Freqpoly, Tile/Raster/Rect, and Contour/ContourFilled layer adapters, manual color/fill scales, facet panel discovery, and continuous heatmap/colorbar scales.",
       "Duplicate keys within one discrete color/fill scale are reported as ambiguous readonly groups; SciFigure will not guess which repeated key a palette edit should target.",
       "R facet subplot aspect uses ggplot theme(aspect.ratio); independent left/bottom/width/height panel bounds are not equivalent to Matplotlib axes bounds.",
       "Drag-position replay and per-facet independent label styling are not enabled in this phase."

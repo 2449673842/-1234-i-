@@ -2839,6 +2839,320 @@ p
         self.assertEqual(axis_x["currentProps"]["tick_rotation"], 30)
         self.assertEqual(axis_x["currentProps"]["tick_direction"], "in")
 
+    def test_tile_raster_rect_adapters_expose_mappable_relations_and_safe_layer_styles(self):
+        cases = [
+            ("GeomTile", 'geom_tile(colour="#111111", linewidth=0.4, alpha=0.8)', True),
+            ("GeomRaster", "geom_raster(alpha=0.8)", False),
+            ("GeomRect", 'geom_rect(aes(xmin=x-0.45, xmax=x+0.45, ymin=y-0.45, ymax=y+0.45), colour="#111111", linewidth=0.4, alpha=0.8)', True),
+        ]
+
+        for geom_name, geom_call, has_edge_style in cases:
+            with self.subTest(geom=geom_name):
+                script = f"""
+library(ggplot2)
+df <- expand.grid(x=1:4, y=1:3)
+df$value <- seq_len(nrow(df)) / 10
+p <- ggplot(df, aes(x=x, y=y, fill=value)) +
+  {geom_call} +
+  scale_fill_gradient(low="#132B43", high="#56B1F7", limits=c(0, 2), name="Intensity") +
+  theme_classic()
+p
+"""
+                baseline = _run_r_renderer(script)
+                layer = _object(baseline, "r.layer.0")
+                heatmap = _object(baseline, "r.heatmap.fill.0")
+                colorbar = _object(baseline, "r.colorbar.fill.0")
+
+                self.assertEqual(layer["kind"], "patch")
+                self.assertEqual(layer["role"], f"ggplot_{geom_name}")
+                self.assertEqual(layer["source"]["artistClass"], geom_name)
+                self.assertEqual(layer["source"]["adapterClass"], geom_name)
+                self.assertEqual(layer["currentProps"]["adapterFamily"], geom_name[4:].lower())
+                self.assertTrue(layer["currentProps"]["fillMapped"])
+                self.assertTrue(layer["currentProps"]["scaleControlled"])
+                self.assertNotEqual(layer["currentProps"]["facecolor"], "#1F77B4")
+                self.assertNotIn("facecolor", layer["editable"])
+                self.assertIn("alpha", layer["editable"])
+                if has_edge_style:
+                    self.assertIn("edgecolor", layer["editable"])
+                    self.assertIn("linewidth", layer["editable"])
+                else:
+                    self.assertNotIn("edgecolor", layer["editable"])
+                    self.assertNotIn("linewidth", layer["editable"])
+
+                layer_relation = layer["identity"]["relation"]
+                heatmap_relation = heatmap["identity"]["relation"]
+                colorbar_relation = colorbar["identity"]["relation"]
+                self.assertEqual(layer_relation["scaleId"], heatmap_relation["scaleId"])
+                self.assertEqual(layer_relation["guideId"], colorbar["id"])
+                self.assertEqual(layer_relation["colorbarId"], colorbar["id"])
+                self.assertEqual(heatmap_relation["layerIds"], ["r.layer.0"])
+                self.assertEqual(colorbar_relation["mappableId"], heatmap["id"])
+                self.assertEqual(colorbar_relation["layerIds"], ["r.layer.0"])
+                self.assertEqual(layer["identity"]["relation"]["subplotIds"], ["subplot.0"])
+
+                edits = [_backend_patch(layer, "alpha", 0.35)]
+                if has_edge_style:
+                    edits.extend([
+                        _backend_patch(layer, "edgecolor", "#AA00AA"),
+                        _backend_patch(layer, "linewidth", 1.6),
+                    ])
+                patched = _run_r_renderer(script, edits)
+                patched_layer = _object(patched, "r.layer.0")
+                self.assertFalse(patched["conflict"])
+                self.assertEqual(len(patched["applied"]), len(edits))
+                self.assertEqual(patched_layer["currentProps"]["alpha"], 0.35)
+                self.assertEqual(layer["stableKey"], patched_layer["stableKey"])
+                self.assertEqual(layer["fingerprint"], patched_layer["fingerprint"])
+                self.assertEqual(layer["identity"], patched_layer["identity"])
+
+    def test_tile_adapter_replays_legacy_gid_only_and_pre_v2_fingerprint_entries(self):
+        script = """
+library(ggplot2)
+df <- expand.grid(x=1:4, y=1:3)
+df$value <- seq_len(nrow(df)) / 10
+p <- ggplot(df, aes(x=x, y=y, fill=value)) +
+  geom_tile(colour="#111111", linewidth=0.4, alpha=0.8) +
+  scale_fill_gradient(low="#132B43", high="#56B1F7", limits=c(0, 2), name="Intensity") +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        layer = _object(baseline, "r.layer.0")
+        legacy_gid_only = {
+            "gid": layer["id"],
+            "prop": "alpha",
+            "value": 0.45,
+            "mode": "backend_patch",
+        }
+        legacy_pre_v2_fingerprint = {
+            "gid": layer["id"],
+            "prop": "edgecolor",
+            "value": "#AA00AA",
+            "mode": "backend_patch",
+            "stableKey": layer["stableKey"],
+            "fingerprint": "legacy-style-sensitive-fingerprint",
+            "identity": layer["identity"],
+        }
+
+        replayed = _run_r_renderer(script, [legacy_gid_only, legacy_pre_v2_fingerprint])
+        replayed_layer = _object(replayed, layer["id"])
+        self.assertFalse(replayed["conflict"])
+        self.assertEqual(replayed["skipped"], [])
+        self.assertEqual(len(replayed["applied"]), 2)
+        self.assertEqual(replayed_layer["currentProps"]["alpha"], 0.45)
+        self.assertEqual(replayed_layer["currentProps"]["edgecolor"], "#AA00AA")
+        self.assertEqual(replayed_layer["stableKey"], layer["stableKey"])
+        self.assertEqual(replayed_layer["fingerprint"], layer["fingerprint"])
+
+    def test_mapped_edge_colour_remains_scale_owned_for_tile_rect_and_contourf(self):
+        cases = [
+            (
+                "GeomTile",
+                """
+library(ggplot2)
+df <- expand.grid(x=1:4, y=1:3)
+df$value <- seq_len(nrow(df)) / 10
+p <- ggplot(df, aes(x=x, y=y)) +
+  geom_tile(aes(colour=value), fill="#C7E9C0", linewidth=0.35) +
+  scale_colour_gradient(low="#132B43", high="#56B1F7", name="Tile edge") +
+  theme_classic()
+p
+""",
+            ),
+            (
+                "GeomRect",
+                """
+library(ggplot2)
+df <- data.frame(
+  xmin=c(0.5, 1.5, 2.5), xmax=c(1.5, 2.5, 3.5),
+  ymin=c(0.5, 0.5, 0.5), ymax=c(1.5, 1.5, 1.5),
+  value=c(0.2, 0.6, 1.0)
+)
+p <- ggplot(df) +
+  geom_rect(aes(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax, colour=value), fill="#FDAE6B", linewidth=0.35) +
+  scale_colour_gradient(low="#132B43", high="#56B1F7", name="Rect edge") +
+  theme_classic()
+p
+""",
+            ),
+            (
+                "GeomContourFilled",
+                """
+library(ggplot2)
+df <- expand.grid(x=seq(-2, 2, length.out=15), y=seq(-2, 2, length.out=15))
+df$z <- with(df, x^2 + y^2)
+p <- ggplot(df, aes(x=x, y=y, z=z)) +
+  geom_contour_filled(aes(colour=after_stat(level_mid)), bins=5, fill="#CBC9E2", linewidth=0.3) +
+  scale_colour_viridis_c(name="Contour edge") +
+  theme_classic()
+p
+""",
+            ),
+        ]
+
+        for geom_name, script in cases:
+            with self.subTest(geom=geom_name):
+                baseline = _run_r_renderer(script)
+                layer = _object(baseline, "r.layer.0")
+                self.assertEqual(layer["source"]["adapterClass"], geom_name)
+                self.assertTrue(layer["currentProps"]["colorMapped"])
+                self.assertNotIn("edgecolor", layer["editable"])
+                self.assertFalse(any(
+                    capability.get("prop") == "edgecolor"
+                    for capability in layer["propertyCapabilities"]
+                ))
+                self.assertIn("scaleId", layer["identity"]["relation"])
+                self.assertIn("colorbarId", layer["identity"]["relation"])
+
+                rejected = _run_r_renderer(script, [
+                    _backend_patch(layer, "edgecolor", "#AA00AA"),
+                ])
+                rejected_layer = _object(rejected, "r.layer.0")
+                self.assertTrue(rejected["conflict"])
+                self.assertEqual(rejected["applied"], [])
+                self.assertEqual(len(rejected["skipped"]), 1)
+                self.assertEqual(rejected_layer["currentProps"]["edgecolor"], layer["currentProps"]["edgecolor"])
+                self.assertEqual(rejected_layer["stableKey"], layer["stableKey"])
+                self.assertEqual(rejected_layer["fingerprint"], layer["fingerprint"])
+                self.assertEqual(rejected_layer["identity"], layer["identity"])
+                self.assertNotIn("#aa00aa", rejected["svg"].lower())
+
+    def test_contour_and_contourf_adapters_keep_structure_readonly_and_replay_styles(self):
+        script = """
+library(ggplot2)
+df <- expand.grid(x=seq(-2, 2, length.out=15), y=seq(-2, 2, length.out=15))
+df$z <- with(df, x^2 + y^2)
+p <- ggplot(df, aes(x=x, y=y, z=z)) +
+  geom_contour(colour="#1F78B4", linewidth=0.7, linetype="dashed", bins=5) +
+  geom_contour_filled(bins=5, alpha=0.65) +
+  scale_fill_viridis_d() +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        contour = _object(baseline, "r.layer.0")
+        contourf = _object(baseline, "r.layer.1")
+
+        self.assertEqual(contour["kind"], "contour")
+        self.assertEqual(contour["role"], "ggplot_GeomContour")
+        self.assertEqual(contour["source"]["adapterClass"], "GeomContour")
+        self.assertEqual(contourf["kind"], "contourf")
+        self.assertEqual(contourf["role"], "ggplot_GeomContourFilled")
+        self.assertEqual(contourf["source"]["adapterClass"], "GeomContourFilled")
+        self.assertEqual(contour["currentProps"]["adapterFamily"], "contour")
+        self.assertEqual(contourf["currentProps"]["adapterFamily"], "contourf")
+        self.assertTrue(contour["currentProps"]["levels"])
+        self.assertTrue(contourf["currentProps"]["levels"])
+        self.assertTrue(contourf["currentProps"]["fillMapped"])
+        self.assertIn("color", contour["editable"])
+        self.assertIn("linewidth", contour["editable"])
+        self.assertIn("linestyle", contour["editable"])
+        self.assertIn("edgecolor", contourf["editable"])
+        self.assertIn("linewidth", contourf["editable"])
+        self.assertNotIn("levels", contour["editable"])
+        self.assertNotIn("x", contour["editable"])
+        self.assertNotIn("y", contour["editable"])
+        self.assertNotIn("z", contour["editable"])
+        self.assertNotIn("levels", contourf["editable"])
+        self.assertNotIn("x", contourf["editable"])
+        self.assertNotIn("y", contourf["editable"])
+        self.assertNotIn("z", contourf["editable"])
+
+        patched = _run_r_renderer(script, [
+            _backend_patch(contour, "color", "#D62728"),
+            _backend_patch(contour, "linewidth", 1.8),
+            _backend_patch(contour, "linestyle", "solid"),
+            _backend_patch(contourf, "edgecolor", "#111111"),
+            _backend_patch(contourf, "linewidth", 1.2),
+            _backend_patch(contourf, "alpha", 0.4),
+        ])
+        patched_contour = _object(patched, "r.layer.0")
+        patched_contourf = _object(patched, "r.layer.1")
+        self.assertFalse(patched["conflict"])
+        self.assertEqual(len(patched["applied"]), 6)
+        self.assertEqual(patched_contour["currentProps"]["color"], "#D62728")
+        self.assertEqual(patched_contour["currentProps"]["linewidth"], 1.8)
+        self.assertEqual(patched_contour["currentProps"]["linestyle"], "solid")
+        self.assertEqual(patched_contourf["currentProps"]["edgecolor"], "#111111")
+        self.assertEqual(patched_contourf["currentProps"]["linewidth"], 1.2)
+        self.assertEqual(patched_contourf["currentProps"]["alpha"], 0.4)
+        self.assertEqual(contour["identity"], patched_contour["identity"])
+        self.assertEqual(contourf["identity"], patched_contourf["identity"])
+        self.assertIn("#D62728".lower(), patched["svg"].lower())
+        self.assertIn("#111111".lower(), patched["svg"].lower())
+
+        rejected = _run_r_renderer(script, [
+            _backend_patch(contour, "levels", [1, 2, 3]),
+            _backend_patch(contourf, "z", [1, 2, 3]),
+        ])
+        self.assertTrue(rejected["conflict"])
+        self.assertEqual(rejected["applied"], [])
+        self.assertEqual(len(rejected["skipped"]), 2)
+        self.assertEqual(_object(rejected, "r.layer.0")["currentProps"]["levels"], contour["currentProps"]["levels"])
+        self.assertEqual(_object(rejected, "r.layer.1")["currentProps"]["levels"], contourf["currentProps"]["levels"])
+
+    def test_contour_continuous_mappable_scale_replays_from_layer_and_keeps_colorbar_relation(self):
+        script = """
+library(ggplot2)
+df <- expand.grid(x=seq(-2, 2, length.out=15), y=seq(-2, 2, length.out=15))
+df$z <- with(df, x^2 + y^2)
+p <- ggplot(df, aes(x=x, y=y, z=z)) +
+  geom_contour(aes(colour=after_stat(level)), bins=5, linewidth=0.7) +
+  scale_colour_viridis_c(name="Contour level") +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        contour = _object(baseline, "r.layer.0")
+        colorbar = _object(baseline, "r.colorbar.color.0")
+        self.assertEqual(contour["kind"], "contour")
+        self.assertTrue(contour["currentProps"]["colorMapped"])
+        self.assertTrue(contour["currentProps"]["scaleControlled"])
+        self.assertEqual(contour["identity"]["relation"]["scaleId"], "r.scale.color.continuous.0")
+        self.assertEqual(contour["identity"]["relation"]["colorbarId"], colorbar["id"])
+        self.assertEqual(colorbar["identity"]["relation"]["mappableId"], contour["id"])
+        self.assertTrue(all(prop in contour["editable"] for prop in ("cmap", "vmin", "vmax")))
+
+        patched = _run_r_renderer(script, [
+            _backend_patch(contour, "cmap", "plasma"),
+            _backend_patch(contour, "vmin", 0.5),
+            _backend_patch(contour, "vmax", 6.5),
+        ])
+        patched_contour = _object(patched, "r.layer.0")
+        patched_colorbar = _object(patched, "r.colorbar.color.0")
+        self.assertFalse(patched["conflict"])
+        self.assertEqual(len(patched["applied"]), 3)
+        self.assertEqual(patched_contour["currentProps"]["cmap"], "plasma")
+        self.assertAlmostEqual(patched_contour["currentProps"]["vmin"], 0.5)
+        self.assertAlmostEqual(patched_contour["currentProps"]["vmax"], 6.5)
+        self.assertEqual(patched_colorbar["currentProps"]["cmap"], "plasma")
+        self.assertAlmostEqual(patched_colorbar["currentProps"]["vmin"], 0.5)
+        self.assertAlmostEqual(patched_colorbar["currentProps"]["vmax"], 6.5)
+        self.assertEqual(contour["stableKey"], patched_contour["stableKey"])
+        self.assertEqual(contour["fingerprint"], patched_contour["fingerprint"])
+        self.assertEqual(contour["identity"], patched_contour["identity"])
+
+    def test_contour_function_breaks_are_readonly_and_json_safe(self):
+        script = """
+library(ggplot2)
+df <- expand.grid(x=seq(-2, 2, length.out=15), y=seq(-2, 2, length.out=15))
+df$z <- with(df, x^2 + y^2)
+p <- ggplot(df, aes(x=x, y=y, z=z)) +
+  geom_contour(breaks=function(x) pretty(x, n=4)) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        contour = _object(result, "r.layer.0")
+        self.assertIsInstance(contour["currentProps"]["breaks"], str)
+        self.assertIn("function", contour["currentProps"]["breaks"])
+        self.assertNotIn("breaks", contour["editable"])
+        self.assertFalse(any(
+            capability.get("prop") == "breaks"
+            for capability in contour["propertyCapabilities"]
+        ))
+
     def test_heatmap_colorbar_patch(self):
         script = """
 library(ggplot2)

@@ -3993,3 +3993,35 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `npm run test:r-semantic-smoke` 12/12，`npm run test:r-patch-authority`、`npm run test:r-identity-v2-compatibility`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。identity 首次运行遇到一次 Windows R `0xC0000005` 解释器启动异常，隔离重跑通过；该单次崩溃未作为功能通过证据。
 - `npm run data:audit`：25 用户、125 项目、283 项目文件、111 导出资产、0 issue。后续测试继续只使用随机端口、临时 DB/data，禁止访问本机 3000 或真实项目 fixture。
 - 2026-07-23 12:07:51 +08:00 最终复核：独立 `gpt-5.5 high` 直接 reproducer 确认 identity-bearing 与旧 GID-only 两条重复组冲突路径均保持原 manifest/SVG，Step group 为 line 语义；结论 `CLEAR`、0 HIGH/MEDIUM。家族 API、R patch authority、identity v2 compatibility、浏览器 12/12、lint、build、diff-check 均在最终修复后重跑通过，未推送、未部署。
+
+---
+
+## 2026-07-23 15:15:51 +08:00 R Tile/Contour 家族缺少专用能力边界，函数型 breaks 无法序列化
+
+**状态与级别**
+
+- 状态：已修复并通过 renderer、前端合同、隔离 API、真实浏览器、导出快照恢复和静态门禁；未推送、未部署。
+- 级别：P1 图元能力真实性与旧项目兼容。通用 patch 识别无法表达 Raster 无边框、连续 contour 的 scale ownership 和 contour 结构字段只读边界；函数型 `breaks` 还会让 manifest JSON 序列化直接失败。
+
+**根因**
+
+- Tile/Raster/Rect 原先共用普通 `patch` 回读，未区分实际 setter；Raster 会被错误推断为具有 `edgecolor/linewidth` 能力。
+- Contour/ContourFilled 缺少专用 kind/adapter 和 layer-mappable-scale-guide-colorbar-panel 关系，mapped fill 可能被误报为可直接覆盖的整层 `facecolor`。
+- ggplot2 允许 `breaks=function(...)`；原实现把 R language/name 对象直接放入 `currentProps`，`jsonlite` 报 `No method asJSON S3 class: name`。
+- 浏览器用例最初通过直接赋值并派发事件修改 React range，DOM 值改变但暂存状态未更新，透明度补丁缺失；这属于测试事件模拟错误，不是产品控件失效。
+
+**修复**
+
+- Tile/Raster/Rect 增加专用 adapter，同时保留旧 `r.layer.N`、`kind=patch` 和 role；能力按真实对象计算，Raster 仅开放 fill/alpha，Tile/Rect 才开放边框样式。
+- Contour/ContourFilled 分别输出 `kind=contour/contourf`，连续 scale 使用 `cmap/vmin/vmax` 写回；`levels/x/y/z/bins/breaks` 只读。mapped fill 不暴露虚假 `facecolor`。
+- family 8 layer 与真实 colorbar/mappable/scale/guide/panel 建立双向 relation；关联函数只处理 `kind=colorbar`，避免把其他连续对象误当 guide。
+- `manifest_readonly_parameter()` 将函数/language breaks 转成 JSON 安全的只读表达，不改变实际统计结构。
+- Playwright range 改用真实 `fill()` 路径并核对最终 input value；应用成功同时要求业务 `status=success`、无 rejected/skipped 且响应 `applied` 覆盖请求补丁。
+
+**验证与防复发**
+
+- 审查前 R renderer 全量 98/98；审查修复后 family 8 定向 6/6、capability matrix 2/2、前端合同 6/6 通过；旧 GID-only 与无 fingerprint 旧 manifest replay 通过。
+- 家族隔离 API 覆盖服务端 mode 权威、合法样式、六类结构字段拒绝、mixed batch 原子拒绝、零持久化、导出后继续编辑和快照恢复。
+- `npm run test:r-semantic-smoke` 14/14，真实组件中心完成对象选择、只读控件检查、Draft、保存刷新、撤销重做、导出和快照恢复，console/page error 为 0。
+- `npm run lint`、`npm run build`、family 8 前端合同和 `git diff --check` 通过。后续新增 R layer adapter 必须同时证明真实 setter、mapped aesthetic ownership、结构只读、旧 identity replay 和浏览器事务链路；不得从通用 kind 猜测全部属性。
+- 2026-07-23 15:39:23 +08:00 独立 `gpt-5.5 high` 初审发现 mapped Tile/Rect/ContourFilled 的 `edgecolor` 仍可能覆盖 scale ownership。renderer 已在 currentProps readback、editable/propertyCapabilities 和 setter 三层 fail-closed；新增 mapped Tile/Rect/ContourFilled 回归证明冲突响应不改变 SVG、manifest、stableKey、fingerprint 或 identity。审查前全量 98/98；修复后 family 8 定向 6/6、家族 API、浏览器 14/14、lint、build、diff-check 通过，复审结论 `CLOSED`、无 HIGH/MEDIUM。

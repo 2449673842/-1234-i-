@@ -230,6 +230,32 @@
       "requiredRoles": ["ggplot_heatmap_series", "ggplot_colorbar"]
     },
     {
+      "id": "r_tile_raster_rect",
+      "file": "r/tile_raster_rect.R",
+      "minKindCounts": { "patch": 3, "heatmap": 1, "colorbar": 1 },
+      "requiredIds": ["r.layer.0", "r.layer.1", "r.layer.2", "r.heatmap.fill.0", "r.colorbar.fill.0"],
+      "requiredRoles": ["ggplot_GeomTile", "ggplot_GeomRaster", "ggplot_GeomRect", "ggplot_heatmap_series", "ggplot_colorbar"],
+      "relations": [
+        { "from": "r.layer.0", "field": "scaleId", "equals": "r.scale.fill.continuous.0" },
+        { "from": "r.layer.1", "field": "colorbarId", "equals": "r.colorbar.fill.0" },
+        { "from": "r.layer.2", "field": "subplotIds", "equals": ["subplot.0"] },
+        { "from": "r.heatmap.fill.0", "field": "layerIds", "equals": ["r.layer.0", "r.layer.1", "r.layer.2"] },
+        { "from": "r.colorbar.fill.0", "field": "mappableId", "equals": "r.heatmap.fill.0" }
+      ]
+    },
+    {
+      "id": "r_contour_family",
+      "file": "r/contour_family.R",
+      "minKindCounts": { "contour": 1, "contourf": 1, "colorbar": 1 },
+      "requiredIds": ["r.layer.0", "r.layer.1", "r.colorbar.color.0"],
+      "requiredRoles": ["ggplot_GeomContour", "ggplot_GeomContourFilled", "ggplot_colorbar"],
+      "relations": [
+        { "from": "r.layer.0", "field": "scaleId", "equals": "r.scale.color.continuous.0" },
+        { "from": "r.colorbar.color.0", "field": "mappableId", "equals": "r.layer.0" },
+        { "from": "r.layer.1", "field": "subplotIds", "equals": ["subplot.0"] }
+      ]
+    },
+    {
       "id": "r_base_preview",
       "file": "r/base_r_preview.R",
       "semanticSupport": "preview_only",

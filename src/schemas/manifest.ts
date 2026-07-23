@@ -221,7 +221,9 @@ export type KnownRLayerAdapterClass =
   | "GeomLabel"
   | "GeomTile"
   | "GeomRaster"
-  | "GeomRect";
+  | "GeomRect"
+  | "GeomContour"
+  | "GeomContourFilled";
 
 export type RLayerAdapterClass = KnownRLayerAdapterClass | `Geom${string}`;
 

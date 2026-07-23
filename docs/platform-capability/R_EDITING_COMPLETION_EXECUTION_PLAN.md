@@ -1,6 +1,6 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0-R-WP3 与 R-WP4 前六类图元的本地集成候选门禁已通过；Step/Histogram/Freqpoly 源分支能力已合入且集成复验待完成，下一图元家族为 Tile/Raster/Rect/Contour
+> 状态：R-WP0-R-WP3 与 R-WP4 前六类图元的本地集成候选门禁已通过；Step/Histogram/Freqpoly、Tile/Raster/Rect 与 Contour/ContourFilled 源分支能力已合入且当前批次复验待完成，下一图元家族为 GeomSegment/Curve
 > 最后修改时间：2026-07-30 16:08:23 +08:00
 > 当前部署状态：R-WP0-R-WP4 已完成子家族仅在本地验证；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
@@ -337,7 +337,7 @@ legend/guide 增删和重排
 5. `GeomBoxplot/Violin`：box、median、whisker、staple、outlier、body 关系。本地候选已实现：Boxplot 声明 box body、median、whiskers、staples、outliers 组件角色，整体线色、箱体填充与稳定 outlier 属性分离；旧 `median_color` 仅作为兼容 alias 映射到整体轮廓并返回 warning，新 manifest/UI 不再把它冒充为独立中位线 setter。Violin 声明 body/quantile-lines 边界，琴身样式可编辑，quantile 独立属性保持只读。
 6. `GeomRibbon/Area`：置信区间带、边界线、fill 和 owner series。本地候选已实现：保留旧 `r.layer.N`、`kind=patch` 和 GeomRibbon/GeomArea role，增加 `adapterFamily=ribbon/area` 与 `body/boundary_lines` 关系，只开放 `facecolor/edgecolor/linewidth/alpha`；`x/y/ymin/ymax`、堆叠、边界拆分和 `GeomSmooth(se=TRUE)` 置信带保持只读。离散 fill group 使用 `ribbon/area/band` 语义，整层 style override 只恢复可信 baseline 的 scale/guide 结构身份，不恢复旧颜色；`scaleActive=false` 的休眠 group 保留用于身份诊断但拒绝编辑。
 7. `GeomStep/Histogram/Freqpoly`：bin/step 语义和连续系列身份。本地候选已实现：Step 保留 `GeomStep` role，Histogram/Freqpoly 分别保留旧 `GeomBar/GeomPath` role 和 `r.layer.N`，通过 `adapterClass=GeomHistogram/GeomFreqpoly` 区分统计层；只开放真实样式 setter，step direction、binwidth/bins、breaks/counts/density/yStat 等科学结构保持只读。离散 scale 身份恢复只接受唯一的一对一 `aesthetic + scaleId + groupKey`，重复结构键不再 first-wins 合并。
-8. `GeomTile/Raster/Rect/Contour`：mappable、scale、guide 和 panel 关系。
+8. `GeomTile/Raster/Rect/Contour`：mappable、scale、guide 和 panel 关系。本地候选已实现：Tile/Raster/Rect 保留旧 `kind=patch`、`r.layer.N` 和 role，Contour/ContourFilled 使用 `kind=contour/contourf`；mapped fill 由 scale/mappable 关系负责，不暴露虚假整层 `facecolor`，Raster 不开放边框 setter。连续 contour 可编辑 `cmap/vmin/vmax`，`levels/x/y/z/bins/breaks` 等科学结构保持只读；layer、mappable、scale、guide、colorbar 和 panel 使用显式双向关系。
 9. `GeomSegment/Curve`：线、箭头和端点语义，不自动与任意文本配对。
 
 每个家族必须完成：
@@ -434,7 +434,18 @@ fixture
 - `npm run test:r-semantic-smoke` 12/12：真实组件中心把 Step/Freqpoly 纳入 line 批量编辑、Histogram 纳入 patch 批量编辑，配色中心继续按活跃 color/fill group 修改，并完成 Draft、保存刷新、撤销重做和导出；console/page error 为 0。
 - `npm run test:r-patch-authority`、`npm run test:r-identity-v2-compatibility`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。identity 用例首次遇到一次 Windows R 进程 `0xC0000005` 启动异常，隔离重跑通过，未把单次解释器崩溃计为产品通过证据。
 - 最终独立 `gpt-5.5 high` 复审发现旧 GID-only 重复组 patch 会在确认拒绝前进入 scale setter，造成 `conflict=true` 但返回 SVG/manifest 已变色；resolver 现于应用前拒绝 ambiguous group。直接 reproducer 验证 identity-bearing 与旧 GID-only 两条冲突路径均保持原 SVG/manifest，复审结论 `CLEAR`、0 HIGH/MEDIUM。Step scale group 同时修正为 `kind=line` / `semanticKind=line`。
-- 当前仍未推送、未部署；R-WP4 还剩 Tile/Raster/Rect/Contour 与 Segment/Curve，不得将本节解释为 R-WP4 全部完成。
+- 当前仍未推送、未部署；后续证据见 Tile/Raster/Rect/Contour 小节。
+
+**GeomTile/Raster/Rect/Contour/ContourFilled 本地候选证据（2026-07-23 15:39:23 +08:00）**
+
+- 审查前 R renderer 全量 98/98；审查修复后 family 8 定向 6/6、capability matrix 2/2 通过。Tile/Raster/Rect 保留旧 `r.layer.N`、`kind=patch` 与既有 role；Contour/ContourFilled 分别输出 `kind=contour/contourf` 和受共享类型约束的专用 `adapterClass`。
+- Tile/Rect 仅在 renderer 确有边框能力时开放 `edgecolor/linewidth`；Raster 只开放 `facecolor/alpha`。mapped fill 不生成虚假整层 fill setter，连续 contour 通过 mappable/scale 写回 `cmap/vmin/vmax`，`levels/x/y/z/bins/breaks` 仅作只读结构诊断。
+- layer、mappable、scale、guide、colorbar 与 panel 建立显式关系；colorbar 关联仅处理真实 `kind=colorbar` 对象。旧 GID-only editLog 与无 fingerprint 版本旧 manifest 可继续重放，样式修改不改变 stableKey、v2 fingerprint 或 relation。
+- 函数型 `breaks` 先转换为 JSON 安全的只读表达，关闭 `No method asJSON S3 class: name`。前端 family 8 合同 6/6，覆盖专用 target role、权威 propertyCapabilities、Raster 边框拒绝和结构字段 strict skip。
+- 家族隔离 API smoke 证明客户端伪报 `local_patch` 会规范化为 `backend_patch`；合法样式 batch 成功，`levels/x/y/z/bins/breaks` 和 mixed batch 原子拒绝，revision、session、Figure、history、cache、导出锚点和快照均不变化；导出后继续编辑与快照恢复通过。
+- `npm run test:r-semantic-smoke` 14/14：真实组件中心完成 Tile/Raster/Rect 与 Contour/ContourFilled 选择、批量样式、只读结构控件核验、Draft、保存刷新、撤销重做、导出后继续编辑和快照恢复；console/page error 为 0。`npm run lint`、`npm run build`、合同测试和 `git diff --check` 通过。
+- 独立 `gpt-5.5 high` 初审发现 mapped Tile/Rect/ContourFilled 仍会开放整层 `edgecolor`，可能覆盖数据驱动 scale。renderer 现同时在 readback、editable/propertyCapabilities 和 setter 三层阻止 mapped edge override；被拒 patch 不再污染返回 manifest。新增三类 mapped-edge 回归后复审确认 `CLOSED`，最终无 HIGH/MEDIUM。
+- 当前仍未推送、未部署；R-WP4 还剩 GeomSegment/Curve，不得将本节解释为 R-WP4 全部完成。
 
 ### R-WP5：scale、guide、facet 与布局关系
 

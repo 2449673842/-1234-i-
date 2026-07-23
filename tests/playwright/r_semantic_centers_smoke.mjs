@@ -61,6 +61,11 @@ const script = [
   'area <- data.frame(x=rep(7:10, 2), y=c(0.7, 1.1, 0.9, 1.4, 1.2, 1.7, 1.5, 2.0), group=rep(c("E", "F"), each=4))',
   'step_data <- data.frame(x=11:14, y=c(1.2, 2.6, 1.9, 3.1))',
   'bin_data <- data.frame(x=c(11.1, 11.4, 11.8, 12.2, 12.7, 13.1, 13.5, 13.8))',
+  'tile_data <- expand.grid(x=15:17, y=1:3)',
+  'tile_data$value <- seq_len(nrow(tile_data)) / 10',
+  'rect_data <- data.frame(xmin=c(18.1, 18.9), xmax=c(18.7, 19.5), ymin=c(1.1, 2.1), ymax=c(1.9, 2.9))',
+  'contour_data <- expand.grid(x=seq(20, 22, length.out=11), y=seq(1, 3, length.out=11))',
+  'contour_data$z <- with(contour_data, sin(x * 1.3) + cos(y * 2.1))',
   'p <- ggplot(df, aes(x, y, color=group)) +',
   '  geom_point(size=3, shape=21, fill="#FFFFFF", stroke=0.6) +',
   '  geom_point(aes(size=weight), shape=21, fill="#A6CEE3", stroke=0.7, alpha=0.8) +',
@@ -75,6 +80,11 @@ const script = [
   '  geom_step(data=step_data, aes(x=x, y=y), inherit.aes=FALSE, direction="vh", colour="#756BB1", linewidth=0.75) +',
   '  geom_histogram(data=bin_data, aes(x=x), inherit.aes=FALSE, binwidth=0.5, boundary=11, fill="#9ECAE1", colour="#2171B5", linewidth=0.45, alpha=0.65) +',
   '  geom_freqpoly(data=bin_data, aes(x=x), inherit.aes=FALSE, bins=6, boundary=11, colour="#E6550D", linewidth=0.8) +',
+  '  geom_tile(data=tile_data, aes(x=x, y=y), inherit.aes=FALSE, fill="#C7E9C0", colour="#238B45", linewidth=0.35, alpha=0.85) +',
+  '  geom_raster(data=tile_data, aes(x=x + 0.18, y=y + 0.18), inherit.aes=FALSE, fill="#9ECAE1", alpha=0.55) +',
+  '  geom_rect(data=rect_data, aes(xmin=xmin, xmax=xmax, ymin=ymin, ymax=ymax), inherit.aes=FALSE, fill="#FDAE6B", colour="#E6550D", linewidth=0.25, alpha=0.35) +',
+  '  geom_contour(data=contour_data, aes(x=x, y=y, z=z), inherit.aes=FALSE, bins=5, colour="#54278F", linewidth=0.65, linetype="solid", alpha=0.9) +',
+  '  geom_contour_filled(data=contour_data, aes(x=x, y=y, z=z), inherit.aes=FALSE, bins=5, fill="#CBC9E2", colour="#6A51A3", linewidth=0.3, alpha=0.55) +',
   '  scale_fill_manual(values=c(A="#80B1D3", B="#FDB462", C="#B3DE69", D="#FCCDE5", E="#92C5DE", F="#A6D96A")) +',
   '  labs(title="R Semantic Centers", x="R X Axis", y="R Y Axis") +',
   '  facet_wrap(~facet) +',
@@ -94,6 +104,24 @@ function parseJson(value) {
   } catch {
     return null;
   }
+}
+
+function patchValueEquals(left, right) {
+  if (typeof left === 'number' || typeof right === 'number') {
+    return Number(left) === Number(right);
+  }
+  return String(left).toLowerCase() === String(right).toLowerCase();
+}
+
+function patchTripletMatches(entry, expected) {
+  return entry?.gid === expected?.gid
+    && entry?.prop === expected?.prop
+    && patchValueEquals(entry?.value, expected?.value);
+}
+
+function allPatchesApplied(responseBody, patches) {
+  const applied = Array.isArray(responseBody?.applied) ? responseBody.applied : [];
+  return patches.every((patch) => applied.some((entry) => patchTripletMatches(entry, patch)));
 }
 
 function interestingApi(request) {
@@ -244,6 +272,40 @@ async function setComponentSelectByGroup(page, groupId, prop, value) {
   return true;
 }
 
+async function setRangeInComponentGroup(page, groupId, prop, value) {
+  const input = page.locator(
+    `[data-component-group-id="${groupId}"] input[data-param-role="range"][data-param-prop="${prop}"]`,
+  ).first();
+  if (!(await input.isVisible({ timeout: 4000 }).catch(() => false))) return false;
+  await input.fill(String(value));
+  await page.waitForTimeout(700);
+  return Number(await input.inputValue()) === Number(value);
+}
+
+async function selectComponentObject(page, groupId, gid) {
+  const objectButton = page.locator(`[data-component-group-id="${groupId}"] [data-component-object-id="${gid}"]`).first();
+  if (!(await objectButton.isVisible({ timeout: 4000 }).catch(() => false))) return false;
+  await objectButton.click();
+  await page.waitForTimeout(400);
+  return true;
+}
+
+async function selectComponentGroup(page, groupId) {
+  const groupButton = page.locator(`[data-component-group-id="${groupId}"]`).getByRole('button', { name: '选中整组' }).first();
+  if (!(await groupButton.isVisible({ timeout: 4000 }).catch(() => false))) return false;
+  await groupButton.click();
+  await page.waitForTimeout(400);
+  return true;
+}
+
+async function countComponentParamControls(page, groupId, props) {
+  const counts = {};
+  for (const prop of props) {
+    counts[prop] = await page.locator(`[data-component-group-id="${groupId}"] [data-param-prop="${prop}"]`).count();
+  }
+  return counts;
+}
+
 async function setColorControl(page, sectionText, labelText, value) {
   const handle = await findControlInRightSidebar(page, { sectionText, labelText, selector: 'input[type="text"]' });
   const element = handle.asElement();
@@ -301,11 +363,17 @@ async function applyDraftAndReadPatch(page) {
   const patchRequest = apiRequests.slice(start).find((request) => request.url.includes('/api/figure/patch')) || null;
   const patchBody = parseJson(patchRequest?.postData);
   const responseBody = await patchResponse?.json().catch(() => null);
+  const requestPatches = patchList(patchBody);
+  const rejected = Array.isArray(responseBody?.rejected) ? responseBody.rejected : [];
+  const skipped = Array.isArray(responseBody?.skipped) ? responseBody.skipped : [];
   const successful = Boolean(
     patchResponse
     && patchResponse.status() >= 200
     && patchResponse.status() < 300
     && responseBody?.status === 'success'
+    && rejected.length === 0
+    && skipped.length === 0
+    && allPatchesApplied(responseBody, requestPatches)
   );
   return { clicked, patchBody, responseBody, successful };
 }
@@ -502,6 +570,46 @@ async function prepareProject(page) {
         currentProps: obj.currentProps,
         source: obj.source,
       })),
+      tileLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.currentProps?.adapterFamily === 'tile').map((obj) => ({
+        id: obj.id,
+        kind: obj.kind,
+        role: obj.role,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+        source: obj.source,
+      })),
+      rasterLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.currentProps?.adapterFamily === 'raster').map((obj) => ({
+        id: obj.id,
+        kind: obj.kind,
+        role: obj.role,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+        source: obj.source,
+      })),
+      rectLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.currentProps?.adapterFamily === 'rect').map((obj) => ({
+        id: obj.id,
+        kind: obj.kind,
+        role: obj.role,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+        source: obj.source,
+      })),
+      contourLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.kind === 'contour').map((obj) => ({
+        id: obj.id,
+        kind: obj.kind,
+        role: obj.role,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+        source: obj.source,
+      })),
+      contourfLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.kind === 'contourf').map((obj) => ({
+        id: obj.id,
+        kind: obj.kind,
+        role: obj.role,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+        source: obj.source,
+      })),
       lineLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.kind === 'line').map((obj) => ({
         id: obj.id,
         editable: obj.editable,
@@ -572,6 +680,16 @@ async function run() {
         && fixture.histogramLayers.every((layer) => layer.kind === 'patch' && layer.role === 'ggplot_GeomBar' && layer.source?.adapterClass === 'GeomHistogram' && Number(layer.currentProps?.binwidth) === 0.5 && !layer.editable?.includes('binwidth'))
         && fixture.freqpolyLayers.length === 1
         && fixture.freqpolyLayers.every((layer) => layer.kind === 'line' && layer.role === 'ggplot_GeomPath' && layer.source?.adapterClass === 'GeomFreqpoly' && Number(layer.currentProps?.bins) === 6 && !layer.editable?.includes('bins'))
+        && fixture.tileLayers.length === 1
+        && fixture.tileLayers.every((layer) => layer.kind === 'patch' && layer.role === 'ggplot_GeomTile' && layer.source?.adapterClass === 'GeomTile' && layer.editable?.includes('facecolor') && layer.editable?.includes('edgecolor') && layer.editable?.includes('linewidth') && layer.editable?.includes('alpha') && !layer.editable?.includes('cmap'))
+        && fixture.rasterLayers.length === 1
+        && fixture.rasterLayers.every((layer) => layer.kind === 'patch' && layer.role === 'ggplot_GeomRaster' && layer.source?.adapterClass === 'GeomRaster' && layer.editable?.includes('facecolor') && layer.editable?.includes('alpha') && !layer.editable?.includes('edgecolor') && !layer.editable?.includes('linewidth') && !layer.editable?.includes('cmap'))
+        && fixture.rectLayers.length === 1
+        && fixture.rectLayers.every((layer) => layer.kind === 'patch' && layer.role === 'ggplot_GeomRect' && layer.source?.adapterClass === 'GeomRect' && layer.editable?.includes('facecolor') && layer.editable?.includes('edgecolor') && layer.editable?.includes('linewidth') && layer.editable?.includes('alpha') && !layer.editable?.includes('cmap'))
+        && fixture.contourLayers.length === 1
+        && fixture.contourLayers.every((layer) => layer.kind === 'contour' && layer.role === 'ggplot_GeomContour' && layer.source?.adapterClass === 'GeomContour' && layer.editable?.includes('linewidth') && layer.editable?.includes('linestyle') && layer.editable?.includes('alpha') && Array.isArray(layer.currentProps?.levels) && !layer.editable?.includes('levels') && !layer.editable?.includes('bins') && !layer.editable?.includes('breaks'))
+        && fixture.contourfLayers.length === 1
+        && fixture.contourfLayers.every((layer) => layer.kind === 'contourf' && layer.role === 'ggplot_GeomContourFilled' && layer.source?.adapterClass === 'GeomContourFilled' && layer.editable?.includes('facecolor') && layer.editable?.includes('edgecolor') && layer.editable?.includes('linewidth') && layer.editable?.includes('linestyle') && layer.editable?.includes('alpha') && Array.isArray(layer.currentProps?.levels) && !layer.editable?.includes('levels') && !layer.editable?.includes('bins') && !layer.editable?.includes('breaks'))
         && fixture.fillGroups.some((group) => group.kind === 'distribution' && group.geomFamilies?.includes('GeomBoxplot') && group.geomFamilies?.includes('GeomViolin'))
         && fixture.fillGroups.some((group) => group.kind === 'band' && group.geomFamilies?.includes('GeomRibbon') && group.geomFamilies?.includes('GeomArea'))
         ? 'PASS' : 'FAIL',
@@ -648,6 +766,73 @@ async function run() {
     record('R2c-point-marker', markerOk ? 'PASS' : 'FAIL', `changed=${markerChanged}, draft=${markerDraft}, stateRevision=${markerState.revision}, patches=${JSON.stringify(markerPatches)}`);
 
     await clickText(page, '组件中心');
+    const tileSelected = await selectComponentObject(page, 'patches', fixture.tileLayers[0]?.id);
+    const rasterSelected = await selectComponentObject(page, 'patches', fixture.rasterLayers[0]?.id);
+    const rectSelected = await selectComponentObject(page, 'patches', fixture.rectLayers[0]?.id);
+    const contourSelected = await selectComponentObject(page, 'contours', fixture.contourLayers[0]?.id);
+    const contourfSelected = await selectComponentObject(page, 'contours', fixture.contourfLayers[0]?.id);
+    const contourGroupSelected = await selectComponentGroup(page, 'contours');
+    const contourReadonlyControls = await countComponentParamControls(page, 'contours', ['levels', 'x', 'y', 'z', 'bins', 'breaks']);
+    const contourReadonlyTextVisible = await page.locator('[data-component-group-id="contours"]').getByText('levels（只读）', { exact: true }).count() > 0;
+    const family8PatchTargetKey = [
+      ...fixture.barLayers,
+      ...fixture.histogramLayers,
+      ...fixture.tileLayers,
+      ...fixture.rasterLayers,
+      ...fixture.rectLayers,
+    ].map((layer) => layer.id).join('|');
+    const family8PatchEdgeChanged = await setColorByScope(page, `component:patches:${family8PatchTargetKey}:edgecolor`, '#1b7837');
+    const family8PatchAlphaChanged = await setRangeInComponentGroup(page, 'patches', 'alpha', 0.6);
+    const family8ContourLineChanged = await setNumberByParam(page, 'component-contours', 'linewidth', 1.75);
+    const family8ContourStyleChanged = await setSelectByParam(page, 'component-contours', 'linestyle', 'dashed');
+    const family8Draft = (await getBodyText(page)).includes('已暂存');
+    const family8Apply = family8PatchEdgeChanged
+      && family8PatchAlphaChanged
+      && family8ContourLineChanged
+      && family8ContourStyleChanged
+      ? await applyDraftAndReadPatch(page)
+      : { patchBody: null, successful: false };
+    const family8Patches = patchList(family8Apply.patchBody);
+    const family8ExpectedEdits = family8Patches.map((patch) => ({
+      gid: patch.gid,
+      prop: patch.prop,
+      value: patch.value,
+    }));
+    const family8State = await waitForEdits(page, family8ExpectedEdits);
+    const family8TileOk = fixture.tileLayers.every((layer) => (
+      family8Patches.some((patch) => patch.gid === layer.id && patch.prop === 'edgecolor' && String(patch.value).toLowerCase() === '#1b7837')
+      && family8Patches.some((patch) => patch.gid === layer.id && patch.prop === 'alpha' && Number(patch.value) === 0.6)
+    ));
+    const family8RectOk = fixture.rectLayers.every((layer) => (
+      family8Patches.some((patch) => patch.gid === layer.id && patch.prop === 'edgecolor' && String(patch.value).toLowerCase() === '#1b7837')
+      && family8Patches.some((patch) => patch.gid === layer.id && patch.prop === 'alpha' && Number(patch.value) === 0.6)
+    ));
+    const family8RasterOk = fixture.rasterLayers.every((layer) => (
+      family8Patches.some((patch) => patch.gid === layer.id && patch.prop === 'alpha' && Number(patch.value) === 0.6)
+      && !family8Patches.some((patch) => patch.gid === layer.id && ['edgecolor', 'linewidth'].includes(patch.prop))
+    ));
+    const family8ContourOk = [...fixture.contourLayers, ...fixture.contourfLayers].every((layer) => (
+      family8Patches.some((patch) => patch.gid === layer.id && patch.prop === 'linewidth' && Number(patch.value) === 1.75)
+      && family8Patches.some((patch) => patch.gid === layer.id && patch.prop === 'linestyle' && String(patch.value) === 'dashed')
+    ));
+    const family8ReadonlyOk = Object.values(contourReadonlyControls).every((count) => count === 0);
+    const family8SelectionOk = tileSelected && rasterSelected && rectSelected && contourSelected && contourfSelected && contourGroupSelected;
+    const family8Ok = family8SelectionOk
+      && family8ReadonlyOk
+      && family8PatchEdgeChanged
+      && family8PatchAlphaChanged
+      && family8ContourLineChanged
+      && family8ContourStyleChanged
+      && family8Draft
+      && family8Apply.successful
+      && family8TileOk
+      && family8RectOk
+      && family8RasterOk
+      && family8ContourOk
+      && family8ExpectedEdits.every((edit) => hasEdit(family8State.editLog, edit));
+    record('R2e-family8-tile-contour-components', family8Ok ? 'PASS' : 'FAIL', `selection=${JSON.stringify({ tileSelected, rasterSelected, rectSelected, contourSelected, contourfSelected, contourGroupSelected })}, readonly=${JSON.stringify(contourReadonlyControls)}, readonlyText=${contourReadonlyTextVisible}, changed=${JSON.stringify({ family8PatchEdgeChanged, family8PatchAlphaChanged, family8ContourLineChanged, family8ContourStyleChanged })}, draft=${family8Draft}, patches=${JSON.stringify(family8Patches)}`);
+
+    await clickText(page, '组件中心');
     const componentSvgBefore = await page.locator('[data-scifigure-canvas-svg="true"] > svg').first().evaluate((node) => node.outerHTML).catch(() => '');
     const barLineChanged = await setComponentNumberByGroup(page, 'patches', 'linewidth', 1.25);
     const errorbarLineChanged = await setComponentNumberByGroup(page, 'errorbars', 'elinewidth', 1.45);
@@ -658,7 +843,13 @@ async function run() {
     const violinTargetKey = fixture.violinLayers.map((layer) => layer.id).join('|');
     const bandTargetKey = fixture.bandLayers.map((layer) => layer.id).join('|');
     const lineTargetKey = fixture.lineLayers.map((layer) => layer.id).join('|');
-    const patchTargetKey = [...fixture.barLayers, ...fixture.histogramLayers].map((layer) => layer.id).join('|');
+    const patchTargetKey = [
+      ...fixture.barLayers,
+      ...fixture.histogramLayers,
+      ...fixture.tileLayers,
+      ...fixture.rasterLayers,
+      ...fixture.rectLayers,
+    ].map((layer) => layer.id).join('|');
     const legacyMedianControlHidden = await page.locator('[data-component-group-id="boxplots"]').getByText('中位线颜色', { exact: true }).count() === 0;
     const familyLineColorChanged = await setColorByScope(page, `component:lines:${lineTargetKey}:color`, '#08519c');
     const familyPatchFillChanged = await setColorByScope(page, `component:patches:${patchTargetKey}:color`, '#fdd0a2');
@@ -756,6 +947,7 @@ async function run() {
     const expectedCoreEdits = [
       ...pointSizeExpectedEdits,
       ...markerExpectedEdits,
+      ...family8ExpectedEdits,
       ...componentBatchExpectedEdits,
     ];
     const saveResult = await saveProjectAndReadPut(page);
@@ -773,7 +965,7 @@ async function run() {
       && undoResult.renderOk
       && componentBatchExpectedEdits.length >= 5
       && componentBatchExpectedEdits.every((edit) => !hasEdit(undoState.editLog, edit))
-      && [...pointSizeExpectedEdits, ...markerExpectedEdits].every((edit) => hasEdit(undoState.editLog, edit));
+      && [...pointSizeExpectedEdits, ...markerExpectedEdits, ...family8ExpectedEdits].every((edit) => hasEdit(undoState.editLog, edit));
     record(
       'R3c-undo-bar-errorbar-batch',
       undoResult.clicked ? (undoOk ? 'PASS' : 'FAIL') : 'BLOCKED',
@@ -858,6 +1050,47 @@ async function run() {
       && exportedEdits.some((patch) => String(patch.gid).startsWith('r.group.fill.') && patch.prop === 'facecolor')
       && expectedCoreEdits.every((edit) => hasEdit(exportedEdits, edit));
     record('R5-export-state', exportOk ? 'PASS' : 'FAIL', `environment=${exported?.bundle?.metadata?.environment}, edits=${JSON.stringify(exportedEdits)}`);
+
+    const snapshotSave = await saveProjectAndReadPut(page);
+    const projectExported = snapshotSave.successful ? await requestJson(`/api/projects/${projectId}/export`, {
+      method: 'POST',
+      body: JSON.stringify({ figureId: 'fig_1', format: 'svg', dpi: 300, saveToLibrary: true }),
+    }) : null;
+    const exportAsset = projectExported?.figures?.[0]?.asset || projectExported?.asset || null;
+    await clickText(page, '组件中心');
+    const postExportLineValue = 0.95;
+    const postExportChanged = exportAsset?.assetId ? await setNumberByParam(page, 'component-contours', 'linewidth', postExportLineValue) : false;
+    const postExportApply = postExportChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
+    const postExportPatches = patchList(postExportApply.patchBody);
+    const postExportExpectedEdits = postExportPatches.map((patch) => ({
+      gid: patch.gid,
+      prop: patch.prop,
+      value: patch.value,
+    }));
+    const postExportState = await waitForEdits(page, postExportExpectedEdits);
+    const postExportSave = postExportApply.successful ? await saveProjectAndReadPut(page) : { successful: false };
+    const restored = postExportSave.successful ? await requestJson(`/api/projects/${projectId}/export-assets/${exportAsset.assetId}/restore`, {
+      method: 'POST',
+    }) : null;
+    const restoredProject = restored?.status === 'success' ? await requestJson(`/api/projects/${projectId}`) : null;
+    const restoredFigures = restoredProject?.project?.figures || restoredProject?.figures || [];
+    const restoredFigure = restoredFigures.find((item) => item.figureId === 'fig_1') || null;
+    const restoredEditLog = restoredFigure?.editLog || [];
+    const snapshotRestoreOk = snapshotSave.successful
+      && projectExported?.status === 'success'
+      && projectExported?.figures?.[0]?.figureId === 'fig_1'
+      && exportAsset?.assetId
+      && exportAsset?.hasEditingSnapshot === true
+      && postExportChanged
+      && postExportApply.successful
+      && postExportPatches.length >= 1
+      && postExportExpectedEdits.every((edit) => hasEdit(postExportState.editLog, edit))
+      && postExportSave.successful
+      && restored?.status === 'success'
+      && restored?.targetFigureId === 'fig_1'
+      && expectedCoreEdits.every((edit) => hasEdit(restoredEditLog, edit))
+      && postExportExpectedEdits.every((edit) => !hasEdit(restoredEditLog, edit));
+    record('R4b-export-snapshot-restore', snapshotRestoreOk ? 'PASS' : 'FAIL', `asset=${JSON.stringify(exportAsset)}, postExport=${JSON.stringify(postExportPatches)}, restored=${JSON.stringify({ status: restored?.status, targetFigureId: restored?.targetFigureId, editCount: restoredEditLog.length })}`);
 
     record(
       'N1',
