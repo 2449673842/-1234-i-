@@ -1,6 +1,6 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0、R-WP1、R-WP2、R-WP3 本地候选完成；R-WP4 Point/Jitter、Line/Path/Smooth、Bar/Col、Errorbar family、Boxplot/Violin 与 Ribbon/Area 的集成候选门禁已通过，下一图元家族为 Step/Histogram/Freqpoly
+> 状态：R-WP0-R-WP3 与 R-WP4 前六类图元的本地集成候选门禁已通过；Step/Histogram/Freqpoly 源分支能力已合入且集成复验待完成，下一图元家族为 Tile/Raster/Rect/Contour
 > 最后修改时间：2026-07-30 16:08:23 +08:00
 > 当前部署状态：R-WP0-R-WP4 已完成子家族仅在本地验证；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
@@ -336,7 +336,7 @@ legend/guide 增删和重排
 4. `GeomErrorbar/Linerange/Pointrange/Crossbar`：主线、端帽、点和容器关系。本地候选已实现：容器保留旧 `r.layer.N`，按 geom 声明 `interval_line/caps/point/crossbar` 组件角色；`elinewidth` 控制区间线，旧 `linewidth` editLog 兼容映射；Errorbar/Crossbar 的 `capsize` 明确为数据单位，Pointrange 才开放 marker/markersize，可填充 Pointrange 与 Crossbar 才开放 facecolor。
 5. `GeomBoxplot/Violin`：box、median、whisker、staple、outlier、body 关系。本地候选已实现：Boxplot 声明 box body、median、whiskers、staples、outliers 组件角色，整体线色、箱体填充与稳定 outlier 属性分离；旧 `median_color` 仅作为兼容 alias 映射到整体轮廓并返回 warning，新 manifest/UI 不再把它冒充为独立中位线 setter。Violin 声明 body/quantile-lines 边界，琴身样式可编辑，quantile 独立属性保持只读。
 6. `GeomRibbon/Area`：置信区间带、边界线、fill 和 owner series。本地候选已实现：保留旧 `r.layer.N`、`kind=patch` 和 GeomRibbon/GeomArea role，增加 `adapterFamily=ribbon/area` 与 `body/boundary_lines` 关系，只开放 `facecolor/edgecolor/linewidth/alpha`；`x/y/ymin/ymax`、堆叠、边界拆分和 `GeomSmooth(se=TRUE)` 置信带保持只读。离散 fill group 使用 `ribbon/area/band` 语义，整层 style override 只恢复可信 baseline 的 scale/guide 结构身份，不恢复旧颜色；`scaleActive=false` 的休眠 group 保留用于身份诊断但拒绝编辑。
-7. `GeomStep/Histogram/Freqpoly`：bin/step 语义和连续系列身份。
+7. `GeomStep/Histogram/Freqpoly`：bin/step 语义和连续系列身份。本地候选已实现：Step 保留 `GeomStep` role，Histogram/Freqpoly 分别保留旧 `GeomBar/GeomPath` role 和 `r.layer.N`，通过 `adapterClass=GeomHistogram/GeomFreqpoly` 区分统计层；只开放真实样式 setter，step direction、binwidth/bins、breaks/counts/density/yStat 等科学结构保持只读。离散 scale 身份恢复只接受唯一的一对一 `aesthetic + scaleId + groupKey`，重复结构键不再 first-wins 合并。
 8. `GeomTile/Raster/Rect/Contour`：mappable、scale、guide 和 panel 关系。
 9. `GeomSegment/Curve`：线、箭头和端点语义，不自动与任意文本配对。
 
@@ -421,7 +421,20 @@ fixture
 - baseline 恢复后的 group 同时报告 `scaleActive`；已被整层 fill override 覆盖的休眠 group 无论 palette edit 位于 override 前还是后都返回 conflict，服务端整批零持久化，不把图例与数据不一致冒充为 superseded 成功。
 - 项目 PUT 保存预检同步拒绝 `scaleActive=false` 的 `r.group.*`；构造 editLog 回归返回 409/`no_setter`，并证明 session、Figure、history、cache、导出资产和快照均未变化。
 - R remap 同步增加存在性与 GID 家族门禁：请求 GID 必须先存在于当前 manifest；合法 `r.group.*`、`r.layer.*`、tick/text 序号变化继续唯一 remap，伪造 missing GID 不能凭借复制 identity 跳到真实对象。`test:r-identity-v2-compatibility` 与 `test:r-patch-authority` 通过。
-- 最新 Boxplot/Violin 与 Ribbon/Area renderer 定向 9/9、前端合同 10/10、隔离浏览器 12/12、R patch authority 11 场景通过；identity 回归新增现存跨家族 GID 拒绝。最终独立 `gpt-5.5 high` 代码审查 `APPROVE`、架构审查 `CLEAR`，无 HIGH/MEDIUM。当前仍未推送、未部署；下一家族为 Step/Histogram/Freqpoly。
+- 最新 Boxplot/Violin 与 Ribbon/Area renderer 定向 9/9、前端合同 10/10、隔离浏览器 12/12、R patch authority 11 场景通过；identity 回归新增现存跨家族 GID 拒绝。最终独立 `gpt-5.5 high` 代码审查 `APPROVE`、架构审查 `CLEAR`，无 HIGH/MEDIUM。当前仍未推送、未部署；后续证据见 Step/Histogram/Freqpoly 小节。
+
+**GeomStep/Histogram/Freqpoly 本地候选证据（2026-07-23 12:07:51 +08:00）**
+
+- R renderer 定向 9/9：覆盖 Step、Histogram、Freqpoly 的 kind/role/relation、v2 identity、专用 adapter、样式重放、旧 GID-only editLog、结构字段拒绝，以及 Ribbon/Area 与离散 group 身份回归。`GeomHistogram`/`GeomFreqpoly` 只作为 `source.adapterClass`，不改写旧 `GeomBar/GeomPath` role 或 `r.layer.N`。
+- Step 的 `stepDirection`，Histogram/Freqpoly 的 `binwidth/bins/breaks/counts/density/yStat` 仅作结构诊断，不进入 editable/propertyCapabilities。前端 `rStepHistogramFreqpolyEditingContract.test.ts` 3/3，证明组件中心只生成权威 backend 样式 patch，结构字段 strict resolver 明确跳过。
+- 修复离散 scale 活跃键压缩：当前 group 以 `aesthetic + scaleId + groupKey` 唯一匹配原脚本 baseline；只有当前与 baseline 都唯一且目标 ID 未被占用时才复用旧 group/palette ID。重复 groupKey fixture 证明 object/group/palette/binding/target instanceKey 不会合并；重复键对象同时标记 `identityAmbiguous=true`、`svgSelectable=false`、`editable=[]`，identity-bearing edit 明确 `ambiguous_identity`，旧 GID-only edit 明确 `unsupported_prop`。休眠 group 继续保持 `scaleActive=false` 并拒绝编辑。
+- `ManifestObject.source.adapterClass` 使用共享 `KnownRLayerAdapterClass` / `RLayerAdapterClass` 类型；已知 adapter 由同一联合约束，扩展仅允许 `Geom${string}`，前端合同不再维护孤立字符串集合。
+- 新增隔离 API smoke：项目 Step/Histogram/Freqpoly 三类样式在一个 batch 中原子持久化；standalone 和项目端伪 `local_patch` 均由服务端归一化为 backend，session/Figure/history/export snapshot/restore editLog 全部断言持久化 `mode=backend_patch`；step direction、bin/stat 结构 patch 和 mixed batch 均 conflict 且 revision、session、Figure、history、cache、导出锚点和快照不变。
+- 同一 API fixture 完成 SVG 导出快照、导出后继续修改和快速恢复。恢复时旧 preview/manifest 先失效，刷新后由 R renderer 重建到导出时 editLog/manifest/SVG；后续修改进入 history checkpoint，导出快照内容保持不可变。
+- `npm run test:r-semantic-smoke` 12/12：真实组件中心把 Step/Freqpoly 纳入 line 批量编辑、Histogram 纳入 patch 批量编辑，配色中心继续按活跃 color/fill group 修改，并完成 Draft、保存刷新、撤销重做和导出；console/page error 为 0。
+- `npm run test:r-patch-authority`、`npm run test:r-identity-v2-compatibility`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。identity 用例首次遇到一次 Windows R 进程 `0xC0000005` 启动异常，隔离重跑通过，未把单次解释器崩溃计为产品通过证据。
+- 最终独立 `gpt-5.5 high` 复审发现旧 GID-only 重复组 patch 会在确认拒绝前进入 scale setter，造成 `conflict=true` 但返回 SVG/manifest 已变色；resolver 现于应用前拒绝 ambiguous group。直接 reproducer 验证 identity-bearing 与旧 GID-only 两条冲突路径均保持原 SVG/manifest，复审结论 `CLEAR`、0 HIGH/MEDIUM。Step scale group 同时修正为 `kind=line` / `semanticKind=line`。
+- 当前仍未推送、未部署；R-WP4 还剩 Tile/Raster/Rect/Contour 与 Segment/Curve，不得将本节解释为 R-WP4 全部完成。
 
 ### R-WP5：scale、guide、facet 与布局关系
 

@@ -190,6 +190,41 @@ export interface ManifestSemanticCoverage {
   reason: string;
 }
 
+export type KnownRLayerAdapterClass =
+  | "GeomPoint"
+  | "GeomJitter"
+  | "GeomLine"
+  | "GeomPath"
+  | "GeomSmooth"
+  | "GeomStep"
+  | "GeomHistogram"
+  | "GeomFreqpoly"
+  | "GeomCol"
+  | "GeomBar"
+  | "GeomErrorbar"
+  | "GeomErrorbarh"
+  | "GeomLinerange"
+  | "GeomPointrange"
+  | "GeomCrossbar"
+  | "GeomBoxplot"
+  | "GeomViolin"
+  | "GeomRibbon"
+  | "GeomArea"
+  | "GeomSegment"
+  | "GeomCurve"
+  | "GeomHline"
+  | "GeomVline"
+  | "GeomAbline"
+  | "GeomDensity"
+  | "GeomDotplot"
+  | "GeomText"
+  | "GeomLabel"
+  | "GeomTile"
+  | "GeomRaster"
+  | "GeomRect";
+
+export type RLayerAdapterClass = KnownRLayerAdapterClass | `Geom${string}`;
+
 export interface ManifestObject {
   id: string;
   kind: ManifestObjectKind;
@@ -209,6 +244,7 @@ export interface ManifestObject {
   semanticCoverage?: ManifestSemanticCoverage;
   source?: {
     artistClass: string;
+    adapterClass?: RLayerAdapterClass;
     axesIndex: number;
     callName?: string;
     ownerAxesIndex?: number;

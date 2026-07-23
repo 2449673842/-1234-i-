@@ -734,6 +734,12 @@ geom_class <- function(layer) {
   classes[[1]]
 }
 
+layer_stat_class <- function(layer) {
+  classes <- class(layer$stat)
+  if (length(classes) == 0) return("StatIdentity")
+  classes[[1]]
+}
+
 layer_position_class <- function(layer) {
   classes <- class(layer$position)
   if (length(classes) == 0) return("PositionIdentity")
@@ -745,7 +751,7 @@ is_point_layer <- function(layer) {
 }
 
 is_line_adapter_layer <- function(layer) {
-  geom_class(layer) %in% c("GeomLine", "GeomPath", "GeomSmooth")
+  geom_class(layer) %in% c("GeomLine", "GeomPath", "GeomSmooth", "GeomStep")
 }
 
 is_bar_adapter_layer <- function(layer) {
@@ -768,9 +774,23 @@ is_ribbon_area_adapter_layer <- function(layer) {
   geom_class(layer) %in% c("GeomRibbon", "GeomArea")
 }
 
+is_step_adapter_layer <- function(layer) {
+  identical(geom_class(layer), "GeomStep")
+}
+
+is_histogram_adapter_layer <- function(layer) {
+  identical(geom_class(layer), "GeomBar") && identical(layer_stat_class(layer), "StatBin")
+}
+
+is_freqpoly_adapter_layer <- function(layer) {
+  identical(geom_class(layer), "GeomPath") && identical(layer_stat_class(layer), "StatBin")
+}
+
 layer_adapter_class <- function(layer) {
   geom <- geom_class(layer)
   position <- layer_position_class(layer)
+  if (is_histogram_adapter_layer(layer)) return("GeomHistogram")
+  if (is_freqpoly_adapter_layer(layer)) return("GeomFreqpoly")
   if (geom %in% c("GeomPoint", "GeomJitter") && grepl("^PositionJitter", position)) {
     return("GeomJitter")
   }
@@ -780,7 +800,7 @@ layer_adapter_class <- function(layer) {
 layer_kind <- function(geom) {
   if (geom %in% c("GeomPoint", "GeomJitter", "GeomDotplot")) return("collection")
   if (geom %in% c("GeomText", "GeomLabel")) return("text")
-  if (geom %in% c("GeomLine", "GeomPath", "GeomSmooth", "GeomSegment", "GeomCurve", "GeomHline", "GeomVline", "GeomAbline", "GeomDensity", "GeomFreqpoly")) return("line")
+  if (geom %in% c("GeomLine", "GeomPath", "GeomSmooth", "GeomStep", "GeomSegment", "GeomCurve", "GeomHline", "GeomVline", "GeomAbline", "GeomDensity", "GeomFreqpoly")) return("line")
   if (geom %in% c("GeomBoxplot")) return("boxplot_container")
   if (geom %in% c("GeomViolin")) return("violinplot_container")
   if (geom %in% c("GeomCol", "GeomBar", "GeomTile", "GeomRaster", "GeomRect", "GeomRibbon", "GeomArea")) return("patch")
@@ -795,6 +815,9 @@ layer_label <- function(geom, index) {
     GeomJitter = "ggplot jitter layer",
     GeomLine = "ggplot line layer",
     GeomPath = "ggplot path layer",
+    GeomStep = "ggplot step layer",
+    GeomHistogram = "ggplot histogram layer",
+    GeomFreqpoly = "ggplot frequency polygon layer",
     GeomCol = "ggplot column layer",
     GeomBar = "ggplot bar layer",
     GeomErrorbar = "ggplot errorbar layer",
@@ -1150,6 +1173,111 @@ apply_bar_layer_edits <- function(layer, gid) {
 
   layer$aes_params <- params
   layer
+}
+
+finite_numeric_values <- function(values) {
+  numeric_values <- suppressWarnings(as.numeric(values %||% numeric()))
+  numeric_values[is.finite(numeric_values)]
+}
+
+stat_bin_numeric_param <- function(layer, name) {
+  value <- finite_numeric_values((layer$stat_params %||% list())[[name]])
+  if (length(value) == 0) return(NULL)
+  value[[1]]
+}
+
+stat_bin_character_param <- function(layer, name) {
+  value <- (layer$stat_params %||% list())[[name]]
+  if (is.null(value) || length(value) == 0 || is.na(value[[1]])) return(NULL)
+  as.character(value[[1]])
+}
+
+stat_bin_breaks <- function(built_data = NULL) {
+  if (is.null(built_data)) return(numeric())
+  values <- c(
+    if ("xmin" %in% names(built_data)) built_data$xmin else numeric(),
+    if ("xmax" %in% names(built_data)) built_data$xmax else numeric()
+  )
+  sort(unique(finite_numeric_values(values)))
+}
+
+stat_bin_y_stat <- function(layer, plot_mapping = NULL) {
+  mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  y_label <- tolower(r_expression_label(mapping$y %||% NULL))
+  for (candidate in c("ndensity", "density", "ncount", "count")) {
+    if (grepl(candidate, y_label, fixed = TRUE)) return(candidate)
+  }
+  "count"
+}
+
+stat_bin_structure_props <- function(layer, built_data = NULL, plot_mapping = NULL) {
+  stat_params <- layer$stat_params %||% list()
+  counts <- if (!is.null(built_data) && "count" %in% names(built_data)) {
+    finite_numeric_values(built_data$count)
+  } else {
+    numeric()
+  }
+  density <- if (!is.null(built_data) && "density" %in% names(built_data)) {
+    finite_numeric_values(built_data$density)
+  } else {
+    numeric()
+  }
+  props <- list(
+    statClass = layer_stat_class(layer),
+    binCount = if (!is.null(built_data) && !is.null(nrow(built_data))) nrow(built_data) else 0L,
+    breaks = as.list(stat_bin_breaks(built_data)),
+    counts = as.list(counts),
+    density = as.list(density),
+    yStat = stat_bin_y_stat(layer, plot_mapping),
+    structureReadonly = TRUE
+  )
+  for (name in c("binwidth", "bins", "boundary", "center")) {
+    value <- stat_bin_numeric_param(layer, name)
+    if (!is.null(value)) props[[name]] <- value
+  }
+  for (name in c("closed", "orientation")) {
+    value <- stat_bin_character_param(layer, name)
+    if (!is.null(value)) props[[name]] <- value
+  }
+  for (name in c("pad", "drop")) {
+    value <- stat_params[[name]]
+    if (!is.null(value) && length(value) > 0 && !is.na(value[[1]])) props[[name]] <- isTRUE(value[[1]])
+  }
+  props
+}
+
+step_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  props <- line_layer_current_props(layer, gid, built_data, plot_mapping)
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  direction <- as.character((layer$geom_params %||% list())$direction %||% "hv")
+  props$adapterFamily <- "step"
+  props$componentRoles <- as.list(c("step_line"))
+  props$stepDirection <- direction
+  props$ownerSeriesKey <- r_mapping_signature(effective_mapping)
+  props$seriesMode <- "continuous_step"
+  props$pointCount <- if (!is.null(built_data) && !is.null(nrow(built_data))) nrow(built_data) else 0L
+  props$structureReadonly <- TRUE
+  props
+}
+
+histogram_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  props <- bar_layer_current_props(layer, gid, built_data, plot_mapping)
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  props$adapterFamily <- "histogram"
+  props$componentRoles <- as.list(c("bins"))
+  props$ownerSeriesKey <- r_mapping_signature(effective_mapping)
+  props$seriesMode <- "binned_rectangles"
+  c(props, stat_bin_structure_props(layer, built_data, plot_mapping))
+}
+
+freqpoly_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL) {
+  props <- line_layer_current_props(layer, gid, built_data, plot_mapping)
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  props$adapterFamily <- "freqpoly"
+  props$componentRoles <- as.list(c("frequency_polygon"))
+  props$ownerSeriesKey <- r_mapping_signature(effective_mapping)
+  props$seriesMode <- "binned_continuous_line"
+  c(props, stat_bin_structure_props(layer, built_data, plot_mapping))
 }
 
 errorbar_component_profile <- function(layer) {
@@ -2472,7 +2600,7 @@ discrete_group_usage <- function(entry, item_index, built_data, plot_obj) {
   }
 
   unique_geoms <- unique(geoms)
-  semantic_kind <- if (any(unique_geoms %in% c("GeomLine", "GeomPath", "GeomSmooth"))) {
+  semantic_kind <- if (any(unique_geoms %in% c("GeomLine", "GeomPath", "GeomSmooth", "GeomStep"))) {
     "line"
   } else if (identical(entry$kind, "fill")) {
     distribution_geoms <- unique_geoms[unique_geoms %in% c("GeomBoxplot", "GeomViolin")]
@@ -2520,6 +2648,7 @@ detect_discrete_scale_semantics <- function(plot_obj) {
       color <- as.character(entry$colors[[i]])
       label <- as.character(entry$labels[[i]])
       group_key <- as.character(entry$keys[[i]])
+      duplicate_group_key <- sum(entry$keys == group_key, na.rm = TRUE) > 1
       usage <- discrete_group_usage(entry, i, catalog$builtData, plot_obj)
       palettes[[length(palettes) + 1]] <- list(
         id = palette_id,
@@ -2543,7 +2672,7 @@ detect_discrete_scale_semantics <- function(plot_obj) {
         id = group_id,
         kind = if (usage$semanticKind == "line") "line" else if (kind == "fill") "patch" else "collection",
         label = paste0(label, " (", kind, " scale)"),
-        editable = list(if (kind == "fill") "facecolor" else "color"),
+        editable = if (duplicate_group_key) list() else list(if (kind == "fill") "facecolor" else "color"),
         currentProps = c(
           if (kind == "fill") list(facecolor = latest_string(group_id, "facecolor", color)) else list(color = latest_string(group_id, "color", color)),
           list(
@@ -2551,9 +2680,13 @@ detect_discrete_scale_semantics <- function(plot_obj) {
             groupKey = group_key,
             geomFamilies = usage$geomFamilies,
             semanticKind = usage$semanticKind,
-            svgSelectable = usage$svgSelectable,
+            svgSelectable = isTRUE(usage$svgSelectable) && !duplicate_group_key,
             scaleActive = length(usage$layerIds) > 0
-          )
+          ),
+          if (duplicate_group_key) list(
+            identityAmbiguous = TRUE,
+            unsupportedReason = "Duplicate discrete scale keys do not provide a unique semantic group identity; palette editing is disabled."
+          ) else list()
         ),
         role = paste0("ggplot_scale_", kind),
         layerIds = usage$layerIds,
@@ -3332,6 +3465,9 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
   point_adapter <- is_point_layer(layer)
   line_adapter <- is_line_adapter_layer(layer)
   bar_adapter <- is_bar_adapter_layer(layer)
+  step_adapter <- is_step_adapter_layer(layer)
+  histogram_adapter <- is_histogram_adapter_layer(layer)
+  freqpoly_adapter <- is_freqpoly_adapter_layer(layer)
   errorbar_adapter <- is_errorbar_adapter_layer(layer)
   boxplot_adapter <- is_boxplot_adapter_layer(layer)
   violin_adapter <- is_violin_adapter_layer(layer)
@@ -3343,7 +3479,13 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
   } else {
     character()
   }
-  props <- if (point_adapter) {
+  props <- if (step_adapter) {
+    step_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (histogram_adapter) {
+    histogram_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (freqpoly_adapter) {
+    freqpoly_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (point_adapter) {
     point_layer_current_props(layer, gid, built_data, plot_mapping)
   } else if (line_adapter) {
     line_layer_current_props(layer, gid, built_data, plot_mapping)
@@ -4569,6 +4711,17 @@ resolve_r_edit_entries <- function(manifest, entries) {
         reject_entry(entry, index - 1L, "missing_gid", gid, prop, paste0("R manifest is missing gid ", gid, "."))
         next
       }
+      if (isTRUE(exact_object$currentProps$identityAmbiguous)) {
+        reject_entry(
+          entry,
+          index - 1L,
+          "unsupported_prop",
+          gid,
+          prop,
+          paste0(gid, ".", prop, " is disabled because the R scale group identity is ambiguous.")
+        )
+        next
+      }
       resolved <- entry
       resolved[[".__requestedEntry"]] <- entry
       resolved[[".__patchIndex"]] <- index - 1L
@@ -4609,6 +4762,17 @@ resolve_r_edit_entries <- function(manifest, entries) {
     }
 
     resolved_gid <- as.character(candidates[[1]]$id)
+    if (isTRUE(candidates[[1]]$currentProps$identityAmbiguous)) {
+      reject_entry(
+        entry,
+        index - 1L,
+        "ambiguous_identity",
+        gid,
+        prop,
+        paste0(gid, " resolves to an R scale group with ambiguous identity.")
+      )
+      next
+    }
     if (!identical(resolved_gid, gid) && (is.null(exact_object) || !r_can_remap_gid(gid, resolved_gid))) {
       reject_entry(
         entry,
@@ -4934,11 +5098,6 @@ restore_baseline_manifest_relations <- function(objects, baseline_manifest = NUL
 restore_baseline_scale_semantics <- function(scale_semantics, baseline_manifest = NULL) {
   baseline_groups <- baseline_manifest$groups %||% list()
   if (length(baseline_groups) == 0) return(scale_semantics)
-  current_group_object_ids <- vapply(
-    scale_semantics$objects %||% list(),
-    function(object) as.character(object$id %||% ""),
-    character(1)
-  )
   append_missing_by_id <- function(current, baseline, id_field) {
     current <- current %||% list()
     current_ids <- vapply(current, function(item) as.character(item[[id_field]] %||% ""), character(1))
@@ -4956,10 +5115,210 @@ restore_baseline_scale_semantics <- function(scale_semantics, baseline_manifest 
   baseline_group_objects <- Filter(function(object) {
     as.character(object$id %||% "") %in% baseline_group_ids
   }, baseline_manifest$objects %||% list())
+
+  group_match_key <- function(group = NULL, object = NULL) {
+    relation <- object$identity$relation %||% list()
+    aesthetic <- as.character(
+      object$currentProps$aesthetic %||%
+        object$aesthetic %||%
+        relation$aesthetic %||%
+        group$aesthetic %||%
+        ""
+    )
+    scale_id <- as.character(
+      object$scaleId %||%
+        relation$scaleId %||%
+        group$scaleId %||%
+        ""
+    )
+    group_key <- as.character(
+      object$currentProps$groupKey %||%
+        object$groupKey %||%
+        relation$groupKey %||%
+        group$label %||%
+        ""
+    )
+    if (!nzchar(aesthetic) || !nzchar(scale_id) || !nzchar(group_key)) return("")
+    paste(aesthetic, scale_id, group_key, sep = "\u001f")
+  }
+
+  baseline_object_by_id <- setNames(baseline_group_objects, vapply(
+    baseline_group_objects,
+    function(object) as.character(object$id %||% ""),
+    character(1)
+  ))
+  keyed_values <- function(index, key, value) {
+    if (!nzchar(key)) return(index)
+    index[[key]] <- c(index[[key]] %||% list(), list(value))
+    index
+  }
+
+  baseline_targets_by_key <- list()
+  for (group in baseline_groups) {
+    group_id <- as.character(group$groupId %||% "")
+    object <- baseline_object_by_id[[group_id]] %||% NULL
+    key <- group_match_key(group, object)
+    if (nzchar(key) && nzchar(group_id)) {
+      baseline_targets_by_key <- keyed_values(baseline_targets_by_key, key, list(
+        groupId = group_id,
+        paletteId = as.character(group$paletteId %||% "")
+      ))
+    }
+  }
+
+  current_object_by_id <- setNames(scale_semantics$objects %||% list(), vapply(
+    scale_semantics$objects %||% list(),
+    function(object) as.character(object$id %||% ""),
+    character(1)
+  ))
+  current_groups_by_key <- list()
+  for (group in scale_semantics$groups %||% list()) {
+    current_group_id <- as.character(group$groupId %||% "")
+    current_object <- current_object_by_id[[current_group_id]] %||% NULL
+    key <- group_match_key(group, current_object)
+    if (nzchar(key) && nzchar(current_group_id)) {
+      current_groups_by_key <- keyed_values(current_groups_by_key, key, list(
+        groupId = current_group_id,
+        paletteId = as.character(group$paletteId %||% "")
+      ))
+    }
+  }
+
+  # Only reuse a baseline identity when the structural key resolves to exactly
+  # one current group and one baseline group. Ambiguous keys are left on their
+  # renderer-generated IDs so repeated labels cannot collapse distinct targets.
+  remap_candidates <- list()
+  shared_keys <- intersect(names(baseline_targets_by_key), names(current_groups_by_key))
+  for (key in shared_keys) {
+    baseline_candidates <- baseline_targets_by_key[[key]] %||% list()
+    current_candidates <- current_groups_by_key[[key]] %||% list()
+    if (length(baseline_candidates) != 1L || length(current_candidates) != 1L) next
+    remap_candidates[[length(remap_candidates) + 1L]] <- list(
+      source = current_candidates[[1]],
+      target = baseline_candidates[[1]]
+    )
+  }
+
+  candidate_target_group_ids <- vapply(
+    remap_candidates,
+    function(candidate) as.character(candidate$target$groupId %||% ""),
+    character(1)
+  )
+  candidate_target_palette_ids <- vapply(
+    remap_candidates,
+    function(candidate) as.character(candidate$target$paletteId %||% ""),
+    character(1)
+  )
+  candidate_source_group_ids <- vapply(
+    remap_candidates,
+    function(candidate) as.character(candidate$source$groupId %||% ""),
+    character(1)
+  )
+  current_group_ids_before_remap <- vapply(
+    scale_semantics$groups %||% list(),
+    function(group) as.character(group$groupId %||% ""),
+    character(1)
+  )
+  current_palette_ids_before_remap <- vapply(
+    scale_semantics$groups %||% list(),
+    function(group) as.character(group$paletteId %||% ""),
+    character(1)
+  )
+  target_group_counts <- table(candidate_target_group_ids[nzchar(candidate_target_group_ids)])
+  target_palette_counts <- table(candidate_target_palette_ids[nzchar(candidate_target_palette_ids)])
+  source_group_counts <- table(candidate_source_group_ids[nzchar(candidate_source_group_ids)])
+
+  group_id_remap <- list()
+  palette_id_remap <- list()
+  for (candidate in remap_candidates) {
+    source_group_id <- as.character(candidate$source$groupId %||% "")
+    target_group_id <- as.character(candidate$target$groupId %||% "")
+    source_palette_id <- as.character(candidate$source$paletteId %||% "")
+    target_palette_id <- as.character(candidate$target$paletteId %||% "")
+    if (!nzchar(source_group_id) || !nzchar(target_group_id)) next
+    if (as.integer(source_group_counts[[source_group_id]] %||% 0L) != 1L) next
+    if (as.integer(target_group_counts[[target_group_id]] %||% 0L) != 1L) next
+    # Do not perform a swap or overwrite a currently occupied identity. A
+    # conservative no-remap is safer than silently changing a group target.
+    if (!identical(source_group_id, target_group_id) && target_group_id %in% current_group_ids_before_remap) next
+    if (nzchar(source_palette_id) && nzchar(target_palette_id)) {
+      if (as.integer(target_palette_counts[[target_palette_id]] %||% 0L) != 1L) next
+      if (!identical(source_palette_id, target_palette_id) && target_palette_id %in% current_palette_ids_before_remap) next
+      palette_id_remap[[source_palette_id]] <- target_palette_id
+    }
+    group_id_remap[[source_group_id]] <- target_group_id
+  }
+
+  remap_id <- function(value, mapping) {
+    text <- as.character(value %||% "")
+    as.character(mapping[[text]] %||% text)
+  }
+  scale_semantics$groups <- lapply(scale_semantics$groups %||% list(), function(group) {
+    group$groupId <- remap_id(group$groupId, group_id_remap)
+    group$paletteId <- remap_id(group$paletteId, palette_id_remap)
+    group
+  })
+  scale_semantics$objects <- lapply(scale_semantics$objects %||% list(), function(object) {
+    object$id <- remap_id(object$id, group_id_remap)
+    object
+  })
+  scale_semantics$palettes <- lapply(scale_semantics$palettes %||% list(), function(palette) {
+    palette$id <- remap_id(palette$id, palette_id_remap)
+    palette
+  })
+  scale_semantics$bindings <- lapply(scale_semantics$bindings %||% list(), function(binding) {
+    binding$groupId <- remap_id(binding$groupId, group_id_remap)
+    binding$paletteId <- remap_id(binding$paletteId, palette_id_remap)
+    binding$gids <- as.list(vapply(
+      binding$gids %||% list(),
+      function(gid) remap_id(gid, group_id_remap),
+      character(1)
+    ))
+    binding$targets <- lapply(binding$targets %||% list(), function(target) {
+      target$gid <- remap_id(target$gid, group_id_remap)
+      if (nzchar(target$gid)) {
+        target$instanceKey <- paste("r", "container", target$gid, sep = ":")
+      }
+      target
+    })
+    binding
+  })
+
+  current_group_object_ids <- vapply(
+    scale_semantics$objects %||% list(),
+    function(object) as.character(object$id %||% ""),
+    character(1)
+  )
   scale_semantics$groups <- append_missing_by_id(scale_semantics$groups, baseline_groups, "groupId")
   scale_semantics$objects <- append_missing_by_id(scale_semantics$objects, baseline_group_objects, "id")
   scale_semantics$palettes <- append_missing_by_id(scale_semantics$palettes, baseline_manifest$palettes %||% list(), "id")
   scale_semantics$bindings <- append_missing_by_id(scale_semantics$bindings, baseline_manifest$bindings %||% list(), "groupId")
+
+  assert_unique_ids <- function(items, field, label) {
+    values <- vapply(items %||% list(), function(item) as.character(item[[field]] %||% ""), character(1))
+    values <- values[nzchar(values)]
+    duplicates <- unique(values[duplicated(values)])
+    if (length(duplicates) > 0) {
+      stop(sprintf("Duplicate %s after discrete scale identity remap: %s", label, paste(duplicates, collapse = ", ")))
+    }
+  }
+  assert_unique_ids(scale_semantics$groups, "groupId", "groupId")
+  assert_unique_ids(scale_semantics$objects, "id", "object id")
+  assert_unique_ids(scale_semantics$palettes, "id", "palette id")
+  assert_unique_ids(scale_semantics$bindings, "groupId", "binding groupId")
+  assert_unique_ids(scale_semantics$bindings, "paletteId", "binding paletteId")
+  target_instance_keys <- unlist(lapply(
+    scale_semantics$bindings %||% list(),
+    function(binding) vapply(binding$targets %||% list(), function(target) as.character(target$instanceKey %||% ""), character(1))
+  ), use.names = FALSE)
+  target_instance_keys <- target_instance_keys[nzchar(target_instance_keys)]
+  duplicate_instance_keys <- unique(target_instance_keys[duplicated(target_instance_keys)])
+  if (length(duplicate_instance_keys) > 0) {
+    stop(sprintf(
+      "Duplicate discrete scale binding target instanceKey after remap: %s",
+      paste(duplicate_instance_keys, collapse = ", ")
+    ))
+  }
 
   baseline_by_id <- setNames(baseline_groups, vapply(
     baseline_groups,
@@ -4971,12 +5330,6 @@ restore_baseline_scale_semantics <- function(scale_semantics, baseline_manifest 
     function(object) as.character(object$id %||% ""),
     character(1)
   ))
-  baseline_object_by_id <- setNames(baseline_group_objects, vapply(
-    baseline_group_objects,
-    function(object) as.character(object$id %||% ""),
-    character(1)
-  ))
-
   for (index in seq_along(scale_semantics$groups)) {
     group_id <- as.character(scale_semantics$groups[[index]]$groupId %||% "")
     baseline_group <- baseline_by_id[[group_id]] %||% NULL
@@ -4990,6 +5343,15 @@ restore_baseline_scale_semantics <- function(scale_semantics, baseline_manifest 
     if (is.null(object_index)) next
     baseline_object <- baseline_object_by_id[[group_id]] %||% NULL
     baseline_relation <- baseline_object$identity$relation %||% list()
+    for (field in c("kind", "role")) {
+      if (!is.null(baseline_object[[field]])) {
+        scale_semantics$objects[[object_index]][[field]] <- baseline_object[[field]]
+      }
+    }
+    baseline_artist_class <- baseline_object$source$artistClass %||% NULL
+    if (!is.null(baseline_artist_class)) {
+      scale_semantics$objects[[object_index]]$source$artistClass <- baseline_artist_class
+    }
     for (field in c("scaleId", "scaleKey", "guideId", "guideKey", "legendId", "aesthetic", "groupKey")) {
       value <- baseline_relation[[field]] %||% baseline_object[[field]] %||% NULL
       if (!is.null(value)) scale_semantics$objects[[object_index]][[field]] <- value
@@ -5359,6 +5721,7 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
     ),
     unsupportedNotes = list(
       "R ggplot2 semantic editing currently covers labels, theme text, Point/Jitter, Line/Path/Smooth, Bar/Col, Errorbar/Linerange/Pointrange/Crossbar, and Boxplot/Violin layer adapters, whole-layer geom styles, manual color/fill scales, facet panel discovery, and continuous heatmap/colorbar scales.",
+      "Duplicate keys within one discrete color/fill scale are reported as ambiguous readonly groups; SciFigure will not guess which repeated key a palette edit should target.",
       "R facet subplot aspect uses ggplot theme(aspect.ratio); independent left/bottom/width/height panel bounds are not equivalent to Matplotlib axes bounds.",
       "Drag-position replay and per-facet independent label styling are not enabled in this phase."
     )

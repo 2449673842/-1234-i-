@@ -59,6 +59,8 @@ const script = [
   'dist <- data.frame(x=rep(c(5, 6), each=12), value=c(1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 18, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 8, 20), group=rep(c("C", "D"), each=12))',
   'band <- data.frame(x=rep(7:10, 2), ymin=c(0.8, 1.2, 1.0, 1.5, 1.4, 1.9, 1.6, 2.2), ymax=c(1.5, 2.0, 1.8, 2.4, 2.1, 2.8, 2.5, 3.2), group=rep(c("E", "F"), each=4))',
   'area <- data.frame(x=rep(7:10, 2), y=c(0.7, 1.1, 0.9, 1.4, 1.2, 1.7, 1.5, 2.0), group=rep(c("E", "F"), each=4))',
+  'step_data <- data.frame(x=11:14, y=c(1.2, 2.6, 1.9, 3.1))',
+  'bin_data <- data.frame(x=c(11.1, 11.4, 11.8, 12.2, 12.7, 13.1, 13.5, 13.8))',
   'p <- ggplot(df, aes(x, y, color=group)) +',
   '  geom_point(size=3, shape=21, fill="#FFFFFF", stroke=0.6) +',
   '  geom_point(aes(size=weight), shape=21, fill="#A6CEE3", stroke=0.7, alpha=0.8) +',
@@ -70,6 +72,9 @@ const script = [
   '  geom_boxplot(data=dist, aes(x=x, y=value, group=group, fill=group), inherit.aes=FALSE, width=0.22, alpha=0.75, colour="#333333", linewidth=0.55, outlier.shape=21, outlier.fill="white") +',
   '  geom_ribbon(data=band, aes(x=x, ymin=ymin, ymax=ymax, group=group, fill=group), inherit.aes=FALSE, position="identity", alpha=0.3, colour="#2166AC", linewidth=0.55) +',
   '  geom_area(data=area, aes(x=x, y=y, group=group, fill=group), inherit.aes=FALSE, position="identity", alpha=0.2, colour="#4D9221", linewidth=0.45) +',
+  '  geom_step(data=step_data, aes(x=x, y=y), inherit.aes=FALSE, direction="vh", colour="#756BB1", linewidth=0.75) +',
+  '  geom_histogram(data=bin_data, aes(x=x), inherit.aes=FALSE, binwidth=0.5, boundary=11, fill="#9ECAE1", colour="#2171B5", linewidth=0.45, alpha=0.65) +',
+  '  geom_freqpoly(data=bin_data, aes(x=x), inherit.aes=FALSE, bins=6, boundary=11, colour="#E6550D", linewidth=0.8) +',
   '  scale_fill_manual(values=c(A="#80B1D3", B="#FDB462", C="#B3DE69", D="#FCCDE5", E="#92C5DE", F="#A6D96A")) +',
   '  labs(title="R Semantic Centers", x="R X Axis", y="R Y Axis") +',
   '  facet_wrap(~facet) +',
@@ -473,6 +478,35 @@ async function prepareProject(page) {
         editable: obj.editable,
         currentProps: obj.currentProps,
       })),
+      stepLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.currentProps?.adapterFamily === 'step').map((obj) => ({
+        id: obj.id,
+        kind: obj.kind,
+        role: obj.role,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+        source: obj.source,
+      })),
+      histogramLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.currentProps?.adapterFamily === 'histogram').map((obj) => ({
+        id: obj.id,
+        kind: obj.kind,
+        role: obj.role,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+        source: obj.source,
+      })),
+      freqpolyLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.currentProps?.adapterFamily === 'freqpoly').map((obj) => ({
+        id: obj.id,
+        kind: obj.kind,
+        role: obj.role,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+        source: obj.source,
+      })),
+      lineLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.kind === 'line').map((obj) => ({
+        id: obj.id,
+        editable: obj.editable,
+        currentProps: obj.currentProps,
+      })),
       fillGroups: (figure.manifest?.groups || []).filter((group) => group.aesthetic === 'fill'),
       paletteCount: figure.manifest?.palettes?.length || 0,
     };
@@ -532,6 +566,12 @@ async function run() {
         && fixture.violinLayers.some((layer) => !layer.editable?.includes('color') && !layer.editable?.includes('quantile_color') && layer.currentProps?.componentRoles?.includes('quantile_lines'))
         && fixture.bandLayers.length === 2
         && fixture.bandLayers.every((layer) => layer.editable?.includes('facecolor') && layer.editable?.includes('edgecolor') && layer.currentProps?.componentRoles?.includes('boundary_lines'))
+        && fixture.stepLayers.length === 1
+        && fixture.stepLayers.every((layer) => layer.kind === 'line' && layer.role === 'ggplot_GeomStep' && layer.source?.adapterClass === 'GeomStep' && layer.currentProps?.stepDirection === 'vh' && !layer.editable?.includes('stepDirection'))
+        && fixture.histogramLayers.length === 1
+        && fixture.histogramLayers.every((layer) => layer.kind === 'patch' && layer.role === 'ggplot_GeomBar' && layer.source?.adapterClass === 'GeomHistogram' && Number(layer.currentProps?.binwidth) === 0.5 && !layer.editable?.includes('binwidth'))
+        && fixture.freqpolyLayers.length === 1
+        && fixture.freqpolyLayers.every((layer) => layer.kind === 'line' && layer.role === 'ggplot_GeomPath' && layer.source?.adapterClass === 'GeomFreqpoly' && Number(layer.currentProps?.bins) === 6 && !layer.editable?.includes('bins'))
         && fixture.fillGroups.some((group) => group.kind === 'distribution' && group.geomFamilies?.includes('GeomBoxplot') && group.geomFamilies?.includes('GeomViolin'))
         && fixture.fillGroups.some((group) => group.kind === 'band' && group.geomFamilies?.includes('GeomRibbon') && group.geomFamilies?.includes('GeomArea'))
         ? 'PASS' : 'FAIL',
@@ -551,7 +591,12 @@ async function run() {
     const componentDraft = (await getBodyText(page)).includes('已暂存');
     const componentApply = componentChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const componentPatches = patchList(componentApply.patchBody);
-    const componentOk = componentChanged && componentDraft && componentApply.successful && componentPatches.some((patch) => String(patch.gid).startsWith('r.layer.') && patch.prop === 'linewidth' && Number(patch.value) === 2.2);
+    const familyLineIds = [...fixture.stepLayers, ...fixture.freqpolyLayers].map((layer) => layer.id);
+    const componentOk = componentChanged
+      && componentDraft
+      && componentApply.successful
+      && componentPatches.some((patch) => String(patch.gid).startsWith('r.layer.') && patch.prop === 'linewidth' && Number(patch.value) === 2.2)
+      && familyLineIds.every((gid) => componentPatches.some((patch) => patch.gid === gid && patch.prop === 'linewidth' && Number(patch.value) === 2.2));
     record('R2-component-center', componentOk ? 'PASS' : 'FAIL', `changed=${componentChanged}, draft=${componentDraft}, patches=${JSON.stringify(componentPatches)}`);
 
     await clickText(page, '组件中心');
@@ -612,7 +657,11 @@ async function run() {
     const boxplotTargetKey = fixture.boxplotLayers.map((layer) => layer.id).join('|');
     const violinTargetKey = fixture.violinLayers.map((layer) => layer.id).join('|');
     const bandTargetKey = fixture.bandLayers.map((layer) => layer.id).join('|');
+    const lineTargetKey = fixture.lineLayers.map((layer) => layer.id).join('|');
+    const patchTargetKey = [...fixture.barLayers, ...fixture.histogramLayers].map((layer) => layer.id).join('|');
     const legacyMedianControlHidden = await page.locator('[data-component-group-id="boxplots"]').getByText('中位线颜色', { exact: true }).count() === 0;
+    const familyLineColorChanged = await setColorByScope(page, `component:lines:${lineTargetKey}:color`, '#08519c');
+    const familyPatchFillChanged = await setColorByScope(page, `component:patches:${patchTargetKey}:color`, '#fdd0a2');
     const boxplotOutlierColorChanged = await setColorByScope(page, `component:boxplots:${boxplotTargetKey}:outlier_color`, '#de2d26');
     const boxplotOutlierShapeChanged = await setComponentSelectByGroup(page, 'boxplots', 'outlier_shape', 24);
     const boxplotOutlierSizeChanged = await setComponentNumberByGroup(page, 'boxplots', 'outlier_size', 3.2);
@@ -627,6 +676,8 @@ async function run() {
       && errorbarMarkerChanged
       && errorbarMarkerSizeChanged
       && legacyMedianControlHidden
+      && familyLineColorChanged
+      && familyPatchFillChanged
       && boxplotOutlierColorChanged
       && boxplotOutlierShapeChanged
       && boxplotOutlierSizeChanged
@@ -660,12 +711,23 @@ async function run() {
         .map((patch) => patch.prop));
       return props.has('facecolor') && props.has('linewidth');
     });
+    const familyLineColorCoverage = [...fixture.stepLayers, ...fixture.freqpolyLayers].every((layer) => (
+      componentBatchPatches.some((patch) => patch.gid === layer.id && patch.prop === 'color' && String(patch.value).toLowerCase() === '#08519c')
+    ));
+    const histogramPatchCoverage = fixture.histogramLayers.every((layer) => {
+      const props = new Set(componentBatchPatches
+        .filter((patch) => patch.gid === layer.id)
+        .map((patch) => patch.prop));
+      return props.has('facecolor') && props.has('linewidth');
+    });
     const componentBatchOk = barLineChanged
       && errorbarLineChanged
       && errorbarCapChanged
       && errorbarMarkerChanged
       && errorbarMarkerSizeChanged
       && legacyMedianControlHidden
+      && familyLineColorChanged
+      && familyPatchFillChanged
       && boxplotOutlierColorChanged
       && boxplotOutlierShapeChanged
       && boxplotOutlierSizeChanged
@@ -680,12 +742,16 @@ async function run() {
       && ['outlier_color', 'outlier_shape', 'outlier_size'].every((prop) => boxplotProps.has(prop))
       && ['edgecolor', 'linewidth'].every((prop) => violinProps.has(prop))
       && bandPatchCoverage
+      && familyLineColorCoverage
+      && histogramPatchCoverage
       && componentSvgBefore !== componentSvgAfter
       && componentSvgAfter.toLowerCase().includes('#de2d26')
       && componentSvgAfter.toLowerCase().includes('#8c510a')
+      && componentSvgAfter.toLowerCase().includes('#08519c')
+      && componentSvgAfter.toLowerCase().includes('#fdd0a2')
       && componentBatchPatches.every((patch) => String(patch.gid).startsWith('r.layer.'))
       && componentBatchExpectedEdits.every((edit) => hasEdit(componentBatchState.editLog, edit));
-    record('R2d-r-layer-components', componentBatchOk ? 'PASS' : 'FAIL', `changed=${JSON.stringify({ barLineChanged, errorbarLineChanged, errorbarCapChanged, errorbarMarkerChanged, errorbarMarkerSizeChanged, legacyMedianControlHidden, boxplotOutlierColorChanged, boxplotOutlierShapeChanged, boxplotOutlierSizeChanged, violinEdgeChanged, violinLineChanged, bandFillChanged, bandLineChanged })}, draft=${errorbarDraft}, patches=${JSON.stringify(componentBatchPatches)}`);
+    record('R2d-r-layer-components', componentBatchOk ? 'PASS' : 'FAIL', `changed=${JSON.stringify({ barLineChanged, errorbarLineChanged, errorbarCapChanged, errorbarMarkerChanged, errorbarMarkerSizeChanged, legacyMedianControlHidden, familyLineColorChanged, familyPatchFillChanged, boxplotOutlierColorChanged, boxplotOutlierShapeChanged, boxplotOutlierSizeChanged, violinEdgeChanged, violinLineChanged, bandFillChanged, bandLineChanged })}, draft=${errorbarDraft}, patches=${JSON.stringify(componentBatchPatches)}`);
 
     const expectedCoreEdits = [
       ...pointSizeExpectedEdits,
@@ -737,8 +803,8 @@ async function run() {
     const paletteChanged = await setColorByScope(page, 'palette:r.scale.color.0.0', '#2ca02c')
       || await setColorControl(page, 'A', '颜色', '#2ca02c')
       || await setColorControl(page, '配色', '颜色', '#2ca02c');
-    const fillPaletteChanged = await setColorByScope(page, 'palette:r.scale.fill.0.0', '#fb9a99')
-      || await setColorControl(page, 'A', '填充色', '#fb9a99');
+    const fillPaletteChanged = await setColorByScope(page, 'palette:r.scale.fill.0.2', '#fb9a99')
+      || await setColorControl(page, 'C', '填充色', '#fb9a99');
     const paletteDraft = (await getBodyText(page)).includes('已暂存');
     const paletteApply = paletteChanged && fillPaletteChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const palettePatches = patchList(paletteApply.patchBody);

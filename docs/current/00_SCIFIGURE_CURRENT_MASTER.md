@@ -3,7 +3,7 @@
 > 状态：当前有效  
 > 更新时间：2026-07-30 16:08:23 +08:00
 > 证据截止时间：2026-07-30 16:08:23 +08:00
-> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 capability 权威、组件能力/Draft 收敛、旧项目兼容、导出快照、统一能力报告、性能诊断和逐域回滚，R-WP0-WP3 隔离基线、patch 权威、结构 identity v2、旧项目兼容和运行时 parity，以及 R-WP4 六类图元的 renderer、合同、patch authority、identity v2 和真实浏览器复验；候选尚未部署
+> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 capability 权威、组件能力/Draft 收敛、旧项目兼容、导出快照、统一能力报告、性能诊断和逐域回滚，R-WP0-WP3 隔离基线、patch 权威、结构 identity v2、旧项目兼容和运行时 parity，以及 R-WP4 前六类图元的集成门禁；Step/Histogram/Freqpoly 源分支能力已合入，集成复验待完成；候选尚未部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
 
@@ -234,7 +234,7 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 | 公开宣传页与注册门禁 | 已实现，邮箱生产通道待配置 | 匿名访问先进入宣传页；启用邮箱验证后，新账号必须完成六位验证码验证才会获得会话；现有账号兼容迁移；安全文案隐藏内部防护细节 |
 | 图形能力展厅 | 本地候选 | 作为帮助中心同级站内页面展示 11 个带能力边界的固定模拟数据样例，其中包含 LnRR 排序图和主项目结构 2 x 2 组合图；没有未经真实验收的样例被标为稳定支持 |
 | Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选 WP6 六个复杂对象家族已有专用语义，其中网络图/路径图/SEM 依赖显式关系声明，不承诺按外观自动识别任意第三方图示；完成全部门禁和部署前不视为线上能力 |
-| R 渲染与语义编辑 | R-WP0-WP3 完成；R-WP4 六类家族本地集成候选通过门禁 | ggplot2 主链路可用；patch mode 服务端权威、失败零持久化、identity v2 和运行时 parity 已验证；Point/Jitter、Line/Path/Smooth、Bar/Col、Errorbar family、Boxplot/Violin、Ribbon/Area 已通过 renderer `85/85`、前端合同 `16/16`、隔离浏览器 `14/14`、patch authority 和 identity v2 compatibility；候选尚未部署 |
+| R 渲染与语义编辑 | R-WP0-WP3 完成；R-WP4 前六类集成门禁通过，Step/Histogram/Freqpoly 待复验 | 前六类已通过 renderer `85/85`、合同 `16/16`、隔离浏览器 `14/14`、patch authority 和 identity v2 compatibility。Step/Histogram/Freqpoly 保留旧 `r.layer.N` 与既有 role，step direction 和 bin/stat 结构只读；源分支能力已合入，当前集成门禁完成前不标记为通过；候选尚未部署 |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |
 | 字体/颜色/线条编辑 | 已实现 | 支持单对象、语义分组、整图和跨 Figure 作用域 |
@@ -387,7 +387,7 @@ docs/platform-capability/UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md
 
 `UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md` 专门处理属性编辑、布局中心、组件中心、配色中心和字体中心的交叉属性与精细度不一致。网页统一版已完成 PropertyDescriptor、capability projection、严格 resolver 和共同 Draft 语义的主要迁移；2026-07-16 候选继续补齐数值自动暂存、字体格式刷、选中子图自动跟随、图例间距、散点比例缩放和保持尺寸的垂直行间距。旧项目兼容路径和 legacy 控件尚未删除。
 
-`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。R-WP0-WP3 已完成本地候选；R-WP4 目前完成 Point/Jitter、Line/Path/Smooth、Bar/Col、Errorbar family、Boxplot/Violin 与 Ribbon/Area 的本地集成候选门禁，后续从 Step/Histogram/Freqpoly 继续逐个收敛，再进入网络图、路径图和 SEM 专用语义扩展。
+`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。R-WP0-WP3 和 R-WP4 前六类已完成本地集成候选门禁；Step/Histogram/Freqpoly 源分支能力已合入并等待当前集成复验，后续从 Tile/Raster/Rect/Contour 继续逐个收敛，再进入网络图、路径图和 SEM 专用语义扩展。
 
 当前专项方案已补充“能力增强列车”：每项能力必须依次证明 renderer 事实、对象身份、属性能力、目标解析、PatchPlan、Figure 事务、项目级持久化以及 Python/R/真实项目回归。禁止从协议设计直接跳到默认启用。
 

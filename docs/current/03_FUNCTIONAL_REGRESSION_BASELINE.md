@@ -3,7 +3,7 @@
 > 状态：当前有效，所有平台功能升级的合并阻断基线
 > 最后修改时间：2026-07-30 16:08:23 +08:00
 > 证据截止时间：2026-07-30 16:08:23 +08:00
-> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 固定候选与旧项目兼容收尾，以及 R-WP0-WP3 隔离基线、patch 权威、identity v2、旧项目兼容和运行时 parity；R-WP4 Point/Jitter、Line/Path/Smooth、Bar/Col、Errorbar family、Boxplot/Violin、Ribbon/Area 集成候选已完成直接门禁
+> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 固定候选与旧项目兼容收尾，以及 R-WP0-WP3 隔离基线、patch 权威、identity v2、旧项目兼容和运行时 parity；R-WP4 前六类集成候选已完成直接门禁，Step/Histogram/Freqpoly 源分支能力已合入且集成复验待完成
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -65,6 +65,7 @@
 | R-WP4 Boxplot/Violin | 本地候选 | renderer 6/6、前端合同 7/7、隔离浏览器 12/12、lint 和 diff-check 通过，独立 `gpt-5.5 high` 审查 APPROVE、0 HIGH/MEDIUM；Boxplot 声明 body/median/whiskers/staples/outliers 关系，整体线色、箱体填充和六类 outlier 样式分离，`outlier_fill` 仅对 shape 21-25 开放；旧 `median_color` 仅兼容迁移到整体轮廓并告警；Violin 声明 body/quantile-lines 边界且不开放虚假 quantile setter，旧 `color` 兼容迁移到 `edgecolor`；共享 fill scale 保留 `distribution` 分组关系，Draft、保存刷新、撤销重做、分组配色和导出一致 |
 | R-WP4 Ribbon/Area | 本地候选 | 最新 renderer 定向 9/9、前端合同 10/10、隔离浏览器 12/12、R patch authority 11 场景和 identity v2 compatibility 通过；保留旧 `r.layer.N`、`kind=patch`、GeomRibbon/GeomArea role 和 v2 identity，仅开放 `facecolor/edgecolor/linewidth/alpha`，区间、边界拆分、堆叠和 Smooth 置信带保持只读。整层 fill override 导致 scale 训练键缩短时，从同次原始脚本 baseline 恢复 scale/guide 结构身份而不恢复旧样式；`scaleActive=false` 的休眠 group 在任一 edit 顺序、patch 入口和项目 PUT 保存入口均冲突拒绝且零持久化。配色中心响应必须为业务 `status=success`，组颜色已进入 editLog、刷新、撤销重做和导出 bundle；最终独立审查 `APPROVE/CLEAR`、无 HIGH/MEDIUM |
 | R-WP4 集成复验 | 通过（本地候选） | 同一集成分支的 R renderer `85/85`、R 合同 `16/16`、隔离浏览器 `14 PASS / 0 FAIL / 0 BLOCKED`、patch authority 11 场景、identity v2 compatibility 和脚本语法均通过；浏览器 console/page error 为 `0/0`，真实生产仍未切换 |
+| R-WP4 Step/Histogram/Freqpoly | 本地候选 | renderer 定向 9/9、前端合同 3/3、隔离家族 API、R patch authority、identity v2 compatibility、浏览器 12/12、lint/build/diff-check 通过，独立复审 `CLEAR`、0 HIGH/MEDIUM。保留旧 `r.layer.N` 和 Step/GeomBar/GeomPath role，以共享类型约束的 `adapterClass` 区分 Histogram/Freqpoly；只开放 color/fill/edge/linewidth/linestyle/alpha，step direction 与 bin/stat 结构保持只读。Step scale group 为 line 语义。离散 scale 身份只按唯一的一对一 `aesthetic + scaleId + groupKey` 恢复；重复键对象不合并且明确 readonly/ambiguous，并在 setter 运行前 fail-closed，冲突响应不得改变 SVG/manifest。项目/standalone 伪 local mode 均规范化并以 `backend_patch` 持久化；mixed batch 零持久化、保存刷新、撤销重做、导出后继续编辑与快照恢复均有隔离证据 |
 | patch/全渲染事务保护 | 通过 | standalone patch、standalone full render 与项目 full render 均由服务端按返回 manifest/renderer 决定；拒绝批次不改变 revision、session、项目脚本、Figure、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |

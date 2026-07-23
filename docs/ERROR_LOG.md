@@ -3957,3 +3957,39 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `npm run test:r-patch-authority` 11 场景通过，新增休眠 scale group 项目 PUT 返回 409/`no_setter` 且 session、Figure、history、cache、导出资产和快照均不变；`npm run lint`、`npm run build` 和相关 `git diff --check` 通过。
 - 最终独立 `gpt-5.5 high` 代码审查 `APPROVE`、架构审查 `CLEAR`，无 HIGH/MEDIUM。
 - 后续任何测试“应用成功”必须核对业务 `status`、返回 `applied` 和持久 editLog，不能只看 HTTP 状态；任何 R identity remap 必须同时满足请求 GID 存在、唯一结构证据和同 GID 家族。
+
+---
+
+## 2026-07-23 11:23:44 +08:00 R 离散 scale 活跃键压缩会复用错误 group ID，Step/Histogram/Freqpoly 缺少完整事务证据
+
+**状态与级别**
+
+- 状态：已修复并通过 renderer、前端合同、隔离 API、真实浏览器、导出快照恢复和静态门禁；未推送、未部署。
+- 级别：P1 分组配色身份与旧项目兼容。用户先做整层样式修改后，仍活跃的颜色组可能被临时 ordinal ID 重新编号；随后修改配色时可能命中旧的其他组，或因 fingerprint 漂移被拒绝。
+
+**根因**
+
+- ggplot layer override 会让部分离散 scale group 从最终 built plot 中暂时消失，剩余 C/D 组可能由 `r.group.fill.0.2/.3` 压缩为 `.0/.1`。
+- 初版 baseline 恢复用 `aesthetic + scaleId + groupKey` 建立 first-wins map，但没有证明该 key 在 baseline 和当前 manifest 中都唯一。重复 groupKey 或旧/压缩 manifest 会把多个 group、palette、binding target 合并到第一个 ID。
+- 既有 compaction 测试先把对象放进按 `groupKey` 建立的字典；如果 renderer 返回重复 key，前一个对象会被覆盖，测试无法发现碰撞。
+- 初次修复只让最终 `confirm_r_edit_entries()` 根据空 capability 拒绝旧 GID-only 重复组编辑，但 `apply_discrete_scale_edits()` 已先消费该 entry，导致响应同时出现 `conflict=true` 与被拒颜色已写入 SVG/manifest。冲突状态正确但返回图错误，仍属于 silent wrong edit。
+- Step/Histogram/Freqpoly 之前沿用通用 line/bar 识别，缺少专用 `adapterClass`、bin/step 只读边界、服务端权威和导出快照恢复的家族级证据。
+
+**修复**
+
+- `restore_baseline_scale_semantics()` 改为多值索引；仅当 baseline 与当前两侧各有且仅有一个结构候选、目标 group/palette ID 未被占用且映射保持一对一时才复用旧身份。歧义键保留 renderer 生成的 ID，不再 first-wins；重复 groupKey 对象明确 `identityAmbiguous=true`、`svgSelectable=false`、`editable=[]`，不允许猜测式配色写回。
+- `resolve_r_edit_entries()` 在任何 setter 运行前拒绝 ambiguous group：带 identity 的 entry 返回 `ambiguous_identity`，旧 GID-only entry 返回 `unsupported_prop`；冲突响应继续由未修改 baseline 构建。`GeomStep` 同步加入离散 group 的 line 语义集合，避免组件中心把 step 分组误当 scatter。
+- remap 后校验 group ID、object ID、palette ID、binding group/palette ID 和 target `instanceKey` 唯一；binding target 的 `instanceKey` 始终按最终 GID 规范化。
+- Step 输出专用 step adapter；Histogram/Freqpoly 分别在保留旧 `GeomBar/GeomPath` role 的同时输出 `adapterClass=GeomHistogram/GeomFreqpoly`。颜色、填充、边框、线宽、线型和透明度可写；step direction、binwidth/bins、breaks/counts/density/yStat 只读。
+- TypeScript `ManifestObject.source` 使用共享 `KnownRLayerAdapterClass` / `RLayerAdapterClass`；已知 adapter 由同一联合约束，扩展只允许 `Geom${string}`，让 renderer 输出、前端组件识别和测试 fixture 使用同一协议。
+- 家族 7 隔离 API 在一个 batch 中验证三类合法样式；客户端伪报 `local_patch` 由服务端归一化，session/Figure/history/export snapshot/restore editLog 均验证持久化 `mode=backend_patch`，结构属性和 mixed batch 原子拒绝且零持久化。
+
+**验证与防复发**
+
+- R renderer 定向 9/9；新增重复 scale limit fixture 先用普通 layer style edit 触发 baseline replay，再确认相同 groupKey 不会产生重复 object/group/palette/binding/target 身份；identity-bearing 重复组编辑返回 `ambiguous_identity`，旧 GID-only 编辑返回 `unsupported_prop`，活跃键压缩和共享 color group 回归通过。
+- `rStepHistogramFreqpolyEditingContract.test.ts` 3/3；组件中心只对 renderer 声明的样式生成 backend patch，结构字段 strict resolver 明确跳过。
+- `r_step_histogram_freqpoly_patch_authority_smoke.mjs` 通过：项目/standalone 权威、三类结构拒绝、mixed batch、revision/session/Figure/history/cache/export/snapshot 零错误持久化均通过。
+- 同一 fixture 完成 SVG 导出快照、导出后继续修改和恢复；恢复先失效旧 preview/manifest，刷新后重建到导出时 editLog/manifest/SVG，后续修改进入 history checkpoint，快照保持不可变。
+- `npm run test:r-semantic-smoke` 12/12，`npm run test:r-patch-authority`、`npm run test:r-identity-v2-compatibility`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。identity 首次运行遇到一次 Windows R `0xC0000005` 解释器启动异常，隔离重跑通过；该单次崩溃未作为功能通过证据。
+- `npm run data:audit`：25 用户、125 项目、283 项目文件、111 导出资产、0 issue。后续测试继续只使用随机端口、临时 DB/data，禁止访问本机 3000 或真实项目 fixture。
+- 2026-07-23 12:07:51 +08:00 最终复核：独立 `gpt-5.5 high` 直接 reproducer 确认 identity-bearing 与旧 GID-only 两条重复组冲突路径均保持原 manifest/SVG，Step group 为 line 语义；结论 `CLEAR`、0 HIGH/MEDIUM。家族 API、R patch authority、identity v2 compatibility、浏览器 12/12、lint、build、diff-check 均在最终修复后重跑通过，未推送、未部署。
