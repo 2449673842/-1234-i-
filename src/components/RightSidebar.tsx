@@ -371,6 +371,11 @@ export function supportsComponentBatchProp(
 ): boolean {
   if (!obj) return false;
   if (isHiddenLegacyRProp(obj, prop, generatedBy)) return false;
+  if (
+    generatedBy === 'r_svg'
+    && obj.fingerprintVersion === 2
+    && !hasAuthoritativePropertyCapabilities(obj)
+  ) return false;
   if (supportsObjectProp(obj, prop)) return true;
   if (isParentOwnedManifestObject(obj)) return false;
   if (isPythonStructuralSeriesProp(obj, prop)) return false;

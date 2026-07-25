@@ -1,8 +1,8 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0-R-WP3 与 R-WP4 九类图元家族本地候选已合入当前集成分支；当前批次复验待完成，下一工作包为 R-WP5
+> 状态：R-WP0-R-WP3、R-WP4 九类图元家族与 R-WP5 scale/guide/facet/layout 本地候选已合入当前集成分支；当前批次复验待完成，下一工作包为 R-WP6
 > 最后修改时间：2026-07-30 16:08:23 +08:00
-> 当前部署状态：R-WP0-R-WP4 已完成子家族仅在本地验证；未推送、未部署
+> 当前部署状态：R-WP0-R-WP5 已完成子家族仅在本地验证；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 现状入口：`docs/R_COMPATIBILITY_PLAN.md`
 > 适用范围：R/ggplot2 渲染、语义图元、对象身份、patch 写回、Draft、历史、导出、复杂坐标、网络图/路径图/SEM 与生产一致性
@@ -454,7 +454,7 @@ fixture
 - SVG identity 只在真实 panel clip group 内绑定，并与图层规划统一使用 geom 实际可绘制行。当前图层按绘制顺序领取最早的完整 body/arrow 结构；候选不足或最早序列无法组成完整结构时继续 fail-closed。该规则修复了 Step/Freqpoly/Segment/Curve 批量改成同色后 Segment/Curve 被标为 unresolved，以及可见行混合 NA 行时错误 unresolved 的回归，同时不允许后继图层偷认当前图元。
 - 完整 R renderer 分三段并行复验为 `37/37 + 37/37 + 37/37 = 111/111`；NA 行与同色前继/后继的 Segment/Curve 定向回归 `3/3`。`npm run test:r-segment-curve-authority` 与 `npm run test:r-identity-v2-compatibility` 均通过。
 - `npm run test:r-semantic-smoke` 14/14：真实组件中心完成 Segment/Curve 选择、line 组批量改色、Draft、backend replay、保存刷新、撤销重做、导出后继续编辑和快照恢复；最终 SVG 中 `r.layer.18` 保留 4 个 body/arrow 图元，`r.layer.19` 保留 3 个图元，console/page error 为 0。
-- `npm run lint`、`npm run build` 和 `git diff --check` 通过；构建只保留既有大 chunk 和 CJS `import.meta` 警告。当前未推送、未部署，R-WP5 尚未开始。
+- `npm run lint`、`npm run build` 和 `git diff --check` 通过；构建只保留既有大 chunk 和 CJS `import.meta` 警告。当前未推送、未部署；R-WP5 状态见下一节。
 
 ### R-WP5：scale、guide、facet 与布局关系
 
@@ -491,6 +491,19 @@ free scale facet
 **回滚单位**
 
 - R scale/guide v2、facet identity v2 和 R guide layout adapter 分开回滚。
+
+**本地候选证据（2026-07-24 03:10:00 +08:00）**
+
+- 当前实现已为离散 color/fill scale 输出 label、limits、breaks、drop、NA、guide 类型、guide 可见性和 group/layer/facet 关系；相同颜色或同名 label 不再作为唯一身份。连续 color/fill scale 输出独立 `r.scale.color.continuous.0` / `r.scale.fill.continuous.0`，并通过 mappable、guide/colorbar 和 owner panel 关系隔离 `vmin/vmax/cmap` 写回。
+- legend/guide 现在关联 scale、group、layer、title、label、key glyph 和容器样式；`markerscale`、spacing、border、字体与可见性走 R backend patch。colorbar 继续关联 scale、mappable 和 owner panel；只有有可核验布局锚点时开放位置/尺寸，否则保留样式能力并说明物理布局限制。
+- facet panel 首选 `facetKey` 身份，`free_x/free_y/free`、strip 位置和 panel spacing 写入 facet layout 语义。单个 facet 的物理 `left/bottom/width/height` bounds 保持 readonly，不向 UI 或 patch capability 暴露；facet `aspect` 已从单 panel 移到 `r.facet.layout.0`，旧 `subplot.N` aspect patch 作为 legacy alias 解析到 layout 并返回 alias warning。
+- targeted renderer evidence 通过：facet manifest/strip patch、legacy facet panel aspect alias、非首个 facet panel tick edit 与全局 axis theme 隔离、连续 colorbar 对齐与 scale relation 写回均覆盖。完整 R renderer 先跑通 111/111；随后 6 个 WP5 失败修复后定向 rerun 6/6，合计覆盖 117 个 renderer 用例。
+- API smoke 覆盖 3 条路径并全部通过：facet physical bounds rejection 零持久化；guide reorder 后 legend text identity 经导出和 snapshot restore 保持；dual continuous color/fill isolation 同批写回后 `r.scale.color.continuous.0` 与 `r.scale.fill.continuous.0` 分别保持身份和值。
+- 浏览器 `r_wp5_scale_guide_facet_smoke` 6/6：离散 scale/guide fixture、facet bounds readonly manifest、配色中心单 group 改色、legend 属性真实控件、facet 物理 bounds 控件不出现、console/page error 为 0。既有 `npm run test:r-semantic-smoke` 14/14 继续通过。
+- `npm run test:r-identity-v2-compatibility` PASS；`npm run lint`、`npm run build` 和 `git diff --check` PASS。当前未推送、未部署；本段只声明 R-WP5 本地候选，不声明 R-WP6 或后续工作包完成。
+- `2026-07-24 21:54:52 +08:00` 重新复验：R-WP5 renderer 定向 14/14、隔离 API 3/3、真实浏览器 6/6、R 语义黄金样例 14/14、identity v2 compatibility、共享 resolver/mapping 214 项、lint、build 与 diff-check 全部通过。浏览器首轮遇到一次 Windows R `0xC0000005` 进程启动崩溃，隔离重跑完整通过；该偶发运行时故障保留记录，不计入产品正确性证据。
+- `2026-07-25 19:12:43 +08:00` 审查收敛补齐：字符型 `colourbar/colorbar` 统一识别为连续色条；隐藏/恢复同时更新 colorbar 与 owning scale；多个离散 guide 分别拥有稳定 `legend_title.N`，标题文字和 SVG 字体样式只写回所属 scale。图例条目标签对显式 scale 原位更新，避免重建 scale 改变同次 replay 的 GID/identity。新增同脚本 legend text replay 回归后，renderer 定向 6/6 与 guide 相关 4/4、隔离 API 3/3、真实浏览器 6/6、R 语义黄金样例 14/14、identity v2 compatibility、共享 resolver/mapping 214 项、lint、build 与 diff-check 全部通过；仍未推送、未部署。
+- `2026-07-25 20:33:34 +08:00` 独立审查三轮收敛完成：legacy continuous absolute-index alias 仅容忍已知会变化的 fingerprint/scaleKey/guideKey，stableKey、semantic/seriesKey、aesthetic 等稳定证据仍须匹配；R 跨 Figure relation 必须至少有一个双方共享且相等的稳定字段，legacy score fallback 不能绕过冲突。完整 R renderer 124/124、共享 resolver/mapping 216/216、隔离 API 3/3、真实浏览器 6/6、R 语义黄金样例 14/14、identity v2 compatibility 与 lint 通过；最终独立复审 0 HIGH/MEDIUM。仍未推送、未部署。
 
 ### R-WP6：文本、annotation 与复杂坐标
 

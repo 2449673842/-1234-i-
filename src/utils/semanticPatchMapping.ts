@@ -84,6 +84,39 @@ const DIAGRAM_REQUIRED_RELATION_FIELDS_BY_ROLE: Record<string, Array<keyof NonNu
   diagram_group: [],
 };
 
+const STABLE_R_RELATION_FIELDS = [
+  'aesthetic',
+  'groupKey',
+  'dataKey',
+  'facetKey',
+  'axisKey',
+  'layerKey',
+  'scaleKey',
+  'guideKey',
+] as const;
+
+export function hasStableRRelationIdentity(identity: ManifestObject['identity'] | undefined): boolean {
+  const relation = identity?.relation;
+  return STABLE_R_RELATION_FIELDS.some(field => (
+    typeof relation?.[field] === 'string' && relation[field]!.length > 0
+  ));
+}
+
+function isStableRRelationCompatible(source: ManifestObject, target: ManifestObject): boolean {
+  const sourceRelation = source.identity?.relation;
+  const targetRelation = target.identity?.relation;
+  const sharedFields = STABLE_R_RELATION_FIELDS.filter(field => (
+    typeof sourceRelation?.[field] === 'string'
+    && typeof targetRelation?.[field] === 'string'
+  ));
+  const sourceHasStableRelation = hasStableRRelationIdentity(source.identity);
+  const targetHasStableRelation = hasStableRRelationIdentity(target.identity);
+  if (sharedFields.length === 0) return !sourceHasStableRelation && !targetHasStableRelation;
+  return sharedFields.every(field => (
+    sourceRelation?.[field] === targetRelation?.[field]
+  ));
+}
+
 function isDiagramRelationCompatible(source: ManifestObject, target: ManifestObject): boolean {
   const sourceRole = String(source.role || '');
   const targetRole = String(target.role || '');
@@ -185,7 +218,8 @@ function isExactTargetCompatible(source: ManifestObject, target: ManifestObject)
   return isPieRelationCompatible(source, target)
     && isVectorFieldRelationCompatible(source, target)
     && isDiagramRelationCompatible(source, target)
-    && isSpecialAxesRelationCompatible(source, target);
+    && isSpecialAxesRelationCompatible(source, target)
+    && isStableRRelationCompatible(source, target);
 }
 
 function hasAuthoritativeRelationIdentity(object: ManifestObject): boolean {
@@ -196,6 +230,7 @@ function hasAuthoritativeRelationIdentity(object: ManifestObject): boolean {
   return hasPieIdentity
     || vectorFieldRelation(object) !== null
     || DIAGRAM_RELATION_ROLES.has(String(object.role))
+    || hasStableRRelationIdentity(object.identity)
     || (
       requiresSpecialAxesRelationIdentity(object)
       && specialAxesRelationSignature(object.identity) !== null
@@ -329,6 +364,7 @@ function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop
   if (!isVectorFieldRelationCompatible(source, target)) return -1;
   if (!isDiagramRelationCompatible(source, target)) return -1;
   if (!isSpecialAxesRelationCompatible(source, target)) return -1;
+  if (!isStableRRelationCompatible(source, target)) return -1;
 
   let score = 0;
   if (source.identity?.instanceKey && source.identity.instanceKey === target.identity?.instanceKey) score += 140;

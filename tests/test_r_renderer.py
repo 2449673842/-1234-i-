@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -378,7 +379,7 @@ p
             (_object(baseline, "legend.0"), "markerscale", 1.4),
             (next(obj for obj in baseline_objects if obj.get("identity", {}).get("relation", {}).get("dataKey") == "legend:color:A"), "text", "Treatment A"),
             (next(obj for obj in baseline_objects if obj.get("identity", {}).get("relation", {}).get("groupKey") == "A"), "color", "#2CA02C"),
-            (next(obj for obj in baseline_objects if obj.get("kind") == "subplot" and obj.get("identity", {}).get("relation", {}).get("facetKey") == "facet=F1"), "aspect", 1.2),
+            (_object(baseline, "r.facet.layout.0"), "aspect", 1.2),
             (_object(baseline, "r.layer.0"), "size", 5),
         ]
         patches = [{
@@ -627,6 +628,12 @@ p
             "fingerprintVersion": target["fingerprintVersion"],
             "identity": target["identity"],
         }
+        same_script_replay = _run_r_renderer(color_first, [patch])
+        self.assertFalse(same_script_replay["conflict"])
+        same_script_target = _object(same_script_replay, target["id"])
+        self.assertEqual(same_script_target["stableKey"], target["stableKey"])
+        self.assertEqual(same_script_target["currentProps"]["text"], "Treatment A")
+
         replayed = _run_r_renderer(fill_first, [patch])
         self.assertFalse(replayed["conflict"])
         replayed_items = [obj for obj in _objects(replayed) if obj.get("role") == "legend_text"]
@@ -654,6 +661,70 @@ p
         self.assertEqual(len(legend_items), 4)
         self.assertEqual(len(guide_keys), 2)
         self.assertEqual(len({obj["stableKey"] for obj in legend_items}), 4)
+
+        legend_titles = [obj for obj in _objects(result) if obj.get("role") == "legend_title"]
+        guides = [obj for obj in _objects(result) if obj.get("role") == "ggplot_semantic_guide"]
+        self.assertEqual({obj["currentProps"]["text"] for obj in legend_titles}, {"Outline group", "Fill group"})
+        self.assertEqual(len(guides), 2)
+        title_by_id = {obj["id"]: obj for obj in legend_titles}
+        for guide in guides:
+            relation = guide["identity"]["relation"]
+            title = title_by_id[relation["legendTitleId"]]
+            self.assertEqual(title["identity"]["relation"]["guideKey"], relation["guideKey"])
+
+        target = next(obj for obj in legend_titles if obj["currentProps"]["text"] == "Outline group")
+        target_guide = next(
+            guide for guide in guides
+            if guide["identity"]["relation"]["legendTitleId"] == target["id"]
+        )
+        reordered_script = script.replace(
+            'scale_color_manual(values=c(A="#111111", B="#222222"), name="Outline group") +\n  '
+            'scale_fill_manual(values=c(A="#AAAAAA", B="#BBBBBB"), name="Fill group")',
+            'scale_fill_manual(values=c(A="#AAAAAA", B="#BBBBBB"), name="Fill group") +\n  '
+            'scale_color_manual(values=c(A="#111111", B="#222222"), name="Outline group")',
+        )
+        replayed = _run_r_renderer(reordered_script, [
+            _backend_patch(target, "text", "A outline"),
+            _backend_patch(target, "fontsize", 17),
+            _backend_patch(target, "color", "#123456"),
+        ])
+        replayed_titles = [obj for obj in _objects(replayed) if obj.get("role") == "legend_title"]
+        self.assertFalse(replayed["conflict"])
+        self.assertEqual(
+            {obj["currentProps"]["text"] for obj in replayed_titles},
+            {"A outline", "Fill group"},
+        )
+        replayed_target = next(obj for obj in replayed_titles if obj["currentProps"]["text"] == "A outline")
+        replayed_target_guide = next(
+            guide for guide in _objects(replayed)
+            if guide.get("role") == "ggplot_semantic_guide"
+            and guide["identity"]["relation"]["legendTitleId"] == replayed_target["id"]
+        )
+        self.assertEqual(replayed_target["id"], target["id"])
+        self.assertEqual(replayed_target["stableKey"], target["stableKey"])
+        self.assertEqual(replayed_target["fingerprint"], target["fingerprint"])
+        self.assertEqual(replayed_target["currentProps"]["fontsize"], 17)
+        self.assertEqual(replayed_target["currentProps"]["color"], "#123456")
+        self.assertEqual(replayed_target_guide["id"], target_guide["id"])
+        self.assertEqual(replayed_target_guide["stableKey"], target_guide["stableKey"])
+        self.assertEqual(replayed_target_guide["fingerprint"], target_guide["fingerprint"])
+        self.assertIn("A outline", replayed["svg"])
+        self.assertIn("Fill group", replayed["svg"])
+        target_tag = re.search(
+            rf'<text\b(?=[^>]*\bid=["\']{re.escape(replayed_target["id"])}["\'])[^>]*>',
+            replayed["svg"],
+        )
+        self.assertIsNotNone(target_tag)
+        self.assertIn("font-size: 17pt", target_tag.group(0))
+        self.assertIn("fill: #123456", target_tag.group(0))
+        untouched_title = next(obj for obj in replayed_titles if obj["id"] != replayed_target["id"])
+        untouched_tag = re.search(
+            rf'<text\b(?=[^>]*\bid=["\']{re.escape(untouched_title["id"])}["\'])[^>]*>',
+            replayed["svg"],
+        )
+        self.assertIsNotNone(untouched_tag)
+        self.assertNotIn("font-size: 17pt", untouched_tag.group(0))
+        self.assertNotIn("fill: #123456", untouched_tag.group(0))
 
     def test_v2_parallel_guide_reorder_replays_legend_text_by_mapping_identity(self):
         color_first = """
@@ -689,6 +760,25 @@ p
             "fingerprintVersion": target["fingerprintVersion"],
             "identity": target["identity"],
         }
+        same_script = _run_r_renderer(color_first, [
+            patch,
+            _backend_patch(target, "fontsize", 18),
+            _backend_patch(target, "color", "#654321"),
+        ])
+        self.assertFalse(same_script["conflict"])
+        untouched_item = next(
+            obj for obj in _objects(same_script)
+            if obj.get("role") == "legend_text"
+            and obj.get("identity", {}).get("relation", {}).get("dataKey") == "legend:fill:A"
+        )
+        untouched_item_tag = re.search(
+            rf'<text\b(?=[^>]*\bid=["\']{re.escape(untouched_item["id"])}["\'])[^>]*>',
+            same_script["svg"],
+        )
+        self.assertIsNotNone(untouched_item_tag)
+        self.assertNotIn("font-size: 18pt", untouched_item_tag.group(0))
+        self.assertNotIn("fill: #654321", untouched_item_tag.group(0))
+
         replayed = _run_r_renderer(fill_first, [patch])
         self.assertFalse(replayed["conflict"])
         remapped = next(
@@ -940,13 +1030,30 @@ p
         self.assertEqual(xtick["currentProps"]["fontstyle"], "italic")
         self.assertEqual(xtick["currentProps"]["color"], "#AA0000")
         self.assertEqual(xtick["currentProps"]["rotation"], 35)
-        # ggplot applies tick text styling at the axis theme level.
-        self.assertEqual(axis_x["currentProps"]["tick_labelsize"], 13)
-        self.assertEqual(axis_x["currentProps"]["tick_labelfamily"], "Times New Roman")
-        self.assertEqual(axis_x["currentProps"]["tick_labelcolor"], "#AA0000")
-        self.assertEqual(axis_x["currentProps"]["tick_rotation"], 35)
+        self.assertEqual(axis_x["currentProps"]["tick_labelsize"], 9)
+        self.assertEqual(axis_x["currentProps"]["tick_labelfamily"], "")
+        self.assertEqual(axis_x["currentProps"]["tick_labelcolor"], "black")
+        self.assertEqual(axis_x["currentProps"]["tick_rotation"], 0)
+        self.assertIn("font-size: 13pt", result["svg"])
+        self.assertIn("fill: #AA0000".lower(), result["svg"].lower())
         self.assertIn("tick_labelcolor", axis_x["editable"])
         self.assertIn("tick_labelcolor", axis_y["editable"])
+
+    def test_same_numeric_x_y_tick_labels_keep_axis_specific_svg_ids(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=0:2, y=0:2)
+p <- ggplot(df, aes(x, y)) + geom_point() + scale_x_continuous(breaks=0:2) + scale_y_continuous(breaks=0:2) + theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+
+        xtick_tag = re.search(r'<text[^>]*id="xtick\.0\.0"[^>]*>\s*0\s*</text>', result["svg"])
+        ytick_tag = re.search(r'<text[^>]*id="ytick\.0\.0"[^>]*>\s*0\s*</text>', result["svg"])
+        self.assertIsNotNone(xtick_tag)
+        self.assertIsNotNone(ytick_tag)
+        self.assertIn("text-anchor='middle'", xtick_tag.group(0))
+        self.assertIn("text-anchor='end'", ytick_tag.group(0))
 
     def test_axis_label_and_tick_style_are_separate(self):
         script = """
@@ -1982,6 +2089,326 @@ p
         self.assertEqual(_object(patched, "legend.0")["currentProps"]["title"], "Study group")
         self.assertEqual(_object(patched, "r.group.color.0.0")["currentProps"]["groupKey"], "B")
         self.assertEqual(_object(patched, "r.group.color.0.0")["currentProps"]["color"], "#2CA02C")
+
+    def test_discrete_scale_patch_preserves_breaks_na_drop_and_guide_semantics(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  x=1:5,
+  y=1:5,
+  group=factor(c("A", "B", NA, "A", "B"), levels=c("A", "B", "C"))
+)
+p <- ggplot(df, aes(x, y, colour=group)) +
+  geom_point(size=4) +
+  scale_colour_manual(
+    values=c(A="#1F78B4", B="#D62728", C="#33A02C"),
+    limits=c("C", "B", "A"),
+    breaks=c("B", "A"),
+    labels=c(B="Beta", A="Alpha"),
+    drop=FALSE,
+    na.value="#999999",
+    na.translate=TRUE,
+    guide=guide_legend(reverse=TRUE, order=2),
+    name="Treatment"
+  ) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        patched = _run_r_renderer(script, [
+            {"gid": "r.group.color.0.1", "prop": "color", "value": "#6A3D9A", "mode": "backend_patch"},
+        ])
+
+        scale = _object(patched, "r.scale.color.0")
+        self.assertEqual(scale["role"], "ggplot_scale_discrete")
+        self.assertEqual(scale["currentProps"]["limits"], ["C", "B", "A"])
+        self.assertEqual(scale["currentProps"]["breaks"], ["B", "A"])
+        self.assertEqual(scale["currentProps"]["labels"], ["Beta", "Alpha"])
+        self.assertFalse(scale["currentProps"]["drop"])
+        self.assertTrue(scale["currentProps"]["naTranslate"])
+        self.assertEqual(scale["currentProps"]["naValue"], "#999999")
+        self.assertEqual(scale["currentProps"]["guideType"], "legend")
+        self.assertTrue(scale["currentProps"]["guideVisible"])
+        self.assertTrue(scale["currentProps"]["guideReverse"])
+        self.assertEqual(scale["currentProps"]["guideOrder"], 2)
+        self.assertEqual(
+            [obj["currentProps"]["text"] for obj in _objects(patched) if obj.get("role") == "legend_text"],
+            ["Beta", "Alpha"],
+        )
+        self.assertEqual(_object(patched, "r.group.color.0.1")["currentProps"]["color"], "#6A3D9A")
+        self.assertEqual(scale["stableKey"], _object(baseline, "r.scale.color.0")["stableKey"])
+
+    def test_free_facet_declares_axis_strip_and_panel_spacing_capabilities(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  x=c(1, 2, 10, 20), y=c(1, 2, 100, 200),
+  facet=c("F1", "F1", "F2", "F2")
+)
+p <- ggplot(df, aes(x, y)) +
+  geom_point() +
+  facet_wrap(~facet, scales="free", strip.position="bottom") +
+  theme_classic() +
+  theme(panel.spacing.x=unit(7, "pt"), panel.spacing.y=unit(9, "pt"))
+p
+"""
+        result = _run_r_renderer(script)
+        panels = [obj for obj in _objects(result) if obj.get("role") == "ggplot_facet_panel"]
+        layout = _object(result, "r.facet.layout.0")
+        strip = _object(result, "facet.strip.0")
+
+        self.assertEqual(len(panels), 2)
+        self.assertEqual({panel["identity"]["relation"]["facetKey"] for panel in panels}, {"facet=F1", "facet=F2"})
+        for panel in panels:
+            self.assertTrue(panel["currentProps"]["freeX"])
+            self.assertTrue(panel["currentProps"]["freeY"])
+            self.assertEqual(panel["currentProps"]["facetScales"], "free")
+            self.assertNotIn("left", panel["editable"])
+            self.assertNotIn("width", panel["editable"])
+        self.assertEqual(layout["currentProps"]["stripPosition"], "bottom")
+        self.assertEqual(layout["currentProps"]["panelSpacingXPt"], 7)
+        self.assertEqual(layout["currentProps"]["panelSpacingYPt"], 9)
+        self.assertEqual(layout["currentProps"]["physicalPanelBounds"], "readonly")
+        self.assertEqual(strip["identity"]["relation"]["parentId"], layout["id"])
+
+    def test_semantic_guide_object_owns_readonly_legend_key_glyphs(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=c("A", "B"), y=c(1, 2), group=c("A", "B"))
+p <- ggplot(df, aes(x, y, color=group, fill=group)) +
+  geom_point(shape=21, size=4) +
+  scale_color_manual(values=c(A="#1F78B4", B="#D62728"), name="Group") +
+  scale_fill_manual(values=c(A="#A6CEE3", B="#FB9A99"), name="Group") +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        guides = [obj for obj in _objects(result) if obj.get("id") == "r.guide.legend.0"]
+        key_glyphs = [
+            obj for obj in _objects(result)
+            if obj.get("role") == "legend_key_glyph"
+        ]
+        legend_text = [
+            obj for obj in _objects(result)
+            if obj.get("role") == "legend_text"
+        ]
+
+        self.assertEqual(
+            len(guides),
+            1,
+            "expected first-class semantic guide object r.guide.legend.0",
+        )
+        guide = guides[0]
+        self.assertEqual(guide["kind"], "guide")
+        self.assertEqual(guide["role"], "ggplot_semantic_guide")
+        self.assertEqual(guide["editable"], ["visible"])
+        self.assertEqual(guide["identity"]["relation"]["legendId"], "legend.0")
+        self.assertEqual(guide["identity"]["relation"]["guideType"], "legend")
+        self.assertEqual(guide["identity"]["relation"]["legendTitleId"], "legend_title.0")
+        self.assertEqual(guide["identity"]["relation"]["legendTextIds"], [text["id"] for text in legend_text])
+        self.assertEqual(guide["identity"]["relation"]["legendMarkerIds"], [glyph["id"] for glyph in key_glyphs])
+        self.assertEqual(len(key_glyphs), 2)
+        self.assertEqual(len(legend_text), 2)
+        for glyph in key_glyphs:
+            relation = glyph["identity"]["relation"]
+            self.assertEqual(glyph["editable"], [])
+            self.assertEqual(relation["guideId"], guide["id"])
+            self.assertEqual(relation["legendId"], "legend.0")
+            self.assertIn(relation["dataKey"], {text["identity"]["relation"]["dataKey"] for text in legend_text})
+            self.assertIn("scaleKey", relation)
+            self.assertIn("groupIds", relation)
+
+    def test_semantic_guide_records_all_owner_layers_groups_and_children(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:6, y=c(1, 3, 2, 5, 4, 6), group=rep(c("A", "B"), 3))
+p <- ggplot(df, aes(x, y, colour=group)) +
+  geom_line() +
+  geom_point(size=4) +
+  scale_colour_manual(values=c(A="#1F78B4", B="#D62728"), name="Group") +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        guide = _object(result, "r.guide.legend.0")
+        relation = guide["identity"]["relation"]
+        legend_text_ids = [obj["id"] for obj in _objects(result) if obj.get("role") == "legend_text"]
+        key_glyph_ids = [obj["id"] for obj in _objects(result) if obj.get("role") == "legend_key_glyph"]
+
+        self.assertEqual(relation["layerIds"], ["r.layer.0", "r.layer.1"])
+        self.assertEqual(relation["subplotIds"], ["subplot.0"])
+        self.assertEqual(relation["scaleIds"], ["r.scale.color.0"])
+        self.assertEqual(relation["groupIds"], ["r.group.color.0.0", "r.group.color.0.1"])
+        self.assertEqual(relation["legendTitleId"], "legend_title.0")
+        self.assertEqual(relation["legendTextIds"], legend_text_ids)
+        self.assertEqual(relation["legendMarkerIds"], key_glyph_ids)
+        for object_id in legend_text_ids + key_glyph_ids:
+            child = _object(result, object_id)
+            child_relation = child["identity"]["relation"]
+            self.assertIn(child_relation.get("semanticGuideId", child_relation.get("guideId")), {guide["id"], "legend.0"})
+
+    def test_semantic_guide_visibility_can_hide_and_restore_without_identity_drift(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=1:4, group=rep(c("A", "B"), 2))
+p <- ggplot(df, aes(x, y, colour=group)) +
+  geom_point(size=4) +
+  scale_colour_manual(values=c(A="#1F78B4", B="#D62728"), name="Group") +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        guide = _object(baseline, "r.guide.legend.0")
+        hidden = _run_r_renderer(script, [_backend_patch(guide, "visible", False)])
+        hidden_guide = _object(hidden, guide["id"])
+        restored = _run_r_renderer(script, [
+            _backend_patch(guide, "visible", False),
+            _backend_patch(hidden_guide, "visible", True),
+        ])
+
+        self.assertFalse(hidden["conflict"])
+        self.assertFalse(hidden_guide["currentProps"]["visible"])
+        self.assertNotIn("Group", hidden["svg"])
+        self.assertTrue(_object(restored, guide["id"])["currentProps"]["visible"])
+        self.assertIn("Group", restored["svg"])
+        self.assertEqual(_object(restored, guide["id"])["stableKey"], guide["stableKey"])
+        self.assertEqual(_object(restored, guide["id"])["fingerprint"], guide["fingerprint"])
+
+    def test_continuous_scale_cmap_patch_preserves_scale_and_guide_semantics(self):
+        script = """
+library(ggplot2)
+df <- expand.grid(x=1:3, y=1:3)
+df$value <- c(0, 0.2, 0.4, 0.6, 0.8, 1, NA, 0.25, 0.75)
+p <- ggplot(df, aes(x, y, fill=value)) +
+  geom_tile() +
+  scale_fill_gradientn(
+    colours=c("#132B43", "#56B1F7", "#FDE725"),
+    trans="sqrt",
+    limits=c(0, 1),
+    breaks=c(0, 0.25, 1),
+    labels=c("Zero", "Quarter", "One"),
+    na.value="#999999",
+    guide=guide_colourbar(reverse=TRUE, order=3),
+    name="Intensity"
+  ) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        patched = _run_r_renderer(script, [
+            {"gid": "r.heatmap.fill.0", "prop": "cmap", "value": "plasma", "mode": "backend_patch"},
+        ])
+        baseline_scale = _object(baseline, "r.scale.fill.continuous.0")
+        patched_scale = _object(patched, "r.scale.fill.continuous.0")
+        patched_heatmap = _object(patched, "r.heatmap.fill.0")
+        patched_colorbar = _object(patched, "r.colorbar.fill.0")
+
+        self.assertFalse(patched["conflict"])
+        self.assertEqual(patched_heatmap["currentProps"]["cmap"], "plasma")
+        self.assertEqual(patched_colorbar["currentProps"]["cmap"], "plasma")
+        self.assertEqual(patched_scale["role"], "ggplot_scale_continuous")
+        self.assertEqual(patched_scale["currentProps"]["transform"], "sqrt")
+        self.assertEqual(patched_scale["currentProps"]["breaks"], [0, 0.25, 1])
+        self.assertEqual(patched_scale["currentProps"]["labels"], ["Zero", "Quarter", "One"])
+        self.assertEqual(patched_scale["currentProps"]["naValue"], "#999999")
+        self.assertEqual(patched_scale["currentProps"]["guideType"], "colorbar")
+        self.assertTrue(patched_scale["currentProps"]["guideVisible"])
+        self.assertTrue(patched_scale["currentProps"]["guideReverse"])
+        self.assertEqual(patched_scale["currentProps"]["guideOrder"], 3)
+        self.assertEqual(patched_scale["stableKey"], baseline_scale["stableKey"])
+        self.assertEqual(patched_scale["fingerprint"], baseline_scale["fingerprint"])
+        self.assertEqual(patched_scale["identity"], baseline_scale["identity"])
+        for label in ["Zero", "Quarter", "One"]:
+            self.assertIn(label, patched["svg"])
+        self.assertIn("#999999".lower(), patched["svg"].lower())
+
+    def test_default_gradient_uses_colorbar_guide_type(self):
+        script = """
+library(ggplot2)
+df <- expand.grid(x=1:3, y=1:3)
+df$value <- seq(0, 1, length.out=nrow(df))
+p <- ggplot(df, aes(x, y, fill=value)) +
+  geom_tile() +
+  scale_fill_gradient(low="#132B43", high="#56B1F7", name="Intensity") +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        scale = _object(result, "r.scale.fill.continuous.0")
+
+        self.assertEqual(scale["currentProps"]["guideType"], "colorbar")
+        self.assertTrue(scale["currentProps"]["guideVisible"])
+
+    def test_continuous_colorbar_visibility_is_shared_with_scale_and_restorable(self):
+        script = """
+library(ggplot2)
+df <- expand.grid(x=1:3, y=1:3)
+df$value <- seq(0, 1, length.out=nrow(df))
+p <- ggplot(df, aes(x, y, fill=value)) +
+  geom_tile() +
+  scale_fill_gradient(low="#132B43", high="#56B1F7", name="Intensity") +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        colorbar = _object(baseline, "r.colorbar.fill.0")
+        hidden = _run_r_renderer(script, [_backend_patch(colorbar, "visible", False)])
+        hidden_colorbar = _object(hidden, colorbar["id"])
+        hidden_scale = _object(hidden, "r.scale.fill.continuous.0")
+        restored = _run_r_renderer(script, [
+            _backend_patch(colorbar, "visible", False),
+            _backend_patch(hidden_colorbar, "visible", True),
+        ])
+
+        self.assertFalse(hidden["conflict"])
+        self.assertFalse(hidden_colorbar["currentProps"]["visible"])
+        self.assertFalse(hidden_scale["currentProps"]["guideVisible"])
+        self.assertNotIn("Intensity", hidden["svg"])
+        self.assertFalse(restored["conflict"])
+        self.assertTrue(_object(restored, colorbar["id"])["currentProps"]["visible"])
+        self.assertTrue(_object(restored, "r.scale.fill.continuous.0")["currentProps"]["guideVisible"])
+        self.assertIn("Intensity", restored["svg"])
+        self.assertEqual(_object(restored, colorbar["id"])["stableKey"], colorbar["stableKey"])
+
+    def test_free_facet_tick_identity_does_not_cross_panels(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  x=c("A", "B", "A", "B"),
+  y=c(1, 2, 100, 200),
+  facet=c("F1", "F1", "F2", "F2")
+)
+p <- ggplot(df, aes(x, y)) +
+  geom_col() +
+  facet_wrap(~facet, scales="free_x") +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        target = next(
+            obj for obj in _objects(baseline)
+            if obj.get("kind") == "xtick"
+            and obj["identity"]["relation"].get("facetKey") == "facet=F2"
+            and obj["currentProps"]["text"] == "A"
+        )
+        neighbor = next(
+            obj for obj in _objects(baseline)
+            if obj.get("kind") == "xtick"
+            and obj["identity"]["relation"].get("facetKey") == "facet=F1"
+            and obj["currentProps"]["text"] == "A"
+        )
+
+        patched = _run_r_renderer(script, [_backend_patch(target, "fontsize", 17)])
+        patched_target = _object(patched, target["id"])
+        patched_neighbor = _object(patched, neighbor["id"])
+
+        self.assertNotEqual(target["stableKey"], neighbor["stableKey"])
+        self.assertNotEqual(target["fingerprint"], neighbor["fingerprint"])
+        self.assertFalse(patched["conflict"])
+        self.assertEqual(patched_target["currentProps"]["fontsize"], 17)
+        self.assertEqual(patched_neighbor["currentProps"]["fontsize"], neighbor["currentProps"]["fontsize"])
+        self.assertEqual(patched_target["identity"]["relation"]["facetKey"], "facet=F2")
+        self.assertEqual(patched_neighbor["identity"]["relation"]["facetKey"], "facet=F1")
 
     def test_legend_title_and_item_text_manifest(self):
         script = """
@@ -3248,25 +3675,39 @@ p
         result = _run_r_renderer(script, [
             {"gid": "facet.strip.0", "prop": "color", "value": "#2CA02C", "mode": "backend_patch"},
             {"gid": "facet.strip.0", "prop": "fontsize", "value": 16, "mode": "backend_patch"},
-            {"gid": "subplot.1", "prop": "aspect", "value": "1", "mode": "backend_patch"},
+            {"gid": "r.facet.layout.0", "prop": "aspect", "value": "1", "mode": "backend_patch"},
         ])
         subplots = [obj for obj in _objects(result) if obj["kind"] == "subplot"]
         self.assertEqual(len(subplots), 2)
-        self.assertIn("aspect", subplots[0]["editable"])
+        self.assertNotIn("aspect", subplots[0]["editable"])
         self.assertEqual(subplots[0]["currentProps"]["aspect"], 1)
         self.assertEqual(subplots[1]["currentProps"]["aspect"], 1)
-        aspect_capability = next(
-            capability for capability in subplots[0]["propertyCapabilities"]
-            if capability["prop"] == "aspect"
-        )
-        self.assertEqual(aspect_capability["coordinateSpace"], "container")
-        self.assertEqual(aspect_capability["scopes"], ["figure"])
+        facet_layout = _object(result, "r.facet.layout.0")
+        self.assertIn("aspect", facet_layout["editable"])
+        self.assertEqual(facet_layout["currentProps"]["aspect"], 1)
         self.assertIn("left", subplots[0]["currentProps"]["unsupportedProps"])
         self.assertIn("width", subplots[0]["currentProps"]["unsupportedProps"])
         self.assertIn("#2CA02C".lower(), result["svg"].lower())
         self.assertEqual(_object(result, "facet.strip.0")["currentProps"]["fontsize"], 16)
 
-    def test_facet_non_first_panel_tick_edits_apply_to_global_axis_theme(self):
+    def test_legacy_facet_panel_aspect_patch_migrates_to_layout(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=1:4, facet=rep(c("F1", "F2"), each=2))
+p <- ggplot(df, aes(x, y)) + geom_point() + facet_wrap(~facet) + theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "subplot.1", "prop": "aspect", "value": 1.25, "mode": "backend_patch"},
+        ])
+
+        self.assertFalse(result["conflict"])
+        self.assertEqual(result["applied"][0]["gid"], "subplot.1")
+        self.assertEqual(result["applied"][0]["resolvedGid"], "r.facet.layout.0")
+        self.assertEqual(_object(result, "r.facet.layout.0")["currentProps"]["aspect"], 1.25)
+        self.assertTrue(any(warning.get("type") == "legacy_target_alias" for warning in result["warnings"] if isinstance(warning, dict)))
+
+    def test_facet_non_first_panel_tick_edits_stay_isolated_from_global_axis_theme(self):
         script = """
 library(ggplot2)
 df <- data.frame(
@@ -3292,10 +3733,9 @@ p
         self.assertEqual(xtick["currentProps"]["fontsize"], 15)
         self.assertEqual(xtick["currentProps"]["fontfamily"], "Times New Roman")
         self.assertEqual(xtick["currentProps"]["color"], "#AA0000")
-        # ggplot applies facet tick styling through the global axis theme.
-        self.assertEqual(axis_x["currentProps"]["tick_labelsize"], 15)
-        self.assertEqual(axis_x["currentProps"]["tick_labelfamily"], "Times New Roman")
-        self.assertEqual(axis_x["currentProps"]["tick_labelcolor"], "#AA0000")
+        self.assertEqual(axis_x["currentProps"]["tick_labelsize"], 9)
+        self.assertEqual(axis_x["currentProps"]["tick_labelfamily"], "")
+        self.assertEqual(axis_x["currentProps"]["tick_labelcolor"], "black")
         self.assertEqual(axis_x["currentProps"]["tick_rotation"], 30)
         self.assertEqual(axis_x["currentProps"]["tick_direction"], "in")
 
@@ -3669,6 +4109,110 @@ p
         }
         for prop in ("left", "bottom", "width", "height"):
             self.assertEqual(colorbar_capabilities[prop]["coordinateSpace"], "figure")
+
+    def test_faceted_continuous_fill_uses_one_shared_colorbar_for_all_owner_panels(self):
+        script = """
+library(ggplot2)
+df <- expand.grid(x=1:3, y=1:2, facet=c("F1", "F2"))
+df$value <- seq(0, 1, length.out=nrow(df))
+p <- ggplot(df, aes(x, y, fill=value)) +
+  geom_tile() +
+  facet_wrap(~facet) +
+  scale_fill_gradient(low="#132B43", high="#56B1F7", name="Intensity") +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        colorbars = [obj for obj in _objects(result) if obj.get("kind") == "colorbar"]
+        panels = [obj for obj in _objects(result) if obj.get("role") == "ggplot_facet_panel"]
+
+        self.assertEqual([obj["id"] for obj in colorbars], ["r.colorbar.fill.0"])
+        colorbar_relation = colorbars[0]["identity"]["relation"]
+        scale_relation = _object(result, "r.scale.fill.continuous.0")["identity"]["relation"]
+        heatmap_relation = _object(result, "r.heatmap.fill.0")["identity"]["relation"]
+        self.assertEqual(colorbar_relation["subplotIds"], ["subplot.0", "subplot.1"])
+        self.assertEqual(colorbar_relation["layerIds"], ["r.layer.0"])
+        self.assertEqual(colorbar_relation["mappableIds"], ["r.heatmap.fill.0"])
+        self.assertEqual(colorbar_relation["scaleId"], "r.scale.fill.continuous.0")
+        self.assertEqual(colorbar_relation["guideId"], "r.colorbar.fill.0")
+        self.assertEqual(scale_relation["subplotIds"], ["subplot.0", "subplot.1"])
+        self.assertEqual(heatmap_relation["subplotIds"], ["subplot.0", "subplot.1"])
+        self.assertEqual(
+            {panel["identity"]["relation"]["facetKey"] for panel in panels},
+            {"facet=F1", "facet=F2"},
+        )
+
+    def test_legacy_absolute_continuous_scale_ids_remap_to_per_aesthetic_ids(self):
+        script = """
+library(ggplot2)
+df <- expand.grid(x=1:3, y=1:3)
+df$colour_value <- seq(0, 1, length.out=nrow(df))
+df$fill_value <- rev(df$colour_value)
+p <- ggplot(df, aes(x, y, colour=colour_value, fill=fill_value)) +
+  geom_tile(linewidth=1) +
+  scale_colour_gradient(low="#132B43", high="#56B1F7", name="Outline") +
+  scale_fill_gradient(low="#FDE725", high="#440154", name="Fill") +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        self.assertEqual(_object(baseline, "r.colorbar.color.0")["currentProps"]["sourceScaleIndex"], 0)
+        self.assertEqual(_object(baseline, "r.colorbar.fill.0")["currentProps"]["sourceScaleIndex"], 1)
+
+        legacy_edits = [
+            {"gid": "r.colorbar.fill.1", "prop": "label", "value": "Legacy fill", "mode": "backend_patch"},
+            {"gid": "r.scale.fill.continuous.1", "prop": "cmap", "value": "plasma", "mode": "backend_patch"},
+            {"gid": "r.heatmap.fill.1", "prop": "vmin", "value": 0.2, "mode": "backend_patch"},
+        ]
+        result = _run_r_renderer(script, legacy_edits)
+
+        self.assertFalse(result["conflict"])
+        self.assertEqual(_object(result, "r.colorbar.fill.0")["currentProps"]["label"], "Legacy fill")
+        self.assertEqual(_object(result, "r.scale.fill.continuous.0")["currentProps"]["cmap"], "plasma")
+        self.assertEqual(_object(result, "r.heatmap.fill.0")["currentProps"]["vmin"], 0.2)
+        self.assertEqual(
+            [entry.get("resolvedGid") for entry in result["applied"]],
+            ["r.colorbar.fill.0", "r.scale.fill.continuous.0", "r.heatmap.fill.0"],
+        )
+        aliases = [
+            warning for warning in result["warnings"]
+            if isinstance(warning, dict) and warning.get("type") == "legacy_target_alias"
+        ]
+        self.assertEqual({warning.get("gid") for warning in aliases}, {edit["gid"] for edit in legacy_edits})
+
+        metadata_legacy_edit = _backend_patch(
+            _object(baseline, "r.colorbar.fill.0"),
+            "label",
+            "Legacy metadata fill",
+        )
+        metadata_legacy_edit["gid"] = "r.colorbar.fill.1"
+        metadata_legacy_edit["fingerprint"] = "r-v2:legacy-absolute-scale-index"
+        metadata_legacy_edit["identity"] = {
+            **metadata_legacy_edit["identity"],
+            "relation": {
+                **metadata_legacy_edit["identity"]["relation"],
+                "scaleKey": "legacy:absolute-scale-index:fill:1",
+                "guideKey": "legacy:absolute-guide-index:fill:1",
+            },
+        }
+        metadata_result = _run_r_renderer(script, [metadata_legacy_edit])
+        self.assertFalse(metadata_result["conflict"], metadata_result)
+        self.assertEqual(
+            _object(metadata_result, "r.colorbar.fill.0")["currentProps"]["label"],
+            "Legacy metadata fill",
+        )
+        self.assertEqual(metadata_result["applied"][0]["resolvedGid"], "r.colorbar.fill.0")
+
+        forged_legacy_edit = _backend_patch(
+            _object(baseline, "r.colorbar.fill.0"),
+            "label",
+            "Forged legacy fill",
+        )
+        forged_legacy_edit["gid"] = "r.colorbar.fill.1"
+        forged_legacy_edit["stableKey"] = "r:colorbar:unrelated-object"
+        forged_result = _run_r_renderer(script, [forged_legacy_edit])
+        self.assertTrue(forged_result["conflict"])
+        self.assertEqual(forged_result["applied"], [])
 
     def test_continuous_point_fill_exposes_restorable_colorbar_alignment(self):
         script = """

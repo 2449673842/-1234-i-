@@ -559,6 +559,39 @@ latest_bool <- function(gid, prop, fallback) {
   isTRUE(fallback)
 }
 
+entry_relation_string <- function(entry, field) {
+  value <- entry$identity$relation[[field]] %||% NULL
+  while (is.list(value) && length(value) == 1 && is.null(names(value))) value <- value[[1]]
+  if (is.null(value) || length(value) == 0 || is.na(value[[1]])) return("")
+  as.character(value[[1]])
+}
+
+has_relation_edit <- function(field, relation_value, prop, gid = "") {
+  if (nzchar(gid) && has_edit(gid, prop)) return(TRUE)
+  any(vapply(edit_entries, function(entry) {
+    identical(as.character(entry$prop %||% ""), prop) &&
+      identical(entry_relation_string(entry, field), as.character(relation_value))
+  }, logical(1)))
+}
+
+latest_relation_bool <- function(field, relation_value, prop, fallback, gid = "") {
+  value <- if (nzchar(gid)) latest_value(gid, prop, fallback) else fallback
+  for (entry in edit_entries) {
+    if (
+      identical(as.character(entry$prop %||% ""), prop) &&
+      identical(entry_relation_string(entry, field), as.character(relation_value))
+    ) {
+      value <- entry$value
+      while (is.list(value) && length(value) == 1 && is.null(names(value))) value <- value[[1]]
+    }
+  }
+  if (is.logical(value)) return(isTRUE(value[[1]]))
+  text <- tolower(as.character(value[[1]] %||% fallback))
+  if (text %in% c("true", "t", "1", "yes", "y")) return(TRUE)
+  if (text %in% c("false", "f", "0", "no", "n")) return(FALSE)
+  isTRUE(fallback)
+}
+
 latest_prefixed_value <- function(prefix, prop, fallback) {
   value <- fallback
   for (entry in edit_entries) {
@@ -643,29 +676,15 @@ style_for_gid <- function(gid, defaults) {
 }
 
 axis_style_for_gid <- function(gid, defaults) {
-  tick_prefix <- if (grepl("^axis\\.x\\.", gid)) {
-    sub("^axis\\.x\\.(\\d+)$", "xtick.\\1.", gid)
-  } else if (grepl("^axis\\.y\\.", gid)) {
-    sub("^axis\\.y\\.(\\d+)$", "ytick.\\1.", gid)
-  } else {
-    ""
-  }
   axis_pattern <- if (grepl("^axis\\.x\\.", gid)) "^axis\\.x\\.\\d+$" else if (grepl("^axis\\.y\\.", gid)) "^axis\\.y\\.\\d+$" else paste0("^", gid, "$")
-  tick_pattern <- if (grepl("^axis\\.x\\.", gid)) "^xtick\\.\\d+\\." else if (grepl("^axis\\.y\\.", gid)) "^ytick\\.\\d+\\." else paste0("^", tick_prefix)
 
   weight <- latest_matching_string(axis_pattern, "tick_fontweight", latest_string(gid, "tick_fontweight", latest_string(gid, "fontweight", defaults$fontweight)))
   style <- latest_matching_string(axis_pattern, "tick_fontstyle", latest_string(gid, "tick_fontstyle", latest_string(gid, "fontstyle", defaults$fontstyle)))
-  weight <- latest_matching_string(tick_pattern, "fontweight", weight)
-  style <- latest_matching_string(tick_pattern, "fontstyle", style)
 
   fontsize <- latest_matching_numeric(axis_pattern, "tick_labelsize", latest_numeric(gid, "tick_labelsize", latest_numeric(gid, "fontsize", defaults$fontsize)))
   fontfamily <- latest_matching_string(axis_pattern, "tick_labelfamily", latest_string(gid, "tick_labelfamily", latest_string(gid, "fontfamily", defaults$fontfamily)))
   color <- latest_matching_string(axis_pattern, "tick_labelcolor", latest_string(gid, "tick_labelcolor", latest_string(gid, "color", defaults$color)))
   rotation <- latest_matching_numeric(axis_pattern, "tick_rotation", latest_numeric(gid, "tick_rotation", defaults$rotation))
-  fontsize <- latest_matching_numeric(tick_pattern, "fontsize", fontsize)
-  fontfamily <- latest_matching_string(tick_pattern, "fontfamily", fontfamily)
-  color <- latest_matching_string(tick_pattern, "color", color)
-  rotation <- latest_matching_numeric(tick_pattern, "rotation", rotation)
 
   list(
     fontsize = fontsize,
@@ -746,7 +765,11 @@ clamp_numeric <- function(value, min_value, max_value) {
 }
 
 subplot_aspect_value <- function() {
-  value <- latest_matching_value("^subplot\\.\\d+$", "aspect", "auto")
+  value <- if (has_edit("r.facet.layout.0", "aspect")) {
+    latest_value("r.facet.layout.0", "aspect", "auto")
+  } else {
+    latest_matching_value("^subplot\\.\\d+$", "aspect", "auto")
+  }
   text <- as.character(value %||% "auto")
   if (text %in% c("auto", "", "NA")) return("auto")
   if (text %in% c("equal", "1")) return(1)
@@ -2809,14 +2832,48 @@ continuous_limits <- function(scale_obj) {
   c(NA_real_, NA_real_)
 }
 
+continuous_scale_breaks <- function(scale_obj, limits) {
+  declared <- scale_obj$breaks %||% NULL
+  if (!is.null(declared) && !inherits(declared, "waiver") && !is.function(declared)) {
+    declared <- unname(declared)
+    return(declared[!is.na(declared)])
+  }
+  breaks <- tryCatch(scale_obj$get_breaks(limits), error = function(e) NULL)
+  if (is.null(breaks)) breaks <- tryCatch(scale_obj$get_breaks(), error = function(e) NULL)
+  if (is.null(breaks) || inherits(breaks, "waiver")) return(numeric())
+  breaks <- unname(breaks)
+  breaks[!is.na(breaks)]
+}
+
+continuous_scale_labels <- function(scale_obj, breaks) {
+  if (length(breaks) == 0) return(character())
+  declared <- scale_obj$labels %||% NULL
+  if (!is.null(declared) && !inherits(declared, "waiver") && !is.function(declared)) {
+    declared <- as.character(unname(declared))
+    if (length(declared) == length(breaks)) return(declared)
+  }
+  labels <- tryCatch(scale_obj$get_labels(breaks), error = function(e) NULL)
+  if (is.null(labels) || length(labels) != length(breaks)) labels <- as.character(breaks)
+  as.character(labels)
+}
+
 find_continuous_colour_scales <- function(plot_obj) {
   built_plot <- tryCatch(ggplot2::ggplot_build(plot_obj)$plot, error = function(e) plot_obj)
   scales <- list()
+  kind_ordinals <- list(color = 0L, fill = 0L)
   if (is.null(built_plot$scales) || length(built_plot$scales$scales) == 0) return(scales)
   for (scale_index in seq_along(built_plot$scales$scales)) {
     scale_obj <- built_plot$scales$scales[[scale_index]]
     if (is_continuous_colour_scale(scale_obj)) {
-      scales[[length(scales) + 1]] <- list(index = scale_index - 1, scale = scale_obj, kind = scale_kind(scale_obj))
+      kind <- scale_kind(scale_obj)
+      ordinal <- kind_ordinals[[kind]] %||% 0L
+      kind_ordinals[[kind]] <- ordinal + 1L
+      scales[[length(scales) + 1]] <- list(
+        index = ordinal,
+        sourceIndex = scale_index - 1L,
+        scale = scale_obj,
+        kind = kind
+      )
     }
   }
   scales
@@ -2845,6 +2902,30 @@ r_scale_structure_key <- function(scale_obj, kind, keys = character(), mapping_k
   transform_name <- as.character(scale_obj$trans$name %||% "identity")
   canonical_keys <- paste(sort(unique(as.character(keys))), collapse = "\u001f")
   paste("ggplot-scale", kind, mapping_key, scale_classes, transform_name, canonical_keys, sep = ":")
+}
+
+r_guide_title_value <- function(scale_obj, plot_obj, kind, mapping_key) {
+  guide_obj <- scale_obj$guide %||% NULL
+  guide_title <- if (is.list(guide_obj) || is.environment(guide_obj)) guide_obj$title %||% NULL else NULL
+  title <- guide_title
+  if (is.null(title) || inherits(title, "waiver")) title <- scale_obj$name %||% NULL
+  if (is.null(title) || inherits(title, "waiver")) {
+    aliases <- if (identical(kind, "color")) c("colour", "color") else kind
+    for (alias in aliases) {
+      candidate <- plot_obj$labels[[alias]] %||% NULL
+      if (!is.null(candidate)) {
+        title <- candidate
+        break
+      }
+    }
+  }
+  if (is.character(title) && length(title) > 0) {
+    value <- as.character(title[[1]])
+  } else {
+    value <- r_expression_label(title)
+  }
+  if (is.na(value) || !nzchar(value)) value <- mapping_key
+  gsub("[\r\n\t ]+", " ", value, perl = TRUE)
 }
 
 r_guide_title_signature <- function(scale_obj, plot_obj, kind, mapping_key) {
@@ -2877,6 +2958,50 @@ r_guide_type_signature <- function(scale_obj) {
   paste(classes, collapse = "/")
 }
 
+r_guide_value <- function(guide_obj, name, fallback = NULL) {
+  if (is.null(guide_obj) || inherits(guide_obj, "waiver")) return(fallback)
+  params <- tryCatch(guide_obj$params, error = function(e) NULL)
+  value <- if (!is.null(params)) params[[name]] %||% NULL else NULL
+  if (is.null(value)) value <- tryCatch(guide_obj[[name]], error = function(e) NULL)
+  value %||% fallback
+}
+
+r_guide_visible <- function(scale_obj) {
+  guide_obj <- scale_obj$guide %||% NULL
+  if (is.character(guide_obj)) return(!any(tolower(guide_obj) == "none"))
+  !inherits(guide_obj, "GuideNone")
+}
+
+r_normalized_guide_type <- function(scale_obj) {
+  if (!r_guide_visible(scale_obj)) return("none")
+  guide_obj <- scale_obj$guide %||% NULL
+  if (is.character(guide_obj)) {
+    guide_names <- tolower(as.character(guide_obj))
+    if (any(guide_names %in% c("colorbar", "colourbar"))) return("colorbar")
+    if (any(guide_names %in% c("legend"))) return("legend")
+  }
+  classes <- class(guide_obj)
+  if (any(grepl("Colorbar|Colourbar", classes, ignore.case = TRUE))) return("colorbar")
+  "legend"
+}
+
+r_scale_breaks <- function(scale_obj, limits) {
+  breaks <- tryCatch(scale_obj$get_breaks(limits), error = function(e) NULL)
+  if (is.null(breaks)) breaks <- tryCatch(scale_obj$get_breaks(), error = function(e) NULL)
+  if (is.null(breaks) || inherits(breaks, "waiver")) return(character())
+  values <- as.character(breaks)
+  values[!is.na(values) & nzchar(values)]
+}
+
+r_scale_labels <- function(scale_obj, breaks) {
+  if (length(breaks) == 0) return(character())
+  labels <- tryCatch(scale_obj$get_labels(breaks), error = function(e) NULL)
+  if (is.null(labels) || length(labels) != length(breaks)) labels <- breaks
+  labels <- as.character(labels)
+  labels[is.na(labels) | !nzchar(labels)] <- breaks[is.na(labels) | !nzchar(labels)]
+  labels
+}
+
 discrete_scale_catalog <- function(plot_obj) {
   built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
   built_plot <- if (!is.null(built) && !is.null(built$plot)) built$plot else plot_obj
@@ -2889,7 +3014,8 @@ discrete_scale_catalog <- function(plot_obj) {
     kind <- scale_kind(scale_obj)
     if (is.null(kind) || is_continuous_colour_scale(scale_obj)) next
 
-    keys <- tryCatch(scale_obj$get_limits(), error = function(e) NULL)
+    raw_limits <- tryCatch(scale_obj$get_limits(), error = function(e) NULL)
+    keys <- raw_limits
     if (is.null(keys) || length(keys) == 0) keys <- scale_obj$range$range %||% character()
     keys <- as.character(keys)
     keys <- keys[!is.na(keys) & nzchar(keys)]
@@ -2906,12 +3032,15 @@ discrete_scale_catalog <- function(plot_obj) {
     if (is.null(labels) || length(labels) != length(keys)) labels <- keys
     labels <- as.character(labels)
     labels[is.na(labels) | !nzchar(labels)] <- keys[is.na(labels) | !nzchar(labels)]
+    guide_breaks <- r_scale_breaks(scale_obj, raw_limits)
+    guide_labels <- r_scale_labels(scale_obj, guide_breaks)
 
     ordinal <- kind_ordinals[[kind]] %||% 0L
     kind_ordinals[[kind]] <- ordinal + 1L
     mapping_key <- r_aesthetic_mapping_signature(built_plot, kind)
     scale_key <- r_scale_structure_key(scale_obj, kind, keys, mapping_key)
     guide_title_key <- r_guide_title_signature(scale_obj, built_plot, kind, mapping_key)
+    guide_title <- r_guide_title_value(scale_obj, built_plot, kind, mapping_key)
     guide_type_key <- r_guide_type_signature(scale_obj)
     guide_key <- paste(
       "ggplot-guide",
@@ -2929,12 +3058,20 @@ discrete_scale_catalog <- function(plot_obj) {
       scaleKey = scale_key,
       guideKey = guide_key,
       guideTitleKey = guide_title_key,
+      guideTitle = guide_title,
       guideTypeKey = guide_type_key,
       mappingKey = mapping_key,
       scale = scale_obj,
       keys = keys,
       labels = labels,
-      colors = colors
+      colors = colors,
+      limits = as.character(raw_limits %||% keys),
+      guideBreaks = guide_breaks,
+      guideLabels = guide_labels,
+      guideVisible = r_guide_visible(scale_obj),
+      guideType = r_normalized_guide_type(scale_obj),
+      guideReverse = isTRUE(r_guide_value(scale_obj$guide, "reverse", FALSE)),
+      guideOrder = suppressWarnings(as.integer(r_guide_value(scale_obj$guide, "order", 0L)))
     )
   }
 
@@ -3007,14 +3144,20 @@ detect_discrete_scale_semantics <- function(plot_obj) {
 
   for (entry in catalog$entries) {
     kind <- entry$kind
+    entry_group_ids <- character()
+    entry_layer_ids <- character()
+    entry_subplot_ids <- character()
     for (i in seq_along(entry$keys)) {
       palette_id <- paste0(entry$scaleId, ".", i - 1)
       group_id <- paste0("r.group.", kind, ".", entry$ordinal, ".", i - 1)
+      entry_group_ids <- c(entry_group_ids, group_id)
       color <- as.character(entry$colors[[i]])
       label <- as.character(entry$labels[[i]])
       group_key <- as.character(entry$keys[[i]])
       duplicate_group_key <- sum(entry$keys == group_key, na.rm = TRUE) > 1
       usage <- discrete_group_usage(entry, i, catalog$builtData, plot_obj)
+      entry_layer_ids <- c(entry_layer_ids, unlist(usage$layerIds, use.names = FALSE))
+      entry_subplot_ids <- c(entry_subplot_ids, unlist(usage$subplotIds, use.names = FALSE))
       palettes[[length(palettes) + 1]] <- list(
         id = palette_id,
         label = label,
@@ -3081,18 +3224,151 @@ detect_discrete_scale_semantics <- function(plot_obj) {
         ))
       )
     }
+    scale_obj <- entry$scale
+    objects[[length(objects) + 1]] <- list(
+      id = entry$scaleId,
+      kind = "container",
+      label = paste0("ggplot discrete ", kind, " scale"),
+      editable = list(),
+      currentProps = list(
+        aesthetic = kind,
+        keys = as.list(entry$keys),
+        limits = as.list(entry$limits),
+        breaks = as.list(entry$guideBreaks),
+        labels = as.list(entry$guideLabels),
+        drop = isTRUE(scale_obj$drop),
+        naTranslate = isTRUE(scale_obj$na.translate),
+        naValue = as.character(scale_obj$na.value %||% NA_character_),
+        guideType = entry$guideType,
+        guideVisible = isTRUE(entry$guideVisible),
+        guideReverse = isTRUE(entry$guideReverse),
+        guideOrder = if (is.na(entry$guideOrder)) 0L else entry$guideOrder,
+        structureReadonly = TRUE
+      ),
+      role = "ggplot_scale_discrete",
+      layerIds = as.list(unique(entry_layer_ids)),
+      groupIds = as.list(unique(entry_group_ids)),
+      subplotIds = as.list(unique(entry_subplot_ids)),
+      scaleId = entry$scaleId,
+      guideId = "legend.0",
+      legendId = "legend.0",
+      scaleKey = entry$scaleKey,
+      guideKey = entry$guideKey,
+      aesthetic = kind,
+      source = list(artistClass = "ggplot_scale_discrete", axesIndex = 0, zorder = entry$ordinal)
+    )
   }
   list(palettes = palettes, bindings = bindings, groups = groups, objects = objects)
+}
+
+discrete_manual_scale_args <- function(entry, values, labels_override = NULL) {
+  scale_obj <- entry$scale
+  names(values) <- entry$keys
+  args <- list(values = values)
+  if (!is.null(scale_obj$limits) && !inherits(scale_obj$limits, "waiver")) args$limits <- scale_obj$limits
+  if (!is.null(scale_obj$breaks) && !inherits(scale_obj$breaks, "waiver")) args$breaks <- scale_obj$breaks
+  if (!is.null(labels_override)) {
+    args$labels <- labels_override
+  } else if (!is.null(scale_obj$labels) && !inherits(scale_obj$labels, "waiver")) {
+    args$labels <- scale_obj$labels
+  }
+  if (!is.null(scale_obj$name) && length(scale_obj$name) > 0 && !inherits(scale_obj$name, "waiver")) {
+    args$name <- scale_obj$name
+  }
+  if (!is.null(scale_obj$na.value)) args$na.value <- scale_obj$na.value
+  if (!is.null(scale_obj$drop)) args$drop <- scale_obj$drop
+  if (!is.null(scale_obj$na.translate)) args$na.translate <- scale_obj$na.translate
+  if (!is.null(scale_obj$guide) && !inherits(scale_obj$guide, "waiver")) args$guide <- scale_obj$guide
+  args
+}
+
+discrete_guide_index_map <- function(catalog) {
+  guide_keys <- unique(vapply(
+    catalog$entries %||% list(),
+    function(entry) as.character(entry$guideKey %||% ""),
+    character(1)
+  ))
+  guide_keys <- guide_keys[nzchar(guide_keys)]
+  if (length(guide_keys) == 0) return(character())
+  order_keys <- vapply(guide_keys, function(guide_key) {
+    entries <- Filter(
+      function(entry) identical(as.character(entry$guideKey %||% ""), guide_key),
+      catalog$entries %||% list()
+    )
+    paste(
+      paste(sort(unique(vapply(entries, function(entry) entry$kind, character(1)))), collapse = "+"),
+      paste(sort(unique(vapply(entries, function(entry) entry$scaleKey, character(1)))), collapse = "|"),
+      paste(sort(unique(vapply(entries, function(entry) entry$mappingKey, character(1)))), collapse = "|"),
+      paste(sort(unique(vapply(entries, function(entry) entry$guideTypeKey, character(1)))), collapse = "|"),
+      sep = ":"
+    )
+  }, character(1))
+  guide_keys <- guide_keys[order(order_keys, guide_keys)]
+  stats::setNames(paste0("r.guide.legend.", seq_along(guide_keys) - 1L), guide_keys)
+}
+
+discrete_guide_title_catalog <- function(plot_obj) {
+  catalog <- discrete_scale_catalog(plot_obj)
+  guide_ids <- discrete_guide_index_map(catalog)
+  titles <- list()
+  for (guide_key in names(guide_ids)) {
+    entries <- Filter(function(entry) identical(as.character(entry$guideKey), guide_key), catalog$entries)
+    if (length(entries) == 0) next
+    guide_gid <- unname(guide_ids[[guide_key]])
+    title_index <- suppressWarnings(as.integer(sub("^r\\.guide\\.legend\\.", "", guide_gid)))
+    if (is.na(title_index)) next
+    title <- as.character(entries[[1]]$guideTitle %||% "")
+    if (!nzchar(title)) next
+    titles[[length(titles) + 1L]] <- list(
+      id = paste0("legend_title.", title_index),
+      guideId = guide_gid,
+      guideKey = guide_key,
+      title = title,
+      entries = entries
+    )
+  }
+  titles
+}
+
+apply_discrete_guide_title_edits <- function(plot_obj) {
+  titles <- discrete_guide_title_catalog(plot_obj)
+  if (length(titles) == 0) return(plot_obj)
+
+  for (item in titles) {
+    if (!has_edit(item$id, "text")) next
+    next_title <- latest_string(item$id, "text", item$title)
+    labs_args <- list()
+    for (entry in item$entries) {
+      scale_index <- suppressWarnings(as.integer(entry$scaleIndex))
+      if (
+        !is.na(scale_index) &&
+        scale_index >= 1L &&
+        scale_index <= length(plot_obj$scales$scales) &&
+        identical(scale_kind(plot_obj$scales$scales[[scale_index]]), entry$kind)
+      ) {
+        plot_obj$scales$scales[[scale_index]]$name <- next_title
+      } else {
+        labs_args[[entry$kind]] <- next_title
+        if (identical(entry$kind, "color")) labs_args$colour <- next_title
+      }
+    }
+    if (length(labs_args) > 0) {
+      plot_obj <- plot_obj + do.call(ggplot2::labs, labs_args)
+    }
+  }
+  plot_obj
 }
 
 apply_discrete_scale_edits <- function(plot_obj) {
   catalog <- discrete_scale_catalog(plot_obj)
   if (length(catalog$entries) == 0) return(plot_obj)
+  guide_ids <- discrete_guide_index_map(catalog)
 
   for (entry in catalog$entries) {
     kind <- entry$kind
     values <- entry$colors
     changed <- FALSE
+    guide_gid <- unname(guide_ids[[entry$guideKey]] %||% "")
     for (i in seq_along(values)) {
       group_id <- paste0("r.group.", kind, ".", entry$ordinal, ".", i - 1)
       prop <- if (kind == "fill") "facecolor" else "color"
@@ -3101,17 +3377,17 @@ apply_discrete_scale_edits <- function(plot_obj) {
         changed <- TRUE
       }
     }
+    guide_visibility_changed <- has_relation_edit("guideKey", entry$guideKey, "visible", guide_gid)
+    if (guide_visibility_changed) changed <- TRUE
     if (changed) {
-      names(values) <- entry$keys
-      scale_args <- list(values = values, breaks = entry$keys, labels = entry$labels, limits = entry$keys)
-      scale_name <- entry$scale$name
-      if (!is.null(scale_name) && length(scale_name) > 0 && !inherits(scale_name, "waiver")) {
-        scale_args$name <- scale_name
+      scale_args <- discrete_manual_scale_args(entry, values)
+      if (guide_visibility_changed) {
+        scale_args$guide <- if (latest_relation_bool("guideKey", entry$guideKey, "visible", entry$guideVisible, guide_gid)) {
+          if (!is.null(entry$scale$guide) && !inherits(entry$scale$guide, "waiver")) entry$scale$guide else "legend"
+        } else {
+          "none"
+        }
       }
-      if (!is.null(entry$scale$na.value)) scale_args$na.value <- entry$scale$na.value
-      if (!is.null(entry$scale$drop)) scale_args$drop <- entry$scale$drop
-      if (!is.null(entry$scale$na.translate)) scale_args$na.translate <- entry$scale$na.translate
-      if (!is.null(entry$scale$guide) && !inherits(entry$scale$guide, "waiver")) scale_args$guide <- entry$scale$guide
       if (kind == "fill") {
         plot_obj <- suppressMessages(plot_obj + do.call(ggplot2::scale_fill_manual, scale_args))
       } else {
@@ -3131,6 +3407,8 @@ apply_continuous_scale_edits <- function(plot_obj) {
     scale_obj <- item$scale
     kind <- item$kind
     scale_index <- item$index
+    source_scale_index <- item$sourceIndex
+    scale_gid <- paste0("r.scale.", kind, ".continuous.", scale_index)
     heatmap_gid <- paste0("r.heatmap.", kind, ".", scale_index)
     colorbar_gid <- paste0("r.colorbar.", kind, ".", scale_index)
     limits <- continuous_limits(scale_obj)
@@ -3148,7 +3426,7 @@ apply_continuous_scale_edits <- function(plot_obj) {
       layer_index <- suppressWarnings(as.integer(sub("^r\\.layer\\.", "", layer_gid))) + 1L
       layer_index >= 1L && layer_index <= length(plot_obj$layers) && is_contour_adapter_layer(plot_obj$layers[[layer_index]])
     }, layer_gids)
-    scale_edit_gids <- c(heatmap_gid, contour_gids)
+    scale_edit_gids <- c(scale_gid, heatmap_gid, contour_gids)
 
     scale_changed <- has_edit_for_any_gid(scale_edit_gids, "cmap") ||
       has_edit_for_any_gid(scale_edit_gids, "vmin") ||
@@ -3162,15 +3440,30 @@ apply_continuous_scale_edits <- function(plot_obj) {
       vmin <- latest_numeric_for_gids(scale_edit_gids, "vmin", current_vmin)
       vmax <- latest_numeric_for_gids(scale_edit_gids, "vmax", current_vmax)
       label <- latest_string(colorbar_gid, "label", current_label)
-      scale_limits <- NULL
-      if (is.finite(vmin) && is.finite(vmax)) {
-        scale_limits <- c(vmin, vmax)
+      limits_changed <- has_edit_for_any_gid(scale_edit_gids, "vmin") || has_edit_for_any_gid(scale_edit_gids, "vmax")
+      scale_limits <- if (limits_changed && is.finite(vmin) && is.finite(vmax)) {
+        c(vmin, vmax)
+      } else if (!is.null(scale_obj$limits) && !is.function(scale_obj$limits)) {
+        scale_obj$limits
+      } else {
+        NULL
       }
 
+      scale_args <- list(colours = colors, name = label)
+      if (!is.null(scale_limits)) scale_args$limits <- scale_limits
+      if (!is.null(scale_obj$breaks) && !inherits(scale_obj$breaks, "waiver")) scale_args$breaks <- scale_obj$breaks
+      if (!is.null(scale_obj$labels) && !inherits(scale_obj$labels, "waiver")) scale_args$labels <- scale_obj$labels
+      if (!is.null(scale_obj$na.value)) scale_args$na.value <- scale_obj$na.value
+      if (!is.null(scale_obj$guide) && !inherits(scale_obj$guide, "waiver")) scale_args$guide <- scale_obj$guide
+      transform_name <- as.character(scale_obj$trans$name %||% "")
+      if (nzchar(transform_name)) scale_args$trans <- transform_name
+      if (!is.null(scale_obj$oob) && is.function(scale_obj$oob)) scale_args$oob <- scale_obj$oob
+      if (!is.null(scale_obj$rescaler) && is.function(scale_obj$rescaler)) scale_args$rescaler <- scale_obj$rescaler
+
       if (kind == "fill") {
-        plot_obj <- suppressMessages(plot_obj + ggplot2::scale_fill_gradientn(colors = colors, limits = scale_limits, name = label))
+        plot_obj <- suppressMessages(plot_obj + do.call(ggplot2::scale_fill_gradientn, scale_args))
       } else {
-        plot_obj <- suppressMessages(plot_obj + ggplot2::scale_color_gradientn(colors = colors, limits = scale_limits, name = label))
+        plot_obj <- suppressMessages(plot_obj + do.call(ggplot2::scale_color_gradientn, scale_args))
       }
     }
 
@@ -3232,12 +3525,24 @@ apply_continuous_scale_edits <- function(plot_obj) {
     }
 
     if (has_edit(colorbar_gid, "visible")) {
-      is_visible <- latest_bool(colorbar_gid, "visible", TRUE)
+      is_visible <- latest_bool(colorbar_gid, "visible", r_guide_visible(scale_obj))
       if (!is_visible) {
         if (kind == "fill") {
           plot_obj <- plot_obj + ggplot2::guides(fill = "none")
         } else {
           plot_obj <- plot_obj + ggplot2::guides(color = "none", colour = "none")
+        }
+      } else if (!has_bounds_edit) {
+        current_guide <- scale_obj$guide %||% NULL
+        guide <- if (r_guide_visible(scale_obj) && !is.null(current_guide) && !inherits(current_guide, "waiver")) {
+          current_guide
+        } else {
+          ggplot2::guide_colourbar()
+        }
+        if (kind == "fill") {
+          plot_obj <- plot_obj + ggplot2::guides(fill = guide)
+        } else {
+          plot_obj <- plot_obj + ggplot2::guides(color = guide, colour = guide)
         }
       }
     }
@@ -3254,10 +3559,11 @@ apply_legend_text_edits <- function(plot_obj) {
   if (length(semantic_items) == 0) return(plot_obj)
 
   for (entry in catalog$entries) {
+    if (!isTRUE(entry$guideVisible)) next
     changed <- FALSE
-    next_labels <- entry$labels
-    for (i in seq_along(next_labels)) {
-      merge_key <- paste(entry$guideKey, entry$keys[[i]], entry$labels[[i]], sep = ":")
+    next_labels <- entry$guideLabels
+    for (i in seq_along(entry$guideBreaks)) {
+      merge_key <- paste(entry$guideKey, entry$guideBreaks[[i]], entry$guideLabels[[i]], sep = ":")
       item_index <- which(vapply(
         semantic_items,
         function(item) identical(item$mergeKey, merge_key),
@@ -3271,26 +3577,23 @@ apply_legend_text_edits <- function(plot_obj) {
       }
     }
     if (changed) {
-      values <- entry$colors
-      names(values) <- entry$keys
-      scale_args <- list(
-        values = values,
-        breaks = entry$keys,
-        labels = next_labels,
-        limits = entry$keys
-      )
-      scale_name <- entry$scale$name
-      if (!is.null(scale_name) && length(scale_name) > 0 && !inherits(scale_name, "waiver")) {
-        scale_args$name <- scale_name
-      }
-      if (!is.null(entry$scale$na.value)) scale_args$na.value <- entry$scale$na.value
-      if (!is.null(entry$scale$drop)) scale_args$drop <- entry$scale$drop
-      if (!is.null(entry$scale$na.translate)) scale_args$na.translate <- entry$scale$na.translate
-      if (!is.null(entry$scale$guide) && !inherits(entry$scale$guide, "waiver")) scale_args$guide <- entry$scale$guide
-      if (entry$kind == "fill") {
-        plot_obj <- suppressMessages(plot_obj + do.call(ggplot2::scale_fill_manual, scale_args))
+      labels_override <- stats::setNames(next_labels, entry$guideBreaks)
+      scale_index <- suppressWarnings(as.integer(entry$scaleIndex))
+      if (
+        !is.na(scale_index) &&
+        scale_index >= 1L &&
+        scale_index <= length(plot_obj$scales$scales) &&
+        identical(scale_kind(plot_obj$scales$scales[[scale_index]]), entry$kind)
+      ) {
+        plot_obj$scales$scales[[scale_index]]$labels <- labels_override
       } else {
-        plot_obj <- suppressMessages(plot_obj + do.call(ggplot2::scale_colour_manual, scale_args))
+        values <- entry$colors
+        scale_args <- discrete_manual_scale_args(entry, values, labels_override)
+        if (entry$kind == "fill") {
+          plot_obj <- suppressMessages(plot_obj + do.call(ggplot2::scale_fill_manual, scale_args))
+        } else {
+          plot_obj <- suppressMessages(plot_obj + do.call(ggplot2::scale_colour_manual, scale_args))
+        }
       }
     }
   }
@@ -3303,11 +3606,7 @@ apply_ggplot_edits <- function(plot_obj) {
   title_text <- latest_string("title.0", "text", plot_obj$labels$title %||% "")
   x_text <- axis_label_text_for_gid("axis.x.0", "xlabel.0", plot_obj$labels$x %||% "")
   y_text <- axis_label_text_for_gid("axis.y.0", "ylabel.0", plot_obj$labels$y %||% "")
-  legend_title <- latest_string(
-    "legend_title.0",
-    "text",
-    latest_string("legend.0", "title", legend_title_from_scale(plot_obj))
-  )
+  legend_title <- latest_string("legend.0", "title", legend_title_from_scale(plot_obj))
 
   title_style <- style_for_gid("title.0", default_title)
   x_label_style <- axis_label_style_for_gid("axis.x.0", "xlabel.0", default_label)
@@ -3391,8 +3690,8 @@ apply_ggplot_edits <- function(plot_obj) {
   plot_obj <- plot_obj +
     ggplot2::labs(title = title_text, x = x_text, y = y_text)
 
-  if (nzchar(legend_title)) {
-    if (has_edit("legend_title.0", "text") || has_edit("legend.0", "title")) {
+  if (nzchar(legend_title) && has_edit("legend.0", "title")) {
+    if (has_edit("legend.0", "title")) {
       for (scale_index in seq_along(plot_obj$scales$scales)) {
         kind <- scale_kind(plot_obj$scales$scales[[scale_index]])
         if (!is.null(kind) && kind %in% c("color", "fill")) {
@@ -3402,6 +3701,8 @@ apply_ggplot_edits <- function(plot_obj) {
     }
     plot_obj <- plot_obj + ggplot2::labs(color = legend_title, colour = legend_title, fill = legend_title)
   }
+
+  plot_obj <- apply_discrete_guide_title_edits(plot_obj)
 
   plot_obj <- plot_obj +
     ggplot2::theme(
@@ -3618,8 +3919,8 @@ apply_ggplot_edits <- function(plot_obj) {
     }
   }
 
-  plot_obj <- apply_discrete_scale_edits(plot_obj)
   plot_obj <- apply_legend_text_edits(plot_obj)
+  plot_obj <- apply_discrete_scale_edits(plot_obj)
   plot_obj <- apply_continuous_scale_edits(plot_obj)
   plot_obj <- apply_text_layer_edits(plot_obj)
   layer_build <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
@@ -3651,30 +3952,115 @@ manifest_text_object <- function(id, label, text, style) {
 
 legend_item_semantics <- function(plot_obj) {
   catalog <- discrete_scale_catalog(plot_obj)
+  guide_ids <- discrete_guide_index_map(catalog)
   items <- list()
   for (entry in catalog$entries) {
-    for (i in seq_along(entry$keys)) {
-      key <- as.character(entry$keys[[i]])
-      label <- as.character(entry$labels[[i]])
+    if (!isTRUE(entry$guideVisible)) next
+    for (i in seq_along(entry$guideBreaks)) {
+      key <- as.character(entry$guideBreaks[[i]])
+      label <- as.character(entry$guideLabels[[i]])
+      key_index <- match(key, entry$keys)
+      usage <- if (!is.na(key_index)) {
+        discrete_group_usage(entry, key_index, catalog$builtData, plot_obj)
+      } else {
+        list(layerIds = list(), subplotIds = list())
+      }
+      group_id <- if (!is.na(key_index)) paste0("r.group.", entry$kind, ".", entry$ordinal, ".", key_index - 1L) else character()
+      key_color <- if (!is.na(key_index)) as.character(entry$colors[[key_index]]) else NA_character_
       merge_key <- paste(entry$guideKey, key, label, sep = ":")
       existing_index <- which(vapply(items, function(item) identical(item$mergeKey, merge_key), logical(1)))
       if (length(existing_index) > 0) {
         item_index <- existing_index[[1]]
         items[[item_index]]$aesthetics <- sort(unique(c(items[[item_index]]$aesthetics, entry$kind)))
+        items[[item_index]]$scaleIds <- sort(unique(c(items[[item_index]]$scaleIds, entry$scaleId)))
         items[[item_index]]$scaleKeys <- sort(unique(c(items[[item_index]]$scaleKeys, entry$scaleKey)))
+        items[[item_index]]$groupIds <- sort(unique(c(items[[item_index]]$groupIds, group_id)))
+        items[[item_index]]$layerIds <- sort(unique(c(items[[item_index]]$layerIds, unlist(usage$layerIds, use.names = FALSE))))
+        items[[item_index]]$subplotIds <- sort(unique(c(items[[item_index]]$subplotIds, unlist(usage$subplotIds, use.names = FALSE))))
+        items[[item_index]]$colors <- c(items[[item_index]]$colors, key_color)
         next
       }
       items[[length(items) + 1]] <- list(
         mergeKey = merge_key,
         guideKey = entry$guideKey,
+        guideId = unname(guide_ids[[entry$guideKey]] %||% "legend.0"),
         aesthetics = entry$kind,
+        scaleIds = entry$scaleId,
         scaleKeys = entry$scaleKey,
+        groupIds = group_id,
+        layerIds = as.character(unlist(usage$layerIds, use.names = FALSE)),
+        subplotIds = as.character(unlist(usage$subplotIds, use.names = FALSE)),
+        colors = key_color,
+        dataKey = if (length(entry$kind) == 1) paste("legend", entry$kind, key, sep = ":") else paste("legend", entry$guideKey, key, sep = ":"),
         key = key,
         label = label
       )
     }
   }
+  for (i in seq_along(items)) {
+    items[[i]]$dataKey <- if (length(items[[i]]$aesthetics) == 1) {
+      paste("legend", items[[i]]$aesthetics[[1]], items[[i]]$key, sep = ":")
+    } else {
+      paste("legend", items[[i]]$guideKey, items[[i]]$key, sep = ":")
+    }
+  }
   items
+}
+
+manifest_discrete_guide_objects <- function(plot_obj) {
+  catalog <- discrete_scale_catalog(plot_obj)
+  guide_ids <- discrete_guide_index_map(catalog)
+  if (length(guide_ids) == 0) return(list())
+  items <- legend_item_semantics(plot_obj)
+  objects <- list()
+  for (guide_key in names(guide_ids)) {
+    entries <- Filter(function(entry) identical(as.character(entry$guideKey), guide_key), catalog$entries)
+    if (length(entries) == 0) next
+    guide_gid <- unname(guide_ids[[guide_key]])
+    title_index <- suppressWarnings(as.integer(sub("^r\\.guide\\.legend\\.", "", guide_gid)))
+    title_gid <- if (!is.na(title_index)) paste0("legend_title.", title_index) else NULL
+    item_indices <- which(vapply(items, function(item) identical(as.character(item$guideKey), guide_key), logical(1)))
+    guide_items <- items[item_indices]
+    layer_ids <- unique(unlist(lapply(guide_items, function(item) item$layerIds), use.names = FALSE))
+    subplot_ids <- unique(unlist(lapply(guide_items, function(item) item$subplotIds), use.names = FALSE))
+    legend_text_ids <- paste0("legend_text.0.", item_indices - 1L)
+    legend_marker_ids <- paste0("legend_key.0.", item_indices - 1L)
+    objects[[length(objects) + 1]] <- list(
+      id = guide_gid,
+      kind = "guide",
+      label = "ggplot discrete guide",
+      editable = list("visible"),
+      currentProps = list(
+        visible = latest_relation_bool(
+          "guideKey",
+          guide_key,
+          "visible",
+          any(vapply(entries, function(entry) isTRUE(entry$guideVisible), logical(1))),
+          guide_gid
+        ),
+        guideType = "legend",
+        reverse = any(vapply(entries, function(entry) isTRUE(entry$guideReverse), logical(1))),
+        order = max(vapply(entries, function(entry) as.integer(entry$guideOrder %||% 0L), integer(1))),
+        structureReadonly = TRUE
+      ),
+      role = "ggplot_semantic_guide",
+      parentId = "legend.0",
+      legendId = "legend.0",
+      guideType = "legend",
+      guideKey = guide_key,
+      layerIds = as.list(layer_ids),
+      subplotIds = as.list(subplot_ids),
+      scaleIds = as.list(unique(vapply(entries, function(entry) entry$scaleId, character(1)))),
+      groupIds = as.list(unique(unlist(lapply(entries, function(entry) {
+        paste0("r.group.", entry$kind, ".", entry$ordinal, ".", seq_along(entry$keys) - 1L)
+      }), use.names = FALSE))),
+      legendTitleId = title_gid,
+      legendTextIds = as.list(legend_text_ids),
+      legendMarkerIds = as.list(legend_marker_ids),
+      source = list(artistClass = "ggplot_guide_discrete", axesIndex = 0)
+    )
+  }
+  objects
 }
 
 legend_item_labels <- function(plot_obj) {
@@ -3685,12 +4071,33 @@ legend_item_labels <- function(plot_obj) {
 
 manifest_legend_text_objects <- function(plot_obj, legend_title, legend_style, legend_guide_key = "ggplot-guide:discrete") {
   objects <- list()
-  title_style <- style_for_gid("legend_title.0", legend_style)
-  if (nzchar(legend_title)) {
-    objects[[length(objects) + 1]] <- manifest_text_object("legend_title.0", "legend_title", legend_title, title_style)
-    objects[[length(objects)]]$role <- "legend_title"
-    objects[[length(objects)]]$guideKey <- legend_guide_key
-    objects[[length(objects)]]$source <- list(artistClass = "ggplot_legend_title", axesIndex = 0)
+  guide_titles <- discrete_guide_title_catalog(plot_obj)
+  if (length(guide_titles) > 0) {
+    for (item in guide_titles) {
+      title_style <- style_for_gid(item$id, legend_style)
+      title <- latest_string(item$id, "text", item$title)
+      obj <- manifest_text_object(item$id, "legend_title", title, title_style)
+      obj$currentProps$originalText <- item$title
+      obj$role <- "legend_title"
+      obj$parentId <- "legend.0"
+      obj$guideId <- "legend.0"
+      obj$guideKey <- item$guideKey
+      obj$source <- list(
+        artistClass = "ggplot_legend_title",
+        axesIndex = 0,
+        zorder = suppressWarnings(as.integer(sub("^legend_title\\.", "", item$id)))
+      )
+      objects[[length(objects) + 1L]] <- obj
+    }
+  } else if (nzchar(legend_title)) {
+    title_style <- style_for_gid("legend_title.0", legend_style)
+    obj <- manifest_text_object("legend_title.0", "legend_title", legend_title, title_style)
+    obj$role <- "legend_title"
+    obj$parentId <- "legend.0"
+    obj$guideId <- "legend.0"
+    obj$guideKey <- legend_guide_key
+    obj$source <- list(artistClass = "ggplot_legend_title", axesIndex = 0)
+    objects[[length(objects) + 1L]] <- obj
   }
 
   items <- legend_item_semantics(plot_obj)
@@ -3712,18 +4119,52 @@ manifest_legend_text_objects <- function(plot_obj, legend_title, legend_style, l
     obj$currentProps$originalText <- label
     obj$editable <- list("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color")
     obj$role <- "legend_text"
-    obj$dataKey <- if (length(items[[i]]$aesthetics) == 1) {
-      paste("legend", items[[i]]$aesthetics[[1]], items[[i]]$key, sep = ":")
-    } else {
-      paste("legend", items[[i]]$guideKey, items[[i]]$key, sep = ":")
-    }
+    obj$parentId <- "legend.0"
+    obj$guideId <- "legend.0"
+    obj$semanticGuideId <- items[[i]]$guideId
+    obj$dataKey <- items[[i]]$dataKey
     obj$aesthetic <- paste(items[[i]]$aesthetics, collapse = "+")
     obj$scaleKey <- paste(items[[i]]$scaleKeys, collapse = "|")
     obj$guideKey <- items[[i]]$guideKey
+    obj$groupIds <- as.list(items[[i]]$groupIds)
+    obj$layerIds <- as.list(items[[i]]$layerIds)
+    obj$subplotIds <- as.list(items[[i]]$subplotIds)
     obj$source <- list(artistClass = "ggplot_legend_text", axesIndex = 0, zorder = i)
     objects[[length(objects) + 1]] <- obj
   }
   objects
+}
+
+manifest_legend_key_objects <- function(plot_obj) {
+  items <- legend_item_semantics(plot_obj)
+  if (length(items) == 0) return(list())
+  lapply(seq_along(items), function(i) {
+    item <- items[[i]]
+    list(
+      id = paste0("legend_key.0.", i - 1L),
+      kind = "component",
+      label = paste0("Legend key: ", item$label),
+      editable = list(),
+      currentProps = list(
+        key = item$key,
+        label = item$label,
+        colors = as.list(item$colors),
+        structureReadonly = TRUE
+      ),
+      role = "legend_key_glyph",
+      parentId = "legend.0",
+      guideId = item$guideId,
+      legendId = "legend.0",
+      guideKey = item$guideKey,
+      scaleIds = as.list(item$scaleIds),
+      scaleKey = paste(item$scaleKeys, collapse = "|"),
+      groupIds = as.list(item$groupIds),
+      layerIds = as.list(item$layerIds),
+      subplotIds = as.list(item$subplotIds),
+      dataKey = item$dataKey,
+      source = list(artistClass = "ggplot_legend_key_glyph", axesIndex = 0, zorder = i)
+    )
+  })
 }
 
 manifest_axis_object <- function(id, label, style, plot_obj = NULL) {
@@ -4009,6 +4450,90 @@ facet_panel_key_map <- function(plot_obj) {
   keys
 }
 
+r_unit_to_pt <- function(value, fallback = NA_real_) {
+  if (is.null(value) || length(value) == 0) return(fallback)
+  converted <- tryCatch(
+    suppressWarnings(as.numeric(grid::convertUnit(value, "pt", valueOnly = TRUE))[[1]]),
+    error = function(e) NA_real_
+  )
+  if (is.finite(converted)) converted else fallback
+}
+
+r_facet_layout_semantics <- function(plot_obj, layout) {
+  params <- plot_obj$facet$params %||% list()
+  free <- params$free %||% list()
+  free_x <- isTRUE(free$x)
+  free_y <- isTRUE(free$y)
+  facet_scales <- if (free_x && free_y) {
+    "free"
+  } else if (free_x) {
+    "free_x"
+  } else if (free_y) {
+    "free_y"
+  } else {
+    "fixed"
+  }
+
+  strip_position <- as.character(params$strip.position %||% "")
+  if (!nzchar(strip_position)) {
+    switch_value <- as.character(params$switch %||% "")
+    strip_position <- if (switch_value %in% c("x", "both")) "bottom" else "top"
+  }
+
+  combined_theme <- tryCatch(ggplot2::theme_get() + plot_obj$theme, error = function(e) plot_obj$theme)
+  theme_value <- function(name) {
+    tryCatch(ggplot2::calc_element(name, combined_theme), error = function(e) NULL)
+  }
+  spacing <- theme_value("panel.spacing")
+  spacing_x <- theme_value("panel.spacing.x") %||% spacing
+  spacing_y <- theme_value("panel.spacing.y") %||% spacing
+
+  structural_cols <- c("PANEL", "ROW", "COL", "SCALE_X", "SCALE_Y", "COORD")
+  facet_vars <- setdiff(names(layout), structural_cols)
+  layout_key <- paste(c("facet-layout", facet_vars), collapse = ":")
+
+  list(
+    freeX = free_x,
+    freeY = free_y,
+    facetScales = facet_scales,
+    stripPosition = strip_position,
+    panelSpacingXPt = r_unit_to_pt(spacing_x),
+    panelSpacingYPt = r_unit_to_pt(spacing_y),
+    facetKey = layout_key
+  )
+}
+
+manifest_facet_layout_object <- function(plot_obj) {
+  if (!is_faceted_plot(plot_obj)) return(NULL)
+  built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
+  layout <- built$layout$layout %||% NULL
+  if (is.null(layout) || nrow(layout) == 0) return(NULL)
+  semantics <- r_facet_layout_semantics(plot_obj, layout)
+  subplot_ids <- paste0("subplot.", as.integer(layout$PANEL) - 1L)
+  list(
+    id = "r.facet.layout.0",
+    kind = "container",
+    label = "ggplot facet layout",
+    editable = list("aspect"),
+    currentProps = list(
+      aspect = subplot_aspect_value(),
+      freeX = semantics$freeX,
+      freeY = semantics$freeY,
+      facetScales = semantics$facetScales,
+      stripPosition = semantics$stripPosition,
+      panelSpacingXPt = semantics$panelSpacingXPt,
+      panelSpacingYPt = semantics$panelSpacingYPt,
+      physicalPanelBounds = "readonly",
+      unsupportedProps = list("left", "bottom", "width", "height"),
+      unsupportedReason = "ggplot facet geometry is owned by the shared gtable layout and has no independent Matplotlib-style panel bounds."
+    ),
+    role = "ggplot_facet_layout",
+    facetKey = semantics$facetKey,
+    subplotIds = as.list(subplot_ids),
+    source = list(artistClass = "ggplot_facet_layout", axesIndex = 0)
+  )
+}
+
 manifest_single_subplot_object <- function(plot_obj, layout_bounds = list()) {
   if (is_faceted_plot(plot_obj)) return(NULL)
   bounds <- layout_bounds$panel %||% list(left = 0.10, bottom = 0.12, width = 0.72, height = 0.76)
@@ -4044,6 +4569,7 @@ manifest_facet_objects <- function(plot_obj) {
   layout <- built$layout$layout
   if (nrow(layout) == 0) return(list())
   aspect <- subplot_aspect_value()
+  semantics <- r_facet_layout_semantics(plot_obj, layout)
 
   lapply(seq_len(nrow(layout)), function(i) {
     row <- layout[i, , drop = FALSE]
@@ -4056,7 +4582,7 @@ manifest_facet_objects <- function(plot_obj) {
       id = paste0("subplot.", panel - 1),
       kind = "subplot",
       label = if (nzchar(label)) paste0("Facet ", panel, ": ", label) else paste0("Facet ", panel),
-      editable = list("aspect"),
+      editable = list(),
       currentProps = list(
         subplotIndex = panel - 1,
         panel = panel,
@@ -4064,10 +4590,14 @@ manifest_facet_objects <- function(plot_obj) {
         col = col_index,
         label = label,
         aspect = aspect,
+        freeX = semantics$freeX,
+        freeY = semantics$freeY,
+        facetScales = semantics$facetScales,
         unsupportedProps = list("left", "bottom", "width", "height"),
         unsupportedReason = "ggplot facet panels use shared gtable layout; independent panel bounds are not equivalent to Matplotlib axes bounds."
       ),
       role = "ggplot_facet_panel",
+      parentId = "r.facet.layout.0",
       facetKey = facet_key,
       source = list(artistClass = "ggplot_facet_panel", axesIndex = panel - 1)
     )
@@ -4091,6 +4621,7 @@ manifest_facet_strip_object <- function(plot_obj) {
       color = strip_style$color
     ),
     role = "facet_strip_title",
+    parentId = "r.facet.layout.0",
     source = list(artistClass = "ggplot_facet_strip", axesIndex = 0)
   )
 }
@@ -4313,6 +4844,7 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
     scale_obj <- item$scale
     kind <- item$kind
     scale_index <- item$index
+    source_scale_index <- item$sourceIndex
     limits <- continuous_limits(scale_obj)
     current_vmin <- if (is.finite(limits[[1]])) limits[[1]] else NULL
     current_vmax <- if (is.finite(limits[[2]])) limits[[2]] else NULL
@@ -4333,7 +4865,46 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
       layer_index <- suppressWarnings(as.integer(sub("^r\\.layer\\.", "", layer_id))) + 1L
       layer_index >= 1L && layer_index <= length(plot_obj$layers) && is_contour_adapter_layer(plot_obj$layers[[layer_index]])
     }, layer_ids)
-    scale_edit_gids <- c(heatmap_gid, contour_layer_ids)
+    scale_edit_gids <- c(scale_id, heatmap_gid, contour_layer_ids)
+    scale_breaks <- continuous_scale_breaks(scale_obj, scale_obj$limits %||% limits)
+    scale_labels <- continuous_scale_labels(scale_obj, scale_breaks)
+    transform_name <- as.character(scale_obj$trans$name %||% "identity")
+    guide_visible <- latest_bool(colorbar_gid, "visible", r_guide_visible(scale_obj))
+    guide_type <- r_normalized_guide_type(scale_obj)
+    if (isTRUE(guide_visible) && identical(guide_type, "none")) guide_type <- "colorbar"
+
+    objects[[length(objects) + 1]] <- list(
+      id = scale_id,
+      kind = "container",
+      label = paste0("ggplot continuous ", kind, " scale"),
+      editable = list("cmap", "vmin", "vmax"),
+      currentProps = list(
+        aesthetic = kind,
+        cmap = latest_string_for_gids(scale_edit_gids, "cmap", "custom"),
+        vmin = latest_numeric_for_gids(scale_edit_gids, "vmin", current_vmin),
+        vmax = latest_numeric_for_gids(scale_edit_gids, "vmax", current_vmax),
+        breaks = as.list(scale_breaks),
+        labels = as.list(scale_labels),
+        transform = transform_name,
+        naValue = as.character(scale_obj$na.value %||% NA_character_),
+        guideType = guide_type,
+        guideVisible = guide_visible,
+        guideReverse = isTRUE(r_guide_value(scale_obj$guide, "reverse", FALSE)),
+        guideOrder = suppressWarnings(as.integer(r_guide_value(scale_obj$guide, "order", 0L))),
+        sourceScaleIndex = source_scale_index,
+        scaleClass = paste(class(scale_obj), collapse = "/"),
+        structureReadonly = TRUE
+      ),
+      role = "ggplot_scale_continuous",
+      layerIds = usage$layerIds,
+      subplotIds = subplot_ids,
+      scaleId = scale_id,
+      guideId = colorbar_gid,
+      scaleKey = scale_key,
+      guideKey = guide_key,
+      aesthetic = kind,
+      source = list(artistClass = "ggplot_scale_continuous", axesIndex = 0, zorder = scale_index)
+    )
 
     if (has_heatmap) {
       objects[[length(objects) + 1]] <- list(
@@ -4346,7 +4917,8 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
           vmin = latest_numeric_for_gids(scale_edit_gids, "vmin", current_vmin),
           vmax = latest_numeric_for_gids(scale_edit_gids, "vmax", current_vmax),
           alpha = latest_numeric(heatmap_gid, "alpha", 1),
-          scale = kind
+          scale = kind,
+          sourceScaleIndex = source_scale_index
         ),
         role = "ggplot_heatmap_series",
         colorbarId = colorbar_gid,
@@ -4362,6 +4934,7 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
     }
 
     colorbar_bounds <- layout_bounds$colorbar %||% default_colorbar
+    colorbar_bounds_proven <- length(continuous_scales) == 1L
     mappable_ids <- if (has_heatmap) list(heatmap_gid) else usage$layerIds
     mappable_id <- mappable_ids[[1]]
 
@@ -4369,18 +4942,25 @@ manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list(
       id = colorbar_gid,
       kind = "colorbar",
       label = paste0("ggplot colorbar ", label),
-      editable = list("label", "tick_fontsize", "visible", "left", "bottom", "width", "height"),
+      editable = c(
+        list("label", "tick_fontsize", "visible"),
+        if (colorbar_bounds_proven) list("left", "bottom", "width", "height") else list()
+      ),
       currentProps = list(
         label = latest_string(colorbar_gid, "label", label),
         tick_fontsize = latest_numeric(colorbar_gid, "tick_fontsize", default_legend$fontsize),
-        visible = latest_value(colorbar_gid, "visible", TRUE),
+        visible = guide_visible,
         left = latest_numeric(colorbar_gid, "left", colorbar_bounds$left),
         bottom = latest_numeric(colorbar_gid, "bottom", colorbar_bounds$bottom),
         width = latest_numeric(colorbar_gid, "width", colorbar_bounds$width),
         height = latest_numeric(colorbar_gid, "height", colorbar_bounds$height),
         vmin = latest_numeric_for_gids(scale_edit_gids, "vmin", current_vmin),
         vmax = latest_numeric_for_gids(scale_edit_gids, "vmax", current_vmax),
-        cmap = latest_string_for_gids(scale_edit_gids, "cmap", "custom")
+        cmap = latest_string_for_gids(scale_edit_gids, "cmap", "custom"),
+        sourceScaleIndex = source_scale_index,
+        physicalBounds = if (colorbar_bounds_proven) "single-guide" else "readonly",
+        unsupportedProps = if (colorbar_bounds_proven) list() else list("left", "bottom", "width", "height"),
+        unsupportedReason = if (colorbar_bounds_proven) NULL else "Multiple ggplot continuous guides do not expose independently provable physical bounds."
       ),
       role = "ggplot_colorbar",
       mappableId = mappable_id,
@@ -4426,34 +5006,21 @@ link_family8_continuous_relations <- function(objects, continuous_objects) {
       if (is.null(layer_index)) next
       object <- objects[[layer_index]]
       geom <- as.character(object$source$artistClass %||% "")
-      if (!geom %in% c("GeomTile", "GeomRaster", "GeomRect", "GeomContour", "GeomContourFilled")) next
-
       object$scaleId <- colorbar$scaleId
       object$guideId <- colorbar_id
       object$colorbarId <- colorbar_id
       object$mappableId <- if (has_heatmap_object) heatmap_id else layer_id
+      object$scaleKey <- colorbar$scaleKey
+      object$guideKey <- colorbar$guideKey
+      object$aesthetic <- colorbar$aesthetic
+      object$currentProps$scaleControlled <- TRUE
       if (geom %in% c("GeomContour", "GeomContourFilled")) {
-        object$scaleKey <- colorbar$scaleKey
-        object$guideKey <- colorbar$guideKey
-        object$aesthetic <- colorbar$aesthetic
-        object$currentProps$scaleControlled <- TRUE
         object$currentProps$cmap <- latest_string_for_gids(scale_gids, "cmap", object$currentProps$cmap %||% "custom")
         object$currentProps$vmin <- latest_numeric_for_gids(scale_gids, "vmin", object$currentProps$vmin %||% NA_real_)
         object$currentProps$vmax <- latest_numeric_for_gids(scale_gids, "vmax", object$currentProps$vmax %||% NA_real_)
         object$editable <- unique(c(object$editable %||% list(), "cmap", "vmin", "vmax"))
       }
       objects[[layer_index]] <- object
-    }
-
-    if (length(layer_ids) > 0) {
-      for (object_index in seq_along(objects)) {
-        object <- objects[[object_index]]
-        if (!as.character(object$id %||% "") %in% layer_ids) next
-        geom <- as.character(object$source$artistClass %||% "")
-        if (!geom %in% c("GeomTile", "GeomRaster", "GeomRect", "GeomContour", "GeomContourFilled")) next
-        object$currentProps$scaleControlled <- TRUE
-        objects[[object_index]] <- object
-      }
     }
 
   }
@@ -4498,6 +5065,9 @@ inject_svg_text_ids <- function(svg, manifest, ggplot_obj = NULL) {
       
       x_labels <- get_axis_labels(params$x)
       y_labels <- get_axis_labels(params$y)
+      x_anchor <- "middle"
+      y_position <- as.character(params$y$position %||% "left")
+      y_anchor <- if (identical(y_position, "right")) "start" else "end"
       
       # Inject data-fig-id for X axis tick labels (individual xtick GIDs)
       for (l_idx in seq_along(x_labels)) {
@@ -4514,6 +5084,8 @@ inject_svg_text_ids <- function(svg, manifest, ggplot_obj = NULL) {
           chunk <- substr(svg, start, start + len - 1)
           open_tag <- regmatches(chunk, regexpr("^<text\\b[^>]*>", chunk, perl = TRUE))
           if (!length(open_tag) || grepl("data-fig-id\\s*=", open_tag, perl = TRUE) || grepl("\\bid\\s*=", open_tag, perl = TRUE)) next
+          anchor_match <- regmatches(open_tag, regexec("\\btext-anchor\\s*=\\s*['\"]([^'\"]+)['\"]", open_tag, perl = TRUE))[[1]]
+          if (length(anchor_match) < 2 || !identical(anchor_match[[2]], x_anchor)) next
           
           tick_gid <- paste0("xtick.", p_idx - 1, ".", l_idx - 1)
           replacement <- sub("^<text\\b", paste0("<text id=\"", tick_gid, "\" data-fig-id=\"", tick_gid, "\""), chunk, perl = TRUE)
@@ -4541,6 +5113,8 @@ inject_svg_text_ids <- function(svg, manifest, ggplot_obj = NULL) {
           chunk <- substr(svg, start, start + len - 1)
           open_tag <- regmatches(chunk, regexpr("^<text\\b[^>]*>", chunk, perl = TRUE))
           if (!length(open_tag) || grepl("data-fig-id\\s*=", open_tag, perl = TRUE) || grepl("\\bid\\s*=", open_tag, perl = TRUE)) next
+          anchor_match <- regmatches(open_tag, regexec("\\btext-anchor\\s*=\\s*['\"]([^'\"]+)['\"]", open_tag, perl = TRUE))[[1]]
+          if (length(anchor_match) < 2 || !identical(anchor_match[[2]], y_anchor)) next
           
           tick_gid <- paste0("ytick.", p_idx - 1, ".", l_idx - 1)
           replacement <- sub("^<text\\b", paste0("<text id=\"", tick_gid, "\" data-fig-id=\"", tick_gid, "\""), chunk, perl = TRUE)
@@ -4561,6 +5135,7 @@ inject_svg_text_ids <- function(svg, manifest, ggplot_obj = NULL) {
 
   for (obj in objects) {
     if (!identical(obj$kind %||% "", "text")) next
+    if (identical((obj$currentProps %||% list())$svgSelectable, FALSE)) next
     gid <- as.character(obj$id %||% "")
     if (!nzchar(gid)) next
     text <- as.character((obj$currentProps %||% list())$text %||% "")
@@ -4610,10 +5185,17 @@ apply_svg_legend_text_edits <- function(svg, manifest) {
     props <- obj$currentProps %||% list()
     original_text <- as.character(props$originalText %||% "")
     next_text <- as.character(props$text %||% "")
-    if (!nzchar(gid) || !nzchar(original_text) || !nzchar(next_text) || identical(original_text, next_text)) next
+    if (
+      identical(props$svgSelectable, FALSE) ||
+      !nzchar(gid) || !nzchar(original_text) || !nzchar(next_text) || identical(original_text, next_text)
+    ) next
 
-    old_escaped <- regex_escape(svg_escape_text(original_text))
-    pattern <- paste0("<text\\b[^>]*>\\s*", old_escaped, "\\s*</text>")
+    escaped_gid <- regex_escape(gid)
+    pattern <- paste0(
+      "<text\\b[^>]*(?:id|data-fig-id)\\s*=\\s*['\"]",
+      escaped_gid,
+      "['\"][^>]*>[\\s\\S]*?</text>"
+    )
     matches <- gregexpr(pattern, svg, perl = TRUE)[[1]]
     if (length(matches) == 1 && matches[[1]] == -1) next
     match_lengths <- attr(matches, "match.length")
@@ -4623,12 +5205,9 @@ apply_svg_legend_text_edits <- function(svg, manifest) {
       len <- match_lengths[[i]]
       if (start < 0 || len <= 0) next
       chunk <- substr(svg, start, start + len - 1)
-      open_tag <- regmatches(chunk, regexpr("^<text\\b[^>]*>", chunk, perl = TRUE))
-      if (!length(open_tag) || grepl("data-fig-id\\s*=", open_tag, perl = TRUE) || grepl("\\bid\\s*=", open_tag, perl = TRUE)) next
-
-      replacement <- sub("^<text\\b", paste0("<text id=\"", gid, "\" data-fig-id=\"", gid, "\""), chunk, perl = TRUE)
+      replacement <- chunk
       replacement <- sub(
-        paste0(">\\s*", old_escaped, "\\s*</text>$"),
+        ">[\\s\\S]*</text>$",
         paste0(">", svg_escape_text(next_text), "</text>"),
         replacement,
         perl = TRUE
@@ -4640,6 +5219,71 @@ apply_svg_legend_text_edits <- function(svg, manifest) {
       )
       break
     }
+  }
+  svg
+}
+
+svg_set_inline_style <- function(tag, property, value) {
+  value <- gsub("[\r\n]", " ", as.character(value), perl = TRUE)
+  style_match <- regexec("\\bstyle\\s*=\\s*(['\"])(.*?)\\1", tag, perl = TRUE)
+  style_parts <- regmatches(tag, style_match)[[1]]
+  next_style <- paste0(property, ": ", value, ";")
+  if (length(style_parts) >= 3) {
+    style <- style_parts[[3]]
+    property_pattern <- paste0("(?i)(^|;)\\s*", regex_escape(property), "\\s*:\\s*[^;]*;?")
+    if (grepl(property_pattern, style, perl = TRUE)) {
+      style <- sub(property_pattern, paste0("\\1 ", next_style), style, perl = TRUE)
+    } else {
+      style <- paste(trimws(style), next_style)
+    }
+    return(sub("\\bstyle\\s*=\\s*(['\"])(.*?)\\1", paste0("style=\"", style, "\""), tag, perl = TRUE))
+  }
+  sub("^<text\\b", paste0("<text style=\"", next_style, "\""), tag, perl = TRUE)
+}
+
+apply_svg_text_style_edits <- function(svg, manifest) {
+  objects <- manifest$objects %||% list()
+  style_props <- c("fontsize", "fontfamily", "fontweight", "fontstyle", "color", "rotation")
+  legend_family_has_edit <- function(prefix, prop) {
+    any(vapply(edit_entries, function(entry) {
+      startsWith(as.character(entry$gid %||% ""), prefix) &&
+        identical(as.character(entry$prop %||% ""), prop)
+    }, logical(1)))
+  }
+  for (obj in objects) {
+    gid <- as.character(obj$id %||% "")
+    is_tick <- grepl("^[xy]tick\\.\\d+\\.\\d+$", gid)
+    legend_prefix <- if (grepl("^legend_title\\.\\d+$", gid)) {
+      "legend_title."
+    } else if (grepl("^legend_text\\.\\d+\\.\\d+$", gid)) {
+      "legend_text."
+    } else {
+      ""
+    }
+    should_apply <- function(prop) {
+      has_edit(gid, prop) || (nzchar(legend_prefix) && legend_family_has_edit(legend_prefix, prop))
+    }
+    if ((!is_tick && !nzchar(legend_prefix)) || !any(vapply(style_props, should_apply, logical(1)))) next
+
+    escaped_gid <- regex_escape(gid)
+    pattern <- paste0("<text\\b(?=[^>]*\\bid\\s*=\\s*['\"]", escaped_gid, "['\"])[^>]*>")
+    match <- regexpr(pattern, svg, perl = TRUE)
+    if (length(match) == 0 || match[[1]] < 0) next
+    tag <- regmatches(svg, match)
+    props <- obj$currentProps %||% list()
+    if (should_apply("fontsize")) tag <- svg_set_inline_style(tag, "font-size", paste0(props$fontsize, "pt"))
+    if (should_apply("fontfamily")) tag <- svg_set_inline_style(tag, "font-family", props$fontfamily)
+    if (should_apply("fontweight")) tag <- svg_set_inline_style(tag, "font-weight", props$fontweight)
+    if (should_apply("fontstyle")) tag <- svg_set_inline_style(tag, "font-style", props$fontstyle)
+    if (should_apply("color")) tag <- svg_set_inline_style(tag, "fill", props$color)
+    if (should_apply("rotation")) {
+      tag <- svg_set_inline_style(tag, "transform", paste0("rotate(", props$rotation, "deg)"))
+      tag <- svg_set_inline_style(tag, "transform-box", "fill-box")
+      tag <- svg_set_inline_style(tag, "transform-origin", "center")
+    }
+    start <- match[[1]]
+    len <- attr(match, "match.length")[[1]]
+    svg <- paste0(substr(svg, 1, start - 1), tag, substr(svg, start + len, nchar(svg)))
   }
   svg
 }
@@ -5274,7 +5918,7 @@ inject_svg_layer_data_ids <- function(svg, plot_obj) {
 }
 
 r_manifest_legend_id <- function(id) {
-  if (grepl("^legend_(title|text|line|patch|collection)\\.0", id)) return("legend.0")
+  if (grepl("^legend_(title|text|key|line|patch|collection)\\.0", id)) return("legend.0")
   NULL
 }
 
@@ -5323,7 +5967,7 @@ r_manifest_coordinate_space <- function(obj) {
   if (coord_system %in% c("data", "axes", "figure", "display")) return(coord_system)
   id <- as.character(obj$id %||% "")
   kind <- as.character(obj$kind %||% "")
-  if (grepl("^legend", id)) return("container")
+  if (grepl("^(legend|r\\.scale\\.|r\\.guide\\.|r\\.facet\\.layout\\.)", id)) return("container")
   if (kind %in% c("subplot", "colorbar")) return("figure")
   if (kind %in% c("line", "collection", "patch", "heatmap", "contour", "contourf", "errorbar_container", "boxplot_container", "violinplot_container")) return("data")
   if (!is.null(r_manifest_subplot_id(obj))) return("axes")
@@ -5337,7 +5981,7 @@ r_manifest_identity <- function(obj) {
   legend_id <- r_manifest_legend_id(id)
   subplot_id <- r_manifest_subplot_id(obj)
   figure_level <- grepl("^(title|xlabel|ylabel|axis\\.[xy]|legend\\.0$|grid|spine\\.)", id)
-  scope <- if (!is.null(legend_id) || grepl("^r\\.group\\.", id)) "container" else if (figure_level) "figure" else if (!is.null(subplot_id)) "subplot" else "figure"
+  scope <- if (!is.null(legend_id) || grepl("^r\\.(group|scale|guide|facet\\.layout)\\.", id)) "container" else if (figure_level) "figure" else if (!is.null(subplot_id)) "subplot" else "figure"
   relation <- list()
   relation <- r_manifest_relation_scalar(relation, "parentId", obj[["parentId"]])
   if (!is.null(subplot_id) && !figure_level) relation[["subplotId"]] <- subplot_id
@@ -5348,7 +5992,7 @@ r_manifest_identity <- function(obj) {
   if (length(explicit_subplot_ids) > 0) relation[["subplotIds"]] <- as.list(explicit_subplot_ids)
   for (key in c(
     "layerId", "layerKey", "scaleId", "scaleKey", "guideId", "guideKey",
-    "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey"
+    "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey", "guideType"
   )) {
     relation <- r_manifest_relation_scalar(relation, key, obj[[key]])
   }
@@ -5359,9 +6003,15 @@ r_manifest_identity <- function(obj) {
   }
   group_ids <- r_manifest_string_values(obj[["groupIds"]])
   if (length(group_ids) > 0) relation[["groupIds"]] <- as.list(group_ids)
+  scale_ids <- r_manifest_string_values(obj[["scaleIds"]])
+  if (length(scale_ids) > 0) relation[["scaleIds"]] <- as.list(scale_ids)
   if (!is.null(legend_id)) relation[["legendId"]] <- legend_id
-  for (key in c("legendId", "colorbarId", "mappableId", "annotationId", "arrowId", "textId")) {
+  for (key in c("legendId", "legendTitleId", "legendTextId", "colorbarId", "mappableId", "annotationId", "arrowId", "textId", "semanticGuideId")) {
     relation <- r_manifest_relation_scalar(relation, key, obj[[key]])
+  }
+  for (key in c("legendTextIds", "legendMarkerIds")) {
+    values <- r_manifest_string_values(obj[[key]])
+    if (length(values) > 0) relation[[key]] <- as.list(values)
   }
   mappable_ids <- r_manifest_string_values(obj[["mappableIds"]])
   if (length(mappable_ids) > 0) relation[["mappableIds"]] <- as.list(mappable_ids)
@@ -5369,6 +6019,12 @@ r_manifest_identity <- function(obj) {
   semantic_key <- paste(role, semantic_scope, sep = ":")
   if (grepl("^r\\.group\\.", id)) {
     semantic_key <- paste("ggplot_group", relation$aesthetic %||% "unknown", relation$groupKey %||% id, sep = ":")
+  } else if (grepl("^r\\.scale\\.", id)) {
+    semantic_key <- paste("ggplot_scale", relation$aesthetic %||% "unknown", relation$scaleKey %||% id, sep = ":")
+  } else if (grepl("^r\\.guide\\.", id)) {
+    semantic_key <- paste("ggplot_guide", relation$guideKey %||% id, sep = ":")
+  } else if (grepl("^r\\.facet\\.layout\\.", id)) {
+    semantic_key <- paste("ggplot_facet_layout", relation$facetKey %||% "layout", sep = ":")
   } else if (grepl("^r\\.layer\\.", id)) {
     semantic_key <- paste(role, "layer", relation$layerKey %||% obj$source$layerSignature %||% role, sep = ":")
   } else if (kind == "subplot") {
@@ -5493,9 +6149,16 @@ attach_r_manifest_shadow_metadata <- function(obj) {
   obj$groupIds <- NULL
   obj$scaleId <- NULL
   obj$scaleKey <- NULL
+  obj$scaleIds <- NULL
   obj$guideId <- NULL
   obj$guideKey <- NULL
+  obj$guideType <- NULL
+  obj$semanticGuideId <- NULL
   obj$legendId <- NULL
+  obj$legendTitleId <- NULL
+  obj$legendTextId <- NULL
+  obj$legendTextIds <- NULL
+  obj$legendMarkerIds <- NULL
   obj$aesthetic <- NULL
   obj$groupKey <- NULL
   obj$dataKey <- NULL
@@ -5613,6 +6276,58 @@ r_can_remap_gid <- function(requested_gid, resolved_gid) {
   nzchar(requested_family) && identical(requested_family, resolved_family)
 }
 
+r_legacy_continuous_target <- function(objects, requested_gid) {
+  matched <- regexec(
+    "^r\\.(scale|colorbar|heatmap)\\.(color|fill)(?:\\.continuous)?\\.([0-9]+)$",
+    requested_gid,
+    perl = TRUE
+  )
+  parts <- regmatches(requested_gid, matched)[[1]]
+  if (length(parts) != 4) return(NULL)
+  family <- parts[[2]]
+  aesthetic <- parts[[3]]
+  source_index <- suppressWarnings(as.integer(parts[[4]]))
+  if (is.na(source_index)) return(NULL)
+  id_prefix <- if (identical(family, "scale")) {
+    paste0("r.scale.", aesthetic, ".continuous.")
+  } else {
+    paste0("r.", family, ".", aesthetic, ".")
+  }
+  candidates <- Filter(function(object) {
+    startsWith(as.character(object$id %||% ""), id_prefix) &&
+      identical(
+        suppressWarnings(as.integer(object$currentProps$sourceScaleIndex %||% NA_integer_)),
+        source_index
+      )
+  }, objects)
+  if (length(candidates) == 1) candidates[[1]] else NULL
+}
+
+r_legacy_continuous_evidence_compatible <- function(object, entry) {
+  for (field in c("stableKey")) {
+    supplied <- unwrap_manifest_value(entry[[field]])
+    if (present_manifest_value(supplied) && !identical(as.character(supplied), as.character(object[[field]] %||% ""))) {
+      return(FALSE)
+    }
+  }
+  for (field in c("semanticKey", "seriesKey")) {
+    supplied <- identity_manifest_value(entry$identity, field)
+    expected <- identity_manifest_value(object$identity, field)
+    if (present_manifest_value(supplied) && !identical(as.character(supplied), as.character(expected %||% ""))) {
+      return(FALSE)
+    }
+  }
+  supplied_relation <- r_identity_relation_value(entry$identity)
+  expected_relation <- r_identity_relation_value(object$identity)
+  for (field in c("aesthetic", "groupKey", "dataKey", "facetKey", "axisKey", "layerKey")) {
+    supplied <- supplied_relation[[field]] %||% NULL
+    if (present_manifest_value(supplied) && !r_identity_json_equal(supplied, expected_relation[[field]] %||% NULL)) {
+      return(FALSE)
+    }
+  }
+  TRUE
+}
+
 resolve_r_edit_entries <- function(manifest, entries) {
   objects <- manifest$objects %||% list()
   object_by_id <- setNames(objects, vapply(objects, function(obj) as.character(obj$id %||% ""), character(1)))
@@ -5645,6 +6360,35 @@ resolve_r_edit_entries <- function(manifest, entries) {
 
     exact_object <- object_by_id[[gid]]
     evidence <- r_entry_identity_evidence(entry)
+    legacy_continuous_object <- if (is.null(exact_object)) {
+      r_legacy_continuous_target(objects, gid)
+    } else {
+      NULL
+    }
+    if (!is.null(legacy_continuous_object) && r_legacy_continuous_evidence_compatible(legacy_continuous_object, entry)) {
+      resolved_gid <- as.character(legacy_continuous_object$id %||% "")
+      warnings[[length(warnings) + 1]] <- list(
+        type = "legacy_target_alias",
+        gid = gid,
+        prop = prop,
+        patchIndex = index - 1L,
+        resolvedGid = resolved_gid,
+        message = paste0(
+          gid,
+          " was migrated from the legacy absolute ggplot scale index to ",
+          resolved_gid,
+          "."
+        )
+      )
+      resolved <- entry
+      resolved[[".__requestedEntry"]] <- entry
+      resolved[[".__patchIndex"]] <- index - 1L
+      resolved[[".__resolvedGid"]] <- resolved_gid
+      resolved[[".__legacyTargetAlias"]] <- TRUE
+      resolved$gid <- resolved_gid
+      accepted[[length(accepted) + 1]] <- resolved
+      next
+    }
     if (length(evidence) == 0) {
       legacy_axis_gid <- if (grepl("^axis\\.[xy]\\.[0-9]+$", gid)) {
         sub("^axis\\.([xy])\\.[0-9]+$", "axis.\\1.0", gid)
@@ -5892,9 +6636,63 @@ confirm_r_edit_entries <- function(manifest, entries, resolution = list(rejected
     }
 
     object <- object_by_id[[gid]]
+    is_legacy_target_alias <- isTRUE(entry[[".__legacyTargetAlias"]])
+    confirmation_evidence <- if (is_legacy_target_alias) list() else r_entry_identity_evidence(requested_entry)
+    if (length(confirmation_evidence) > 0 && (is.null(object) || !r_object_matches_identity_evidence(object, confirmation_evidence))) {
+      confirmation_candidates <- Filter(function(candidate) {
+        r_object_matches_identity_evidence(candidate, confirmation_evidence)
+      }, objects)
+      if (length(confirmation_candidates) == 1) {
+        remapped_gid <- as.character(confirmation_candidates[[1]]$id %||% "")
+        if (!r_can_remap_gid(requested_gid, remapped_gid)) {
+          reject_entry(
+            requested_entry,
+            patch_index,
+            "identity_mismatch",
+            requested_gid,
+            prop,
+            paste0(requested_gid, " post-render identity matched an object outside the requested R GID family."),
+            list(candidateGids = list(remapped_gid))
+          )
+          next
+        }
+        gid <- remapped_gid
+        object <- confirmation_candidates[[1]]
+      } else if (length(confirmation_candidates) > 1) {
+        reject_entry(
+          requested_entry,
+          patch_index,
+          "ambiguous_identity",
+          requested_gid,
+          prop,
+          paste0(requested_gid, " post-render identity matches multiple R manifest objects."),
+          list(candidateGids = as.list(vapply(confirmation_candidates, function(candidate) as.character(candidate$id), character(1))))
+        )
+        next
+      }
+    }
     if (is.null(object)) {
       reject_entry(requested_entry, patch_index, "missing_gid", requested_gid, prop, paste0("R manifest is missing gid ", gid, "."))
       next
+    }
+    if (
+      identical(prop, "aspect") &&
+      grepl("^subplot\\.\\d+$", requested_gid) &&
+      identical(as.character(object$role %||% ""), "ggplot_facet_panel")
+    ) {
+      facet_layout <- object_by_id[["r.facet.layout.0"]]
+      if (!is.null(facet_layout)) {
+        object <- facet_layout
+        gid <- "r.facet.layout.0"
+        warnings[[length(warnings) + 1]] <- list(
+          type = "legacy_target_alias",
+          gid = requested_gid,
+          prop = prop,
+          patchIndex = patch_index,
+          resolvedGid = gid,
+          message = paste0(requested_gid, ".aspect was migrated to the shared ggplot facet layout.")
+        )
+      }
     }
     effective_prop <- effective_prop_for_object(object, prop)
     legacy_prop_alias <- NULL
@@ -5968,12 +6766,13 @@ confirm_r_edit_entries <- function(manifest, entries, resolution = list(rejected
     }
 
     entry_stable_key <- unwrap_manifest_value(entry$stableKey)
-    if (present_manifest_value(entry_stable_key) && !identical(as.character(entry_stable_key), as.character(object$stableKey %||% ""))) {
+    if (!is_legacy_target_alias && present_manifest_value(entry_stable_key) && !identical(as.character(entry_stable_key), as.character(object$stableKey %||% ""))) {
       reject_entry(requested_entry, patch_index, "identity_mismatch", requested_gid, prop, paste0(gid, " stableKey does not match the R manifest object."), list(field = "stableKey"))
       next
     }
     entry_fingerprint_version <- suppressWarnings(as.integer(unwrap_manifest_value(entry$fingerprintVersion)))
     if (
+      !is_legacy_target_alias &&
       length(entry_fingerprint_version) == 1 && !is.na(entry_fingerprint_version) && entry_fingerprint_version == 2 &&
       identical(as.integer(object$fingerprintVersion %||% 0), 2) &&
       present_manifest_value(entry$fingerprint) &&
@@ -5986,7 +6785,7 @@ confirm_r_edit_entries <- function(manifest, entries, resolution = list(rejected
       next
     }
     identity_rejected <- FALSE
-    for (identity_field in c("semanticKey", "seriesKey")) {
+    for (identity_field in if (is_legacy_target_alias) character() else c("semanticKey", "seriesKey")) {
       expected_identity <- identity_manifest_value(object$identity, identity_field)
       actual_identity <- identity_manifest_value(entry$identity, identity_field)
       if (present_manifest_value(actual_identity) && !identical(as.character(actual_identity), as.character(expected_identity %||% ""))) {
@@ -6023,20 +6822,73 @@ restore_baseline_manifest_relations <- function(objects, baseline_manifest = NUL
     function(object) as.character(object$id %||% ""),
     character(1)
   ))
-  relation_fields <- c("subplotId", "subplotIds", "layerIds", "groupIds")
+  relation_fields <- c("subplotId", "subplotIds", "layerIds", "groupIds", "guideKey")
   for (index in seq_along(objects)) {
     id <- as.character(objects[[index]]$id %||% "")
     baseline_object <- baseline_by_id[[id]] %||% NULL
     if (is.null(baseline_object)) next
     baseline_relation <- baseline_object$identity$relation %||% list()
-    for (field in relation_fields) {
+    object_relation_fields <- relation_fields
+    if (grepl("^r\\.guide\\.", id) && has_edit(id, "visible")) {
+      # Hiding a guide removes its rendered items from ggplot's post-edit
+      # catalog. Keep the pre-edit structural ownership so the same guide can
+      # be shown again and its v2 identity does not drift with visibility.
+      object_relation_fields <- unique(c(
+        object_relation_fields,
+        "scaleIds", "legendTextIds", "legendMarkerIds"
+      ))
+      for (field in c("parentId", "legendId", "guideKey", "guideType", "legendTitleId")) {
+        value <- baseline_relation[[field]] %||% NULL
+        if (!is.null(value)) objects[[index]][[field]] <- value
+      }
+    }
+    for (field in object_relation_fields) {
       values <- r_manifest_string_values(baseline_relation[[field]])
       if (length(values) == 0) next
-      objects[[index]][[field]] <- if (identical(field, "subplotId") && length(values) == 1) {
+      objects[[index]][[field]] <- if (field %in% c("subplotId", "guideKey") && length(values) == 1) {
         values[[1]]
       } else {
         as.list(values)
       }
+    }
+  }
+
+  current_ids <- vapply(objects, function(object) as.character(object$id %||% ""), character(1))
+  hidden_guide_ids <- vapply(Filter(function(object) {
+    id <- as.character(object$id %||% "")
+    grepl("^r\\.guide\\.", id) &&
+      has_edit(id, "visible") &&
+      identical(object$currentProps$visible, FALSE)
+  }, objects), function(object) as.character(object$id), character(1))
+  for (guide_id in hidden_guide_ids) {
+    baseline_guide <- baseline_by_id[[guide_id]] %||% NULL
+    guide_relation <- baseline_guide$identity$relation %||% list()
+    child_ids <- unique(c(
+      r_manifest_string_values(guide_relation$legendTextIds),
+      r_manifest_string_values(guide_relation$legendMarkerIds)
+    ))
+    for (child_id in child_ids) {
+      if (child_id %in% current_ids) next
+      baseline_child <- baseline_by_id[[child_id]] %||% NULL
+      if (is.null(baseline_child)) next
+      child <- baseline_child
+      child_relation <- child$identity$relation %||% list()
+      for (field in names(child_relation)) child[[field]] <- child_relation[[field]]
+      for (prop in as.character(unlist(child$editable %||% list(), use.names = FALSE))) {
+        if (has_edit(child_id, prop)) {
+          child$currentProps[[prop]] <- latest_value(child_id, prop, child$currentProps[[prop]])
+        }
+      }
+      child$currentProps$guideVisible <- FALSE
+      child$currentProps$svgSelectable <- FALSE
+      child$currentProps$hiddenByGuide <- guide_id
+      child$identity <- NULL
+      child$stableKey <- NULL
+      child$fingerprint <- NULL
+      child$fingerprintVersion <- NULL
+      child$propertyCapabilities <- NULL
+      objects[[length(objects) + 1L]] <- child
+      current_ids <- c(current_ids, child_id)
     }
   }
   objects
@@ -6450,6 +7302,8 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
   objects[[length(objects) + 1]] <- manifest_spine_object("spine.top.0", "top")
   objects[[length(objects) + 1]] <- manifest_spine_object("spine.right.0", "right")
   objects <- c(objects, manifest_legend_text_objects(plot_obj, legend_title, legend_style, legend_guide_key))
+  objects <- c(objects, manifest_legend_key_objects(plot_obj))
+  objects <- c(objects, manifest_discrete_guide_objects(plot_obj))
   
   # Inject individual xtick and ytick objects into objects list
   built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
@@ -6557,6 +7411,10 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
   }
   facet_objects <- manifest_facet_objects(plot_obj)
   if (length(facet_objects) > 0) {
+    facet_layout_object <- manifest_facet_layout_object(plot_obj)
+    if (!is.null(facet_layout_object)) {
+      objects <- c(objects, list(facet_layout_object))
+    }
     objects <- c(objects, facet_objects)
     strip_object <- manifest_facet_strip_object(plot_obj)
     if (!is.null(strip_object)) {
@@ -6572,16 +7430,20 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
     objects <- c(objects, scale_semantics$objects)
   }
   if (length(scale_semantics$objects) > 0) {
+    scale_group_objects <- Filter(
+      function(group_obj) grepl("^r\\.group\\.", as.character(group_obj$id %||% "")),
+      scale_semantics$objects
+    )
     for (object_index in seq_along(objects)) {
       object_id <- as.character(objects[[object_index]]$id %||% "")
       if (grepl("^r\\.layer\\.", object_id)) {
-        linked_groups <- Filter(function(group_obj) object_id %in% unlist(group_obj$layerIds %||% list()), scale_semantics$objects)
+        linked_groups <- Filter(function(group_obj) object_id %in% unlist(group_obj$layerIds %||% list()), scale_group_objects)
         if (length(linked_groups) > 0) {
           objects[[object_index]]$groupIds <- as.list(vapply(linked_groups, function(group_obj) group_obj$id, character(1)))
           objects[[object_index]]$subplotIds <- as.list(unique(unlist(lapply(linked_groups, function(group_obj) group_obj$subplotIds %||% list()))))
         }
       } else if (identical(object_id, "legend.0")) {
-        objects[[object_index]]$groupIds <- as.list(vapply(scale_semantics$objects, function(group_obj) group_obj$id, character(1)))
+        objects[[object_index]]$groupIds <- as.list(vapply(scale_group_objects, function(group_obj) group_obj$id, character(1)))
       }
     }
   }
@@ -6859,8 +7721,9 @@ result <- tryCatch({
 
   svg_postprocess_started_ms <- monotonic_ms()
   if (!is.null(ggplot_obj)) {
-    svg <- apply_svg_legend_text_edits(svg, manifest)
     svg <- inject_svg_text_ids(svg, manifest, ggplot_obj)
+    svg <- apply_svg_legend_text_edits(svg, manifest)
+    svg <- apply_svg_text_style_edits(svg, manifest)
     svg <- inject_svg_layer_data_ids(svg, ggplot_obj)
   }
   timing_breakdown$svgPostprocessMs <- max(0, round(monotonic_ms() - svg_postprocess_started_ms))

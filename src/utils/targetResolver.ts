@@ -444,7 +444,13 @@ export function compileEditingIntentStrict(
 ): ControlledTargetCompileResult {
   const readiness = getStrictProtocolReadiness(manifest, intent);
   if (!readiness.ready) {
-    if (options.legacyAdapterEnabled === false) {
+    const missingCapabilityIds = new Set(readiness.missingPropertyCapabilityObjectIds);
+    const modernRProtocolGap = manifest.generatedBy === 'r_svg'
+      && manifest.objects.some(object => (
+        missingCapabilityIds.has(object.id)
+        && object.fingerprintVersion === 2
+      ));
+    if (options.legacyAdapterEnabled === false || modernRProtocolGap) {
       return {
         strategy: 'strict',
         fallbackReason: 'legacy_adapter_disabled',

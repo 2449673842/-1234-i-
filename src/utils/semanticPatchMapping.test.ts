@@ -221,6 +221,146 @@ describe('semantic patch mapping', () => {
     });
   });
 
+  it.each(['scaleKey', 'guideKey', 'facetKey'] as const)(
+    'rejects R cross-figure mapping when %s differs despite matching stable credentials',
+    (relationField) => {
+      const rManifest = (id: string, relationValue: string): Manifest => ({
+        ...baseManifest([{
+          id,
+          kind: 'collection',
+          label: 'R group',
+          editable: ['color'],
+          currentProps: { color: '#1f78b4' },
+          role: 'ggplot_scale_color',
+          stableKey: 'r:collection:ggplot_group:color:A:r-series:color:A',
+          fingerprint: `r-v2:${id}`,
+          fingerprintVersion: 2,
+          identity: {
+            instanceKey: `r:container:${id}`,
+            seriesKey: 'r-series:color:A',
+            semanticKey: 'ggplot_group:color:A',
+            scope: 'container',
+            coordinateSpace: 'none',
+            relation: {
+              aesthetic: 'color',
+              groupKey: 'A',
+              [relationField]: relationValue,
+            },
+          },
+          propertyCapabilities: [{
+            prop: 'color',
+            patchMode: 'backend_patch',
+            scopes: ['object', 'figure', 'cross_figure'],
+            preview: 'none',
+            replay: 'stable',
+          }],
+        }]),
+        generatedBy: 'r_svg',
+      });
+      const input = {
+        gid: 'r.group.color.0.0',
+        prop: 'color',
+        value: '#2ca02c',
+        mode: 'backend_patch',
+      };
+      const result = mapPatchesToTargetFigure(
+        [input],
+        rManifest('r.group.color.0.0', `source-${relationField}`),
+        rManifest('r.group.color.1.0', `target-${relationField}`),
+        { identityV2Enabled: true, legacyScoreAdapterEnabled: true },
+      );
+
+      expect(result.patches).toHaveLength(0);
+      expect(result.skipped).toEqual([input]);
+    },
+  );
+
+  it('maps an old partial R relation to a new complete relation when shared fields agree', () => {
+    const rObject = (id: string, relation: Record<string, string>): ManifestObject => ({
+      id,
+      kind: 'collection',
+      label: 'R group',
+      editable: ['color'],
+      currentProps: { color: '#1f78b4' },
+      role: 'ggplot_scale_color',
+      stableKey: 'r:collection:ggplot_group:color:A:r-series:color:A',
+      fingerprint: `r-v2:${id}`,
+      fingerprintVersion: 2,
+      identity: {
+        instanceKey: `r:container:${id}`,
+        seriesKey: 'r-series:color:A',
+        semanticKey: 'ggplot_group:color:A',
+        scope: 'container',
+        coordinateSpace: 'none',
+        relation,
+      },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'figure', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+    const source = rObject('r.group.color.0.0', { aesthetic: 'color', groupKey: 'A' });
+    const target = rObject('r.group.color.1.0', {
+      aesthetic: 'color',
+      groupKey: 'A',
+      scaleKey: 'ggplot-scale:color:group',
+      guideKey: 'ggplot-guide:color:group',
+    });
+    const result = mapPatchesToTargetFigure(
+      [{ gid: source.id, prop: 'color', value: '#2ca02c', mode: 'backend_patch' }],
+      { ...baseManifest([source]), generatedBy: 'r_svg' },
+      { ...baseManifest([target]), generatedBy: 'r_svg' },
+      { identityV2Enabled: true, legacyScoreAdapterEnabled: false },
+    );
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toHaveLength(1);
+    expect(result.patches[0].gid).toBe(target.id);
+  });
+
+  it('rejects R mapping when metadata-bearing relations share no stable field', () => {
+    const rObject = (id: string, relation: Record<string, string>): ManifestObject => ({
+      id,
+      kind: 'collection',
+      label: 'R group',
+      editable: ['color'],
+      currentProps: { color: '#1f78b4' },
+      role: 'ggplot_scale_color',
+      stableKey: 'r:collection:shared',
+      fingerprintVersion: 2,
+      identity: {
+        instanceKey: 'r:container:shared',
+        seriesKey: 'r-series:shared',
+        semanticKey: 'r-semantic:shared',
+        scope: 'container',
+        coordinateSpace: 'none',
+        relation,
+      },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+    const source = rObject('r.group.color.0.0', { aesthetic: 'color' });
+    const target = rObject('r.group.color.1.0', { groupKey: 'A' });
+    const input = { gid: source.id, prop: 'color', value: '#2ca02c', mode: 'backend_patch' };
+    const result = mapPatchesToTargetFigure(
+      [input],
+      { ...baseManifest([source]), generatedBy: 'r_svg' },
+      { ...baseManifest([target]), generatedBy: 'r_svg' },
+      { identityV2Enabled: true, legacyScoreAdapterEnabled: true },
+    );
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([input]);
+  });
+
   it('keeps an explicit single-object style patch scoped to one target object', () => {
     const source = baseManifest([
       {

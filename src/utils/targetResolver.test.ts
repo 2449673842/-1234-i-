@@ -494,6 +494,35 @@ describe('controlled strict target compiler', () => {
     }]);
   });
 
+  it('does not use the legacy compiler for an R v2 object missing property capabilities', () => {
+    const figure = manifest([{
+      id: 'r.scale.color.0',
+      kind: 'container',
+      label: 'R scale',
+      editable: ['visible'],
+      currentProps: { visible: true },
+      role: 'ggplot_scale_discrete',
+      fingerprint: 'r-v2:modern-scale',
+      fingerprintVersion: 2,
+      identity: identity('r.scale.color.0'),
+    }], 'r_svg');
+
+    const result = compileEditingIntentWithControlledResolver(figure, {
+      intent: 'style.component',
+      scope: {
+        selectionMode: 'explicit_objects',
+        objectIds: ['r.scale.color.0'],
+        targetRole: 'component',
+      },
+      operation: { prop: 'visible', value: false },
+    }, true);
+
+    expect(result.strategy).toBe('strict');
+    expect(result.fallbackReason).toBe('legacy_adapter_disabled');
+    expect(result.patches).toHaveLength(0);
+    expect(result.readiness.missingPropertyCapabilityObjectIds).toEqual(['r.scale.color.0']);
+  });
+
   it('keeps a selected multi-subplot font scope inside the requested subplot', () => {
     const objects = [0, 1].map((index): ManifestObject => ({
       id: `ylabel.${index}`,

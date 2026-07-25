@@ -60,6 +60,27 @@
 
 ---
 
+## 2026-07-25 19:12:43 +08:00 R 多 guide 标题与条目编辑可能静默串改或触发身份漂移
+
+**状态与级别**
+
+- 状态：R-WP5 本地候选已修复并通过隔离门禁；尚未推送、尚未部署。
+- 级别：P1 编辑正确性。多个离散 guide 的标题若共享 `legend_title.0`，可能把两个标题一起改名；图例条目编辑若重建显式 scale，会在同次 replay 中改变 scale 顺序并让原 GID 指向另一对象。
+
+**根因与修复**
+
+- guide ordinal 曾依赖可变标题或 scale 插入顺序，且全局 `labs(color/fill)` 同时覆盖多个 guide。现在 ordinal 使用不可变 scale/aesthetic 结构，每个 guide 输出独立 `legend_title.N` 和 `legendTitleId`，重放时恢复 baseline `guideKey`，标题编辑只更新所属 scale。
+- `apply_legend_text_edits()` 过去通过追加新的 manual scale 改 labels，ggplot2 会将该 scale 移到列表末尾。显式 scale 现在原位更新 labels；只有无法匹配原 scale 的隐式场景才使用兼容回退路径。
+- 字符型 `guide="colourbar"` / `"colorbar"` 现在归一为 `guideType=colorbar`；隐藏和恢复同步 colorbar 与 owning scale 的可见状态。`legend_title.N` 和 `legend_text.N.M` 字体样式同时写入实际 SVG。
+
+**验证与防复发**
+
+- 新增同脚本双 guide legend text replay、多个 guide 标题隔离与身份稳定、字符型 colorbar、隐藏恢复和 SVG 字体样式回归。
+- renderer 定向 6/6 与 guide 相关 4/4、隔离 API 3/3、真实浏览器 6/6、R 语义黄金样例 14/14、identity v2 compatibility、共享 resolver/mapping 214 项、lint、build 与 diff-check 通过。
+- 后续任何 guide 标题/条目写回不得通过可变显示文字决定 ordinal，也不得用追加 replacement scale 的副作用改变同次 replay 身份；发生歧义必须拒绝且零持久化。
+- 独立复审继续发现并关闭两个安全旁路：metadata-bearing legacy alias 不得跳过全部身份核验；R relation 无共享字段或字段冲突时，legacy score fallback 不得重新映射。最终完整 R renderer 124/124、resolver/mapping 216/216，第三轮独立复审 0 HIGH/MEDIUM。
+
+---
 ## 2026-07-23 01:14:18 +08:00 R Bar mapped override 身份漂移与 Errorbar 仅有通用整层样式
 
 **状态与级别**

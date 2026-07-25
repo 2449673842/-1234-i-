@@ -3,7 +3,7 @@
 > 状态：当前有效，所有平台功能升级的合并阻断基线
 > 最后修改时间：2026-07-30 16:08:23 +08:00
 > 证据截止时间：2026-07-30 16:08:23 +08:00
-> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 与 R-WP0-WP3 基线；R-WP4 九类家族源分支能力已合入，当前批次复验待完成
+> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 与 R-WP0-WP3 基线；R-WP4 九类家族与 R-WP5 scale/guide/facet/layout 源分支能力已合入，当前批次复验待完成
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -68,6 +68,7 @@
 | R-WP4 Step/Histogram/Freqpoly | 本地候选 | renderer 定向 9/9、前端合同 3/3、隔离家族 API、R patch authority、identity v2 compatibility、浏览器 12/12、lint/build/diff-check 通过，独立复审 `CLEAR`、0 HIGH/MEDIUM。保留旧 `r.layer.N` 和 Step/GeomBar/GeomPath role，以共享类型约束的 `adapterClass` 区分 Histogram/Freqpoly；只开放 color/fill/edge/linewidth/linestyle/alpha，step direction 与 bin/stat 结构保持只读。Step scale group 为 line 语义。离散 scale 身份只按唯一的一对一 `aesthetic + scaleId + groupKey` 恢复；重复键对象不合并且明确 readonly/ambiguous，并在 setter 运行前 fail-closed，冲突响应不得改变 SVG/manifest。项目/standalone 伪 local mode 均规范化并以 `backend_patch` 持久化；mixed batch 零持久化、保存刷新、撤销重做、导出后继续编辑与快照恢复均有隔离证据 |
 | R-WP4 Tile/Raster/Rect/Contour/ContourFilled | 本地候选 | 审查前 R renderer 全量 98/98；审查修复后 family 8 定向 6/6、capability matrix 2/2、前端合同 6/6、隔离家族 API、浏览器 14/14、lint/build/diff-check 通过，独立复审 `CLOSED`、0 HIGH/MEDIUM。保留 Tile/Raster/Rect 的旧 `kind=patch`、GID 和 role，Contour/ContourFilled 使用专用 kind/adapter；mapped fill/edge 由 scale/mappable 管理，Raster 不开放边框 setter，连续 contour 支持 `cmap/vmin/vmax`，`levels/x/y/z/bins/breaks` 只读。函数型 breaks JSON 安全，旧无版本 manifest/GID-only editLog 可重放；非法结构和 mixed batch 零持久化，保存刷新、撤销重做、导出后继续编辑与快照恢复均有隔离证据 |
 | R-WP4 Segment/Curve | 本地候选 | 完整 R renderer 111/111、NA 行与同色前继/后继定向 3/3、隔离家族 API、identity v2 compatibility、浏览器 14/14、lint/build/diff-check 通过。保留旧 `r.layer.N`、line kind、role 和 v2 identity；只开放未被 mapping/scale 控制的线样式，端点、曲率和 arrow 结构只读，不生成无依据 arrow child/text relation。SVG 仅对 geom 实际可绘制行按真实 panel 绘制顺序领取完整 body/arrow 序列，统一改色后 `r.layer.18` 的 4 个图元和 `r.layer.19` 的 3 个图元仍保持可选择；候选不足或顺序不完整继续 fail-closed。非法结构、mapped override 和 mixed batch 零持久化，保存刷新、撤销重做、导出后继续编辑与快照恢复均有隔离证据 |
+| R-WP5 scale/guide/facet/layout | 本地候选 | 离散 scale 保留 label/limits/breaks/drop/NA/guide 语义，连续 color/fill scale 与 mappable/colorbar 分开关联；字符型 `colourbar/colorbar`、隐藏恢复、多 guide 独立标题及标题 SVG 样式已收敛，显式 scale 的图例条目改名不再因重建 scale 导致身份漂移。旧 continuous absolute-index alias 仅兼容已知旧字段，伪造稳定身份拒绝；R 跨 Figure relation 要求共享稳定字段且 legacy score fallback 不得绕过冲突。facet 独立物理 bounds 明确只读。完整 R renderer 124/124、隔离 API 3/3、浏览器 6/6、R 语义黄金样例 14/14、identity v2 compatibility、TypeScript 216 项、lint 通过，最终独立复审 0 HIGH/MEDIUM。一次 Windows R `0xC0000005` 启动崩溃仅作运行时偶发记录，隔离重跑完整通过，不作为放宽门禁的理由 |
 | patch/全渲染事务保护 | 通过 | standalone patch、standalone full render 与项目 full render 均由服务端按返回 manifest/renderer 决定；拒绝批次不改变 revision、session、项目脚本、Figure、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |

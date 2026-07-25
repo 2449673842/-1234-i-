@@ -234,7 +234,7 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 | 公开宣传页与注册门禁 | 已实现，邮箱生产通道待配置 | 匿名访问先进入宣传页；启用邮箱验证后，新账号必须完成六位验证码验证才会获得会话；现有账号兼容迁移；安全文案隐藏内部防护细节 |
 | 图形能力展厅 | 本地候选 | 作为帮助中心同级站内页面展示 11 个带能力边界的固定模拟数据样例，其中包含 LnRR 排序图和主项目结构 2 x 2 组合图；没有未经真实验收的样例被标为稳定支持 |
 | Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选 WP6 六个复杂对象家族已有专用语义，其中网络图/路径图/SEM 依赖显式关系声明，不承诺按外观自动识别任意第三方图示；完成全部门禁和部署前不视为线上能力 |
-| R 渲染与语义编辑 | R-WP0-WP3 完成；R-WP4 九类家族本地候选已合入，当前批次待复验 | ggplot2 主链路可用；patch mode 服务端权威、失败零持久化、identity v2 和运行时 parity 已验证。R-WP4 九类家族均有专用能力边界；最新 Segment/Curve 保留旧 GID/role，端点、曲率和 arrow 结构只读，mapped 样式归 scale 所有，不推断 arrow child 或文本关系。多个线家族统一改色或可见行混合 NA 行时，SVG 仍按 panel 绘制顺序保留各自 GID。完整 R renderer 111/111、隔离浏览器 14/14、家族权限和旧身份兼容通过；当前批次总门禁完成前不标记为生产能力，下一工作包为 R-WP5 |
+| R 渲染与语义编辑 | R-WP0-WP5 本地候选已合入，当前批次待复验 | ggplot2 主链路可用；patch mode 服务端权威、失败零持久化、identity v2 和运行时 parity 已验证。R-WP4 九类家族均有专用能力边界；R-WP5 已为离散/连续 scale、legend/guide、colorbar 与 facet layout 建立显式身份和关系，单 facet 不会伪装成可独立修改物理 bounds。完整 R renderer 124/124、R-WP5 API 3/3、浏览器 6/6、R 语义黄金样例 14/14、旧 identity v2 兼容和独立复审 0 HIGH/MEDIUM 通过；当前批次总门禁完成前不标记为生产能力，下一工作包为 R-WP6 |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |
 | 字体/颜色/线条编辑 | 已实现 | 支持单对象、语义分组、整图和跨 Figure 作用域 |
@@ -387,7 +387,7 @@ docs/platform-capability/UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md
 
 `UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md` 专门处理属性编辑、布局中心、组件中心、配色中心和字体中心的交叉属性与精细度不一致。网页统一版已完成 PropertyDescriptor、capability projection、严格 resolver 和共同 Draft 语义的主要迁移；2026-07-16 候选继续补齐数值自动暂存、字体格式刷、选中子图自动跟随、图例间距、散点比例缩放和保持尺寸的垂直行间距。旧项目兼容路径和 legacy 控件尚未删除。
 
-`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。R-WP0-WP4 已完成本地候选；R-WP4 九类家族均已建立专用能力边界，最新 Segment/Curve 保留旧身份并将端点、曲率和 arrow 结构设为只读。下一步进入 R-WP5，收敛 scale、guide、facet 与布局关系；网络图、路径图和 SEM 专用语义仍按后续工作包推进。
+`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。R-WP0-WP5 已完成本地候选；R-WP5 已收敛 scale、guide、facet 与共享布局关系，并继续拒绝无法证明的单 facet 物理 bounds。下一步进入 R-WP6，处理文本、annotation、拖动与复杂坐标；网络图、路径图和 SEM 专用语义仍按后续工作包推进。
 
 当前专项方案已补充“能力增强列车”：每项能力必须依次证明 renderer 事实、对象身份、属性能力、目标解析、PatchPlan、Figure 事务、项目级持久化以及 Python/R/真实项目回归。禁止从协议设计直接跳到默认启用。
 
@@ -553,3 +553,5 @@ npm run test:help-center-smoke
 同一候选把编辑器 `.py/.R` 拖放范围从代码面板扩展到整个工作区，预览页拖入脚本后自动切到代码页；不支持的文件仅记录提示，不覆盖当前脚本。当前定向证据为展厅单元 5/5、展厅隔离浏览器、MCP 安全 4/4、MCP 隔离真实 UI、脚本拖放隔离浏览器和 TypeScript 全部通过。该候选尚未提交、推送或部署，展厅“立即体验”仍进入现有项目创建流程，不代表免注册可编辑 Demo 已完成。
 
 `2026-07-24 00:53:29 +08:00` 完成 R-WP4 GeomSegment/Curve 本地候选。renderer 以专用 adapter 表达端点、曲率和 arrow 只读结构，并在真实 panel 内对 geom 实际可绘制行按图层绘制顺序绑定完整 body/arrow 序列；Step、Freqpoly、Segment 和 Curve 批量改为同色或可见行混合 NA 行时不再丢失 Segment/Curve 的 SVG GID。完整 R renderer 111/111、真实浏览器 14/14、家族 patch authority、identity v2 compatibility、lint、build 和 diff-check 通过。当前未推送、未部署，R-WP5 尚未开始。
+
+`2026-07-25 20:33:34 +08:00` 完成 R-WP5 独立审查收敛。除 scale/guide/facet、多 guide 标题与 SVG 样式隔离外，旧 continuous absolute-index alias 现在只容忍已知变化字段，伪造 stableKey/semantic/series/aesthetic 证据拒绝；R 跨 Figure relation 必须共享至少一个稳定字段，legacy score fallback 不能绕过冲突。完整 R renderer 124/124、隔离 API 3/3、真实浏览器 6/6、R 语义黄金样例 14/14、identity v2 compatibility、TypeScript 216 项和 lint 通过；最终独立复审 0 HIGH/MEDIUM。当前未推送、未部署，下一工作包为 R-WP6。
