@@ -618,6 +618,15 @@ sem.fit_annotation
 - 包未安装时诊断明确，不能导致整个工作区空白或历史损坏。
 - adapter 关闭后回到原有预览/导出或只读路径。
 
+**2026-07-26 本地候选证据**
+
+- 固定 renderer 镜像当前未安装 `ggrepel`、`ggnewscale`、`sf`、`ggraph`、`igraph`、`tidygraph`、`semPlot` 或 `DiagrammeR`。R-WP8 因此完成 Shadow/readonly 边界，不把缺少版本固定和专用 replay adapter 的对象虚报为可编辑。
+- runtime inventory 使用 `find.package()` 和 `packageVersion()` 只读报告上述包的安装状态，不加载命名空间。缺包脚本返回结构化 `missing_package` 诊断，包含包名且不泄露本地路径。
+- `GeomTextRepel/GeomLabelRepel` 和原生 `GeomNode*/GeomEdge*` 在可渲染环境中保留预览/导出结果，但 manifest 明确输出 `extensionPackage`、`extensionSupport=shadow_unsupported`、空 `editable/propertyCapabilities`。未带 `scifigure-sem-v1` marker 的 ggraph lookalike 不升级为 diagram 语义。
+- `ggnewscale` 或重命名 aesthetic 进入 coverage report 的独立 unsupported 条目，不与当前 color/fill scale 合并。`CoordSf` 普通已证明样式保持既有能力，但位置 patch 在无投影逆变换证据时 readonly；合法颜色与非法位置组成 mixed batch 时 setter 前整批拒绝。
+- base R/grid 输出继续支持预览和导出，manifest `objects=[]`、`backendPatch=false`。对象 patch、CoordSf mixed batch 和缺包失败均不增加 revision，不写 session、project Figure、history 或 render cache。
+- 新增 4 个合成 Shadow fixture、7 个 renderer 边界测试和隔离 API smoke。R-WP8 7/7、Python/R capability matrix、R-WP7 10/10、旧 R 身份 4/4、identity v2 API、R-WP7 API/Chromium、R security precheck、renderer image contract、完整 R semantic Chromium、lint 和 diff-check 通过。当前未推送、未部署；下一工作包为 R-WP9。
+
 ### R-WP9：完整用户链路、性能与可观测性
 
 **新增完整 E2E**

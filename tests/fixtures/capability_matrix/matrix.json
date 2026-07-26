@@ -301,6 +301,36 @@
       ]
     },
     {
+      "id": "r_ggrepel_shadow",
+      "file": "r/ggrepel_shadow.R",
+      "minKindCounts": { "unsupported": 2 },
+      "requiredRoles": ["ggplot_GeomTextRepel", "ggplot_GeomLabelRepel"],
+      "requiredUnsupportedClasses": ["GeomTextRepel", "GeomLabelRepel"]
+    },
+    {
+      "id": "r_ggnewscale_shadow",
+      "file": "r/ggnewscale_shadow.R",
+      "minKindCounts": { "collection": 1 },
+      "requiredRoles": ["ggplot_GeomPoint"],
+      "requiredUnsupportedClasses": ["ggnewscale_or_renamed_aesthetic"]
+    },
+    {
+      "id": "r_coord_sf_shadow",
+      "file": "r/coord_sf_shadow.R",
+      "minKindCounts": { "collection": 1, "text": 1 },
+      "requiredRoles": ["ggplot_GeomPoint", "ggplot_text_data"],
+      "requiredCoordinateDiagnostics": [
+        { "class": "CoordSf", "status": "shadow_unsupported" }
+      ]
+    },
+    {
+      "id": "r_ggraph_shadow",
+      "file": "r/ggraph_shadow.R",
+      "minKindCounts": { "unsupported": 2 },
+      "requiredRoles": ["ggplot_GeomEdgePath", "ggplot_GeomNodePoint"],
+      "requiredUnsupportedClasses": ["GeomEdgePath", "GeomNodePoint"]
+    },
+    {
       "id": "r_base_preview",
       "file": "r/base_r_preview.R",
       "semanticSupport": "preview_only",

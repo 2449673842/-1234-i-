@@ -3,7 +3,7 @@
 > 状态：当前有效  
 > 更新时间：2026-07-30 04:35:45 +08:00
 > 证据截止时间：2026-07-30 04:35:45 +08:00
-> 复核范围：隔离集成分支 `deploy/prod-integration-v3` 与生产 release `e35f4a4-jd22`；候选尚未部署
+> 复核范围：隔离集成分支 `deploy/prod-integration-v3` 与生产 release `e35f4a4-jd22`；含 Python WP7 特殊 axes、全渲染事务边界、旧 editLog 兼容，以及 R-WP0-WP8 对象身份、事务边界、显式 diagram 语义、扩展包/base R Shadow 边界；候选尚未部署
 > 适用范围：产品能力、前后端协议、Python/R 渲染、编辑与导出链路
 
 ## 1. 总体设计
@@ -729,6 +729,14 @@ R 不从图形外观推断模型结构。脚本必须在图层数据中提供 `.
 
 SVG owner 绑定通常限制在真实 panel clip 内。SEM 常用 `coord_cartesian(clip="off")` 绘制图外关系，可能没有 panel clip group；diagram 场景会从最大有效 panel 边框推导受限范围，普通已建模图层先按原绘制顺序领取通用 owner，显式对象再获得 diagram GID，从而排除图例 key 和图外装饰。只有范围已验证才允许顺序领取；无法证明范围时必须候选精确唯一，否则 unresolved。专项 renderer 10/10、R capability matrix、4 条旧身份兼容、隔离 API 和 Chromium live SVG 正确 tag/样式选择通过；当前未推送、未部署。
 
+### 13.6 R 扩展包和 base R Shadow 边界（2026-07-26 19:26:25 +08:00）
+
+固定 renderer 镜像只声明经过版本固定和镜像校验的 R 包。`ggrepel`、`ggnewscale`、`sf`、`ggraph`、`igraph`、`tidygraph`、`semPlot` 与 `DiagrammeR` 当前不在镜像契约中，因此 runtime inventory 仅以 `find.package()`/`packageVersion()` 报告状态，不加载这些包，也不因开发机偶然安装而开放写回能力。缺包执行返回 `missing_package`、包名和用户可读信息；错误响应只保留公开版本/包状态，不返回 executable、R home、library paths、环境目录、工作目录、临时目录或字体文件路径。
+
+可渲染的 `GeomTextRepel/GeomLabelRepel`、`GeomNode*/GeomEdge*` 对象在 manifest 中携带 `extensionPackage` 与 `extensionSupport=shadow_unsupported`，但 `editable/propertyCapabilities` 为空；预览和导出保留，不能通过普通 text/point/line adapter 绕过。`ggnewscale` 重命名 aesthetic 只进入 unsupported coverage，不会与活跃 color/fill scale 合并。`CoordSf` 的普通已证明样式继续沿用现有 ggplot adapter，但位置字段无可靠投影逆变换时保持 readonly；任一 shadow 拒绝会在 setter 前清空整批 accepted，防止合法颜色先写入。base R/grid 输出保持 `objects=[]`、`backendPatch=false` 的 preview/export-only 合同。
+
+隔离 API 对 CoordSf mixed batch、base R object patch 和缺包失败进行持久化审计：冲突请求 `applied=[]`，revision、session editLog、project Figure editLog/history 和 render cache 不变化。该边界是能力真实性和旧项目安全门禁，不代表上述扩展包已获得专用 adapter。
+
 ## 14. Python/R 对齐表
 
 | 能力 | Python | R | 当前判断 |
@@ -742,7 +750,7 @@ SVG owner 绑定通常限制在真实 panel clip 内。SEM 常用 `coord_cartesi
 | facet/subplot | axes | facet panel | 基本对齐 |
 | annotation 拖拽 | 标准 data/axes/figure 坐标支持 text/arrow/anchor | 线性、flip、X/Y log、圆内 polar 精确逆变换 | 部分对齐，R 不猜测独立箭头 |
 | 网络图/路径图/SEM | 显式 `_scifigure_semantic_gid` 专用语义 | 显式 `scifigure-sem-v1` marker 专用语义 | 协议对齐；两端均不自动推断任意第三方图示 |
-| base R 图形编辑 | 不适用 | 有限 | 未对齐 |
+| base R 图形编辑 | 不适用 | 仅预览/导出 | 未对齐但边界明确 |
 | 任意 SVG 节点写回 | 不承诺 | 不承诺 | 非目标 |
 | 导出 | 已实现 | 已实现转换路径 | 需格式矩阵 |
 

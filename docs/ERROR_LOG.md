@@ -4133,3 +4133,27 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - 没有 panel clip 时先证明最大 panel 边框范围；diagram 场景内普通已建模图层按绘制顺序先领取通用 owner，显式对象再领取 diagram GID。图例和图外装饰被排除，范围无法证明时只接受精确唯一候选。
 - `test_r_wp7_diagram_semantics.py` 10/10，直接要求七类对象关系、科学字段只读、identity drift/mixed batch 拒绝、完整 GID、ASCII `bw6k` 与 Unicode `é` 不碰撞、含 `.` 的跨字段 token 不碰撞、重复完整 identity 拒绝、多顶点 path、同样式 decoy 正确 owner，以及每个专用对象都出现在 SVG。R capability matrix 与旧动态批次/fingerprint 4/4 关键回归通过。
 - 隔离 API 证明合法 revision 1→2、刷新重放稳定；非法 mixed batch 对 project/session/history/cache/export anchor/snapshot 零变化。Chromium 证明 node、segment/path edge、arrow、node label、group 绑定到正确 live SVG tag/样式，专用组件分组无重复，节点配色进入 live SVG，科学字段不暴露。
+
+---
+
+## 2026-07-26 19:26:25 +08:00 R 扩展对象能力不明确，CoordSf 混合补丁会部分应用
+
+**状态与级别**
+
+- 状态：已修复并通过 renderer、隔离 API、能力矩阵、旧身份和真实 Chromium 回归；未推送、未部署。
+- 级别：P1 silent wrong edit 与能力虚报风险。未知扩展 geom 虽然显示为 unsupported，但缺少包/支持状态；`CoordSf` 同批颜色和位置修改会先应用颜色，再在位置确认阶段冲突。
+
+**根因**
+
+- runtime inventory 只列核心 R 包，无法区分扩展包未安装、已安装但无 adapter、或可稳定 replay。
+- unknown geom 只有通用 `unsupportedReason`，前端和能力报告无法明确这是 `ggrepel/ggraph/sf` 的 Shadow 边界。
+- `CoordSf` 位置 readonly 只在 setter/acknowledgement 后发现；此前合法样式已进入 setter，违反 mixed batch 原子性。
+- `ggnewscale` renamed aesthetic 已被发现，但诊断没有 package/status 元数据；base R 虽为 preview-only，缺少同一工作包的持久化零写入证据。
+
+**修复与防复发**
+
+- runtime inventory 使用 `find.package()` 和 `packageVersion()` 只读列出八个 R-WP8 扩展包，不加载命名空间；缺包诊断固定为结构化 `missing_package`，错误响应删除 executable、R home、library paths、环境目录、工作目录、临时目录和字体文件路径。
+- renderer 显式识别 `GeomTextRepel/GeomLabelRepel`、`GeomNode*/GeomEdge*` 与 `GeomSf` 的扩展边界，manifest/coverage report 输出 package 和 `shadow_unsupported`；对象保持空 editable，不复用普通 geom 写回。
+- 在任何 setter 前执行 Shadow resolution；`positionAdapterStatus=shadow_unsupported` 或扩展只读对象命中后，整批 accepted 清空，所有原始补丁进入 rejected/skipped，使用未编辑 baseline 生成 SVG/manifest。
+- 新增 `ggrepel`、`ggnewscale`、`coord_sf`、`ggraph` 四个合成 fixture、7 个 renderer 测试和隔离 API smoke。API 直接读取临时 SQLite，证明拒绝后 session、project Figure、revision、history 和 render cache 不变化；base R object patch 同样零持久化。
+- 防回归门禁包括 `test:r-wp8-api`、R-WP8 7/7、capability matrix、R-WP7 10/10、旧 R 身份 4/4、identity v2 API、R security precheck、renderer image contract、完整 R semantic Chromium、lint 和 `git diff --check`。

@@ -63,7 +63,8 @@ safe_runtime_path <- function(value) {
 }
 
 safe_runtime_package <- function(package_name) {
-  installed <- requireNamespace(package_name, quietly = TRUE)
+  package_path <- tryCatch(find.package(package_name, quiet = TRUE), error = function(e) character())
+  installed <- length(package_path) > 0 && nzchar(as.character(package_path[[1]]))
   version <- if (installed) {
     tryCatch(as.character(utils::packageVersion(package_name)), error = function(e) NULL)
   } else {
@@ -141,7 +142,11 @@ runtime_environment_contract <- function() {
 
 collect_runtime_inventory <- function() {
   required_packages <- c("jsonlite")
-  optional_packages <- c("ggplot2", "svglite", "readxl", "systemfonts", "textshaping")
+  optional_packages <- c(
+    "ggplot2", "svglite", "readxl", "systemfonts", "textshaping",
+    "ggrepel", "ggnewscale", "sf", "ggraph", "igraph", "tidygraph",
+    "semPlot", "DiagrammeR"
+  )
   package_names <- c(required_packages, optional_packages)
   packages <- lapply(package_names, safe_runtime_package)
   names(packages) <- package_names
@@ -194,6 +199,24 @@ collect_runtime_inventory <- function() {
       ok = length(missing_required) == 0,
       missingRequiredPackages = as.list(missing_required)
     )
+  )
+}
+
+public_error_runtime_inventory <- function(inventory) {
+  r_info <- inventory$r %||% list()
+  list(
+    schemaVersion = inventory$schemaVersion %||% "1.0",
+    r = list(
+      version = r_info$version %||% NULL,
+      platform = r_info$platform %||% NULL,
+      arch = r_info$arch %||% NULL,
+      os = r_info$os %||% NULL
+    ),
+    packages = inventory$packages %||% list(),
+    locale = inventory$locale %||% list(),
+    timezone = inventory$timezone %||% NULL,
+    graphics = inventory$graphics %||% list(),
+    checks = inventory$checks %||% list()
   )
 }
 
@@ -421,7 +444,7 @@ if (is.null(script) || !nzchar(script)) {
       message = "R script is required"
     ),
     warningDiagnostics = list(),
-    runtimeInventory = collect_runtime_inventory()
+    runtimeInventory = public_error_runtime_inventory(collect_runtime_inventory())
   ))
   quit(status = 0)
 }
@@ -1165,6 +1188,37 @@ layer_kind <- function(geom) {
   if (geom %in% c("GeomContourFilled")) return("contourf")
   if (geom %in% c("GeomErrorbar", "GeomErrorbarh", "GeomPointrange", "GeomLinerange", "GeomCrossbar")) return("errorbar_container")
   "unsupported"
+}
+
+r_extension_geom_boundary <- function(geom) {
+  if (geom %in% c("GeomTextRepel", "GeomLabelRepel")) {
+    return(list(
+      package = "ggrepel",
+      status = "shadow_unsupported",
+      reason = paste0(
+        geom,
+        " repel layout is preserved for preview/export, but text/style/position replay requires a dedicated ggrepel adapter."
+      )
+    ))
+  }
+  if (grepl("^Geom(Node|Edge)", geom, perl = TRUE)) {
+    return(list(
+      package = "ggraph",
+      status = "shadow_unsupported",
+      reason = paste0(
+        geom,
+        " remains readonly because native ggraph node/edge identity is not equivalent to an explicit scifigure-sem-v1 marker."
+      )
+    ))
+  }
+  if (identical(geom, "GeomSf")) {
+    return(list(
+      package = "sf",
+      status = "shadow_unsupported",
+      reason = "GeomSf projection semantics remain readonly until a version-pinned coordinate and feature identity adapter is verified."
+    ))
+  }
+  NULL
 }
 
 layer_label <- function(geom, index) {
@@ -4658,6 +4712,7 @@ r_layer_structure_signature <- function(layer, plot_mapping = NULL) {
 manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data = NULL) {
   geom <- geom_class(layer)
   diagram <- r_layer_diagram_metadata(layer)
+  extension_boundary <- r_extension_geom_boundary(geom)
   adapter_class <- layer_adapter_class(layer)
   gid <- r_layer_manifest_gid(layer, index)
   layer_key <- r_layer_structure_signature(layer, plot_mapping)
@@ -4779,7 +4834,15 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
     violinplot_container = if (violin_adapter) props else list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
     contour = props,
     contourf = props,
-    unsupported = list(unsupportedReason = paste0("No stable SciFigure write-back adapter for ggplot geom class ", geom, ".")),
+    unsupported = if (!is.null(extension_boundary)) {
+      list(
+        unsupportedReason = extension_boundary$reason,
+        extensionPackage = extension_boundary$package,
+        extensionSupport = extension_boundary$status
+      )
+    } else {
+      list(unsupportedReason = paste0("No stable SciFigure write-back adapter for ggplot geom class ", geom, "."))
+    },
     list()
   )
   if (!is.null(diagram)) {
@@ -4832,7 +4895,13 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
       axesIndex = 0,
       zorder = index,
       layerSignature = layer_key
-    ), if (!is.null(diagram)) list(callName = "SciFigure.semantic_gid", diagram = diagram) else list()),
+    ), if (!is.null(diagram)) {
+      list(callName = "SciFigure.semantic_gid", diagram = diagram)
+    } else if (!is.null(extension_boundary)) {
+      list(package = extension_boundary$package)
+    } else {
+      list()
+    }),
     semanticCoverage = if (!is.null(diagram)) list(
       family = "diagram",
       status = "dedicated",
@@ -7319,6 +7388,63 @@ validate_r_diagram_edit_resolution <- function(manifest, resolution) {
   list(accepted = accepted, rejected = rejected, warnings = warnings)
 }
 
+validate_r_shadow_edit_resolution <- function(manifest, resolution) {
+  objects <- manifest$objects %||% list()
+  object_by_id <- setNames(objects, vapply(objects, function(obj) as.character(obj$id %||% ""), character(1)))
+  accepted <- list()
+  rejected <- resolution$rejected %||% list()
+  warnings <- resolution$warnings %||% list()
+
+  for (entry in resolution$accepted %||% list()) {
+    gid <- as.character(unwrap_manifest_value(entry$gid) %||% "")
+    prop <- as.character(unwrap_manifest_value(entry$prop) %||% "")
+    if (identical(gid, "global")) {
+      accepted[[length(accepted) + 1L]] <- entry
+      next
+    }
+    object <- object_by_id[[gid]] %||% NULL
+    shadow_reason <- NULL
+    warning_type <- "unsupported_prop"
+    if (!is.null(object)) {
+      if (
+        identical(prop, "position") &&
+        identical(as.character(object$currentProps$positionAdapterStatus %||% ""), "shadow_unsupported")
+      ) {
+        shadow_reason <- as.character(
+          object$currentProps$positionUnsupportedReason %||%
+            paste0(gid, ".position is disabled for the current R coordinate system.")
+        )
+        warning_type <- "unsupported_coordinate"
+      } else if (
+        identical(as.character(object$kind %||% ""), "unsupported") ||
+        identical(as.character(object$currentProps$extensionSupport %||% ""), "shadow_unsupported")
+      ) {
+        shadow_reason <- as.character(
+          object$currentProps$unsupportedReason %||%
+            paste0(gid, ".", prop, " belongs to a readonly R extension object.")
+        )
+      }
+    }
+    if (is.null(shadow_reason)) {
+      accepted[[length(accepted) + 1L]] <- entry
+      next
+    }
+
+    requested_entry <- entry[[".__requestedEntry"]] %||% entry
+    patch_index <- suppressWarnings(as.integer(entry[[".__patchIndex"]] %||% -1L))
+    warnings[[length(warnings) + 1L]] <- list(
+      type = warning_type,
+      gid = as.character(unwrap_manifest_value(requested_entry$gid) %||% gid),
+      prop = prop,
+      patchIndex = patch_index,
+      message = shadow_reason
+    )
+    rejected[[length(rejected) + 1L]] <- requested_entry
+  }
+
+  list(accepted = accepted, rejected = rejected, warnings = warnings)
+}
+
 manifest_values_equal <- function(prop, actual, expected) {
   actual <- unwrap_manifest_value(actual)
   expected <- unwrap_manifest_value(expected)
@@ -8294,7 +8420,9 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
   unsupported_artists <- lapply(unsupported_objects, function(obj) list(
     class = as.character(obj$source$artistClass %||% "unknown_ggplot_geom"),
     count = 1,
-    reason = as.character(obj$currentProps$unsupportedReason %||% "No stable SciFigure write-back adapter.")
+    reason = as.character(obj$currentProps$unsupportedReason %||% "No stable SciFigure write-back adapter."),
+    package = obj$currentProps$extensionPackage %||% NULL,
+    status = obj$currentProps$extensionSupport %||% "unsupported"
   ))
   extension_scales <- Filter(function(scale_obj) {
     aesthetics <- as.character(scale_obj$aesthetics %||% character())
@@ -8304,6 +8432,8 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
     unsupported_artists[[length(unsupported_artists) + 1]] <- list(
       class = "ggnewscale_or_renamed_aesthetic",
       count = length(extension_scales),
+      package = "ggnewscale",
+      status = "shadow_unsupported",
       reason = "Multiple renamed aesthetics require a dedicated scale-to-layer adapter; SciFigure will not merge them into the active color/fill scale."
     )
   }
@@ -8515,6 +8645,7 @@ result <- tryCatch({
           renderer_patch_warnings <- source_patch_warnings
           r_edit_resolution <- resolve_r_edit_entries(baseline_manifest, source_entries)
           r_edit_resolution <- validate_r_diagram_edit_resolution(baseline_manifest, r_edit_resolution)
+          r_edit_resolution <- validate_r_shadow_edit_resolution(baseline_manifest, r_edit_resolution)
           if (length(r_edit_resolution$rejected %||% list()) > 0) {
             r_edit_resolution$accepted <- list()
             r_edit_resolution$rejected <- source_entries
@@ -8616,7 +8747,7 @@ result <- tryCatch({
     traceback = paste(utils::capture.output(traceback()), collapse = "\n"),
     diagnostic = runtime_diagnostic(e, payload),
     warningDiagnostics = runtime_warning_diagnostics,
-    runtimeInventory = runtime_inventory,
+    runtimeInventory = public_error_runtime_inventory(runtime_inventory),
     timingMs = timing_breakdown$totalMs,
     timingBreakdown = timing_breakdown
   )

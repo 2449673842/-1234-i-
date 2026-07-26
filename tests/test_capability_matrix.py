@@ -206,6 +206,27 @@ def validate_entry(testcase, entry, manifests):
             relation["equals"],
             f"{entry['id']}: invalid relation {relation['from']}.{relation['field']}",
         )
+    unsupported_classes = {
+        row.get("class")
+        for manifest in manifests
+        for row in manifest.get("coverageReport", {}).get("unsupportedArtists", [])
+    }
+    for class_name in entry.get("requiredUnsupportedClasses", []):
+        testcase.assertIn(
+            class_name,
+            unsupported_classes,
+            f"{entry['id']}: missing unsupported class {class_name}",
+        )
+    coordinate_diagnostics = [
+        row
+        for manifest in manifests
+        for row in manifest.get("coverageReport", {}).get("coordinateDiagnostics", [])
+    ]
+    for required in entry.get("requiredCoordinateDiagnostics", []):
+        testcase.assertTrue(
+            any(all(row.get(key) == value for key, value in required.items()) for row in coordinate_diagnostics),
+            f"{entry['id']}: missing coordinate diagnostic {required}; got {coordinate_diagnostics}",
+        )
 
 
 def validate_r_preview_only_entry(testcase, entry, manifest):
