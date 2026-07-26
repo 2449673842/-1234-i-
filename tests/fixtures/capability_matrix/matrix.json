@@ -257,6 +257,50 @@
       ]
     },
     {
+      "id": "r_network_path_sem",
+      "file": "r/network_path_sem.R",
+      "minKindCounts": { "collection": 2, "line": 2, "patch": 1, "text": 4 },
+      "requiredIds": [
+        "r.diagram.node.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9ub2Rl.a_bGF0ZW50X2E",
+        "r.diagram.node.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9ub2Rl.a_b2JzZXJ2ZWRfYg",
+        "r.diagram.edge.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9lZGdl.a_bGF0ZW50X2FfdG9fb2JzZXJ2ZWRfYg",
+        "r.diagram.edge.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9lZGdl.a_bGF0ZW50X2FfcGF0aF90b19vYnNlcnZlZF9i",
+        "r.diagram.arrow.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9hcnJvdw.a_YXJyb3dfYV9i",
+        "r.diagram.text.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9ub2RlX2xhYmVs.a_bGFiZWxfbGF0ZW50X2E",
+        "r.diagram.text.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9ub2RlX2xhYmVs.a_bGFiZWxfb2JzZXJ2ZWRfYg",
+        "r.diagram.text.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9jb2VmZmljaWVudF9sYWJlbA.a_Y29lZl9hX2I",
+        "r.diagram.text.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9maXRfYW5ub3RhdGlvbg.a_Zml0X3N1bW1hcnk",
+        "r.diagram.group.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9ncm91cA.a_bWVhc3VyZW1lbnRfbW9kZWw"
+      ],
+      "requiredRoles": [
+        "diagram_node",
+        "diagram_edge",
+        "diagram_arrow",
+        "diagram_node_label",
+        "diagram_coefficient_label",
+        "diagram_fit_annotation",
+        "diagram_group"
+      ],
+      "relations": [
+        { "from": "r.diagram.node.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9ub2Rl.a_bGF0ZW50X2E", "field": "diagramId", "equals": "sem.demo" },
+        { "from": "r.diagram.node.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9ub2Rl.a_bGF0ZW50X2E", "field": "nodeId", "equals": "latent_a" },
+        { "from": "r.diagram.node.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9ub2Rl.a_b2JzZXJ2ZWRfYg", "field": "nodeId", "equals": "observed_b" },
+        { "from": "r.diagram.edge.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9lZGdl.a_bGF0ZW50X2FfdG9fb2JzZXJ2ZWRfYg", "field": "edgeId", "equals": "latent_a_to_observed_b" },
+        { "from": "r.diagram.edge.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9lZGdl.a_bGF0ZW50X2FfdG9fb2JzZXJ2ZWRfYg", "field": "sourceNodeId", "equals": "latent_a" },
+        { "from": "r.diagram.edge.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9lZGdl.a_bGF0ZW50X2FfdG9fb2JzZXJ2ZWRfYg", "field": "targetNodeId", "equals": "observed_b" },
+        { "from": "r.diagram.edge.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9lZGdl.a_bGF0ZW50X2FfcGF0aF90b19vYnNlcnZlZF9i", "field": "edgeId", "equals": "latent_a_path_to_observed_b" },
+        { "from": "r.diagram.edge.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9lZGdl.a_bGF0ZW50X2FfcGF0aF90b19vYnNlcnZlZF9i", "field": "sourceNodeId", "equals": "latent_a" },
+        { "from": "r.diagram.edge.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9lZGdl.a_bGF0ZW50X2FfcGF0aF90b19vYnNlcnZlZF9i", "field": "targetNodeId", "equals": "observed_b" },
+        { "from": "r.diagram.arrow.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9hcnJvdw.a_YXJyb3dfYV9i", "field": "edgeId", "equals": "latent_a_to_observed_b" },
+        { "from": "r.diagram.arrow.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9hcnJvdw.a_YXJyb3dfYV9i", "field": "sourceNodeId", "equals": "latent_a" },
+        { "from": "r.diagram.arrow.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9hcnJvdw.a_YXJyb3dfYV9i", "field": "targetNodeId", "equals": "observed_b" },
+        { "from": "r.diagram.text.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9ub2RlX2xhYmVs.a_bGFiZWxfbGF0ZW50X2E", "field": "nodeId", "equals": "latent_a" },
+        { "from": "r.diagram.text.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9ub2RlX2xhYmVs.a_bGFiZWxfb2JzZXJ2ZWRfYg", "field": "nodeId", "equals": "observed_b" },
+        { "from": "r.diagram.text.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9jb2VmZmljaWVudF9sYWJlbA.a_Y29lZl9hX2I", "field": "edgeId", "equals": "latent_a_to_observed_b" },
+        { "from": "r.diagram.group.a_c2Vt.a_c2VtLmRlbW8.a_ZGlhZ3JhbV9ncm91cA.a_bWVhc3VyZW1lbnRfbW9kZWw", "field": "diagramObjectId", "equals": "measurement_model" }
+      ]
+    },
+    {
       "id": "r_base_preview",
       "file": "r/base_r_preview.R",
       "semanticSupport": "preview_only",

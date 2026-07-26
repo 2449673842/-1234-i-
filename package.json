@@ -22,6 +22,8 @@
     "test:r-identity-v2-compatibility": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/r_identity_v2_compatibility_smoke.mjs",
     "test:r-wp5-api": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/r_wp5_scale_guide_facet_smoke.mjs",
     "test:r-wp5-ui": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/r_wp5_scale_guide_facet_smoke.mjs",
+    "test:r-wp7-api": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/r_wp7_diagram_semantics_persistence_smoke.mjs",
+    "test:r-wp7-ui": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/r_wp7_diagram_semantics_smoke.mjs",
     "test:r-runtime-consistency": "node tests/api/r_runtime_consistency_smoke.mjs",
     "test:r-renderer-image-contract": "node tests/deployment/r_wp3_renderer_image_contract.mjs",
     "test:r-runtime-parity": "node tests/api/r_runtime_parity_smoke.mjs",

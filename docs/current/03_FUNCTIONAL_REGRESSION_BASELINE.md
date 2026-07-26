@@ -3,7 +3,7 @@
 > 状态：当前有效，所有平台功能升级的合并阻断基线
 > 最后修改时间：2026-07-30 16:08:23 +08:00
 > 证据截止时间：2026-07-30 16:08:23 +08:00
-> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 与 R-WP0-WP3 基线；R-WP4 九类家族与 R-WP5 scale/guide/facet/layout 源分支能力已合入，当前批次复验待完成
+> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 与 R-WP0-WP3 基线；R-WP4 九类家族、R-WP5 scale/guide/facet/layout、R-WP6 文本/annotation/复杂坐标和 R-WP7 diagram 源分支能力已合入，当前批次复验待完成
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -70,6 +70,7 @@
 | R-WP4 Segment/Curve | 本地候选 | 完整 R renderer 111/111、NA 行与同色前继/后继定向 3/3、隔离家族 API、identity v2 compatibility、浏览器 14/14、lint/build/diff-check 通过。保留旧 `r.layer.N`、line kind、role 和 v2 identity；只开放未被 mapping/scale 控制的线样式，端点、曲率和 arrow 结构只读；有结构化来源时箭头作为父线对象拥有的显式只读 child 输出，不生成猜测的 text relation。SVG 仅对 geom 实际可绘制行按真实 panel 绘制顺序领取完整 body/arrow 序列，统一改色后 `r.layer.18` 的 4 个图元和 `r.layer.19` 的 3 个图元仍保持可选择；候选不足或顺序不完整继续 fail-closed。非法结构、mapped override 和 mixed batch 零持久化，保存刷新、撤销重做、导出后继续编辑与快照恢复均有隔离证据 |
 | R-WP5 scale/guide/facet/layout | 本地候选 | 离散 scale 保留 label/limits/breaks/drop/NA/guide 语义，连续 color/fill scale 与 mappable/colorbar 分开关联；字符型 `colourbar/colorbar`、隐藏恢复、多 guide 独立标题及标题 SVG 样式已收敛，显式 scale 的图例条目改名不再因重建 scale 导致身份漂移。旧 continuous absolute-index alias 仅兼容已知旧字段，伪造稳定身份拒绝；R 跨 Figure relation 要求共享稳定字段且 legacy score fallback 不得绕过冲突。facet 独立物理 bounds 明确只读。完整 R renderer 124/124、隔离 API 3/3、浏览器 6/6、R 语义黄金样例 14/14、identity v2 compatibility、TypeScript 216 项、lint 通过，最终独立复审 0 HIGH/MEDIUM。一次 Windows R `0xC0000005` 启动崩溃仅作运行时偶发记录，隔离重跑完整通过，不作为放宽门禁的理由 |
 | R-WP6 文本/annotation/复杂坐标 | 本地候选 | `ggplot_text_data/annotation/stat` 身份分离，stat 只读；文本、字体、对齐、旋转、lineheight、plotmath/多行和 mapped-label fill 保持通过。Cartesian/flip/log/panel 内 polar 位置可逆，CoordSf、第三方 coord 和不可逆位置 shadow/readonly。R `currentProps.position` 与 renderer acknowledgement 对齐；后端拒绝时前端保留待确认拖动和视觉位置、零持久化、禁止重复提交，成功后才清空并形成一次历史。R renderer 125 场景、capability matrix 2/2、R semantic 19/19、drag 扩展失败/重试、组件容器 42/42、identity v2、历史/导出/快照恢复、1720 项单测、lint/build/diff-check 通过；未推送、未部署 |
+| R-WP7 网络图/路径图/SEM | 本地候选 | 显式 `scifigure-sem-v1` marker 输出七类 `diagram_*` role 和完整 node/edge relation；未标记 lookalike 不升级。GID 的四个身份字段均使用 Base64URL，ASCII `a_` 与非 ASCII `b_` 命名空间分离，字段边界无歧义，重复完整 identity 在 manifest 构建期拒绝；同 marker 多行保留为单个有序 path。科学文本、系数、p 值、拟合指标和拓扑只读，非法 mixed batch renderer/API 原子拒绝且 project/session/history/cache/export anchor/snapshot 零持久化。`clip="off"` 时仅在可证明 panel 范围内按图层顺序绑定，范围不可信则精确唯一或 fail-closed。renderer 10/10、R capability matrix、旧动态批次/fingerprint 4/4、隔离 API 和 Chromium live SVG 正确几何选择均通过；未推送、未部署 |
 | patch/全渲染事务保护 | 通过 | standalone patch、standalone full render 与项目 full render 均由服务端按返回 manifest/renderer 决定；拒绝批次不改变 revision、session、项目脚本、Figure、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |
@@ -450,6 +451,7 @@ pie/wedge 工作包当时的完整 Vitest 基线为 1006/1006；其最终映射�
 | `b20b103` | 本地既有 Python renderer | complex artist、结构身份漂移 | 2026-07-19 22:26 +08:00 | 26/26 + 7/7 PASS |
 | `b20b103` | 隔离 API / 临时数据目录 | `python_diagram_semantics_persistence_smoke.mjs` | 2026-07-19 22:43 +08:00 | PASS；合法样式、科学结构拒绝、拓扑漂移、关系缺失、混合批次与篡改快照零持久化 |
 | `b20b103` | Chromium 隔离服务 | `python_diagram_semantics_smoke.mjs`、`python_diagram_cross_figure_smoke.mjs` | 2026-07-19 22:49 +08:00 | PASS；完整用户链路和三类关系 fail-closed 场景通过 |
+| 工作区 R-WP7 本地候选 | R renderer / 隔离 API / Chromium | `test_r_wp7_diagram_semantics.py`、`r_wp7_diagram_semantics_persistence_smoke.mjs`、`r_wp7_diagram_semantics_smoke.mjs` | 2026-07-26 18:19 +08:00 | PASS；完整 R diagram identity、ASCII/Unicode 命名空间与字段边界隔离、重复 GID 拒绝、多顶点 path、同样式 decoy 正确 owner、科学字段只读、合法重放和 mixed batch 零持久化通过 |
 | `b20b103` | Vitest | `npm test` | 2026-07-19 22:50 +08:00 | 145 文件、1078/1078 PASS |
 | `b20b103` | 共享协议与组合链路 | R renderer 31/31、R semantic 5/5、R 风险预检、组合代码项目 | 2026-07-19 22:27 +08:00 | PASS |
 | `b20b103` | TypeScript / Vite | `npm run lint`、`npm run build`、`git diff --check` | 2026-07-19 22:50 +08:00 | PASS；仅既有 bundle/CJS 警告 |

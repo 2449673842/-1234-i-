@@ -1,8 +1,8 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0-R-WP3、R-WP4 九类图元家族、R-WP5 scale/guide/facet/layout 与 R-WP6 文本/annotation/复杂坐标本地候选已合入当前集成分支；当前批次复验待完成，下一工作包为 R-WP7
+> 状态：R-WP0-R-WP3、R-WP4 九类图元家族、R-WP5 scale/guide/facet/layout、R-WP6 文本/annotation/复杂坐标与 R-WP7 网络图/路径图/SEM 专用语义本地候选已合入当前集成分支；当前批次复验待完成，下一工作包为 R-WP8
 > 最后修改时间：2026-07-30 16:08:23 +08:00
-> 当前部署状态：R-WP0-R-WP6 已完成子家族仅在本地验证；未推送、未部署
+> 当前部署状态：R-WP0-R-WP7 已完成子家族仅在本地验证；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 现状入口：`docs/R_COMPATIBILITY_PLAN.md`
 > 适用范围：R/ggplot2 渲染、语义图元、对象身份、patch 写回、Draft、历史、导出、复杂坐标、网络图/路径图/SEM 与生产一致性
@@ -582,6 +582,15 @@ sem.fit_annotation
 - 调整布局不修改模型数据和系数。
 - 导出和快照恢复保持对象关系。
 - 缺少稳定键的图明确提示部分支持，不猜测。
+
+**2026-07-26 本地候选证据**
+
+- R renderer 接受 `.scifigure_semantic_gid` / `scifigure-sem-v1` 显式声明，输出 `diagram_node/edge/arrow/node_label/coefficient_label/fit_annotation/group` 七类 role，并携带 `diagramId/diagramType/diagramObjectId/nodeId/edgeId/sourceNodeId/targetNodeId` 稳定关系；未标记 lookalike 保持通用 ggplot 对象。
+- 专用对象只开放 manifest 可证明的视觉能力。路径系数、p 值、拟合指标、显著性、节点/边身份和拓扑字段不进入 `editable/propertyCapabilities`；任一非法项与合法样式组成 mixed batch 时，renderer 在应用前整批拒绝。
+- GID 纳入 diagram type、diagram id、完整 semantic role 和 object id；所有字段内容均使用 Base64URL，ASCII token 使用 `a_`、非 ASCII token 使用 `b_`，类型命名空间和字段边界均无歧义。manifest 构建期拒绝重复完整 diagram identity 生成的 GID。相同 marker 的多行按原顺序保留为一个语义图层，多顶点 `GeomPath` 不拆断。
+- 文本层重建保留 diagram metadata 和结构身份。`clip="off"` 不产生 panel clip group 时，diagram 场景先从可证明的 panel 边框建立受限几何范围，普通已建模图层按绘制顺序领取通用 owner，显式对象再获得 diagram GID；无法证明 panel 范围时要求候选精确唯一并 fail-closed。
+- renderer 专项 10/10、R capability matrix、4 个旧 fingerprint/动态批次关键回归通过；新增 ASCII `bw6k` 与 Unicode `é` 的跨命名空间碰撞、含 `.` 字段边界碰撞，以及重复完整 diagram identity 构建期拒绝回归。隔离 API 证明合法样式 revision 1→2 并可刷新重放；非法 mixed batch 对 project/session/history/cache/export anchor/snapshot 零持久化。隔离 Chromium 证明 node、segment edge、多顶点 path edge、arrow、node label、group 可从 live SVG 选择且绑定到正确 tag/样式，专用组件组无重复，节点配色进入真实 SVG，科学字段不暴露。
+- 当前仅支持显式关系声明的 ggplot2 图层；未承诺自动识别任意 `ggraph`、`semPlot`、DiagrammeR 或 grid grob。未推送、未部署；下一工作包为 R-WP8。
 
 **回滚单位**
 

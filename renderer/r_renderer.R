@@ -796,6 +796,297 @@ layer_position_class <- function(layer) {
   classes[[1]]
 }
 
+R_DIAGRAM_TYPES <- c("network", "path", "sem")
+R_DIAGRAM_ROLE_MAP <- list(
+  node = "diagram_node",
+  edge = "diagram_edge",
+  arrow = "diagram_arrow",
+  node_label = "diagram_node_label",
+  coefficient_label = "diagram_coefficient_label",
+  fit_annotation = "diagram_fit_annotation",
+  group = "diagram_group"
+)
+
+r_semantic_identifier <- function(value, field) {
+  text <- trimws(as.character(value %||% "")[[1]])
+  if (!nzchar(text)) stop(paste0(field, " must be a non-empty identifier"))
+  if (nchar(text, type = "chars") > 256 || grepl("[[:cntrl:]]", text, perl = TRUE)) {
+    stop(paste0(field, " contains unsupported characters or is too long"))
+  }
+  text
+}
+
+r_diagram_semantic_metadata <- function(
+  diagram_id,
+  role,
+  object_id,
+  diagram_type = "sem",
+  node_id = NULL,
+  edge_id = NULL,
+  source_node_id = NULL,
+  target_node_id = NULL,
+  layout_editable = FALSE
+) {
+  diagram_id_text <- r_semantic_identifier(diagram_id, "diagram_id")
+  role_text <- tolower(r_semantic_identifier(role, "role"))
+  object_id_text <- r_semantic_identifier(object_id, "object_id")
+  diagram_type_text <- tolower(r_semantic_identifier(diagram_type, "diagram_type"))
+  if (is.null(R_DIAGRAM_ROLE_MAP[[role_text]])) stop(paste0("unsupported diagram role: ", role_text))
+  if (!diagram_type_text %in% R_DIAGRAM_TYPES) stop(paste0("unsupported diagram_type: ", diagram_type_text))
+
+  optional <- list(
+    nodeId = if (!is.null(node_id)) r_semantic_identifier(node_id, "node_id") else NULL,
+    edgeId = if (!is.null(edge_id)) r_semantic_identifier(edge_id, "edge_id") else NULL,
+    sourceNodeId = if (!is.null(source_node_id)) r_semantic_identifier(source_node_id, "source_node_id") else NULL,
+    targetNodeId = if (!is.null(target_node_id)) r_semantic_identifier(target_node_id, "target_node_id") else NULL
+  )
+  if (identical(role_text, "node")) {
+    optional$nodeId <- object_id_text
+  } else if (identical(role_text, "edge")) {
+    optional$edgeId <- object_id_text
+    if (is.null(optional$sourceNodeId) || is.null(optional$targetNodeId)) {
+      stop("edge semantics require source_node_id and target_node_id")
+    }
+  } else if (identical(role_text, "arrow") && is.null(optional$edgeId)) {
+    stop("arrow semantics require edge_id")
+  } else if (identical(role_text, "node_label") && is.null(optional$nodeId)) {
+    stop("node_label semantics require node_id")
+  } else if (identical(role_text, "coefficient_label") && is.null(optional$edgeId)) {
+    stop("coefficient_label semantics require edge_id")
+  }
+
+  c(list(
+    family = "diagram",
+    semanticRole = R_DIAGRAM_ROLE_MAP[[role_text]],
+    diagramRole = role_text,
+    diagramId = diagram_id_text,
+    diagramType = diagram_type_text,
+    diagramObjectId = object_id_text,
+    layoutEditable = isTRUE(layout_editable)
+  ), Filter(Negate(is.null), optional))
+}
+
+r_layer_diagram_metadata <- function(layer) {
+  metadata <- layer$.scifigure_diagram %||% NULL
+  if (!is.list(metadata) || !identical(metadata$family %||% "", "diagram")) return(NULL)
+  metadata
+}
+
+scifigure_semantic_layer <- function(
+  layer,
+  diagram_id,
+  role,
+  object_id,
+  diagram_type = "sem",
+  node_id = NULL,
+  edge_id = NULL,
+  source_node_id = NULL,
+  target_node_id = NULL,
+  layout_editable = FALSE
+) {
+  if (is.null(layer$geom) || is.null(layer$stat)) stop("scifigure_semantic_layer requires one ggplot2 layer")
+  metadata <- r_diagram_semantic_metadata(
+    diagram_id = diagram_id,
+    role = role,
+    object_id = object_id,
+    diagram_type = diagram_type,
+    node_id = node_id,
+    edge_id = edge_id,
+    source_node_id = source_node_id,
+    target_node_id = target_node_id,
+    layout_editable = layout_editable
+  )
+  geom <- geom_class(layer)
+  allowed_geoms <- switch(
+    metadata$diagramRole,
+    node = c("GeomPoint", "GeomJitter", "GeomCol", "GeomBar", "GeomTile", "GeomRect"),
+    edge = c("GeomLine", "GeomPath", "GeomSegment", "GeomCurve"),
+    arrow = c("GeomSegment", "GeomCurve"),
+    node_label = c("GeomText", "GeomLabel"),
+    coefficient_label = c("GeomText", "GeomLabel"),
+    fit_annotation = c("GeomText", "GeomLabel"),
+    group = c("GeomRect", "GeomTile", "GeomCol", "GeomBar"),
+    character()
+  )
+  if (!geom %in% allowed_geoms) {
+    stop(paste0(metadata$diagramRole, " semantics do not support ggplot geom ", geom))
+  }
+  arrow <- (layer$geom_params %||% list())$arrow %||% NULL
+  if (identical(metadata$diagramRole, "edge") && !is.null(arrow)) {
+    stop("edge semantics with an arrow must use a separate semantic arrow layer")
+  }
+  if (identical(metadata$diagramRole, "arrow") && is.null(arrow)) {
+    stop("arrow semantics require a GeomSegment/GeomCurve layer with grid::arrow()")
+  }
+  layer$.scifigure_diagram <- metadata
+  layer$.scifigure_identity_key <- paste(
+    "diagram", metadata$diagramId, metadata$semanticRole, metadata$diagramObjectId, geom,
+    sep = ":"
+  )
+  layer
+}
+
+r_parse_scifigure_semantic_gid <- function(value) {
+  marker <- as.character(value %||% "")[[1]]
+  prefix <- "scifigure-sem-v1:"
+  if (!startsWith(marker, prefix)) return(NULL)
+  query <- substring(marker, nchar(prefix) + 1L)
+  parts <- strsplit(query, "&", fixed = TRUE)[[1]]
+  fields <- list()
+  for (part in parts) {
+    pair <- strsplit(part, "=", fixed = TRUE)[[1]]
+    if (length(pair) != 2L) return(NULL)
+    key <- utils::URLdecode(pair[[1]])
+    if (nzchar(key) && !is.null(fields[[key]])) return(NULL)
+    fields[[key]] <- utils::URLdecode(pair[[2]])
+  }
+  tryCatch(r_diagram_semantic_metadata(
+    diagram_id = fields$diagram,
+    role = fields$role,
+    object_id = fields$id,
+    diagram_type = fields$type %||% "sem",
+    node_id = fields$node,
+    edge_id = fields$edge,
+    source_node_id = fields$source,
+    target_node_id = fields$target
+  ), error = function(e) NULL)
+}
+
+r_clone_layer_with_data <- function(layer, data) {
+  clone <- ggplot2::ggproto(NULL, layer)
+  clone$data <- data
+  clone
+}
+
+r_expand_scifigure_semantic_layers <- function(plot_obj) {
+  if (!inherits(plot_obj, "ggplot") || length(plot_obj$layers) == 0) return(plot_obj)
+  expanded <- list()
+  for (layer in plot_obj$layers) {
+    if (!is.null(r_layer_diagram_metadata(layer))) {
+      expanded[[length(expanded) + 1L]] <- layer
+      next
+    }
+    source_data <- layer$data
+    if (is.null(source_data) || inherits(source_data, "waiver")) source_data <- plot_obj$data
+    source_data <- tryCatch(as.data.frame(source_data), error = function(e) NULL)
+    marker_name <- if (!is.null(source_data) && ".scifigure_semantic_gid" %in% names(source_data)) {
+      ".scifigure_semantic_gid"
+    } else if (!is.null(source_data) && "scifigure_semantic_gid" %in% names(source_data)) {
+      "scifigure_semantic_gid"
+    } else {
+      NULL
+    }
+    if (is.null(marker_name) || nrow(source_data) == 0) {
+      expanded[[length(expanded) + 1L]] <- layer
+      next
+    }
+
+    marker_values <- as.character(source_data[[marker_name]])
+    processed <- rep(FALSE, nrow(source_data))
+    for (row_index in seq_len(nrow(source_data))) {
+      if (processed[[row_index]]) next
+      marker <- marker_values[[row_index]]
+      blank_marker <- is.na(marker) || !nzchar(trimws(marker))
+      matching_rows <- if (blank_marker) {
+        which(is.na(marker_values) | !nzchar(trimws(marker_values)))
+      } else {
+        which(!is.na(marker_values) & marker_values == marker)
+      }
+      matching_rows <- matching_rows[!processed[matching_rows]]
+      processed[matching_rows] <- TRUE
+      if (blank_marker) {
+        expanded[[length(expanded) + 1L]] <- r_clone_layer_with_data(
+          layer,
+          source_data[matching_rows, , drop = FALSE]
+        )
+        next
+      }
+
+      metadata <- r_parse_scifigure_semantic_gid(marker)
+      if (is.null(metadata)) {
+        stop(paste0("Invalid .scifigure_semantic_gid at row ", row_index, "."))
+      }
+      semantic_layer <- r_clone_layer_with_data(layer, source_data[matching_rows, , drop = FALSE])
+      semantic_layer <- scifigure_semantic_layer(
+        semantic_layer,
+        diagram_id = metadata$diagramId,
+        role = metadata$diagramRole,
+        object_id = metadata$diagramObjectId,
+        diagram_type = metadata$diagramType,
+        node_id = metadata$nodeId,
+        edge_id = metadata$edgeId,
+        source_node_id = metadata$sourceNodeId,
+        target_node_id = metadata$targetNodeId,
+        layout_editable = metadata$layoutEditable %||% FALSE
+      )
+      expanded[[length(expanded) + 1L]] <- semantic_layer
+    }
+  }
+  plot_obj$layers <- expanded
+  plot_obj
+}
+
+r_diagram_gid_token <- function(value) {
+  text <- as.character(value %||% "")[[1]]
+  utf8_bytes <- charToRaw(enc2utf8(text))
+  namespace <- if (all(as.integer(utf8_bytes) <= 0x7f)) "a_" else "b_"
+  encoded <- jsonlite::base64_enc(utf8_bytes)
+  encoded <- gsub("+", "-", encoded, fixed = TRUE)
+  encoded <- gsub("/", "_", encoded, fixed = TRUE)
+  encoded <- sub("=+$", "", encoded, perl = TRUE)
+  paste0(namespace, encoded)
+}
+
+r_diagram_object_gid <- function(metadata) {
+  if (is.null(metadata)) return(NULL)
+  family <- switch(
+    metadata$semanticRole,
+    diagram_node = "node",
+    diagram_edge = "edge",
+    diagram_arrow = "arrow",
+    diagram_group = "group",
+    diagram_node_label = "text",
+    diagram_coefficient_label = "text",
+    diagram_fit_annotation = "text",
+    "object"
+  )
+  paste(
+    "r",
+    "diagram",
+    family,
+    r_diagram_gid_token(metadata$diagramType),
+    r_diagram_gid_token(metadata$diagramId),
+    r_diagram_gid_token(metadata$semanticRole),
+    r_diagram_gid_token(metadata$diagramObjectId),
+    sep = "."
+  )
+}
+
+assert_unique_r_diagram_gids <- function(objects) {
+  object_ids <- vapply(
+    objects %||% list(),
+    function(object) as.character(object$id %||% ""),
+    character(1)
+  )
+  diagram_ids <- object_ids[grepl("^r\\.diagram\\.", object_ids, perl = TRUE)]
+  duplicates <- unique(diagram_ids[duplicated(diagram_ids)])
+  if (length(duplicates) > 0) {
+    stop(sprintf(
+      "Duplicate R diagram GID generated from explicit semantic identity: %s",
+      paste(duplicates, collapse = ", ")
+    ))
+  }
+  invisible(TRUE)
+}
+
+r_layer_manifest_gid <- function(layer, index, include_text = FALSE) {
+  metadata <- r_layer_diagram_metadata(layer)
+  if (!is.null(metadata) && (include_text || !geom_class(layer) %in% c("GeomText", "GeomLabel"))) {
+    return(r_diagram_object_gid(metadata))
+  }
+  paste0("r.layer.", index - 1)
+}
+
 is_point_layer <- function(layer) {
   geom_class(layer) %in% c("GeomPoint", "GeomJitter")
 }
@@ -2148,7 +2439,7 @@ apply_layer_edits <- function(plot_obj, built_data_by_layer = list()) {
   if (length(plot_obj$layers) == 0) return(plot_obj)
 
   for (i in seq_along(plot_obj$layers)) {
-    gid <- paste0("r.layer.", i - 1)
+    gid <- r_layer_manifest_gid(plot_obj$layers[[i]], i)
     built_data <- if (length(built_data_by_layer) >= i) built_data_by_layer[[i]] else NULL
     if (is_point_layer(plot_obj$layers[[i]])) {
       plot_obj$layers[[i]] <- apply_point_layer_edits(plot_obj$layers[[i]], gid, built_data)
@@ -2244,6 +2535,7 @@ text_layer_rows <- function(plot_obj) {
     data <- built$data[[i]]
     if (is.null(data) || nrow(data) == 0) next
     stat_class <- layer_stat_class(layer)
+    diagram <- r_layer_diagram_metadata(layer)
     source_kind <- if (!identical(stat_class, "StatIdentity")) {
       "stat"
     } else if (
@@ -2301,7 +2593,8 @@ text_layer_rows <- function(plot_obj) {
         textSource = source_kind,
         dataKey = if (!is.null(stable_keys)) stable_keys[[row_index]] else NULL,
         dataKeySource = stable_key_source,
-        data = data[row_index, , drop = FALSE]
+        data = data[row_index, , drop = FALSE],
+        diagram = diagram
       )
     }
   }
@@ -2315,6 +2608,7 @@ text_data_key_token <- function(value) {
 }
 
 text_row_gid <- function(item) {
+  if (!is.null(item$diagram)) return(r_diagram_object_gid(item$diagram))
   token <- text_data_key_token(item$dataKey)
   if (!is.null(token) && !identical(item$dataKeySource, "derived")) {
     return(paste0("r.text.", item$layerIndex - 1, ".", token))
@@ -2823,6 +3117,7 @@ apply_text_layer_edits <- function(plot_obj) {
       )
     }
     replacement_layer$.scifigure_identity_key <- frozen_identity_key
+    replacement_layer$.scifigure_diagram <- source_layer$.scifigure_diagram %||% NULL
     plot_obj$layers[[layer_index]] <- replacement_layer
   }
 
@@ -4362,10 +4657,12 @@ r_layer_structure_signature <- function(layer, plot_mapping = NULL) {
 
 manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data = NULL) {
   geom <- geom_class(layer)
+  diagram <- r_layer_diagram_metadata(layer)
   adapter_class <- layer_adapter_class(layer)
-  gid <- paste0("r.layer.", index - 1)
+  gid <- r_layer_manifest_gid(layer, index)
   layer_key <- r_layer_structure_signature(layer, plot_mapping)
   kind <- layer_kind(geom)
+  if (kind == "text") diagram <- NULL
   point_adapter <- is_point_layer(layer)
   line_adapter <- is_line_adapter_layer(layer)
   segment_curve_adapter <- is_segment_curve_adapter_layer(layer)
@@ -4462,6 +4759,15 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
       if (isTRUE(props$alphaMapped)) list() else list("alpha")
     )
   }
+  if (!is.null(diagram)) {
+    if (kind == "text") {
+      editable <- list()
+    } else if (diagram$semanticRole %in% c("diagram_node", "diagram_group")) {
+      editable <- intersect(editable, c("color", "facecolor", "edgecolor", "linewidth", "size", "alpha", "linestyle"))
+    } else if (diagram$semanticRole %in% c("diagram_edge", "diagram_arrow")) {
+      editable <- intersect(editable, c("color", "linewidth", "linestyle", "alpha"))
+    }
+  }
   current_props <- switch(
     kind,
     text = list(color = props$color, fontsize = props$size, alpha = props$alpha),
@@ -4476,31 +4782,63 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
     unsupported = list(unsupportedReason = paste0("No stable SciFigure write-back adapter for ggplot geom class ", geom, ".")),
     list()
   )
+  if (!is.null(diagram)) {
+    current_props$diagramId <- diagram$diagramId
+    current_props$diagramType <- diagram$diagramType
+    current_props$diagramObjectId <- diagram$diagramObjectId
+    current_props$structureReadonly <- as.list(unique(c(
+      unlist(current_props$structureReadonly %||% list(), use.names = FALSE),
+      "diagram_id", "diagram_type", "diagram_object_id",
+      if (!is.null(diagram$nodeId)) "node_id" else character(),
+      if (!is.null(diagram$edgeId)) c("edge_id", "source_node_id", "target_node_id") else character()
+    )))
+    if (isTRUE(diagram$layoutEditable) && diagram$semanticRole == "diagram_node") {
+      current_props$layoutEditMode <- "explicit_semantic_layout"
+    }
+  }
   arrow_id <- if (segment_curve_adapter && isTRUE(current_props$hasArrow)) {
     paste0("r.arrow.", index - 1)
   } else {
     NULL
   }
-  list(
+  diagram_fields <- if (!is.null(diagram)) {
+    list(
+      diagramId = diagram$diagramId,
+      diagramType = diagram$diagramType,
+      diagramObjectId = diagram$diagramObjectId,
+      nodeId = diagram$nodeId,
+      edgeId = diagram$edgeId,
+      sourceNodeId = diagram$sourceNodeId,
+      targetNodeId = diagram$targetNodeId
+    )
+  } else {
+    list()
+  }
+  c(list(
     id = gid,
     kind = kind,
     label = layer_label(adapter_class, index),
     editable = editable,
     currentProps = current_props,
-    role = paste0("ggplot_", geom),
-    arrowId = arrow_id,
-    children = if (!is.null(arrow_id)) list(arrow_id) else list(),
+    role = if (!is.null(diagram) && kind != "text") diagram$semanticRole else paste0("ggplot_", geom),
+    arrowId = if (is.null(diagram)) arrow_id else NULL,
+    children = if (!is.null(diagram)) list() else if (!is.null(arrow_id)) list(arrow_id) else list(),
     layerKey = layer_key,
     subplotIds = as.list(panel_ids),
-    source = list(
+    source = c(list(
       artistClass = geom,
       adapterClass = adapter_class,
       positionClass = layer_position_class(layer),
       axesIndex = 0,
       zorder = index,
       layerSignature = layer_key
-    )
-  )
+    ), if (!is.null(diagram)) list(callName = "SciFigure.semantic_gid", diagram = diagram) else list()),
+    semanticCoverage = if (!is.null(diagram)) list(
+      family = "diagram",
+      status = "dedicated",
+      attribution = "source.explicit_semantic_gid"
+    ) else NULL
+  ), diagram_fields)
 }
 
 manifest_segment_curve_arrow_objects <- function(plot_obj, built_data = list()) {
@@ -4509,6 +4847,7 @@ manifest_segment_curve_arrow_objects <- function(plot_obj, built_data = list()) 
   for (index in seq_along(plot_obj$layers)) {
     layer <- plot_obj$layers[[index]]
     if (!is_segment_curve_adapter_layer(layer)) next
+    if (!is.null(r_layer_diagram_metadata(layer))) next
     arrow <- segment_curve_arrow_metadata((layer$geom_params %||% list())$arrow %||% NULL)
     if (length(arrow) == 0) next
     layer_id <- paste0("r.layer.", index - 1)
@@ -4778,6 +5117,7 @@ manifest_text_layer_objects <- function(plot_obj) {
 
   lapply(rows, function(item) {
     data <- item$data
+    diagram <- item$diagram %||% NULL
     gid <- text_row_edit_gid(item)
     manifest_gid <- text_row_gid(item)
     layer_key <- r_layer_structure_signature(plot_obj$layers[[item$layerIndex]], plot_obj$mapping)
@@ -4804,6 +5144,7 @@ manifest_text_layer_objects <- function(plot_obj) {
         "hjust", "vjust", "rotation", "lineheight"
       )
     }
+    if (!is.null(diagram)) editable <- setdiff(editable, "text")
     current_props <- list(
       text = latest_string(gid, "text", as.character(data$label %||% "")),
       fontsize = latest_numeric(gid, "fontsize", as.numeric(data$size %||% default_label$fontsize)),
@@ -4857,13 +5198,45 @@ manifest_text_layer_objects <- function(plot_obj) {
         position_support$reason
       }
     }
-    list(
+    if (!is.null(diagram)) {
+      protected_props <- switch(
+        diagram$semanticRole,
+        diagram_node_label = c("text", "node_id"),
+        diagram_coefficient_label = c(
+          "text", "edge_id", "coefficient", "value", "p_value", "pvalue",
+          "significance", "confidence_interval", "ci_low", "ci_high"
+        ),
+        diagram_fit_annotation = c(
+          "text", "fit", "fit_indices", "cfi", "tli", "rmsea", "srmr",
+          "aic", "bic", "chi_square", "p_value", "pvalue"
+        ),
+        "text"
+      )
+      current_props$structureReadonly <- as.list(protected_props)
+      current_props$diagramId <- diagram$diagramId
+      current_props$diagramType <- diagram$diagramType
+      current_props$diagramObjectId <- diagram$diagramObjectId
+    }
+    diagram_fields <- if (!is.null(diagram)) {
+      list(
+        diagramId = diagram$diagramId,
+        diagramType = diagram$diagramType,
+        diagramObjectId = diagram$diagramObjectId,
+        nodeId = diagram$nodeId,
+        edgeId = diagram$edgeId,
+        sourceNodeId = diagram$sourceNodeId,
+        targetNodeId = diagram$targetNodeId
+      )
+    } else {
+      list()
+    }
+    c(list(
       id = manifest_gid,
       kind = "text",
       label = paste0("ggplot text ", item$layerIndex - 1, ".", item$rowIndex - 1),
       editable = editable,
       currentProps = current_props,
-      role = paste0("ggplot_text_", item$textSource),
+      role = if (!is.null(diagram)) diagram$semanticRole else paste0("ggplot_text_", item$textSource),
       annotationId = if (identical(item$textSource, "annotation")) manifest_gid else NULL,
       textSource = item$textSource,
       statClass = item$statClass,
@@ -4874,8 +5247,16 @@ manifest_text_layer_objects <- function(plot_obj) {
       groupKey = as.character(data$group %||% item$rowIndex),
       dataKey = item$dataKey,
       aesthetic = "label",
-      source = list(artistClass = item$geom, axesIndex = panel - 1, zorder = item$layerIndex)
-    )
+      source = c(
+        list(artistClass = item$geom, axesIndex = panel - 1, zorder = item$layerIndex),
+        if (!is.null(diagram)) list(callName = "SciFigure.semantic_gid", diagram = diagram) else list()
+      ),
+      semanticCoverage = if (!is.null(diagram)) list(
+        family = "diagram",
+        status = "dedicated",
+        attribution = "source.explicit_semantic_gid"
+      ) else NULL
+    ), diagram_fields)
   })
 }
 
@@ -5501,9 +5882,15 @@ layer_svg_plan <- function(plot_obj) {
     unique(values[!is.na(values) & nzchar(values) & toupper(values) != "NA"])
   }
 
+  diagram_context <- any(vapply(
+    plot_obj$layers,
+    function(layer) !is.null(r_layer_diagram_metadata(layer)),
+    logical(1)
+  ))
   plans <- list()
   for (i in seq_along(plot_obj$layers)) {
     layer <- plot_obj$layers[[i]]
+    explicit_diagram <- !is.null(r_layer_diagram_metadata(layer))
     geom <- geom_class(layer)
     kind <- layer_kind(geom)
     if (kind == "text") next
@@ -5526,8 +5913,8 @@ layer_svg_plan <- function(plot_obj) {
     grouped_rows <- group_rows(data)
     tags <- switch(
       geom,
-      GeomPoint = c("circle", "path", "polygon"),
-      GeomJitter = c("circle", "path", "polygon"),
+      GeomPoint = c("circle", "rect", "path", "polygon"),
+      GeomJitter = c("circle", "rect", "path", "polygon"),
       GeomLine = c("polyline", "path", "line"),
       GeomPath = c("polyline", "path", "line"),
       GeomSmooth = c("polyline", "path", "line"),
@@ -5587,13 +5974,15 @@ layer_svg_plan <- function(plot_obj) {
       count <- max(1L, nrow(data))
     }
     plans[[length(plans) + 1]] <- list(
-      gid = paste0("r.layer.", i - 1),
+      gid = r_layer_manifest_gid(layer, i),
       geom = geom,
       kind = kind,
       tags = tags,
       count = count,
       layer_index = i,
       segment_curve = segment_curve,
+      explicit_diagram = explicit_diagram,
+      diagram_context = diagram_context,
       stroke_colors = visible_style_values(c(
         style_values(data, "colour"),
         if (identical(geom, "GeomBoxplot")) {
@@ -5793,6 +6182,116 @@ svg_panel_geometry_records <- function(svg, tags) {
   records[order(vapply(records, function(record) record$start, numeric(1)))]
 }
 
+svg_layer_geometry_records <- function(
+  svg,
+  tags,
+  explicit_diagram = FALSE,
+  allow_verified_fallback = FALSE
+) {
+  records <- svg_panel_geometry_records(svg, tags)
+  if (length(records) > 0) {
+    attr(records, "scifigure_scope_verified") <- TRUE
+    return(records)
+  }
+  if (!isTRUE(explicit_diagram) && !isTRUE(allow_verified_fallback)) return(records)
+
+  records <- svg_geometry_tag_records(svg, tags)
+  bounds <- svg_fallback_panel_bounds(svg)
+  if (is.null(bounds)) {
+    attr(records, "scifigure_scope_verified") <- FALSE
+    return(records)
+  }
+  records <- Filter(function(record) svg_record_anchor_inside(record, bounds), records)
+  attr(records, "scifigure_scope_verified") <- TRUE
+  records
+}
+
+svg_fallback_panel_bounds <- function(svg) {
+  viewbox_match <- regexec(
+    "viewBox\\s*=\\s*['\"]\\s*[-+0-9.eE]+\\s+[-+0-9.eE]+\\s+([-+0-9.eE]+)\\s+([-+0-9.eE]+)\\s*['\"]",
+    svg,
+    perl = TRUE
+  )
+  viewbox <- regmatches(svg, viewbox_match)[[1]]
+  if (length(viewbox) < 3) return(NULL)
+  total_width <- suppressWarnings(as.numeric(viewbox[[2]]))
+  total_height <- suppressWarnings(as.numeric(viewbox[[3]]))
+  if (!all(is.finite(c(total_width, total_height))) || total_width <= 0 || total_height <= 0) return(NULL)
+
+  candidates <- list()
+  for (record in svg_geometry_tag_records(svg, c("rect"))) {
+    chunk <- record$chunk
+    rect <- list(
+      x = svg_tag_number(chunk, "x"),
+      y = svg_tag_number(chunk, "y"),
+      width = svg_tag_number(chunk, "width"),
+      height = svg_tag_number(chunk, "height")
+    )
+    values <- unlist(rect)
+    if (!all(is.finite(values)) || rect$width <= 0 || rect$height <= 0) next
+    if (rect$x <= 0.5 && rect$y <= 0.5 && rect$width >= total_width * 0.98 && rect$height >= total_height * 0.98) next
+    if (rect$width < total_width * 0.25 || rect$height < total_height * 0.25) next
+    if (rect$width >= total_width * 0.98 || rect$height >= total_height * 0.98) next
+    if (
+      grepl("fill:\\s*#FFFFFF", chunk, ignore.case = TRUE, perl = TRUE) &&
+      grepl("stroke:\\s*none", chunk, ignore.case = TRUE, perl = TRUE)
+    ) next
+    candidates[[length(candidates) + 1L]] <- rect
+  }
+  if (length(candidates) == 0) return(NULL)
+  areas <- vapply(candidates, function(rect) rect$width * rect$height, numeric(1))
+  candidates[[which.max(areas)]]
+}
+
+svg_record_anchor <- function(record) {
+  chunk <- record$chunk
+  tag <- record$tag %||% svg_tag_name(chunk)
+  if (tag == "circle") return(c(svg_tag_number(chunk, "cx"), svg_tag_number(chunk, "cy")))
+  if (tag %in% c("rect", "image")) {
+    x <- svg_tag_number(chunk, "x")
+    y <- svg_tag_number(chunk, "y")
+    width <- svg_tag_number(chunk, "width")
+    height <- svg_tag_number(chunk, "height")
+    return(c(x + width / 2, y + height / 2))
+  }
+  if (tag == "line") {
+    return(c(
+      mean(c(svg_tag_number(chunk, "x1"), svg_tag_number(chunk, "x2"))),
+      mean(c(svg_tag_number(chunk, "y1"), svg_tag_number(chunk, "y2")))
+    ))
+  }
+  if (tag %in% c("polyline", "polygon")) {
+    points_match <- regexec("\\bpoints\\s*=\\s*['\"]([^'\"]+)['\"]", chunk, perl = TRUE)
+    points_parts <- regmatches(chunk, points_match)[[1]]
+    if (length(points_parts) >= 2) {
+      values <- suppressWarnings(as.numeric(unlist(strsplit(gsub(",", " ", points_parts[[2]], fixed = TRUE), "[[:space:]]+", perl = TRUE))))
+      values <- values[is.finite(values)]
+      if (length(values) >= 2) return(c(mean(values[seq(1, length(values), by = 2)]), mean(values[seq(2, length(values), by = 2)])))
+    }
+  }
+  if (tag == "path") {
+    d_match <- regexec("\\bd\\s*=\\s*['\"]([^'\"]+)['\"]", chunk, perl = TRUE)
+    d_parts <- regmatches(chunk, d_match)[[1]]
+    if (length(d_parts) >= 2) {
+      matches <- gregexpr("[-+]?(?:[0-9]*\\.)?[0-9]+(?:[eE][-+]?[0-9]+)?", d_parts[[2]], perl = TRUE)[[1]]
+      if (!(length(matches) == 1 && matches[[1]] == -1)) {
+        values <- suppressWarnings(as.numeric(regmatches(d_parts[[2]], list(matches))[[1]]))
+        values <- values[is.finite(values)]
+        if (length(values) >= 2) return(c(mean(values[seq(1, length(values), by = 2)]), mean(values[seq(2, length(values), by = 2)])))
+      }
+    }
+  }
+  c(NA_real_, NA_real_)
+}
+
+svg_record_anchor_inside <- function(record, bounds) {
+  anchor <- svg_record_anchor(record)
+  if (!all(is.finite(anchor))) return(FALSE)
+  epsilon <- 0.5
+  anchor[[1]] >= bounds$x - epsilon && anchor[[1]] <= bounds$x + bounds$width + epsilon &&
+    anchor[[2]] >= bounds$y - epsilon && anchor[[2]] <= bounds$y + bounds$height + epsilon
+}
+
 svg_linetype_class <- function(value) {
   text <- tolower(as.character(value %||% "solid")[[1]])
   if (text %in% c("1", "solid")) return("solid")
@@ -5903,7 +6402,16 @@ find_svg_style_candidate <- function(records, start_index, tags, color, linetype
   NA_integer_
 }
 
-segment_curve_svg_selection <- function(svg, layer, layer_index, built_data, scale_catalog, default_gid, plot_mapping = NULL) {
+segment_curve_svg_selection <- function(
+  svg,
+  layer,
+  layer_index,
+  built_data,
+  scale_catalog,
+  default_gid,
+  plot_mapping = NULL,
+  allow_verified_fallback = FALSE
+) {
   data <- built_data[[layer_index]] %||% NULL
   if (is.null(data) || nrow(data) == 0) return(list(selections = list(), ambiguous_records = list()))
   data <- r_layer_drawable_data(layer, data)$data
@@ -5916,9 +6424,16 @@ segment_curve_svg_selection <- function(svg, layer, layer_index, built_data, sca
   colors <- rep(colors, length.out = row_count)
   linetypes <- rep(linetypes, length.out = row_count)
   arrow_count <- segment_curve_arrow_count(layer)
+  explicit_diagram <- !is.null(r_layer_diagram_metadata(layer))
   body_tags <- if (identical(geom, "GeomSegment")) c("line", "polyline", "path") else c("polyline", "path", "line")
   arrow_tags <- if (identical(geom, "GeomSegment")) c("polygon", "polyline", "path") else c("polyline", "path", "polygon")
-  records <- svg_panel_geometry_records(svg, unique(c(body_tags, arrow_tags)))
+  records <- svg_layer_geometry_records(
+    svg,
+    unique(c(body_tags, arrow_tags)),
+    explicit_diagram = explicit_diagram,
+    allow_verified_fallback = allow_verified_fallback
+  )
+  scope_verified <- isTRUE(attr(records, "scifigure_scope_verified"))
   matching_records <- vapply(records, function(record) {
     if (!is_svg_data_candidate(record$chunk)) return(FALSE)
     stroke <- svg_tag_style_value(record$chunk, "stroke")
@@ -5930,7 +6445,10 @@ segment_curve_svg_selection <- function(svg, layer, layer_index, built_data, sca
   ambiguous_records <- records[matching_records]
   expected_record_count <- row_count * (1L + arrow_count)
   matching_indices <- which(matching_records)
-  if (length(matching_indices) < expected_record_count) {
+  if (
+    length(matching_indices) < expected_record_count ||
+    (explicit_diagram && !scope_verified && length(matching_indices) != expected_record_count)
+  ) {
     return(list(selections = list(), ambiguous_records = ambiguous_records))
   }
   owned_indices <- matching_indices[seq_len(expected_record_count)]
@@ -5961,7 +6479,9 @@ segment_curve_svg_selection <- function(svg, layer, layer_index, built_data, sca
       selected_indices <- c(selected_indices, record_index)
       selections[[length(selections) + 1]] <- list(
         record = records[[record_index]],
-        gid = if (is_arrow) {
+        gid = if (explicit_diagram) {
+          default_gid
+        } else if (is_arrow) {
           paste0("r.arrow.", layer_index - 1)
         } else {
           get_svg_candidate_group_gid(
@@ -5981,12 +6501,26 @@ segment_curve_svg_selection <- function(svg, layer, layer_index, built_data, sca
   list(selections = selections, ambiguous_records = list())
 }
 
-inject_segment_curve_layer_svg_ids <- function(svg, plot_obj, layer_index, built_data, scale_catalog) {
+inject_segment_curve_layer_svg_ids <- function(
+  svg,
+  plot_obj,
+  layer_index,
+  built_data,
+  scale_catalog,
+  allow_verified_fallback = FALSE
+) {
   layer <- plot_obj$layers[[layer_index]]
   if (!is_segment_curve_adapter_layer(layer)) return(svg)
-  default_gid <- paste0("r.layer.", layer_index - 1)
+  default_gid <- r_layer_manifest_gid(layer, layer_index)
   selection_result <- segment_curve_svg_selection(
-    svg, layer, layer_index, built_data, scale_catalog, default_gid, plot_obj$mapping
+    svg,
+    layer,
+    layer_index,
+    built_data,
+    scale_catalog,
+    default_gid,
+    plot_obj$mapping,
+    allow_verified_fallback = allow_verified_fallback
   )
   selections <- selection_result$selections %||% list()
   if (length(selections) == 0) {
@@ -6038,7 +6572,12 @@ get_svg_candidate_group_gid <- function(chunk, default_layer_gid, scale_catalog,
 
 inject_next_svg_tag_attrs <- function(svg, plan, scale_catalog) {
   if (plan$count <= 0 || length(plan$tags) == 0 || !nzchar(plan$gid)) return(svg)
-  records <- svg_panel_geometry_records(svg, plan$tags)
+  records <- svg_layer_geometry_records(
+    svg,
+    plan$tags,
+    explicit_diagram = plan$explicit_diagram,
+    allow_verified_fallback = plan$diagram_context
+  )
   if (length(records) == 0) return(svg)
   explicit_candidates <- list()
   css_default_candidates <- list()
@@ -6061,7 +6600,10 @@ inject_next_svg_tag_attrs <- function(svg, plan, scale_catalog) {
     candidates <- c(explicit_candidates, css_default_candidates)
   }
   candidates <- candidates[order(vapply(candidates, function(candidate) candidate$start, numeric(1)))]
-  if (identical(plan$selection_mode, "ordered")) {
+  selection_mode <- if (
+    isTRUE(plan$explicit_diagram) && !isTRUE(attr(records, "scifigure_scope_verified"))
+  ) "exact" else plan$selection_mode
+  if (identical(selection_mode, "ordered")) {
     if (length(candidates) < plan$count) {
       return(mark_svg_records_unresolved(svg, candidates, plan$gid))
     }
@@ -6072,7 +6614,11 @@ inject_next_svg_tag_attrs <- function(svg, plan, scale_catalog) {
 
   for (idx in rev(seq_along(candidates))) {
     candidate <- candidates[[idx]]
-    resolved_gid <- get_svg_candidate_group_gid(candidate$chunk, plan$gid, scale_catalog, plan$scale_kinds %||% character())
+    resolved_gid <- if (isTRUE(plan$explicit_diagram)) {
+      plan$gid
+    } else {
+      get_svg_candidate_group_gid(candidate$chunk, plan$gid, scale_catalog, plan$scale_kinds %||% character())
+    }
     replacement <- sub("^<([A-Za-z0-9:_-]+)\\b", paste0("<\\1 data-fig-id=\"", resolved_gid, "\""), candidate$chunk, perl = TRUE)
     svg <- paste0(
       substr(svg, 1, candidate$start - 1),
@@ -6090,7 +6636,14 @@ inject_svg_layer_data_ids <- function(svg, plot_obj) {
   scale_catalog <- discrete_scale_catalog(plot_obj)
   for (plan in plans) {
     svg <- if (isTRUE(plan$segment_curve)) {
-      inject_segment_curve_layer_svg_ids(svg, plot_obj, plan$layer_index, built_data, scale_catalog)
+      inject_segment_curve_layer_svg_ids(
+        svg,
+        plot_obj,
+        plan$layer_index,
+        built_data,
+        scale_catalog,
+        allow_verified_fallback = plan$diagram_context
+      )
     } else {
       inject_next_svg_tag_attrs(svg, plan, scale_catalog)
     }
@@ -6174,7 +6727,8 @@ r_manifest_identity <- function(obj) {
   for (key in c(
     "layerId", "layerKey", "scaleId", "scaleKey", "guideId", "guideKey",
     "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey", "guideType",
-    "textSource", "statClass"
+    "textSource", "statClass", "diagramId", "diagramType", "diagramObjectId",
+    "nodeId", "edgeId", "sourceNodeId", "targetNodeId"
   )) {
     relation <- r_manifest_relation_scalar(relation, key, obj[[key]])
   }
@@ -6199,7 +6753,12 @@ r_manifest_identity <- function(obj) {
   if (length(mappable_ids) > 0) relation[["mappableIds"]] <- as.list(mappable_ids)
   semantic_scope <- relation[["subplotId"]] %||% if (length(relation[["subplotIds"]] %||% list()) == 1) relation[["subplotIds"]][[1]] else "figure"
   semantic_key <- paste(role, semantic_scope, sep = ":")
-  if (grepl("^r\\.group\\.", id)) {
+  if (!is.null(relation$diagramId) && !is.null(relation$diagramObjectId)) {
+    semantic_key <- paste(
+      "diagram", relation$diagramId, role, relation$diagramObjectId,
+      sep = ":"
+    )
+  } else if (grepl("^r\\.group\\.", id)) {
     semantic_key <- paste("ggplot_group", relation$aesthetic %||% "unknown", relation$groupKey %||% id, sep = ":")
   } else if (grepl("^r\\.scale\\.", id)) {
     semantic_key <- paste("ggplot_scale", relation$aesthetic %||% "unknown", relation$scaleKey %||% id, sep = ":")
@@ -6231,6 +6790,9 @@ r_manifest_identity <- function(obj) {
       paste("r-series", semantic_key, sep = ":")
     }
   }
+  if (!is.null(relation$diagramId) && !is.null(relation$diagramObjectId)) {
+    identity$seriesKey <- paste("diagram", relation$diagramId, role, relation$diagramObjectId, sep = ":")
+  }
   if (length(relation) > 0) identity$relation <- relation
   identity
 }
@@ -6239,7 +6801,8 @@ r_structural_relation <- function(identity) {
   relation <- identity$relation %||% list()
   stable_fields <- c(
     "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey",
-    "layerKey", "scaleKey", "guideKey"
+    "layerKey", "scaleKey", "guideKey", "diagramId", "diagramType",
+    "diagramObjectId", "nodeId", "edgeId", "sourceNodeId", "targetNodeId"
   )
   relation[intersect(stable_fields, names(relation))]
 }
@@ -6394,7 +6957,8 @@ r_stable_relation_value <- function(identity) {
   relation <- r_identity_relation_value(identity)
   stable_fields <- c(
     "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey",
-    "layerKey", "scaleKey", "guideKey"
+    "layerKey", "scaleKey", "guideKey", "diagramId", "diagramType",
+    "diagramObjectId", "nodeId", "edgeId", "sourceNodeId", "targetNodeId"
   )
   relation[intersect(stable_fields, names(relation))]
 }
@@ -6707,6 +7271,49 @@ resolve_r_edit_entries <- function(manifest, entries) {
     resolved[[".__resolvedGid"]] <- resolved_gid
     resolved$gid <- resolved_gid
     accepted[[length(accepted) + 1]] <- resolved
+  }
+
+  list(accepted = accepted, rejected = rejected, warnings = warnings)
+}
+
+validate_r_diagram_edit_resolution <- function(manifest, resolution) {
+  objects <- manifest$objects %||% list()
+  object_by_id <- setNames(objects, vapply(objects, function(obj) as.character(obj$id %||% ""), character(1)))
+  accepted <- list()
+  rejected <- resolution$rejected %||% list()
+  warnings <- resolution$warnings %||% list()
+
+  for (entry in resolution$accepted %||% list()) {
+    gid <- as.character(unwrap_manifest_value(entry$gid) %||% "")
+    prop <- as.character(unwrap_manifest_value(entry$prop) %||% "")
+    object <- object_by_id[[gid]] %||% NULL
+    role <- as.character(object$role %||% "")
+    if (!startsWith(role, "diagram_")) {
+      accepted[[length(accepted) + 1L]] <- entry
+      next
+    }
+
+    editable <- as.character(unlist(object$editable %||% list(), use.names = FALSE))
+    capabilities <- object$propertyCapabilities %||% list()
+    supported <- prop %in% editable && any(vapply(capabilities, function(capability) {
+      identical(as.character(capability$prop %||% ""), prop) &&
+        !identical(as.character(capability$replay %||% ""), "unsupported")
+    }, logical(1)))
+    if (supported) {
+      accepted[[length(accepted) + 1L]] <- entry
+      next
+    }
+
+    requested_entry <- entry[[".__requestedEntry"]] %||% entry
+    patch_index <- suppressWarnings(as.integer(entry[[".__patchIndex"]] %||% -1L))
+    warnings[[length(warnings) + 1L]] <- list(
+      type = "unsupported_prop",
+      gid = as.character(unwrap_manifest_value(requested_entry$gid) %||% gid),
+      prop = prop,
+      patchIndex = patch_index,
+      message = paste0(gid, ".", prop, " is not replayable in the R manifest.")
+    )
+    rejected[[length(rejected) + 1L]] <- requested_entry
   }
 
   list(accepted = accepted, rejected = rejected, warnings = warnings)
@@ -7679,6 +8286,7 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
     objects <- c(objects, continuous_colorbar_objects)
   }
 
+  assert_unique_r_diagram_gids(objects)
   objects <- lapply(objects, attach_r_manifest_shadow_metadata)
 
   unsupported_objects <- Filter(function(obj) identical(obj$kind %||% "", "unsupported"), objects)
@@ -7778,7 +8386,8 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
       coordinateDiagnostics = coordinate_diagnostics
     ),
     unsupportedNotes = list(
-      "R ggplot2 semantic editing currently covers labels, theme text, Point/Jitter, Line/Path/Smooth, Bar/Col, Errorbar/Linerange/Pointrange/Crossbar, Boxplot/Violin, Ribbon/Area, Step/Histogram/Freqpoly, Tile/Raster/Rect, and Contour/ContourFilled layer adapters, manual color/fill scales, facet panel discovery, and continuous heatmap/colorbar scales.",
+      "R ggplot2 semantic editing currently covers labels, theme text, Point/Jitter, Line/Path/Smooth, Bar/Col, Errorbar/Linerange/Pointrange/Crossbar, Boxplot/Violin, Ribbon/Area, Step/Histogram/Freqpoly, Tile/Raster/Rect, Contour/ContourFilled, and explicitly marked network/path/SEM diagram objects, plus manual color/fill scales, facet panel discovery, and continuous heatmap/colorbar scales.",
+      "Network/path/SEM objects require explicit scifigure-sem-v1 markers with stable node and edge relations. Unmarked lookalike points, lines, arrows, and text remain generic; coefficients, p values, fit metrics, and topology stay readonly.",
       "Duplicate keys within one discrete color/fill scale are reported as ambiguous readonly groups; SciFigure will not guess which repeated key a palette edit should target.",
       "R facet subplot aspect uses ggplot theme(aspect.ratio); independent left/bottom/width/height panel bounds are not equivalent to Matplotlib axes bounds.",
       "Text drag-position replay is enabled only for verified Cartesian, fixed, flip, log-scale, and polar adapters; projected, nonlinear, and third-party coordinates remain explicitly readonly."
@@ -7804,6 +8413,7 @@ result <- tryCatch({
   env$uploaded_file_paths <- if (!is.null(payload$uploaded_file_paths)) payload$uploaded_file_paths else list()
   env$csv_json_paths <- if (!is.null(payload$csv_json_paths)) payload$csv_json_paths else list()
   env$dataPayload <- payload$dataPayload
+  env$scifigure_semantic_layer <- scifigure_semantic_layer
   read_scifigure_csv_bridge <- function(file, args) {
     file_value <- as.character(file)
     if (length(file_value) == 0 || is.na(file_value[1]) || !nzchar(file_value[1])) {
@@ -7895,6 +8505,8 @@ result <- tryCatch({
       if (exists(name, envir = env, inherits = FALSE)) {
         obj <- get(name, envir = env)
         if (inherits(obj, "ggplot")) {
+          obj <- r_expand_scifigure_semantic_layers(obj)
+          assign(name, obj, envir = env)
           source_entries <- edit_entries
           source_patch_warnings <- renderer_patch_warnings
           edit_entries <- list()
@@ -7902,6 +8514,11 @@ result <- tryCatch({
           edit_entries <- source_entries
           renderer_patch_warnings <- source_patch_warnings
           r_edit_resolution <- resolve_r_edit_entries(baseline_manifest, source_entries)
+          r_edit_resolution <- validate_r_diagram_edit_resolution(baseline_manifest, r_edit_resolution)
+          if (length(r_edit_resolution$rejected %||% list()) > 0) {
+            r_edit_resolution$accepted <- list()
+            r_edit_resolution$rejected <- source_entries
+          }
           edit_entries <- r_edit_resolution$accepted
           obj <- apply_ggplot_edits(obj)
           assign(name, obj, envir = env)

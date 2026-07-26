@@ -721,6 +721,14 @@ diagram group    -> diagram_group
 
 专项验证：`test:special-axes-python` 10 项中 8 通过、Cartopy/brokenaxes 2 项因依赖缺失跳过；`test:special-axes-api`、`test:special-axes-ui`、`test:patch-rejection-persistence`、`test:legacy-contour-project-compatibility`、`test:project-history-persistence`、`test:r-semantic-smoke`、`npm run lint`、`npm run build` 和 `git diff --check` 通过。
 
+### 13.5 R 显式网络图、路径图和 SEM 语义（2026-07-26 18:19:46 +08:00）
+
+R 不从图形外观推断模型结构。脚本必须在图层数据中提供 `.scifigure_semantic_gid`，值使用版本化 `scifigure-sem-v1` marker，并显式给出 diagram、role、object id 及适用的 node/edge/source/target id。renderer 将标记行拆成稳定的一行语义图层，输出与 Python 前端协议一致的 `diagram_node/edge/arrow/node_label/coefficient_label/fit_annotation/group`；未标记点、线、箭头和文字继续使用通用 ggplot role。
+
+专用关系参与 GID、stableKey、seriesKey、fingerprint v2 和 replay identity。GID 同时编码 diagram type、diagram id、完整 semantic role 和 object id；四个字段内容全部使用 Base64URL，ASCII token 固定使用 `a_` 前缀，非 ASCII token 固定使用 `b_` 前缀，因此编码结果和 `.` 字段分隔符均不会造成身份碰撞。manifest 构建期若发现重复完整 diagram identity 生成相同 GID，会直接拒绝渲染，不输出歧义对象。相同 marker 的多行按原顺序聚合为一个语义图层，因此多顶点 path 不会被拆成不可绘制的一行 layer。视觉样式只在 manifest `editable/propertyCapabilities` 明确声明时进入 backend patch；系数、p 值、置信区间、显著性、拟合指标、节点身份、边端点和拓扑不开放。任一非法 diagram patch 会在 setter 前使整批 fail-closed，合法样式不得部分写入 SVG、manifest 或持久化状态。
+
+SVG owner 绑定通常限制在真实 panel clip 内。SEM 常用 `coord_cartesian(clip="off")` 绘制图外关系，可能没有 panel clip group；diagram 场景会从最大有效 panel 边框推导受限范围，普通已建模图层先按原绘制顺序领取通用 owner，显式对象再获得 diagram GID，从而排除图例 key 和图外装饰。只有范围已验证才允许顺序领取；无法证明范围时必须候选精确唯一，否则 unresolved。专项 renderer 10/10、R capability matrix、4 条旧身份兼容、隔离 API 和 Chromium live SVG 正确 tag/样式选择通过；当前未推送、未部署。
+
 ## 14. Python/R 对齐表
 
 | 能力 | Python | R | 当前判断 |
@@ -733,6 +741,7 @@ diagram group    -> diagram_group
 | legend/colorbar | 细粒度对象 | 显式 scale/guide/layer/panel/mappable 关系 | 部分对齐 |
 | facet/subplot | axes | facet panel | 基本对齐 |
 | annotation 拖拽 | 标准 data/axes/figure 坐标支持 text/arrow/anchor | 线性、flip、X/Y log、圆内 polar 精确逆变换 | 部分对齐，R 不猜测独立箭头 |
+| 网络图/路径图/SEM | 显式 `_scifigure_semantic_gid` 专用语义 | 显式 `scifigure-sem-v1` marker 专用语义 | 协议对齐；两端均不自动推断任意第三方图示 |
 | base R 图形编辑 | 不适用 | 有限 | 未对齐 |
 | 任意 SVG 节点写回 | 不承诺 | 不承诺 | 非目标 |
 | 导出 | 已实现 | 已实现转换路径 | 需格式矩阵 |

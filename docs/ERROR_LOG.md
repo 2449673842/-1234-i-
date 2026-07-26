@@ -4106,3 +4106,30 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - R renderer 125 个场景完成覆盖；capability matrix 2/2、R identity v2、segment/curve authority、R security precheck 通过。
 - `npm run test:r-semantic-smoke` 19/19；`npm run test:drag-extended-smoke` 包含失败保留/防重复/重试成功；组件容器 42/42。
 - patch rejection、项目历史、cross-Figure、用户隔离、导出矩阵、导出快照 API/UI、Python semantic、`npm test` 213 文件/1720 项、lint、build 与 diff-check 通过。
+
+---
+
+## 2026-07-26 18:19:46 +08:00 R diagram 文本重放丢失语义、混合批次部分应用、clip off 图元无法选择
+
+**状态与级别**
+
+- 状态：已修复并通过 renderer、能力矩阵、隔离 API 和真实 Chromium；未推送、未部署。
+- 级别：P1 科学对象身份、错误持久化和真实画布选择。manifest 能识别 SEM 对象，但正常编辑后标签可能退化为通用 GID；合法样式与非法科学字段混合时会部分应用；`clip="off"` 图中非文本对象无法从画布点击。
+
+**根因**
+
+- `apply_text_layer_edits()` 用新 `geom_text/geom_label` 替换原图层，只保留结构 identity key，没有复制 `.scifigure_diagram` metadata。
+- `resolve_r_edit_entries()` 只做目标身份解析，科学文本/拓扑字段直到渲染后的 acknowledgement 才被判 unsupported，导致同批合法颜色已进入 setter 和 SVG。
+- R SVG owner 注入只扫描 panel clip group。`coord_cartesian(clip="off")` 不产生该 group，文本由独立注入路径获得 GID，node/edge/arrow/group 则完全没有 `data-fig-id`。
+- 初版 GID 只包含宽泛 family 和 object id，不同 diagram 或不同文本 role 可碰撞；后续虽改为 Base64URL，但 Unicode `é` 的旧 token `bw6k` 仍会与普通 ASCII object id `bw6k` 碰撞。
+- marker 展开按行复制 layer，错误拆断多顶点 `GeomLine/GeomPath`；首版整图 SVG 回退没有先限定 panel 和建立前置普通图层 owner，同样式图例或 decoy 可能被误认。
+- 首版浏览器 smoke 还误用 `document.querySelector('svg')` 命中了工具栏图标，并从 sessionStorage 的非实时 SVG 字段判断画布颜色；测试已改为读取 `data-scifigure-canvas-svg` 内的 live DOM。
+
+**修复与防复发**
+
+- 文本 replacement layer 同步保留 diagram metadata 和 identity key，node/coefficient/fit label 的专用 GID 在字体和位置重放后不漂移。
+- diagram 对象在 setter 前按 manifest `editable/propertyCapabilities` 预检；任一拒绝把原始批次全部放入 skipped，`applied=[]`，使用未编辑对象生成 SVG/manifest。
+- GID 纳入 diagram type/id、完整 role 和 object id；字段内容全部使用 Base64URL，ASCII token 使用 `a_`、非 ASCII token 使用 `b_`，类型命名空间和 `.` 字段边界均不相交。manifest 构建期检测并拒绝重复 R diagram GID；相同 marker 多行合并为一个有序语义 layer，多顶点 path 不再拆断。
+- 没有 panel clip 时先证明最大 panel 边框范围；diagram 场景内普通已建模图层按绘制顺序先领取通用 owner，显式对象再领取 diagram GID。图例和图外装饰被排除，范围无法证明时只接受精确唯一候选。
+- `test_r_wp7_diagram_semantics.py` 10/10，直接要求七类对象关系、科学字段只读、identity drift/mixed batch 拒绝、完整 GID、ASCII `bw6k` 与 Unicode `é` 不碰撞、含 `.` 的跨字段 token 不碰撞、重复完整 identity 拒绝、多顶点 path、同样式 decoy 正确 owner，以及每个专用对象都出现在 SVG。R capability matrix 与旧动态批次/fingerprint 4/4 关键回归通过。
+- 隔离 API 证明合法 revision 1→2、刷新重放稳定；非法 mixed batch 对 project/session/history/cache/export anchor/snapshot 零变化。Chromium 证明 node、segment/path edge、arrow、node label、group 绑定到正确 live SVG tag/样式，专用组件分组无重复，节点配色进入 live SVG，科学字段不暴露。

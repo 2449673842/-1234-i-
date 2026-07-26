@@ -3,7 +3,7 @@
 > 状态：当前有效  
 > 更新时间：2026-07-30 16:08:23 +08:00
 > 证据截止时间：2026-07-30 16:08:23 +08:00
-> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 与 R-WP0-WP3 基线，以及 R-WP4 九类图元家族源分支能力；当前批次集成复验待完成，候选尚未部署
+> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 与 R-WP0-WP7 本地候选源分支能力；当前批次集成复验待完成，候选尚未部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
 
@@ -234,7 +234,7 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 | 公开宣传页与注册门禁 | 已实现，邮箱生产通道待配置 | 匿名访问先进入宣传页；启用邮箱验证后，新账号必须完成六位验证码验证才会获得会话；现有账号兼容迁移；安全文案隐藏内部防护细节 |
 | 图形能力展厅 | 本地候选 | 作为帮助中心同级站内页面展示 11 个带能力边界的固定模拟数据样例，其中包含 LnRR 排序图和主项目结构 2 x 2 组合图；没有未经真实验收的样例被标为稳定支持 |
 | Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选 WP6 六个复杂对象家族已有专用语义，其中网络图/路径图/SEM 依赖显式关系声明，不承诺按外观自动识别任意第三方图示；完成全部门禁和部署前不视为线上能力 |
-| R 渲染与语义编辑 | R-WP0-WP6 本地候选已合入，当前批次待复验 | ggplot2 主链路可用；patch mode 服务端权威、失败零持久化、identity v2 和运行时 parity 已验证。R-WP4 九类家族、R-WP5 scale/guide/facet/layout、R-WP6 data/annotation/stat 文本身份与复杂坐标边界均已收敛。Cartesian/flip/log/panel 内 polar 支持位置重放；CoordSf、第三方 coord 和不可逆位置保持 shadow/readonly。R renderer 125 个场景、R 语义浏览器 19/19、旧 identity v2、历史、导出和快照恢复通过；当前批次总门禁完成前不标记为生产能力，下一工作包为 R-WP7 |
+| R 渲染与语义编辑 | R-WP0-WP7 本地候选已合入，当前批次待复验 | ggplot2 主链路可用；patch mode 服务端权威、失败零持久化、identity v2 和运行时 parity 已验证。R-WP4 九类家族、R-WP5 scale/guide/facet/layout、R-WP6 文本/复杂坐标、R-WP7 显式网络图/路径图/SEM 语义均已收敛。R diagram 仅接受稳定 marker，不按外观猜测；科学文本与拓扑只读。renderer 专项、capability matrix、隔离 API 和真实 Chromium 通过；当前批次总门禁完成前不标记为生产能力，下一工作包为 R-WP8 |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |
 | 字体/颜色/线条编辑 | 已实现 | 支持单对象、语义分组、整图和跨 Figure 作用域 |
@@ -387,7 +387,7 @@ docs/platform-capability/UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md
 
 `UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md` 专门处理属性编辑、布局中心、组件中心、配色中心和字体中心的交叉属性与精细度不一致。网页统一版已完成 PropertyDescriptor、capability projection、严格 resolver 和共同 Draft 语义的主要迁移；2026-07-16 候选继续补齐数值自动暂存、字体格式刷、选中子图自动跟随、图例间距、散点比例缩放和保持尺寸的垂直行间距。旧项目兼容路径和 legacy 控件尚未删除。
 
-`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。R-WP0-WP5 已完成本地候选；R-WP5 已收敛 scale、guide、facet 与共享布局关系，并继续拒绝无法证明的单 facet 物理 bounds。下一步进入 R-WP6，处理文本、annotation、拖动与复杂坐标；网络图、路径图和 SEM 专用语义仍按后续工作包推进。
+`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。R-WP0-WP7 已形成未部署的本地候选：R-WP5 收敛 scale/guide/facet，R-WP6 收敛文本/拖动/复杂坐标，R-WP7 以显式 marker 提供网络图、路径图和 SEM 的 node/edge/arrow/label/group 专用语义。下一步进入 R-WP8，逐项证明扩展包和 base R 能力边界。
 
 当前专项方案已补充“能力增强列车”：每项能力必须依次证明 renderer 事实、对象身份、属性能力、目标解析、PatchPlan、Figure 事务、项目级持久化以及 Python/R/真实项目回归。禁止从协议设计直接跳到默认启用。
 
@@ -557,3 +557,5 @@ npm run test:help-center-smoke
 `2026-07-25 20:33:34 +08:00` 完成 R-WP5 独立审查收敛。除 scale/guide/facet、多 guide 标题与 SVG 样式隔离外，旧 continuous absolute-index alias 现在只容忍已知变化字段，伪造 stableKey/semantic/series/aesthetic 证据拒绝；R 跨 Figure relation 必须共享至少一个稳定字段，legacy score fallback 不能绕过冲突。完整 R renderer 124/124、隔离 API 3/3、真实浏览器 6/6、R 语义黄金样例 14/14、identity v2 compatibility、TypeScript 216 项和 lint 通过；最终独立复审 0 HIGH/MEDIUM。当前未推送、未部署，下一工作包为 R-WP6。
 
 `2026-07-26 13:45:59 +08:00` 完成 R-WP6 本地候选收敛。R 文本拆分为 data、annotation、stat 三类身份，扩展对齐、旋转、lineheight、plotmath/多行和位置能力；统计文字只读，`geom_label` 文本编辑保留 mapped fill。Cartesian/flip/log/panel 内 polar 可逆重放，CoordSf、第三方 coord 和不可逆位置 fail-closed。修复 R `currentProps.position` 缺失导致 renderer acknowledgement 冲突，以及前端确认前清空拖动草稿的问题；真实浏览器失败/重试证明零持久化、单请求和成功后清空。R renderer 125 个场景、R semantic 19/19、组件容器 42/42、capability matrix、identity v2、历史/导出/恢复、1720 项前端单测、lint/build/diff-check 通过。当前未推送、未部署，下一工作包为 R-WP7。
+
+`2026-07-26 18:19:46 +08:00` 完成 R-WP7 本地候选。R renderer 通过 `scifigure-sem-v1` 显式 marker 建立七类 diagram role 和完整 node/edge relation；GID 的四个身份字段全部使用 Base64URL，ASCII `a_` 与非 ASCII `b_` 命名空间分离，字段边界无歧义，重复完整 identity 在 manifest 构建期拒绝，同 marker 多行保留为一个有序 path。未标记 lookalike 保持通用对象，系数、p 值、拟合指标和拓扑只读。修复文本重建丢失 metadata、非法 mixed batch 部分应用，以及 `clip="off"` 下图例/同样式图元干扰 owner 的问题；只有可证明 panel 范围才允许按图层顺序绑定。renderer 10/10、R capability matrix、旧动态批次/fingerprint 4/4、隔离 API 和 Chromium 正确几何选择通过；当前未推送、未部署，下一工作包为 R-WP8。
