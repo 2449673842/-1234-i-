@@ -3,7 +3,7 @@
 > 状态：当前有效  
 > 更新时间：2026-07-30 16:08:23 +08:00
 > 证据截止时间：2026-07-30 16:08:23 +08:00
-> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 与 R-WP0-WP7 本地候选源分支能力；当前批次集成复验待完成，候选尚未部署
+> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 与 R-WP0-WP9 本地候选源分支能力；当前批次集成复验待完成，候选尚未部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
 
@@ -234,7 +234,7 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 | 公开宣传页与注册门禁 | 已实现，邮箱生产通道待配置 | 匿名访问先进入宣传页；启用邮箱验证后，新账号必须完成六位验证码验证才会获得会话；现有账号兼容迁移；安全文案隐藏内部防护细节 |
 | 图形能力展厅 | 本地候选 | 作为帮助中心同级站内页面展示 11 个带能力边界的固定模拟数据样例，其中包含 LnRR 排序图和主项目结构 2 x 2 组合图；没有未经真实验收的样例被标为稳定支持 |
 | Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选 WP6 六个复杂对象家族已有专用语义，其中网络图/路径图/SEM 依赖显式关系声明，不承诺按外观自动识别任意第三方图示；完成全部门禁和部署前不视为线上能力 |
-| R 渲染与语义编辑 | R-WP0-WP8 本地候选已合入，当前批次待复验 | ggplot2 主链路可用；patch mode 服务端权威、失败零持久化、identity v2 和运行时 parity 已验证。R-WP4 九类家族、R-WP5 scale/guide/facet/layout、R-WP6 文本/复杂坐标、R-WP7 显式网络图/路径图/SEM 语义均已收敛。R-WP8 固化扩展包与 base R 的 Shadow/只读边界：未固定包不虚报可编辑，CoordSf 不可逆位置和 mixed batch fail-closed，base R 仅预览/导出。renderer 专项、capability matrix、隔离 API 和真实 Chromium 通过；当前批次总门禁完成前不标记为生产能力，下一工作包为 R-WP9 |
+| R 渲染与语义编辑 | R-WP0-WP9 本地候选已合入，当前批次待复验 | ggplot2 主链路可用；patch mode 服务端权威、失败零持久化、identity v2 和运行时 parity 已验证。R-WP4 九类家族、R-WP5 scale/guide/facet/layout、R-WP6 文本/复杂坐标、R-WP7 显式网络图/路径图/SEM、R-WP8 扩展 Shadow 边界均已收敛。R-WP9 完成双 CSV 用户链路、四格式导出、导出后编辑/快照恢复、renderer 分段计时、缓存 authority v2、导出计时、SVG 持久化预算和 timeout/container 清理；当前批次总门禁完成前不标记为生产能力，下一工作包为 R-WP10 |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |
 | 字体/颜色/线条编辑 | 已实现 | 支持单对象、语义分组、整图和跨 Figure 作用域 |
@@ -387,7 +387,7 @@ docs/platform-capability/UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md
 
 `UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md` 专门处理属性编辑、布局中心、组件中心、配色中心和字体中心的交叉属性与精细度不一致。网页统一版已完成 PropertyDescriptor、capability projection、严格 resolver 和共同 Draft 语义的主要迁移；2026-07-16 候选继续补齐数值自动暂存、字体格式刷、选中子图自动跟随、图例间距、散点比例缩放和保持尺寸的垂直行间距。旧项目兼容路径和 legacy 控件尚未删除。
 
-`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。R-WP0-WP8 已形成未部署的本地候选：R-WP5 收敛 scale/guide/facet，R-WP6 收敛文本/拖动/复杂坐标，R-WP7 以显式 marker 提供网络图、路径图和 SEM 的 node/edge/arrow/label/group 专用语义，R-WP8 将未固定扩展包、不可逆投影位置和 base R 明确保持为 Shadow/readonly 或 preview-only。下一步进入 R-WP9，完成全用户链路、性能和可观测性门禁。
+`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。R-WP0-WP9 已形成未部署的本地候选：R-WP5 收敛 scale/guide/facet，R-WP6 收敛文本/拖动/复杂坐标，R-WP7 提供显式网络图/路径图/SEM 语义，R-WP8 固化扩展 Shadow/readonly 边界，R-WP9 完成多文件用户链路、性能分段、缓存 authority、导出观测、超大 SVG 零持久化和 timeout 清理。下一步进入 R-WP10 默认启用与发布门禁。
 
 当前专项方案已补充“能力增强列车”：每项能力必须依次证明 renderer 事实、对象身份、属性能力、目标解析、PatchPlan、Figure 事务、项目级持久化以及 Python/R/真实项目回归。禁止从协议设计直接跳到默认启用。
 
@@ -561,3 +561,5 @@ npm run test:help-center-smoke
 `2026-07-26 18:19:46 +08:00` 完成 R-WP7 本地候选。R renderer 通过 `scifigure-sem-v1` 显式 marker 建立七类 diagram role 和完整 node/edge relation；GID 的四个身份字段全部使用 Base64URL，ASCII `a_` 与非 ASCII `b_` 命名空间分离，字段边界无歧义，重复完整 identity 在 manifest 构建期拒绝，同 marker 多行保留为一个有序 path。未标记 lookalike 保持通用对象，系数、p 值、拟合指标和拓扑只读。修复文本重建丢失 metadata、非法 mixed batch 部分应用，以及 `clip="off"` 下图例/同样式图元干扰 owner 的问题；只有可证明 panel 范围才允许按图层顺序绑定。renderer 10/10、R capability matrix、旧动态批次/fingerprint 4/4、隔离 API 和 Chromium 正确几何选择通过；当前未推送、未部署，下一工作包为 R-WP8。
 
 `2026-07-26 19:26:25 +08:00` 完成 R-WP8 本地候选。固定 renderer 镜像未安装的 `ggrepel/ggnewscale/sf/ggraph/igraph/tidygraph/semPlot/DiagrammeR` 统一进入显式 Shadow/readonly 边界；runtime inventory 只读报告安装状态，缺包诊断结构化且错误响应不泄露运行时路径。repel 与原生 ggraph geom 保留可用预览但不暴露写回控件，renamed aesthetic 不并入现有 scale，CoordSf 不可逆位置与合法样式混合时整批拒绝，base R 维持 preview/export only。隔离 API 证明拒绝后 session、Figure、revision、history 和 render cache 均不变化。R-WP8 7/7、capability matrix、旧身份、R-WP7 API/UI、完整 R semantic Chromium、安全预检、镜像契约和 lint 通过；当前未推送、未部署，下一工作包为 R-WP9。
+
+`2026-07-26 20:22:44 +08:00` 完成 R-WP9 本地候选。新增双 CSV 精确路径 workflow，覆盖项目创建、真实上传、patch revision、刷新、SVG/PNG/PDF/TIFF、导出后编辑和快照恢复。R renderer 输出脚本、语义预检、编辑解析/应用、ggplot 绘制及设备开关分段计时；缓存 key 使用 renderer authority schema v2；导出响应提供 render/convert/persist 计时。UTF-8 SVG 超限在 session、preview、cache、资产和快照前返回结构化 413，直接渲染、patch 和导出均由数据库/文件前后快照证明零持久化。timeout smoke 证明本轮 Rscript job、临时目录和受管容器无残留。相关 workflow、性能持久化、timeout、render performance、cache、lint、build、diff-check 和 data audit 通过；当前未推送、未部署，下一工作包为 R-WP10。

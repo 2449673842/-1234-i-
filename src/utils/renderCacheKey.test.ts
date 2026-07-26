@@ -65,4 +65,86 @@ describe('buildFigureRenderCacheKey', () => {
 
     expect(highDpi).not.toBe(lowDpi);
   });
+
+  it('uses a stable default renderer authority when omitted', async () => {
+    const omittedAuthority = await buildFigureRenderCacheKey(baseInput);
+    const explicitDefaultAuthority = await buildFigureRenderCacheKey({
+      ...baseInput,
+      rendererAuthority: {
+        rendererSource: 'unspecified',
+        rendererImage: 'unspecified',
+        rendererRuntime: 'unspecified',
+        rendererPackageContract: 'unspecified',
+      },
+    });
+
+    expect(explicitDefaultAuthority).toBe(omittedAuthority);
+  });
+
+  it('changes when renderer authority changes', async () => {
+    const matplotlibRuntime = await buildFigureRenderCacheKey({
+      ...baseInput,
+      rendererAuthority: {
+        rendererSource: 'server-session-render',
+        rendererImage: 'python-renderer:2026-07-26',
+        rendererRuntime: 'python-3.11',
+        rendererPackageContract: { matplotlib: '3.9.x', numpy: '2.x' },
+      },
+    });
+    const pinnedRuntime = await buildFigureRenderCacheKey({
+      ...baseInput,
+      rendererAuthority: {
+        rendererSource: 'server-session-render',
+        rendererImage: 'python-renderer:2026-07-26',
+        rendererRuntime: 'python-3.12',
+        rendererPackageContract: { matplotlib: '3.9.x', numpy: '2.x' },
+      },
+    });
+
+    expect(pinnedRuntime).not.toBe(matplotlibRuntime);
+  });
+
+  it('normalizes equivalent renderer package contracts', async () => {
+    const a = await buildFigureRenderCacheKey({
+      ...baseInput,
+      rendererAuthority: {
+        rendererSource: 'server-session-render',
+        rendererImage: 'python-renderer:2026-07-26',
+        rendererRuntime: 'python-3.11',
+        rendererPackageContract: { matplotlib: '3.9.x', numpy: '2.x' },
+      },
+    });
+    const b = await buildFigureRenderCacheKey({
+      ...baseInput,
+      rendererAuthority: {
+        rendererSource: 'server-session-render',
+        rendererImage: 'python-renderer:2026-07-26',
+        rendererRuntime: 'python-3.11',
+        rendererPackageContract: { numpy: '2.x', matplotlib: '3.9.x' },
+      },
+    });
+
+    expect(b).toBe(a);
+  });
+
+  it('accepts top-level renderer authority fields for compatibility', async () => {
+    const nestedAuthority = await buildFigureRenderCacheKey({
+      ...baseInput,
+      rendererAuthority: {
+        rendererSource: 'server-session-render',
+        rendererImage: 'python-renderer:2026-07-26',
+        rendererRuntime: 'python-3.11',
+        rendererPackageContract: { matplotlib: '3.9.x' },
+      },
+    });
+    const topLevelAuthority = await buildFigureRenderCacheKey({
+      ...baseInput,
+      rendererSource: 'server-session-render',
+      rendererImage: 'python-renderer:2026-07-26',
+      rendererRuntime: 'python-3.11',
+      rendererPackageContract: { matplotlib: '3.9.x' },
+    });
+
+    expect(topLevelAuthority).toBe(nestedAuthority);
+  });
 });

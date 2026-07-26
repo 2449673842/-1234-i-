@@ -1,8 +1,8 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0-R-WP3、R-WP4 九类图元家族、R-WP5 scale/guide/facet/layout、R-WP6 文本/annotation/复杂坐标与 R-WP7 网络图/路径图/SEM 专用语义本地候选已合入当前集成分支；当前批次复验待完成，下一工作包为 R-WP8
+> 状态：R-WP0-R-WP9 本地候选已合入当前集成分支；当前批次复验待完成，下一工作包为 R-WP10 默认启用、发布门禁与旧路径受控退役
 > 最后修改时间：2026-07-30 16:08:23 +08:00
-> 当前部署状态：R-WP0-R-WP7 已完成子家族仅在本地验证；未推送、未部署
+> 当前部署状态：R-WP0-R-WP9 已完成子家族仅在本地验证；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 现状入口：`docs/R_COMPATIBILITY_PLAN.md`
 > 适用范围：R/ggplot2 渲染、语义图元、对象身份、patch 写回、Draft、历史、导出、复杂坐标、网络图/路径图/SEM 与生产一致性
@@ -679,6 +679,15 @@ persist/export conversion
 - 新 R E2E 连续通过且使用隔离环境。
 - 冷/热渲染指标分别记录，不用单次平均值宣传性能。
 - 超时、错误和取消后无残留 renderer 进程或受管容器。
+
+**2026-07-26 本地候选证据**
+
+- 复用既有 `r_semantic_centers_smoke.mjs` 作为浏览器黄金链路，不重复维护第二套巨型 UI 流程；新增隔离 API workflow 真实创建 R 项目、multipart 上传两个 CSV，并由脚本通过精确 `uploaded_file_paths[[filename]]` 读取。合法 backend patch 只增加一次 revision，刷新、四格式导出、导出后编辑和快照恢复保持一致。
+- R renderer 新增真实分段计时：`scriptEvalMs`、`semanticPreflightMs`、`editResolutionMs`、`editApplyMs`、`ggplotRenderMs`、`deviceOpenMs`、`deviceCloseMs`；保留旧 `scriptExecutionMs/svgSerializeMs/manifestBuildMs/svgPostprocessMs/totalMs`，不伪造无法独立测量的 `packageLoadMs`。
+- render cache key 升级为 schema v2，并纳入服务端可信的 renderer source、实际 Docker image ID/RepoDigests/labels、runtime 和 package/Dockerfile contract；客户端字段不参与 authority。renderer source、镜像或运行合同变化会产生新 key，旧缓存不能跨合同误命中。
+- `/api/figure/export` 与项目导出返回 `exportRenderMs/exportConvertMs/exportPersistMs/totalMs`。成功 SVG 在写 session、project preview、render cache、导出资产或快照前执行 UTF-8 字节预算；超限返回 `SVG_PERSISTENCE_BUDGET_EXCEEDED` 和 `persisted=false`。
+- 项目导出在任何资产写入前生成并预算检查全部主图/子图 SVG。隔离持久化测试分别证明超大直接渲染、超大 patch 和带 `includeSubplots` 的超大项目导出不会改变 session、revision、editLog、history、preview、render cache、export asset/snapshot 或导出文件。R timeout 清理测试证明请求创建的 Rscript job、临时目录和受管容器无残留，且不写任何渲染状态。
+- `test:r-wp9-workflow`、`test:r-wp9-performance-persistence`、`test:r-wp9-timeout-cleanup`、`test:render-performance`、`test:cache-smoke`、R timing 3/3、lint、build、diff-check 和 data audit 通过。数据审计为 25 用户、128 项目、286 文件、112 导出资产、0 issue。当前未推送、未部署；下一工作包为 R-WP10。
 
 ### R-WP10：默认启用、发布与旧路径退役
 

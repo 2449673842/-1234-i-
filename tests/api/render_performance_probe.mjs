@@ -13,6 +13,20 @@ function assertPerformanceEnvelope(data, language) {
   assert(perf.runtime.mode === 'local' || perf.runtime.mode === 'docker', `${language} runtime mode is invalid`);
   assert(perf.server && perf.server.totalMs >= 0, `${language} server timing is missing`);
   assert(perf.server.totalMs >= perf.runtime.totalMs, `${language} server total is shorter than renderer runtime`);
+  if (language === 'r') {
+    for (const key of [
+      'scriptEvalMs',
+      'semanticPreflightMs',
+      'editResolutionMs',
+      'editApplyMs',
+      'ggplotRenderMs',
+      'deviceOpenMs',
+      'deviceCloseMs',
+    ]) {
+      assert(Number.isFinite(perf.renderer[key]) && perf.renderer[key] >= 0, `r renderer timing ${key} is missing`);
+    }
+    assert(!Object.hasOwn(perf.renderer, 'packageLoadMs'), 'r renderer must not fabricate packageLoadMs');
+  }
 }
 
 async function main() {

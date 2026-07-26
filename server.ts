@@ -244,6 +244,7 @@ async function startServer() {
     try {
       const row = getDb().prepare('SELECT svg, manifest, code_slice FROM render_cache WHERE cache_key = ?').get(cacheKey) as any;
       if (row) {
+        if (findSvgPersistenceBudgetViolation({ svg: row.svg })) return null;
         return {
           svg: row.svg,
           manifest: JSON.parse(row.manifest),
@@ -258,6 +259,7 @@ async function startServer() {
 
   function setCachedRender(cacheKey: string, svg: string, manifest: any, codeSlice?: any, diagnosticsSource?: any) {
     try {
+      assertSvgWithinPersistenceBudget(svg, 'render_cache');
       const cachedManifest = withRenderDiagnostics(manifest, diagnosticsSource);
       getDb().prepare(`
         INSERT OR REPLACE INTO render_cache (cache_key, svg, manifest, code_slice)
@@ -291,7 +293,211 @@ async function startServer() {
       figureFingerprint,
       editLog: editLogOverride ?? session.editLog ?? [],
       renderOptions: session.language === 'r' ? { width_in: 7, height_in: 5 } : { dpi: 150 },
+      rendererAuthority: trustedRendererCacheAuthority(engine),
     });
+  }
+
+  const repositoryFileShaCache = new Map<string, string>();
+  const dockerRendererAuthorityCache = new Map<string, {
+    imageIdentity: string;
+    labels: Record<string, string>;
+  }>();
+  const rendererAuthorityProcessNonce = randomUUID();
+
+  function repositoryFileSha(relativePath: string): string {
+    const cached = repositoryFileShaCache.get(relativePath);
+    if (cached) return cached;
+    const sourcePath = path.join(process.cwd(), relativePath);
+    if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) return 'unavailable';
+    const sha = crypto.createHash('sha256').update(fs.readFileSync(sourcePath)).digest('hex');
+    repositoryFileShaCache.set(relativePath, sha);
+    return sha;
+  }
+
+  function inspectDockerRendererAuthority(image: string): {
+    imageIdentity: string;
+    labels: Record<string, string>;
+  } {
+    const cached = dockerRendererAuthorityCache.get(image);
+    if (cached) return cached;
+    const inspected = spawnSync('docker', ['image', 'inspect', image], {
+      encoding: 'utf-8',
+      env: buildProcessEnvForBin('docker', { runtime: 'docker' }),
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    if (inspected.status !== 0) {
+      const unavailable = {
+        imageIdentity: `${image}:unavailable:${rendererAuthorityProcessNonce}`,
+        labels: {},
+      };
+      dockerRendererAuthorityCache.set(image, unavailable);
+      return unavailable;
+    }
+    try {
+      const parsed = JSON.parse(String(inspected.stdout || '[]'));
+      const descriptor = Array.isArray(parsed) ? parsed[0] : null;
+      const rawLabels = descriptor?.Config?.Labels && typeof descriptor.Config.Labels === 'object'
+        ? descriptor.Config.Labels
+        : {};
+      const labelKeys = [
+        'org.scifigure.renderer.base',
+        'org.scifigure.renderer.debian',
+        'org.scifigure.renderer.python',
+        'org.scifigure.renderer.python-packages',
+        'org.scifigure.renderer.python-lock-sha256',
+        'org.scifigure.renderer.r',
+        'org.scifigure.renderer.r-packages',
+        'org.scifigure.renderer.r-source-sha256',
+        'org.scifigure.renderer.svg-device',
+        'org.scifigure.renderer.font-files',
+        'org.scifigure.renderer.font-aliases',
+      ];
+      const labels = Object.fromEntries(labelKeys
+        .filter(key => typeof rawLabels[key] === 'string')
+        .map(key => [key, String(rawLabels[key])]));
+      const imageId = String(descriptor?.Id || '').trim();
+      const repoDigests = Array.isArray(descriptor?.RepoDigests)
+        ? descriptor.RepoDigests.map(String).sort()
+        : [];
+      const authority = {
+        imageIdentity: JSON.stringify({ image, imageId, repoDigests }),
+        labels,
+      };
+      dockerRendererAuthorityCache.set(image, authority);
+      return authority;
+    } catch {
+      const invalid = {
+        imageIdentity: `${image}:invalid-inspect:${rendererAuthorityProcessNonce}`,
+        labels: {},
+      };
+      dockerRendererAuthorityCache.set(image, invalid);
+      return invalid;
+    }
+  }
+
+  function trustedRendererCacheAuthority(engine: string): Record<string, unknown> {
+    const isR = engine === 'r_ggplot';
+    const mode = rendererMode();
+    const configuredImage = String(process.env.SCIFIGURE_RENDERER_IMAGE || 'scifigure-renderer:latest');
+    const dockerAuthority = mode === 'docker'
+      ? inspectDockerRendererAuthority(configuredImage)
+      : null;
+    const rendererImage = dockerAuthority?.imageIdentity || 'local';
+    const rendererSource = isR
+      ? repositoryFileSha(path.join('renderer', 'r_renderer.R'))
+      : repositoryFileSha(path.join('renderer', 'introspector.py'));
+    const rendererContractSha = repositoryFileSha('Dockerfile.renderer');
+    const rendererRuntime = isR
+      ? String(
+          dockerAuthority?.labels['org.scifigure.renderer.r']
+          || process.env.SCIFIGURE_R_RUNTIME_CONTRACT
+          || process.env.SCIFIGURE_R_VERSION
+          || 'managed-r'
+        )
+      : String(
+          dockerAuthority?.labels['org.scifigure.renderer.python']
+          || process.env.SCIFIGURE_PYTHON_RUNTIME_CONTRACT
+          || process.env.SCIFIGURE_PYTHON_VERSION
+          || 'managed-python'
+        );
+    const rendererPackageContract = isR
+      ? {
+          imagePackages: dockerAuthority?.labels['org.scifigure.renderer.r-packages'] || 'local',
+          ggplot2: process.env.SCIFIGURE_R_GGPLOT2_VERSION || 'managed',
+          jsonlite: process.env.SCIFIGURE_R_JSONLITE_VERSION || 'managed',
+          readxl: process.env.SCIFIGURE_R_READXL_VERSION || 'managed',
+          svglite: process.env.SCIFIGURE_R_SVGLITE_VERSION || 'managed',
+          systemfonts: process.env.SCIFIGURE_R_SYSTEMFONTS_VERSION || 'managed',
+          textshaping: process.env.SCIFIGURE_R_TEXTSHAPING_VERSION || 'managed',
+          svgDevice: process.env.SCIFIGURE_R_SVG_DEVICE || 'managed',
+          rendererContractSha,
+        }
+      : {
+          imagePackages: dockerAuthority?.labels['org.scifigure.renderer.python-packages'] || 'local',
+          imageLockSha: dockerAuthority?.labels['org.scifigure.renderer.python-lock-sha256'] || 'local',
+          matplotlib: process.env.SCIFIGURE_MATPLOTLIB_VERSION || 'managed',
+          numpy: process.env.SCIFIGURE_NUMPY_VERSION || 'managed',
+          pandas: process.env.SCIFIGURE_PANDAS_VERSION || 'managed',
+          rendererContractSha,
+        };
+    return {
+      rendererSource: `${mode}:${rendererSource}`,
+      rendererImage,
+      rendererRuntime: `${mode}:${rendererRuntime}`,
+      rendererPackageContract: {
+        ...rendererPackageContract,
+        imageLabels: dockerAuthority?.labels || {},
+      },
+    };
+  }
+
+  type SvgPersistenceBudgetViolation = {
+    figureId: string;
+    actualBytes: number;
+    limitBytes: number;
+  };
+
+  function svgPersistenceBudgetBytes(): number {
+    return Math.round(boundedNumber(
+      process.env.SCIFIGURE_MAX_PERSISTED_SVG_MB,
+      16,
+      0.001,
+      64,
+    ) * 1024 * 1024);
+  }
+
+  function findSvgPersistenceBudgetViolation(rendered: any): SvgPersistenceBudgetViolation | null {
+    const limitBytes = svgPersistenceBudgetBytes();
+    const candidates: Array<{ figureId: string; svg: unknown }> = [];
+    if (typeof rendered?.svg === 'string') {
+      candidates.push({ figureId: String(rendered.figureId || 'fig_1'), svg: rendered.svg });
+    }
+    if (Array.isArray(rendered?.figures)) {
+      rendered.figures.forEach((figure: any, index: number) => {
+        if (typeof figure?.svg === 'string') {
+          candidates.push({
+            figureId: String(figure.figureId || `fig_${index + 1}`),
+            svg: figure.svg,
+          });
+        }
+      });
+    }
+    for (const candidate of candidates) {
+      const actualBytes = Buffer.byteLength(candidate.svg as string, 'utf8');
+      if (actualBytes > limitBytes) {
+        return { figureId: candidate.figureId, actualBytes, limitBytes };
+      }
+    }
+    return null;
+  }
+
+  function assertSvgWithinPersistenceBudget(svg: string | null | undefined, figureId: string): void {
+    if (typeof svg !== 'string') return;
+    const violation = findSvgPersistenceBudgetViolation({ figureId, svg });
+    if (!violation) return;
+    throw new Error(
+      `SVG_PERSISTENCE_BUDGET_EXCEEDED:${violation.figureId}:${violation.actualBytes}:${violation.limitBytes}`,
+    );
+  }
+
+  function rejectOversizedRenderedSvg(
+    res: express.Response,
+    rendered: any,
+    message = '渲染结果超过 SVG 持久化大小限制，本次状态未写入。',
+  ): boolean {
+    const violation = findSvgPersistenceBudgetViolation(rendered);
+    if (!violation) return false;
+    res.status(413).json({
+      status: 'error',
+      code: 'SVG_PERSISTENCE_BUDGET_EXCEEDED',
+      message,
+      figureId: violation.figureId,
+      actualBytes: violation.actualBytes,
+      limitBytes: violation.limitBytes,
+      persisted: false,
+    });
+    return true;
   }
 
   const app = express();
@@ -1269,6 +1475,8 @@ async function startServer() {
     if (!owner?.userId) {
       throw new Error('导出资产缺少有效的项目所有者');
     }
+    assertSvgWithinPersistenceBudget(args.svg, args.figureId || 'export_asset');
+    assertSvgWithinPersistenceBudget(args.thumbnailSvg, `${args.figureId || 'export_asset'}:thumbnail`);
     const assetId = `exp_${randomUUID()}`;
     const fmt = args.format.toLowerCase();
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -2320,6 +2528,7 @@ ${inner}
     fingerprint?: string | number | null;
     diagnosticsSource?: unknown;
   }): void {
+    assertSvgWithinPersistenceBudget(args.svg, args.sessionId);
     const manifest = withRenderDiagnostics(args.manifest, args.diagnosticsSource);
     getDb().prepare(`
       UPDATE project_figures
@@ -2540,10 +2749,16 @@ ${inner}
     }
     const allowedKeys = [
       'staticScanMs',
+      'scriptEvalMs',
       'scriptExecutionMs',
+      'semanticPreflightMs',
+      'editResolutionMs',
       'dynamicScanMs',
       'figureDiscoveryMs',
       'editApplyMs',
+      'ggplotRenderMs',
+      'deviceOpenMs',
+      'deviceCloseMs',
       'introspectionMs',
       'svgSerializeMs',
       'layoutDiagnosticsMs',
@@ -2588,7 +2803,9 @@ ${inner}
     const isMeasuredRenderRoute = req.path === '/api/figure/render'
       || req.path === '/api/figure/patch'
       || req.path === '/api/figure/code-patch'
-      || /^\/api\/projects\/[^/]+\/figures\/render$/.test(req.path);
+      || req.path === '/api/figure/export'
+      || /^\/api\/projects\/[^/]+\/figures\/render$/.test(req.path)
+      || /^\/api\/projects\/[^/]+\/export$/.test(req.path);
     if (!isMeasuredRenderRoute) return next();
 
     const requestStartedAt = performance.now();
@@ -5809,6 +6026,7 @@ ${inner}
         }, { req, label: 'render' });
       }
       if (result.status === 'success') {
+        if (rejectOversizedRenderedSvg(res, result)) return;
         if (compressedRequestedEditLog.length > 0) {
           const knownEditLog = Array.isArray(existingSession?.editLog) ? existingSession.editLog : [];
           const renderedManifest = result.manifest || result.figures?.[0]?.manifest;
@@ -6082,6 +6300,7 @@ ${inner}
           uploaded_file_paths: prepareUploadedFilePathsForR(uploaded_file_paths, cwd),
           renderOptions: { width_in: 7, height_in: 5 },
         }, { req, label: 'r-patch' });
+        if (result.status === 'success' && rejectOversizedRenderedSvg(res, result)) return;
         const renderedPrecheck = result.status === 'success'
           ? (
               projectContext
@@ -6307,6 +6526,7 @@ ${inner}
           cwd,
           uploaded_file_paths,
         }, { req, label: 'patch-project-code' });
+        if (result.status === 'success' && rejectOversizedRenderedSvg(res, result)) return;
 
         const replayConflicts = collectRendererReplayConflictsByFigure(
           result.warnings,
@@ -6487,6 +6707,7 @@ ${inner}
         uploaded_file_paths,
         editLogs: projectContext ? { [projectContext.figureId]: compressEditLog(mergedEditLog) } : undefined
       }, { req, label: 'patch' });
+      if (result.status === 'success' && rejectOversizedRenderedSvg(res, result)) return;
 
       const renderedFigure = projectContext
         ? result.figures?.find((figure: any) => figure.figureId === projectContext.figureId)
@@ -6741,6 +6962,7 @@ ${inner}
         });
       }
 
+      if (rejectOversizedRenderedSvg(res, result)) return;
       // 4. Update session
       if (session) {
         session.script = script;
@@ -6812,7 +7034,10 @@ ${inner}
         linkedFigure?.manifest,
       ));
 
+      let exportRenderMs = 0;
+      let exportConvertMs = 0;
       let result: any;
+      const exportRenderStartedAt = performance.now();
       if (session.language === 'r') {
         result = await spawnRWithPayload({
           script: session.script,
@@ -6836,9 +7061,15 @@ ${inner}
           export_format: reqFormat !== 'svg' ? reqFormat : undefined,
         }, { req, label: 'export', maxOutputMb: 64 });
       }
+      exportRenderMs = roundedDuration(exportRenderStartedAt);
       if (result.status !== 'success') {
         return res.json(result);
       }
+      if (rejectOversizedRenderedSvg(
+        res,
+        result,
+        '导出 SVG 超过持久化大小限制，本次未生成导出结果。',
+      )) return;
       if (session.language === 'r') {
         const exportPrecheck = precheckRenderedProjectFigureEditLog(
           result.manifest,
@@ -6877,11 +7108,13 @@ ${inner}
       let format_note = '';
 
       if (session.language === 'r' && reqFormat !== 'svg' && !binary_b64) {
+        const exportConvertStartedAt = performance.now();
         const converted = await spawnPythonWithPayload('svg_convert.py', {
           svg,
           format: reqFormat,
           dpi: dpi || 300,
         }, { req, label: 'r-svg-export', maxOutputMb: 64 });
+        exportConvertMs += roundedDuration(exportConvertStartedAt);
         if (converted.status === 'success' && converted.binary_b64) {
           binary_b64 = converted.binary_b64;
         } else {
@@ -6914,7 +7147,7 @@ ${inner}
         }
       };
 
-      const responsePayload = {
+      const responsePayload = attachServerPerformance({
         status: 'success',
         format: reqFormat,
         svg,
@@ -6922,7 +7155,11 @@ ${inner}
         bundle,
         format_note,
         warnings: result.warnings ?? []
-      };
+      }, {
+        exportRenderMs,
+        exportConvertMs,
+        exportPersistMs: 0,
+      });
       assertHourlyByteBudget(
         req,
         res,
@@ -7653,6 +7890,7 @@ ${inner}
       }
 
       if (result.status === 'success') {
+        if (rejectOversizedRenderedSvg(res, result)) return;
         // Detect figure count drift
         const newFigures = result.figures || [];
         const manifestPrecheckWarnings: any[] = [];
@@ -7946,6 +8184,20 @@ ${inner}
           }
 
           if (previewResult.status === 'success') {
+            const budgetViolation = findSvgPersistenceBudgetViolation(previewResult);
+            if (budgetViolation) {
+              return res.json({
+                status: 'success',
+                figures: resultFigures,
+                previewWarning: '预览 SVG 超过持久化大小限制，已保留现有预览。',
+                previewError: {
+                  code: 'SVG_PERSISTENCE_BUDGET_EXCEEDED',
+                  figureId: budgetViolation.figureId,
+                  actualBytes: budgetViolation.actualBytes,
+                  limitBytes: budgetViolation.limitBytes,
+                },
+              });
+            }
             const previewById = new Map((previewResult.figures || []).map((fig: any) => [fig.figureId, fig]));
             const updatePreviewStmt = getDb().prepare(`
               UPDATE project_figures
@@ -8628,6 +8880,9 @@ ${inner}
       }
 
       const results = [];
+      let exportRenderMs = 0;
+      let exportConvertMs = 0;
+      let exportPersistMs = 0;
       const validatedPythonExportScripts = new Set<string>();
       const datasets = listProjectFiles(projectId);
       const exportDatasetCapture = saveToLibrary !== false
@@ -8665,6 +8920,7 @@ ${inner}
         ));
 
         const targetFigId = `fig_${fig.figure_index + 1}`;
+        const exportRenderStartedAt = performance.now();
         const result = session.language === 'r'
           ? await spawnRWithPayload({
               script: session.script,
@@ -8683,6 +8939,7 @@ ${inner}
               renderOptions: { dpi: dpi || 300 },
               export_format: reqFormat !== 'svg' ? reqFormat : undefined,
             }, { req, label: 'project-export', maxOutputMb: 64 });
+        exportRenderMs += roundedDuration(exportRenderStartedAt);
 
         if (session.language === 'r' && result.status !== 'success') {
           return res.status(422).json({
@@ -8695,6 +8952,11 @@ ${inner}
 
         if (result.status === 'success') {
           const matchedFig = result.figures?.find((f: any) => f.figureId === targetFigId) || result;
+          if (rejectOversizedRenderedSvg(
+            res,
+            { ...matchedFig, figureId: targetFigId },
+            `${targetFigId} 导出 SVG 超过持久化大小限制，未创建导出资产或快照。`,
+          )) return;
           const targetWarnings = Array.isArray(result.warnings)
             ? result.warnings.filter((warning: any) => !warning?.figureId || warning.figureId === targetFigId)
             : [];
@@ -8739,11 +9001,13 @@ ${inner}
             });
           }
           if (session.language === 'r' && reqFormat !== 'svg' && !matchedFig.binary_b64) {
+            const exportConvertStartedAt = performance.now();
             const converted = await spawnPythonWithPayload('svg_convert.py', {
               svg: matchedFig.svg,
               format: reqFormat,
               dpi: dpi || 300,
             }, { req, label: 'project-r-svg-export', maxOutputMb: 64 });
+            exportConvertMs += roundedDuration(exportConvertStartedAt);
             if (converted.status !== 'success' || !converted.binary_b64) {
               return res.status(422).json({
                 status: 'error',
@@ -8762,6 +9026,27 @@ ${inner}
             matchedFig,
             targetWarnings,
           });
+        }
+      }
+
+      const subplotPanelsByFigure = new Map<string, ReturnType<typeof buildSubplotSvgExports>>();
+      if (saveToLibrary !== false && includeSubplots) {
+        for (const renderedTarget of renderedTargets) {
+          const panels = buildSubplotSvgExports(
+            renderedTarget.matchedFig.svg,
+            renderedTarget.matchedFig.manifest,
+          );
+          for (const panel of panels) {
+            if (rejectOversizedRenderedSvg(
+              res,
+              {
+                figureId: `${renderedTarget.targetFigId}:${panel.subplotId}`,
+                svg: panel.svg,
+              },
+              `${renderedTarget.targetFigId} 的子图 SVG 超过持久化大小限制，未创建任何导出资产或快照。`,
+            )) return;
+          }
+          subplotPanelsByFigure.set(renderedTarget.targetFigId, panels);
         }
       }
 
@@ -8791,6 +9076,7 @@ ${inner}
             : undefined;
           let asset: ExportAsset | null = null;
           if (saveToLibrary !== false) {
+            const exportPersistStartedAt = performance.now();
             asset = persistProjectExportAsset({
               projectId,
               figureId: targetFigId,
@@ -8813,21 +9099,24 @@ ${inner}
               editingSnapshot,
             });
             newlyPersistedAssets.push(asset);
+            exportPersistMs += roundedDuration(exportPersistStartedAt);
           }
           const subplotAssets: ExportAsset[] = [];
           const subplotFormatNotes: string[] = [];
           if (saveToLibrary !== false && includeSubplots) {
-            const subplotPanels = buildSubplotSvgExports(matchedFig.svg, matchedFig.manifest);
+            const subplotPanels = subplotPanelsByFigure.get(targetFigId) || [];
             for (const [panelIndex, panel] of subplotPanels.entries()) {
               let subplotFormat = 'svg';
               let subplotBinaryB64: string | null = null;
               let subplotFormatNote = '';
               if (effectiveFigureFormat !== 'svg') {
+                const exportConvertStartedAt = performance.now();
                 const converted = await spawnPythonWithPayload('svg_convert.py', {
                   svg: panel.svg,
                   format: effectiveFigureFormat,
                   dpi: dpi || 300,
                 }, { req, label: 'subplot-svg-export', maxOutputMb: 64 });
+                exportConvertMs += roundedDuration(exportConvertStartedAt);
                 if (converted.status === 'success' && converted.binary_b64) {
                   subplotFormat = converted.format || effectiveFigureFormat;
                   subplotBinaryB64 = converted.binary_b64;
@@ -8836,6 +9125,7 @@ ${inner}
                   subplotFormatNotes.push(subplotFormatNote);
                 }
               }
+              const subplotPersistStartedAt = performance.now();
               const subplotAsset = persistProjectExportAsset({
                 projectId,
                 figureId: `${targetFigId}:${panel.subplotId}`,
@@ -8863,6 +9153,7 @@ ${inner}
               });
               subplotAssets.push(subplotAsset);
               newlyPersistedAssets.push(subplotAsset);
+              exportPersistMs += roundedDuration(subplotPersistStartedAt);
             }
           }
           results.push({
@@ -8877,10 +9168,14 @@ ${inner}
           });
       }
 
-      const responsePayload = {
+      const responsePayload = attachServerPerformance({
         status: 'success',
         figures: results
-      };
+      }, {
+        exportRenderMs,
+        exportConvertMs,
+        exportPersistMs,
+      });
       assertHourlyByteBudget(
         req,
         res,

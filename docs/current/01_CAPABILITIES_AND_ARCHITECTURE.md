@@ -867,3 +867,11 @@ ERROR_LOG.md
 动态效果必须尊重 prefers-reduced-motion
 帮助页样式必须限制在 help-center-page 命名空间内
 ```
+
+## 19. R-WP9 性能、缓存与持久化边界（2026-07-26 20:22:44 +08:00）
+
+R renderer 的性能信息现在区分脚本求值、语义预检、编辑解析、编辑应用、ggplot 绘制、设备打开/关闭、SVG 读取、manifest 构建和后处理。旧总计字段继续保留；无法独立测量的 package load 不生成虚假字段。服务端只转发白名单计时，导出另提供 render、convert、persist 和总耗时。
+
+render cache key 使用 schema v2，将脚本、数据、Figure、editLog 和 render options 与服务端可信 renderer source、镜像、runtime、包/Dockerfile contract 共同哈希。authority 不能由客户端提供；任一 renderer 合同变化都会形成新 key。
+
+成功 SVG 在进入 session、project preview、render cache、导出资产、缩略图或编辑快照前执行 UTF-8 字节预算。超限响应固定为 `SVG_PERSISTENCE_BUDGET_EXCEEDED`、HTTP 413 和 `persisted=false`；直接渲染、patch、导出三条隔离回归均比较数据库与导出文件前后状态。R timeout 后清理请求创建的进程、临时目录和容器，不停止或误判测试前已存在的容器。

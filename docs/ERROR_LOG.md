@@ -4157,3 +4157,29 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - 在任何 setter 前执行 Shadow resolution；`positionAdapterStatus=shadow_unsupported` 或扩展只读对象命中后，整批 accepted 清空，所有原始补丁进入 rejected/skipped，使用未编辑 baseline 生成 SVG/manifest。
 - 新增 `ggrepel`、`ggnewscale`、`coord_sf`、`ggraph` 四个合成 fixture、7 个 renderer 测试和隔离 API smoke。API 直接读取临时 SQLite，证明拒绝后 session、project Figure、revision、history 和 render cache 不变化；base R object patch 同样零持久化。
 - 防回归门禁包括 `test:r-wp8-api`、R-WP8 7/7、capability matrix、R-WP7 10/10、旧 R 身份 4/4、identity v2 API、R security precheck、renderer image contract、完整 R semantic Chromium、lint 和 `git diff --check`。
+
+---
+
+## 2026-07-26 20:22:44 +08:00 R 缓存跨 renderer 合同复用，超大 SVG 可在错误前写入状态
+
+**状态与级别**
+
+- 状态：已修复并通过多文件 workflow、性能、缓存、超限零持久化和 timeout 清理门禁；未推送、未部署。
+- 级别：P1 旧项目正确性、资源边界和错误持久化风险。缓存 key 只包含图形输入，renderer/runtime 升级后可能复用旧结果；导出允许 64 MB 输出，但成功 SVG 缺少独立持久化预算。
+
+**根因**
+
+- render cache 未包含 renderer source、镜像、运行时或包合同，统一部署版本变化不能自动使旧 cache 失效。
+- renderer 只限制进程总输出，正常渲染和导出没有在写 session、preview、cache、asset、thumbnail 或 snapshot 前统一测量 SVG UTF-8 字节数。
+- 性能中间层只覆盖 render/patch/code-patch，导出没有 render/convert/persist 分段；R renderer 只有粗粒度 `scriptExecutionMs`，无法判断耗时位于脚本、语义、setter、ggplot 或设备阶段。
+- 旧 timeout 回归未直接比较请求前后的进程、临时目录、容器和数据库状态；初版测试还错误要求机器上不存在任何同名前缀容器，可能误伤测试前已有服务。
+
+**修复与防复发**
+
+- cache key schema v2 纳入服务端可信 source/image/runtime/package 与 Dockerfile contract；客户端不能覆盖 authority。
+- Docker mode 额外读取实际 image ID、RepoDigests 和 `org.scifigure.renderer.*` 合同标签；可变 tag 被重建或重指后不会继续命中旧 cache。镜像不可检查时使用本进程唯一 fail-closed authority，禁止绕过 renderer 可用性验证。
+- 所有成功 SVG 在任何状态持久化前执行可配置 UTF-8 预算，超限固定返回 `SVG_PERSISTENCE_BUDGET_EXCEEDED`、413、`persisted=false`。
+- 项目导出在写主图资产前先生成并预算检查全部子图 SVG，避免主图已落库后子图超限形成部分导出。
+- R renderer 增加 script eval、semantic preflight、edit resolution/apply、ggplot render 和 device open/close 真实计时；导出增加 render/convert/persist/total 计时，不伪造 package load。
+- 隔离 workflow 覆盖两个真实 CSV、四格式导出、导出后编辑和恢复。超限测试分别比较直接 render、patch 和 export 前后 session/revision/history/preview/cache/asset/snapshot/file；timeout 测试按 jobId 和容器前后集合检查，只禁止本轮新增残留。
+- `test:r-wp9-workflow`、`test:r-wp9-performance-persistence`、`test:r-wp9-timeout-cleanup`、`test:render-performance`、`test:cache-smoke`、R timing 3/3、lint、build、diff-check 和 data audit 通过。数据审计为 25 用户、128 项目、286 文件、112 导出资产、0 issue。

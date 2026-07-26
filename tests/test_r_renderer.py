@@ -4989,6 +4989,13 @@ p
         timing = result.get("timingBreakdown", {})
         expected_keys = {
             "scriptExecutionMs",
+            "scriptEvalMs",
+            "semanticPreflightMs",
+            "editResolutionMs",
+            "editApplyMs",
+            "ggplotRenderMs",
+            "deviceOpenMs",
+            "deviceCloseMs",
             "svgSerializeMs",
             "manifestBuildMs",
             "svgPostprocessMs",
@@ -4996,8 +5003,49 @@ p
         }
         self.assertTrue(expected_keys.issubset(timing.keys()))
         self.assertTrue(all(isinstance(timing[key], (int, float)) and timing[key] >= 0 for key in expected_keys))
+        self.assertNotIn("packageLoadMs", timing)
         self.assertEqual(result["timingMs"], timing["totalMs"])
         self.assertGreaterEqual(timing["totalMs"], timing["svgSerializeMs"])
+
+    def test_r_renderer_timing_segments_are_path_specific_for_base_r(self):
+        result = _run_r_renderer('Sys.sleep(0.02); plot(1:3, 1:3, main="Base timing")')
+        timing = result.get("timingBreakdown", {})
+
+        self.assertGreater(timing["scriptEvalMs"], 0)
+        self.assertEqual(timing["semanticPreflightMs"], 0)
+        self.assertEqual(timing["editResolutionMs"], 0)
+        self.assertEqual(timing["editApplyMs"], 0)
+        self.assertEqual(timing["ggplotRenderMs"], 0)
+        self.assertGreaterEqual(timing["deviceOpenMs"], 0)
+        self.assertGreaterEqual(timing["deviceCloseMs"], 0)
+        self.assertNotIn("packageLoadMs", timing)
+
+    def test_r_renderer_reports_edit_timing_segments_on_patch_path(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+p <- ggplot(df, aes(x, y)) + geom_point(size=3) + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        target = _object(baseline, "r.layer.0")
+        result = _run_r_renderer(script, [_backend_patch(target, "color", "#2CA02C")])
+        timing = result.get("timingBreakdown", {})
+
+        self.assertFalse(result["conflict"])
+        self.assertEqual(_object(result, "r.layer.0")["currentProps"]["color"], "#2CA02C")
+        for key in [
+            "scriptEvalMs",
+            "semanticPreflightMs",
+            "editResolutionMs",
+            "editApplyMs",
+            "ggplotRenderMs",
+            "deviceOpenMs",
+            "deviceCloseMs",
+        ]:
+            self.assertIsInstance(timing.get(key), (int, float))
+            self.assertGreaterEqual(timing[key], 0)
+        self.assertNotIn("packageLoadMs", timing)
 
     def test_r_renderer_returns_runtime_inventory_contract(self):
         result = _run_r_renderer("""

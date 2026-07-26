@@ -8532,10 +8532,28 @@ monotonic_ms <- function() {
 render_started_ms <- monotonic_ms()
 timing_breakdown <- list(
   scriptExecutionMs = 0,
+  scriptEvalMs = 0,
+  semanticPreflightMs = 0,
+  editResolutionMs = 0,
+  editApplyMs = 0,
+  ggplotRenderMs = 0,
+  deviceOpenMs = 0,
+  deviceCloseMs = 0,
   svgSerializeMs = 0,
   manifestBuildMs = 0,
   svgPostprocessMs = 0
 )
+
+time_renderer_phase <- function(key, expr) {
+  phase_started_ms <- monotonic_ms()
+  on.exit({
+    elapsed_ms <- max(0, monotonic_ms() - phase_started_ms)
+    current_ms <- timing_breakdown[[key]]
+    if (is.null(current_ms)) current_ms <- 0
+    timing_breakdown[[key]] <<- current_ms + elapsed_ms
+  }, add = TRUE)
+  eval.parent(substitute(expr))
+}
 
 result <- tryCatch({
   env <- new.env(parent = globalenv())
@@ -8617,11 +8635,13 @@ result <- tryCatch({
   runtime_inventory$timezone <- safe_runtime_string(Sys.timezone())
   runtime_inventory$environment <- runtime_environment_contract()
 
-  if (requireNamespace("svglite", quietly = TRUE)) {
-    svglite::svglite(file = tmp_svg, width = width, height = height)
-  } else {
-    grDevices::svg(filename = tmp_svg, width = width, height = height, onefile = TRUE)
-  }
+  time_renderer_phase("deviceOpenMs", {
+    if (requireNamespace("svglite", quietly = TRUE)) {
+      svglite::svglite(file = tmp_svg, width = width, height = height)
+    } else {
+      grDevices::svg(filename = tmp_svg, width = width, height = height, onefile = TRUE)
+    }
+  })
   on.exit({
     try(grDevices::dev.off(), silent = TRUE)
   }, add = TRUE)
@@ -8629,31 +8649,41 @@ result <- tryCatch({
   baseline_manifest <- NULL
   script_execution_started_ms <- monotonic_ms()
   withCallingHandlers({
-    eval(parse(text = script), envir = env)
+    time_renderer_phase("scriptEvalMs", {
+      eval(parse(text = script), envir = env)
+    })
     candidate_names <- c("p", "plot_obj", "figure", "fig")
     for (name in candidate_names) {
       if (exists(name, envir = env, inherits = FALSE)) {
         obj <- get(name, envir = env)
         if (inherits(obj, "ggplot")) {
-          obj <- r_expand_scifigure_semantic_layers(obj)
+          time_renderer_phase("semanticPreflightMs", {
+            obj <- r_expand_scifigure_semantic_layers(obj)
+            assign(name, obj, envir = env)
+            source_entries <- edit_entries
+            source_patch_warnings <- renderer_patch_warnings
+            edit_entries <- list()
+            baseline_manifest <- build_ggplot_manifest(obj, "")
+            edit_entries <- source_entries
+            renderer_patch_warnings <- source_patch_warnings
+          })
+          time_renderer_phase("editResolutionMs", {
+            r_edit_resolution <- resolve_r_edit_entries(baseline_manifest, source_entries)
+            r_edit_resolution <- validate_r_diagram_edit_resolution(baseline_manifest, r_edit_resolution)
+            r_edit_resolution <- validate_r_shadow_edit_resolution(baseline_manifest, r_edit_resolution)
+            if (length(r_edit_resolution$rejected %||% list()) > 0) {
+              r_edit_resolution$accepted <- list()
+              r_edit_resolution$rejected <- source_entries
+            }
+            edit_entries <- r_edit_resolution$accepted
+          })
+          time_renderer_phase("editApplyMs", {
+            obj <- apply_ggplot_edits(obj)
+          })
           assign(name, obj, envir = env)
-          source_entries <- edit_entries
-          source_patch_warnings <- renderer_patch_warnings
-          edit_entries <- list()
-          baseline_manifest <- build_ggplot_manifest(obj, "")
-          edit_entries <- source_entries
-          renderer_patch_warnings <- source_patch_warnings
-          r_edit_resolution <- resolve_r_edit_entries(baseline_manifest, source_entries)
-          r_edit_resolution <- validate_r_diagram_edit_resolution(baseline_manifest, r_edit_resolution)
-          r_edit_resolution <- validate_r_shadow_edit_resolution(baseline_manifest, r_edit_resolution)
-          if (length(r_edit_resolution$rejected %||% list()) > 0) {
-            r_edit_resolution$accepted <- list()
-            r_edit_resolution$rejected <- source_entries
-          }
-          edit_entries <- r_edit_resolution$accepted
-          obj <- apply_ggplot_edits(obj)
-          assign(name, obj, envir = env)
-          print(obj)
+          time_renderer_phase("ggplotRenderMs", {
+            print(obj)
+          })
           break
         }
       }
@@ -8665,7 +8695,9 @@ result <- tryCatch({
   })
   timing_breakdown$scriptExecutionMs <- max(0, round(monotonic_ms() - script_execution_started_ms))
 
-  try(grDevices::dev.off(), silent = TRUE)
+  time_renderer_phase("deviceCloseMs", {
+    try(grDevices::dev.off(), silent = TRUE)
+  })
   svg_serialize_started_ms <- monotonic_ms()
   svg <- paste(readLines(tmp_svg, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
   timing_breakdown$svgSerializeMs <- max(0, round(monotonic_ms() - svg_serialize_started_ms))
