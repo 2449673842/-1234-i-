@@ -718,6 +718,7 @@ persist/export conversion
 - R-WP9 三条用户链路重新通过：双 CSV 精确路径与四格式导出、超大 SVG 直接渲染/patch/项目导出零持久化、timeout 后 Rscript/临时目录/本轮容器清理。
 - 以独立 `scifigure-renderer:rwp10-candidate` 镜像运行 renderer sandbox；镜像源码 SHA、固定 Python/R/package/font/locale 合同和宿主隔离通过。测试超时仅从 5 秒调整到 15 秒以容纳 Windows Docker 冷启动，产品默认超时未改变；临时 SQLite 清理增加受限路径校验和 EBUSY/EPERM/ENOTEMPTY 重试。
 - `test:r-security-precheck`、`test:user-isolation`、`test:render-performance`、`test:cache-smoke`、lint、build、diff-check 和 data audit 通过。审计仍为 25 用户、128 项目、286 文件、112 导出资产、0 issue。
+- 共享 server/export/cache 路由的最终 Python 回归按风险串行验证：`test:cross-figure-smoke` 18/18、`test:patch-rejection-persistence`、`test:python-semantic-workflow` 和 `test:export-matrix-smoke` 全部通过。浏览器门禁并行运行时曾因 Vite HMR 端口竞争记录一次 404 console error；串行重跑同一用例为 0 console/page error，因此后续浏览器发布门禁保持串行。
 - 独立 `gpt-5.5 high` 审查结论为 `APPROVE/CLEAR`，无 HIGH/MEDIUM；确认 15 秒仅是测试隔离阈值，临时目录清理具有受限路径和有界重试。
 - 本地候选不等于生产发布：未推送、未部署，尚未完成生产不可变镜像/构建、线上小范围账号和生产容器人工视觉回归。旧 ordinal、无版本 identity 和 legacy adapter 因此继续保留，不能在本轮退役。
 

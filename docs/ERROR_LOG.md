@@ -4203,4 +4203,5 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 
 - 候选镜像构建验证固定 Python 3.12.13、Matplotlib 3.11.1、R 4.5.0、ggplot2 3.5.1、字体、locale、包版本和 R renderer SHA。
 - `SCIFIGURE_RENDERER_IMAGE=scifigure-renderer:rwp10-candidate npm run test:renderer-sandbox` 通过；测试只创建并清理本轮临时容器和临时目录。
+- 最终跨语言浏览器门禁首次并行运行时，多个 Vite 实例竞争 HMR 端口，cross-Figure 的 17 个功能断言全部通过但记录一次 404 console error。改为串行后同一用例 18/18、console/page error 均为 0；Python semantic、patch rejection 和 export matrix 同步通过。
 - 后续沙箱门禁必须区分“源码合同拒绝”“渲染行为失败”和“测试清理失败”，不得通过放宽 stale-image 校验或跳过清理来取得绿色结果。
