@@ -1678,12 +1678,15 @@ export function MainWorkspace({
             </div>
           </div>
 
-          <div className="relative flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto overscroll-x-contain pl-2">
+          <div
+            className="flex min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden overscroll-x-contain"
+          >
+            <div className="ml-auto flex shrink-0 items-center gap-2 pl-2">
             {figSession?.svg && (
               <button
                 type="button"
                 onClick={() => setDragEditMode(prev => !prev)}
-                className={`sticky left-0 z-20 shrink-0 rounded-full border px-2 py-1 text-xs font-semibold transition-colors ${
+                className={`shrink-0 rounded-full border px-2 py-1 text-xs font-semibold transition-colors ${
                   dragEditMode
                     ? 'border-blue-200 bg-blue-50 text-blue-700'
                     : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
@@ -1766,6 +1769,7 @@ export function MainWorkspace({
             >
               {showBottomPanel ? '收起代码面板' : '代码面板'}
             </button>
+            </div>
           </div>
         </div>
 
