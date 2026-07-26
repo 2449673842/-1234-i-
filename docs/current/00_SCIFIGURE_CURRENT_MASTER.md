@@ -234,7 +234,7 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 | 公开宣传页与注册门禁 | 已实现，邮箱生产通道待配置 | 匿名访问先进入宣传页；启用邮箱验证后，新账号必须完成六位验证码验证才会获得会话；现有账号兼容迁移；安全文案隐藏内部防护细节 |
 | 图形能力展厅 | 本地候选 | 作为帮助中心同级站内页面展示 11 个带能力边界的固定模拟数据样例，其中包含 LnRR 排序图和主项目结构 2 x 2 组合图；没有未经真实验收的样例被标为稳定支持 |
 | Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选 WP6 六个复杂对象家族已有专用语义，其中网络图/路径图/SEM 依赖显式关系声明，不承诺按外观自动识别任意第三方图示；完成全部门禁和部署前不视为线上能力 |
-| R 渲染与语义编辑 | R-WP0-WP5 本地候选已合入，当前批次待复验 | ggplot2 主链路可用；patch mode 服务端权威、失败零持久化、identity v2 和运行时 parity 已验证。R-WP4 九类家族均有专用能力边界；R-WP5 已为离散/连续 scale、legend/guide、colorbar 与 facet layout 建立显式身份和关系，单 facet 不会伪装成可独立修改物理 bounds。完整 R renderer 124/124、R-WP5 API 3/3、浏览器 6/6、R 语义黄金样例 14/14、旧 identity v2 兼容和独立复审 0 HIGH/MEDIUM 通过；当前批次总门禁完成前不标记为生产能力，下一工作包为 R-WP6 |
+| R 渲染与语义编辑 | R-WP0-WP6 本地候选已合入，当前批次待复验 | ggplot2 主链路可用；patch mode 服务端权威、失败零持久化、identity v2 和运行时 parity 已验证。R-WP4 九类家族、R-WP5 scale/guide/facet/layout、R-WP6 data/annotation/stat 文本身份与复杂坐标边界均已收敛。Cartesian/flip/log/panel 内 polar 支持位置重放；CoordSf、第三方 coord 和不可逆位置保持 shadow/readonly。R renderer 125 个场景、R 语义浏览器 19/19、旧 identity v2、历史、导出和快照恢复通过；当前批次总门禁完成前不标记为生产能力，下一工作包为 R-WP7 |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |
 | 字体/颜色/线条编辑 | 已实现 | 支持单对象、语义分组、整图和跨 Figure 作用域 |
@@ -555,3 +555,5 @@ npm run test:help-center-smoke
 `2026-07-24 00:53:29 +08:00` 完成 R-WP4 GeomSegment/Curve 本地候选。renderer 以专用 adapter 表达端点、曲率和 arrow 只读结构，并在真实 panel 内对 geom 实际可绘制行按图层绘制顺序绑定完整 body/arrow 序列；Step、Freqpoly、Segment 和 Curve 批量改为同色或可见行混合 NA 行时不再丢失 Segment/Curve 的 SVG GID。完整 R renderer 111/111、真实浏览器 14/14、家族 patch authority、identity v2 compatibility、lint、build 和 diff-check 通过。当前未推送、未部署，R-WP5 尚未开始。
 
 `2026-07-25 20:33:34 +08:00` 完成 R-WP5 独立审查收敛。除 scale/guide/facet、多 guide 标题与 SVG 样式隔离外，旧 continuous absolute-index alias 现在只容忍已知变化字段，伪造 stableKey/semantic/series/aesthetic 证据拒绝；R 跨 Figure relation 必须共享至少一个稳定字段，legacy score fallback 不能绕过冲突。完整 R renderer 124/124、隔离 API 3/3、真实浏览器 6/6、R 语义黄金样例 14/14、identity v2 compatibility、TypeScript 216 项和 lint 通过；最终独立复审 0 HIGH/MEDIUM。当前未推送、未部署，下一工作包为 R-WP6。
+
+`2026-07-26 13:45:59 +08:00` 完成 R-WP6 本地候选收敛。R 文本拆分为 data、annotation、stat 三类身份，扩展对齐、旋转、lineheight、plotmath/多行和位置能力；统计文字只读，`geom_label` 文本编辑保留 mapped fill。Cartesian/flip/log/panel 内 polar 可逆重放，CoordSf、第三方 coord 和不可逆位置 fail-closed。修复 R `currentProps.position` 缺失导致 renderer acknowledgement 冲突，以及前端确认前清空拖动草稿的问题；真实浏览器失败/重试证明零持久化、单请求和成功后清空。R renderer 125 个场景、R semantic 19/19、组件容器 42/42、capability matrix、identity v2、历史/导出/恢复、1720 项前端单测、lint/build/diff-check 通过。当前未推送、未部署，下一工作包为 R-WP7。

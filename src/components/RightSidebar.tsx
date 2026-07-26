@@ -507,6 +507,9 @@ const PROP_LABELS: Record<string, string> = {
   rotation: '旋转角度',
   ha: '水平对齐',
   va: '垂直对齐',
+  hjust: '水平对齐',
+  vjust: '垂直对齐',
+  lineheight: '文字行距',
   x: 'X 位置',
   y: 'Y 位置',
   position: '位置',
@@ -4435,17 +4438,20 @@ export function RightSidebar({
         || claimedContainerIds.has(String(obj.parentId || obj.identity?.relation?.parentId || ''))
       )
     );
-    const lineObjects = scopedObjects.filter(obj => obj.kind === 'line' && obj.role !== 'step_series' && !isDedicatedDiagramComponentObject(obj) && !isLegendChild(obj) && !isMarkerLine(obj) && !isClaimedContainerChild(obj));
-    const pointObjects = scopedObjects.filter(obj => !['step_series', 'stairs_series', 'histogram_series'].includes(String(obj.role || '')) && !isDedicatedDiagramComponentObject(obj) && !isLegendChild(obj) && !isClaimedContainerChild(obj) && (isMarkerLine(obj) || isScatterCollection(obj)));
+    const isOwnedComponentChild = (obj: ManifestObject) => (
+      isClaimedContainerChild(obj) || isParentOwnedManifestObject(obj)
+    );
+    const lineObjects = scopedObjects.filter(obj => obj.kind === 'line' && obj.role !== 'step_series' && !isDedicatedDiagramComponentObject(obj) && !isLegendChild(obj) && !isMarkerLine(obj) && !isOwnedComponentChild(obj));
+    const pointObjects = scopedObjects.filter(obj => !['step_series', 'stairs_series', 'histogram_series'].includes(String(obj.role || '')) && !isDedicatedDiagramComponentObject(obj) && !isLegendChild(obj) && !isOwnedComponentChild(obj) && (isMarkerLine(obj) || isScatterCollection(obj)));
     const isBandObject = (obj: ManifestObject) => (
       obj.kind === 'fill_between'
       || obj.role === 'fill_between_series'
       || ['ribbon', 'area'].includes(String(obj.currentProps?.adapterFamily || ''))
     );
     const bandObjects = scopedObjects.filter(obj => (
-      isBandObject(obj) && !isLegendChild(obj) && !isClaimedContainerChild(obj)
+      isBandObject(obj) && !isLegendChild(obj) && !isOwnedComponentChild(obj)
     ));
-    const legacyErrorbarObjects = scopedObjects.filter(obj => obj.kind === 'collection' && !isLegendChild(obj) && !isScatterCollection(obj) && !isClaimedContainerChild(obj));
+    const legacyErrorbarObjects = scopedObjects.filter(obj => obj.kind === 'collection' && !isLegendChild(obj) && !isScatterCollection(obj) && !isOwnedComponentChild(obj));
     const errorbarObjects = COMPONENT_TARGET_RESOLVER_V2_ENABLED && errorbarContainerObjects.length > 0
       ? errorbarContainerObjects
       : legacyErrorbarObjects;
@@ -4459,7 +4465,7 @@ export function RightSidebar({
       && !['pie_slice', 'wedge_slice'].includes(String(obj.role || ''))
       && !isDedicatedDiagramComponentObject(obj)
       && !isLegendChild(obj)
-      && !isClaimedContainerChild(obj)
+      && !isOwnedComponentChild(obj)
     ));
     const textObjects = scopedObjects.filter(obj => (
       obj.kind === 'text'
@@ -5144,6 +5150,7 @@ export function RightSidebar({
           const stemBaselineLineWidth = commonComponentProp(targetObjects, 'baseline_linewidth', undefined) as number | undefined;
           const stemBaselineVisible = Boolean(commonComponentProp(targetObjects, 'baseline_visible', true));
           const boxColor = resolvePickerColor(commonComponentProp(targetObjects, 'box_color', '#000000'));
+          const boxMedianColor = resolvePickerColor(commonComponentProp(targetObjects, 'median_color', '#000000'));
           const boxOutlierColor = resolvePickerColor(commonComponentProp(targetObjects, 'outlier_color', '#000000'));
           const boxOutlierFill = resolvePickerColor(commonComponentProp(targetObjects, 'outlier_fill', '#ffffff'));
           const boxOutlierShape = String(commonComponentProp(targetObjects, 'outlier_shape', 19));
@@ -5308,6 +5315,9 @@ export function RightSidebar({
                 )}
                 {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'box_color')) && (
                   renderColorInput('箱体颜色', boxColor, (value) => patchComponentGroup(targetObjects, 'box_color', value), `component:${group.id}:${targetKey}:box_color`)
+                )}
+                {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'median_color')) && (
+                  renderColorInput('中位线颜色', boxMedianColor, (value) => patchComponentGroup(targetObjects, 'median_color', value), `component:${group.id}:${targetKey}:median_color`)
                 )}
                 {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'outlier_color')) && (
                   renderColorInput('离群点边框色', boxOutlierColor, (value) => patchComponentGroup(targetObjects, 'outlier_color', value), `component:${group.id}:${targetKey}:outlier_color`)

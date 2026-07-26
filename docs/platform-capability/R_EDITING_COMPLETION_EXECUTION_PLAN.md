@@ -1,8 +1,8 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0-R-WP3、R-WP4 九类图元家族与 R-WP5 scale/guide/facet/layout 本地候选已合入当前集成分支；当前批次复验待完成，下一工作包为 R-WP6
+> 状态：R-WP0-R-WP3、R-WP4 九类图元家族、R-WP5 scale/guide/facet/layout 与 R-WP6 文本/annotation/复杂坐标本地候选已合入当前集成分支；当前批次复验待完成，下一工作包为 R-WP7
 > 最后修改时间：2026-07-30 16:08:23 +08:00
-> 当前部署状态：R-WP0-R-WP5 已完成子家族仅在本地验证；未推送、未部署
+> 当前部署状态：R-WP0-R-WP6 已完成子家族仅在本地验证；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 现状入口：`docs/R_COMPATIBILITY_PLAN.md`
 > 适用范围：R/ggplot2 渲染、语义图元、对象身份、patch 写回、Draft、历史、导出、复杂坐标、网络图/路径图/SEM 与生产一致性
@@ -338,7 +338,7 @@ legend/guide 增删和重排
 6. `GeomRibbon/Area`：置信区间带、边界线、fill 和 owner series。本地候选已实现：保留旧 `r.layer.N`、`kind=patch` 和 GeomRibbon/GeomArea role，增加 `adapterFamily=ribbon/area` 与 `body/boundary_lines` 关系，只开放 `facecolor/edgecolor/linewidth/alpha`；`x/y/ymin/ymax`、堆叠、边界拆分和 `GeomSmooth(se=TRUE)` 置信带保持只读。离散 fill group 使用 `ribbon/area/band` 语义，整层 style override 只恢复可信 baseline 的 scale/guide 结构身份，不恢复旧颜色；`scaleActive=false` 的休眠 group 保留用于身份诊断但拒绝编辑。
 7. `GeomStep/Histogram/Freqpoly`：bin/step 语义和连续系列身份。本地候选已实现：Step 保留 `GeomStep` role，Histogram/Freqpoly 分别保留旧 `GeomBar/GeomPath` role 和 `r.layer.N`，通过 `adapterClass=GeomHistogram/GeomFreqpoly` 区分统计层；只开放真实样式 setter，step direction、binwidth/bins、breaks/counts/density/yStat 等科学结构保持只读。离散 scale 身份恢复只接受唯一的一对一 `aesthetic + scaleId + groupKey`，重复结构键不再 first-wins 合并。
 8. `GeomTile/Raster/Rect/Contour`：mappable、scale、guide 和 panel 关系。本地候选已实现：Tile/Raster/Rect 保留旧 `kind=patch`、`r.layer.N` 和 role，Contour/ContourFilled 使用 `kind=contour/contourf`；mapped fill 由 scale/mappable 关系负责，不暴露虚假整层 `facecolor`，Raster 不开放边框 setter。连续 contour 可编辑 `cmap/vmin/vmax`，`levels/x/y/z/bins/breaks` 等科学结构保持只读；layer、mappable、scale、guide、colorbar 和 panel 使用显式双向关系。
-9. `GeomSegment/Curve`：线、箭头和端点语义，不自动与任意文本配对。本地候选已实现：保留旧 `r.layer.N`、line kind 和 role，分别输出 `adapterFamily=segment/curve`；颜色、线宽、线型和透明度只在未被 mapping/scale 控制时开放，端点、曲率、箭头方向和箭头类型保持只读。箭头不伪装成独立 child，也不按距离推断文本关系；SVG 归属按 panel 内图层绘制顺序领取完整 body/arrow 结构，使多个线家族改成同色后仍保留各自 GID。
+9. `GeomSegment/Curve`：线、箭头和端点语义，不自动与任意文本配对。本地候选已实现：保留旧 `r.layer.N`、line kind 和 role，分别输出 `adapterFamily=segment/curve`；颜色、线宽、线型和透明度只在未被 mapping/scale 控制时开放，端点、曲率、箭头方向和箭头类型保持只读。箭头作为父线对象拥有的显式只读 child 输出，不按距离推断文本关系；SVG 归属按 panel 内图层绘制顺序领取完整 body/arrow 结构，使多个线家族改成同色后仍保留各自 GID。
 
 每个家族必须完成：
 
@@ -449,7 +449,7 @@ fixture
 
 **GeomSegment/Curve 本地候选证据（2026-07-24 00:35:27 +08:00）**
 
-- Segment/Curve 使用专用 adapter，保留旧 `r.layer.N`、line kind、role、stableKey 和 v2 structural fingerprint。端点、`lineend/linejoin`、曲率、角度、控制点数量和 arrow 元数据仅作为只读结构；没有结构化来源时不生成 arrow child 或 text relation。
+- Segment/Curve 使用专用 adapter，保留旧 `r.layer.N`、line kind、role、stableKey 和 v2 structural fingerprint。端点、`lineend/linejoin`、曲率、角度、控制点数量和 arrow 元数据仅作为只读结构；有结构化 arrow 来源时生成父线对象拥有的显式只读 child，但始终不生成猜测的 text relation。
 - mapped `colour/linewidth/linetype/alpha` 继续由 scale 所有，非法 layer override 和 mixed batch 原子拒绝；项目与 standalone 请求中的客户端伪 `local_patch` 均由服务端规范化为 `backend_patch`。冲突请求不增加 revision，也不写 session、Figure、history、cache、导出锚点或快照。
 - SVG identity 只在真实 panel clip group 内绑定，并与图层规划统一使用 geom 实际可绘制行。当前图层按绘制顺序领取最早的完整 body/arrow 结构；候选不足或最早序列无法组成完整结构时继续 fail-closed。该规则修复了 Step/Freqpoly/Segment/Curve 批量改成同色后 Segment/Curve 被标为 unresolved，以及可见行混合 NA 行时错误 unresolved 的回归，同时不允许后继图层偷认当前图元。
 - 完整 R renderer 分三段并行复验为 `37/37 + 37/37 + 37/37 = 111/111`；NA 行与同色前继/后继的 Segment/Curve 定向回归 `3/3`。`npm run test:r-segment-curve-authority` 与 `npm run test:r-identity-v2-compatibility` 均通过。
@@ -522,6 +522,15 @@ free scale facet
 - 确认、刷新、撤销、导出和恢复位置一致。
 - 无法精确逆变换时不生成位置 patch。
 - 字体和文本编辑不改变数据映射、统计量或 annotation anchor 语义。
+
+**实现与验证证据（2026-07-26 13:45:59 +08:00）**
+
+- `GeomText/GeomLabel` 明确区分 `ggplot_text_data`、`ggplot_text_annotation` 和只读 `ggplot_text_stat`；数据键、annotationId、statClass 和 layer/panel 关系进入 v2 identity。旧 pre-role-split manifest 只在 stableKey、semanticKey、dataKey 和结构 fingerprint 可证明兼容时迁移。
+- 数据/annotation 文本支持文字、字体、字重、字形、颜色、hjust/vjust、旋转、lineheight、plotmath/多行文本和位置；统计层文字保持只读。冻结 `geom_label` 文本行时保留 mapped fill，文本编辑不再把分组背景退回白色。
+- Cartesian、CoordFlip、x/y log 与 panel 内 CoordPolar 位置 forward/inverse 已验证；polar 越界、CoordSf 和第三方 coord 输出 shadow/readonly 诊断，不生成不可证明的位置 patch。Segment/Curve arrow 使用独立对象和显式关系，不按邻近文字猜测。
+- R renderer 125 个场景以四个互斥分片完成覆盖（32、32、32、29；首分片 3 个升级前角色断言修正后定向通过）；capability matrix 2/2、`test:r-identity-v2-compatibility`、`test:r-segment-curve-authority` 和 `test:r-security-precheck` 通过。
+- `test:r-semantic-smoke` 19/19：真实拖动只提交最终位置，历史只增加一次，刷新、撤销、重做、导出和快照恢复一致。通用拖动新增失败/重试场景：后端拒绝时保留待确认补丁和视觉位置、零持久化；提交中禁止重复请求；重试成功后才清空。
+- 共享门禁通过：组件容器 42/42（补回 Python 箱线图中位线颜色控件，R 旧伪能力继续隐藏）、拖动扩展、patch rejection、项目历史、导出矩阵、快照恢复/API+UI、cross-Figure、用户隔离、Python semantic、`npm test` 213 文件/1720 项、lint、build 与 diff-check。当前未推送、未部署；下一工作包为 R-WP7。
 
 **回滚单位**
 

@@ -2238,11 +2238,26 @@ text_layer_rows <- function(plot_obj) {
   if (is.null(built) || is.null(built$data)) return(rows)
 
   for (i in seq_along(plot_obj$layers)) {
-    geom <- geom_class(plot_obj$layers[[i]])
+    layer <- plot_obj$layers[[i]]
+    geom <- geom_class(layer)
     if (!geom %in% c("GeomText", "GeomLabel")) next
     data <- built$data[[i]]
     if (is.null(data) || nrow(data) == 0) next
-    source_data <- plot_obj$layers[[i]]$data
+    stat_class <- layer_stat_class(layer)
+    source_kind <- if (!identical(stat_class, "StatIdentity")) {
+      "stat"
+    } else if (
+      identical(layer$inherit.aes, FALSE) &&
+      identical(layer$show.legend, FALSE) &&
+      !is.null(layer$data) &&
+      !inherits(layer$data, "waiver") &&
+      nrow(tryCatch(as.data.frame(layer$data), error = function(e) data.frame())) == 1
+    ) {
+      "annotation"
+    } else {
+      "data"
+    }
+    source_data <- layer$data
     if (is.null(source_data) || inherits(source_data, "waiver")) source_data <- plot_obj$data
     source_data <- tryCatch(as.data.frame(source_data), error = function(e) NULL)
     stable_keys <- NULL
@@ -2282,6 +2297,8 @@ text_layer_rows <- function(plot_obj) {
         layerIndex = i,
         rowIndex = row_index,
         geom = geom,
+        statClass = stat_class,
+        textSource = source_kind,
         dataKey = if (!is.null(stable_keys)) stable_keys[[row_index]] else NULL,
         dataKeySource = stable_key_source,
         data = data[row_index, , drop = FALSE]
@@ -2312,7 +2329,10 @@ text_row_legacy_gid <- function(item) {
 text_row_edit_gid <- function(item) {
   stable_gid <- text_row_gid(item)
   legacy_gid <- text_row_legacy_gid(item)
-  props <- c("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "position")
+  props <- c(
+    "text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color",
+    "hjust", "vjust", "rotation", "lineheight", "position"
+  )
   if (any(vapply(props, function(prop) has_edit(stable_gid, prop), logical(1)))) return(stable_gid)
   if (!identical(stable_gid, legacy_gid) && any(vapply(props, function(prop) has_edit(legacy_gid, prop), logical(1)))) return(legacy_gid)
   stable_gid
@@ -2409,22 +2429,47 @@ position_scale_transform <- function(context, axis_name) {
 
 text_position_support <- function(plot_obj, context = text_position_context(plot_obj)) {
   coord_classes <- class(context$coord)
+  coord_class <- if (length(coord_classes) > 0) as.character(coord_classes[[1]]) else "unknown"
   unsafe_coord <- intersect(coord_classes, c("CoordTrans", "CoordSf", "CoordMap", "CoordQuickmap"))
   if (length(unsafe_coord) > 0) {
     return(list(
       supported = FALSE,
+      coordinateClass = as.character(unsafe_coord[[1]]),
+      adapter = "projected_or_nonlinear",
+      status = "shadow_unsupported",
       reason = paste0("Text dragging disabled for ggplot coordinate system: ", unsafe_coord[[1]])
     ))
   }
 
-  if (!any(coord_classes %in% c("CoordCartesian", "CoordFlip", "CoordPolar"))) {
-    return(list(supported = FALSE, reason = "Text dragging disabled because the ggplot coordinate transform is not affine and invertible."))
+  verified_coord_adapters <- c(
+    CoordCartesian = "cartesian",
+    CoordFixed = "cartesian_fixed",
+    CoordFlip = "flip",
+    CoordPolar = "polar"
+  )
+  if (!coord_class %in% names(verified_coord_adapters)) {
+    return(list(
+      supported = FALSE,
+      coordinateClass = coord_class,
+      adapter = "third_party_or_unknown",
+      status = "shadow_unsupported",
+      reason = paste0(
+        "Text dragging disabled because ", coord_class,
+        " is not a verified SciFigure adapter, even if it inherits a supported ggplot coordinate class."
+      )
+    ))
   }
   if ("CoordPolar" %in% coord_classes) {
     valid_polar <- length(context$panelParams) > 0 && all(vapply(context$panelParams, function(params) {
       length(params$theta.range %||% numeric()) >= 2 && length(params$r.range %||% numeric()) >= 2
     }, logical(1)))
-    if (!valid_polar) return(list(supported = FALSE, reason = "Text dragging disabled because ggplot polar ranges are unavailable."))
+    if (!valid_polar) return(list(
+      supported = FALSE,
+      coordinateClass = coord_class,
+      adapter = verified_coord_adapters[[coord_class]],
+      status = "shadow_unsupported",
+      reason = "Text dragging disabled because ggplot polar ranges are unavailable."
+    ))
   }
 
   supported_transforms <- c("identity", "none", "log-10", "log2", "log", "ln")
@@ -2433,12 +2478,22 @@ text_position_support <- function(plot_obj, context = text_position_context(plot
     if (!transform$name %in% supported_transforms || !is.function(transform$inverse)) {
       return(list(
         supported = FALSE,
+        coordinateClass = coord_class,
+        adapter = "unsupported_scale_transform",
+        status = "shadow_unsupported",
         reason = paste0("Text dragging disabled for transformed ggplot position scale: ", transform$name)
       ))
     }
   }
 
-  list(supported = TRUE, reason = NULL, context = context)
+  list(
+    supported = TRUE,
+    coordinateClass = coord_class,
+    adapter = verified_coord_adapters[[coord_class]],
+    status = "supported",
+    reason = NULL,
+    context = context
+  )
 }
 
 coord_to_axes_fraction <- function(context, panel_index, x, y) {
@@ -2616,6 +2671,10 @@ apply_text_layer_edits <- function(plot_obj) {
       !has_edit(gid, "fontweight") &&
       !has_edit(gid, "fontstyle") &&
       !has_edit(gid, "color") &&
+      !has_edit(gid, "hjust") &&
+      !has_edit(gid, "vjust") &&
+      !has_edit(gid, "rotation") &&
+      !has_edit(gid, "lineheight") &&
       !has_edit(gid, "position")
     ) {
       next
@@ -2646,6 +2705,18 @@ apply_text_layer_edits <- function(plot_obj) {
     }
     if (has_edit(gid, "color")) {
       row$colour <- latest_string(gid, "color", row$colour %||% "black")
+    }
+    if (has_edit(gid, "hjust")) {
+      row$hjust <- latest_numeric(gid, "hjust", row$hjust %||% 0.5)
+    }
+    if (has_edit(gid, "vjust")) {
+      row$vjust <- latest_numeric(gid, "vjust", row$vjust %||% 0.5)
+    }
+    if (has_edit(gid, "rotation")) {
+      row$angle <- latest_numeric(gid, "rotation", row$angle %||% 0)
+    }
+    if (has_edit(gid, "lineheight")) {
+      row$lineheight <- latest_numeric(gid, "lineheight", row$lineheight %||% 1.2)
     }
     if (has_edit(gid, "fontweight") || has_edit(gid, "fontstyle")) {
       face <- text_fontface_to_weight_style(row$fontface %||% 1)
@@ -2703,11 +2774,12 @@ apply_text_layer_edits <- function(plot_obj) {
     layer_index <- as.integer(layer_key)
     source_layer <- plot_obj$layers[[layer_index]]
     geom <- geom_class(source_layer)
+    geom_params <- source_layer$geom_params %||% list()
     frozen_identity_key <- source_layer$.scifigure_identity_key %||%
       r_layer_structure_signature(source_layer, plot_obj$mapping)
     layer_data <- inverse_text_position_scales(edited_by_layer[[layer_key]], position_context)
     keep_cols <- intersect(
-      c(".scifigure_id", "x", "y", "label", "colour", "color", "size", "alpha", "family", "fontface", "angle", "hjust", "vjust", "lineheight"),
+      c(".scifigure_id", "x", "y", "label", "colour", "color", "fill", "size", "alpha", "family", "fontface", "angle", "hjust", "vjust", "lineheight"),
       names(layer_data)
     )
     layer_data <- layer_data[, keep_cols, drop = FALSE]
@@ -2721,7 +2793,16 @@ apply_text_layer_edits <- function(plot_obj) {
         size = layer_data$size %||% 4,
         family = layer_data$family %||% "",
         fontface = layer_data$fontface %||% 1,
-        alpha = layer_data$alpha %||% NA
+        alpha = layer_data$alpha %||% NA,
+        angle = layer_data$angle %||% 0,
+        hjust = layer_data$hjust %||% 0.5,
+        vjust = layer_data$vjust %||% 0.5,
+        lineheight = layer_data$lineheight %||% 1.2,
+        parse = isTRUE(geom_params$parse),
+        label.padding = geom_params$label.padding %||% grid::unit(0.25, "lines"),
+        label.r = geom_params$label.r %||% grid::unit(0.15, "lines"),
+        label.size = geom_params$label.size %||% 0.25,
+        fill = layer_data$fill %||% source_layer$aes_params$fill %||% "white"
       )
     } else {
       replacement_layer <- ggplot2::geom_text(
@@ -2732,7 +2813,13 @@ apply_text_layer_edits <- function(plot_obj) {
         size = layer_data$size %||% 4,
         family = layer_data$family %||% "",
         fontface = layer_data$fontface %||% 1,
-        alpha = layer_data$alpha %||% NA
+        alpha = layer_data$alpha %||% NA,
+        angle = layer_data$angle %||% 0,
+        hjust = layer_data$hjust %||% 0.5,
+        vjust = layer_data$vjust %||% 0.5,
+        lineheight = layer_data$lineheight %||% 1.2,
+        parse = isTRUE(geom_params$parse),
+        check_overlap = isTRUE(geom_params$check_overlap)
       )
     }
     replacement_layer$.scifigure_identity_key <- frozen_identity_key
@@ -4389,6 +4476,11 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
     unsupported = list(unsupportedReason = paste0("No stable SciFigure write-back adapter for ggplot geom class ", geom, ".")),
     list()
   )
+  arrow_id <- if (segment_curve_adapter && isTRUE(current_props$hasArrow)) {
+    paste0("r.arrow.", index - 1)
+  } else {
+    NULL
+  }
   list(
     id = gid,
     kind = kind,
@@ -4396,6 +4488,8 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
     editable = editable,
     currentProps = current_props,
     role = paste0("ggplot_", geom),
+    arrowId = arrow_id,
+    children = if (!is.null(arrow_id)) list(arrow_id) else list(),
     layerKey = layer_key,
     subplotIds = as.list(panel_ids),
     source = list(
@@ -4407,6 +4501,54 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
       layerSignature = layer_key
     )
   )
+}
+
+manifest_segment_curve_arrow_objects <- function(plot_obj, built_data = list()) {
+  if (!inherits(plot_obj, "ggplot") || length(plot_obj$layers) == 0) return(list())
+  objects <- list()
+  for (index in seq_along(plot_obj$layers)) {
+    layer <- plot_obj$layers[[index]]
+    if (!is_segment_curve_adapter_layer(layer)) next
+    arrow <- segment_curve_arrow_metadata((layer$geom_params %||% list())$arrow %||% NULL)
+    if (length(arrow) == 0) next
+    layer_id <- paste0("r.layer.", index - 1)
+    arrow_id <- paste0("r.arrow.", index - 1)
+    geom <- geom_class(layer)
+    data <- if (length(built_data) >= index) built_data[[index]] else NULL
+    panel_ids <- if (!is.null(data) && "PANEL" %in% names(data)) {
+      values <- suppressWarnings(as.integer(data$PANEL))
+      values <- unique(values[is.finite(values) & values >= 1])
+      paste0("subplot.", values - 1L)
+    } else {
+      character()
+    }
+    objects[[length(objects) + 1]] <- list(
+      id = arrow_id,
+      kind = "patch",
+      label = if (identical(geom, "GeomCurve")) "ggplot curve arrow" else "ggplot segment arrow",
+      editable = list(),
+      currentProps = c(
+        arrow,
+        list(
+          adapterFamily = if (identical(geom, "GeomCurve")) "curve_arrow" else "segment_arrow",
+          parentOwned = TRUE,
+          structureReadonly = list("angle", "length", "ends", "type")
+        )
+      ),
+      role = if (identical(geom, "GeomCurve")) "ggplot_curve_arrow" else "ggplot_segment_arrow",
+      parentId = layer_id,
+      layerId = layer_id,
+      layerKey = r_layer_structure_signature(layer, plot_obj$mapping),
+      subplotIds = as.list(panel_ids),
+      source = list(
+        artistClass = paste0(geom, "Arrow"),
+        adapterClass = geom,
+        axesIndex = 0,
+        zorder = index
+      )
+    )
+  }
+  objects
 }
 
 is_faceted_plot <- function(plot_obj) {
@@ -4652,8 +4794,16 @@ manifest_text_layer_objects <- function(plot_obj) {
       }
     }
     face <- text_fontface_to_weight_style(data$fontface %||% 1)
+    parse_enabled <- isTRUE((plot_obj$layers[[item$layerIndex]]$geom_params %||% list())$parse)
     raw_position <- inverse_text_position_scales(data.frame(x = data$x, y = data$y), position_context)
-    editable <- list("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color")
+    editable <- if (identical(item$textSource, "stat")) {
+      list()
+    } else {
+      list(
+        "text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color",
+        "hjust", "vjust", "rotation", "lineheight"
+      )
+    }
     current_props <- list(
       text = latest_string(gid, "text", as.character(data$label %||% "")),
       fontsize = latest_numeric(gid, "fontsize", as.numeric(data$size %||% default_label$fontsize)),
@@ -4661,12 +4811,24 @@ manifest_text_layer_objects <- function(plot_obj) {
       fontweight = latest_string(gid, "fontweight", face$fontweight),
       fontstyle = latest_string(gid, "fontstyle", face$fontstyle),
       color = latest_string(gid, "color", as.character(data$colour %||% "black")),
+      hjust = latest_numeric(gid, "hjust", as.numeric(data$hjust %||% 0.5)),
+      vjust = latest_numeric(gid, "vjust", as.numeric(data$vjust %||% 0.5)),
+      rotation = latest_numeric(gid, "rotation", as.numeric(data$angle %||% 0)),
+      lineheight = latest_numeric(gid, "lineheight", as.numeric(data$lineheight %||% 1.2)),
+      parse = parse_enabled,
+      textSyntax = if (parse_enabled) "plotmath" else "plain",
+      textSource = item$textSource,
+      statClass = item$statClass,
       data_x = as.numeric(raw_position$x),
       data_y = as.numeric(raw_position$y),
       dataKey = item$dataKey,
-      identityStability = if (!is.null(item$dataKey)) "stable" else "unsupported",
+      positionCoordinateClass = position_support$coordinateClass,
+      positionAdapter = position_support$adapter,
+      identityStability = if (identical(item$textSource, "stat")) "readonly" else if (!is.null(item$dataKey)) "stable" else "unsupported",
       identityStabilityReason = if (!is.null(item$dataKey)) {
-        if (identical(item$dataKeySource, "source")) {
+        if (identical(item$textSource, "stat")) {
+          "Stat-generated text is identified separately but remains readonly because replay would replace the statistical layer with frozen labels."
+        } else if (identical(item$dataKeySource, "source")) {
           "Stable data key supplied by the text layer source data."
         } else {
           "Stable semantic key derived from the original text label, coordinates, and panel."
@@ -4675,14 +4837,25 @@ manifest_text_layer_objects <- function(plot_obj) {
         "No unique source or semantic row key is available; replay is disabled to prevent ordinal remapping."
       }
     )
-    if (isTRUE(position_support$supported)) {
+    if (!identical(item$textSource, "stat") && isTRUE(position_support$supported)) {
       editable <- c(editable, list("position"))
+      current_props$positionAdapterStatus <- "supported"
       current_props$x <- pos$x
       current_props$y <- pos$y
       current_props$coord_system <- "axes"
+      current_props$position <- list(
+        x = pos$x,
+        y = pos$y,
+        coord_system = "axes"
+      )
     } else {
       current_props$positionEditable <- FALSE
-      current_props$positionUnsupportedReason <- position_support$reason
+      current_props$positionAdapterStatus <- if (identical(item$textSource, "stat")) "readonly_stat" else position_support$status
+      current_props$positionUnsupportedReason <- if (identical(item$textSource, "stat")) {
+        "Stat-generated text position is readonly because moving it would freeze statistical output into annotation data."
+      } else {
+        position_support$reason
+      }
     }
     list(
       id = manifest_gid,
@@ -4690,8 +4863,10 @@ manifest_text_layer_objects <- function(plot_obj) {
       label = paste0("ggplot text ", item$layerIndex - 1, ".", item$rowIndex - 1),
       editable = editable,
       currentProps = current_props,
-      role = "ggplot_text_annotation",
-      annotationId = manifest_gid,
+      role = paste0("ggplot_text_", item$textSource),
+      annotationId = if (identical(item$textSource, "annotation")) manifest_gid else NULL,
+      textSource = item$textSource,
+      statClass = item$statClass,
       subplotId = paste0("subplot.", panel - 1),
       facetKey = panel_keys[[as.character(panel)]] %||% "root",
       layerId = paste0("r.layer.", item$layerIndex - 1),
@@ -5780,16 +5955,22 @@ segment_curve_svg_selection <- function(svg, layer, layer_index, built_data, sca
         next_index <- candidate_index + 1L
       }
     }
-    for (record_index in row_selection) {
+    for (selection_index in seq_along(row_selection)) {
+      record_index <- row_selection[[selection_index]]
+      is_arrow <- selection_index > 1L
       selected_indices <- c(selected_indices, record_index)
       selections[[length(selections) + 1]] <- list(
         record = records[[record_index]],
-        gid = get_svg_candidate_group_gid(
-          records[[record_index]]$chunk,
-          default_gid,
-          scale_catalog,
-          r_layer_mapped_scale_kinds(layer, plot_mapping)
-        )
+        gid = if (is_arrow) {
+          paste0("r.arrow.", layer_index - 1)
+        } else {
+          get_svg_candidate_group_gid(
+            records[[record_index]]$chunk,
+            default_gid,
+            scale_catalog,
+            r_layer_mapped_scale_kinds(layer, plot_mapping)
+          )
+        }
       )
     }
     cursor <- next_index
@@ -5992,7 +6173,8 @@ r_manifest_identity <- function(obj) {
   if (length(explicit_subplot_ids) > 0) relation[["subplotIds"]] <- as.list(explicit_subplot_ids)
   for (key in c(
     "layerId", "layerKey", "scaleId", "scaleKey", "guideId", "guideKey",
-    "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey", "guideType"
+    "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey", "guideType",
+    "textSource", "statClass"
   )) {
     relation <- r_manifest_relation_scalar(relation, key, obj[[key]])
   }
@@ -6027,6 +6209,8 @@ r_manifest_identity <- function(obj) {
     semantic_key <- paste("ggplot_facet_layout", relation$facetKey %||% "layout", sep = ":")
   } else if (grepl("^r\\.layer\\.", id)) {
     semantic_key <- paste(role, "layer", relation$layerKey %||% obj$source$layerSignature %||% role, sep = ":")
+  } else if (grepl("^r\\.arrow\\.", id)) {
+    semantic_key <- paste(role, "arrow", relation$layerKey %||% relation$layerId %||% id, sep = ":")
   } else if (kind == "subplot") {
     semantic_key <- paste("ggplot_panel", relation$facetKey %||% "root", sep = ":")
   } else if (grepl("^r\\.text\\.", id) && !is.null(relation$dataKey)) {
@@ -6164,6 +6348,8 @@ attach_r_manifest_shadow_metadata <- function(obj) {
   obj$dataKey <- NULL
   obj$facetKey <- NULL
   obj$axisKey <- NULL
+  obj$textSource <- NULL
+  obj$statClass <- NULL
   obj$propertyCapabilities <- r_manifest_property_capabilities(obj)
   obj
 }
@@ -6219,6 +6405,44 @@ r_normalize_structural_fingerprint <- function(value) {
   gsub("[\\r\\n\\t ]+", "", fingerprint, perl = TRUE)
 }
 
+r_parse_structural_fingerprint <- function(value) {
+  fingerprint <- r_normalize_structural_fingerprint(value)
+  if (!startsWith(fingerprint, "r-v2:")) return(NULL)
+  tryCatch(
+    jsonlite::fromJSON(
+      rawToChar(jsonlite::base64_dec(substring(fingerprint, nchar("r-v2:") + 1L))),
+      simplifyVector = FALSE
+    ),
+    error = function(e) NULL
+  )
+}
+
+r_legacy_text_role_identity_evidence_compatible <- function(object, evidence) {
+  if (
+    !identical(as.character(object$role %||% ""), "ggplot_text_data") ||
+    !startsWith(as.character(object$id %||% ""), "r.text.") ||
+    is.null(evidence$stableKey) ||
+    !identical(evidence$stableKey, as.character(object$stableKey %||% "")) ||
+    is.null(evidence$semanticKey) ||
+    !identical(evidence$semanticKey, as.character(identity_manifest_value(object$identity, "semanticKey") %||% "")) ||
+    is.null(evidence$relation$dataKey) ||
+    !r_identity_json_equal(evidence$relation$dataKey, r_identity_relation_value(object$identity)$dataKey %||% NULL)
+  ) {
+    return(FALSE)
+  }
+  legacy <- r_parse_structural_fingerprint(evidence$fingerprint)
+  current <- r_parse_structural_fingerprint(object$fingerprint)
+  if (
+    is.null(legacy) || is.null(current) ||
+    !identical(as.character(legacy$role %||% ""), "ggplot_text_annotation") ||
+    !identical(as.character(current$role %||% ""), "ggplot_text_data")
+  ) {
+    return(FALSE)
+  }
+  legacy$role <- current$role
+  r_identity_json_equal(legacy, current)
+}
+
 r_identity_json_equal <- function(actual, expected) {
   identical(
     jsonlite::toJSON(unwrap_manifest_value(actual), auto_unbox = TRUE, null = "null", digits = NA),
@@ -6250,7 +6474,7 @@ r_object_matches_identity_evidence <- function(object, evidence) {
   if (!is.null(evidence$fingerprint) && !identical(
     r_normalize_structural_fingerprint(evidence$fingerprint),
     r_normalize_structural_fingerprint(object$fingerprint)
-  )) return(FALSE)
+  ) && !r_legacy_text_role_identity_evidence_compatible(object, evidence)) return(FALSE)
   if (!is.null(evidence$semanticKey) && !identical(evidence$semanticKey, as.character(identity_manifest_value(object$identity, "semanticKey") %||% ""))) return(FALSE)
   if (!is.null(evidence$seriesKey) && !identical(evidence$seriesKey, as.character(identity_manifest_value(object$identity, "seriesKey") %||% ""))) return(FALSE)
   if (!is.null(evidence$relation)) {
@@ -6779,7 +7003,7 @@ confirm_r_edit_entries <- function(manifest, entries, resolution = list(rejected
       !identical(
         r_normalize_structural_fingerprint(entry$fingerprint),
         r_normalize_structural_fingerprint(object$fingerprint)
-      )
+      ) && !r_legacy_text_role_identity_evidence_compatible(object, r_entry_identity_evidence(entry))
     ) {
       reject_entry(requested_entry, patch_index, "identity_mismatch", requested_gid, prop, paste0(gid, " fingerprint does not match the R manifest object."), list(field = "fingerprint"))
       next
@@ -7400,6 +7624,7 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
       )
     )
     objects <- c(objects, layer_objects)
+    objects <- c(objects, manifest_segment_curve_arrow_objects(plot_obj, layer_built_data))
   }
   text_layer_objects <- manifest_text_layer_objects(plot_obj)
   if (length(text_layer_objects) > 0) {
@@ -7475,6 +7700,20 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
     )
   }
   unsupported_count <- length(unsupported_objects) + length(extension_scales)
+  coordinate_support <- text_position_support(plot_obj)
+  coordinate_diagnostics <- if (
+    length(text_layer_objects) > 0 && !isTRUE(coordinate_support$supported)
+  ) {
+    list(list(
+      capability = "text.position",
+      class = coordinate_support$coordinateClass %||% "unknown",
+      adapter = coordinate_support$adapter %||% "unknown",
+      status = coordinate_support$status %||% "shadow_unsupported",
+      reason = coordinate_support$reason %||% "No verified inverse coordinate adapter is available."
+    ))
+  } else {
+    list()
+  }
 
   kind_counts <- table(vapply(objects, function(obj) obj$kind, character(1)))
   kind_count <- function(kind) {
@@ -7487,7 +7726,13 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
     as.list(unique(unlist(lapply(matching, function(obj) obj$editable %||% list()), use.names = FALSE)))
   }
   by_kind <- list(
-    text = list(count = kind_count("text"), editableProps = list("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color")),
+    text = list(
+      count = kind_count("text"),
+      editableProps = kind_editable_props(
+        "text",
+        list("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "hjust", "vjust", "rotation", "lineheight", "position")
+      )
+    ),
     axis_x = list(count = kind_count("axis_x"), editableProps = list("label", "label_fontsize", "label_color", "tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad")),
     axis_y = list(count = kind_count("axis_y"), editableProps = list("label", "label_fontsize", "label_color", "tick_labelsize", "tick_labelfamily", "tick_labelcolor", "tick_fontweight", "tick_fontstyle", "limits", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad")),
     legend = list(count = kind_count("legend"), editableProps = list("title", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "visible", "loc", "ncol", "markerscale", "handletextpad", "labelspacing", "columnspacing", "borderpad", "facecolor", "edgecolor", "linewidth", "alpha")),
@@ -7529,13 +7774,14 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
         unsupported = unsupported_count
       ),
       byKind = by_kind,
-      unsupportedArtists = unsupported_artists
+      unsupportedArtists = unsupported_artists,
+      coordinateDiagnostics = coordinate_diagnostics
     ),
     unsupportedNotes = list(
       "R ggplot2 semantic editing currently covers labels, theme text, Point/Jitter, Line/Path/Smooth, Bar/Col, Errorbar/Linerange/Pointrange/Crossbar, Boxplot/Violin, Ribbon/Area, Step/Histogram/Freqpoly, Tile/Raster/Rect, and Contour/ContourFilled layer adapters, manual color/fill scales, facet panel discovery, and continuous heatmap/colorbar scales.",
       "Duplicate keys within one discrete color/fill scale are reported as ambiguous readonly groups; SciFigure will not guess which repeated key a palette edit should target.",
       "R facet subplot aspect uses ggplot theme(aspect.ratio); independent left/bottom/width/height panel bounds are not equivalent to Matplotlib axes bounds.",
-      "Drag-position replay and per-facet independent label styling are not enabled in this phase."
+      "Text drag-position replay is enabled only for verified Cartesian, fixed, flip, log-scale, and polar adapters; projected, nonlinear, and third-party coordinates remain explicitly readonly."
     )
   )
 }

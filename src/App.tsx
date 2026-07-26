@@ -22,7 +22,7 @@ import { FigureSpec, defaultSpec, DatasetEntry, FigureEntry } from './types';
 import { useFigureSession } from './hooks/useFigureSession';
 import { buildReproduciblePython } from './utils/reproduciblePython';
 import { applyRuntimePatchesToManifest, applyRuntimePatchesToSvg } from './utils/svgEditor';
-import { mapPatchesToTargetFigure } from './utils/semanticPatchMapping';
+import { hasStableRRelationIdentity, mapPatchesToTargetFigure } from './utils/semanticPatchMapping';
 import {
   isExplicitlyDeniedCrossFigure,
   isContentIntent,
@@ -1359,6 +1359,13 @@ export default function App() {
             )
             || (targetRole === 'data_quiver' && Boolean(identityRelation?.quiverId))
             || (targetRole === 'data_streamplot' && Boolean(identityRelation?.streamplotId))
+            || (
+              sourceManifest?.generatedBy === 'r_svg'
+              // R cross-Figure mapping is intentionally available to every object
+              // with a structural relation; the mapper still enforces role, kind,
+              // capability, and matching relation fields before producing a patch.
+              && hasStableRRelationIdentity(draft.identity)
+            )
             || (
               targetRole === 'legend_marker'
               && Boolean(identityRelation?.quiverId || identityRelation?.streamplotId)

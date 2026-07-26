@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Manifest, ManifestObject } from '../schemas/manifest';
-import { mapPatchesToTargetFigure } from './semanticPatchMapping';
+import { hasStableRRelationIdentity, mapPatchesToTargetFigure } from './semanticPatchMapping';
 
 const baseManifest = (objects: Manifest['objects']): Manifest => ({
   generatedBy: 'introspection',
@@ -15,6 +15,30 @@ const baseManifest = (objects: Manifest['objects']): Manifest => ({
 });
 
 describe('semantic patch mapping', () => {
+  it('treats all supported R structural relation families as authoritative identity evidence', () => {
+    expect(hasStableRRelationIdentity({
+      instanceKey: 'r:group:A',
+      semanticKey: 'ggplot_group:color:A',
+      scope: 'container',
+      coordinateSpace: 'none',
+      relation: { scaleKey: 'ggplot-scale:color:group' },
+    })).toBe(true);
+    expect(hasStableRRelationIdentity({
+      instanceKey: 'r:text:row-1',
+      semanticKey: 'ggplot_text:data:row-1',
+      scope: 'container',
+      coordinateSpace: 'data',
+      relation: { dataKey: 'row-1' },
+    })).toBe(true);
+    expect(hasStableRRelationIdentity({
+      instanceKey: 'r:unknown',
+      semanticKey: 'unknown',
+      scope: 'container',
+      coordinateSpace: 'none',
+      relation: { diagramId: 'not-an-r-relation-key' },
+    })).toBe(false);
+  });
+
   it('maps matching semantic axis objects when raw gid differs', () => {
     const source = baseManifest([
       {

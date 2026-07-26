@@ -113,6 +113,9 @@ function parseJson(value) {
 }
 
 function patchValueEquals(left, right) {
+  if ((left && typeof left === 'object') || (right && typeof right === 'object')) {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
   if (typeof left === 'number' || typeof right === 'number') {
     return Number(left) === Number(right);
   }
@@ -197,6 +200,57 @@ async function clickText(page, text) {
     }
   }
   return false;
+}
+
+async function ensureDragMode(page, enabled) {
+  const button = page.getByRole('button', { name: /拖拽微调/ }).first();
+  if (!(await button.isVisible({ timeout: 5000 }).catch(() => false))) return false;
+  const isEnabled = ((await button.textContent().catch(() => '')) || '').includes('开');
+  if (isEnabled !== enabled) {
+    await button.click();
+    await page.waitForTimeout(500);
+  }
+  const nextText = (await button.textContent().catch(() => '')) || '';
+  return enabled ? nextText.includes('开') : nextText.includes('关');
+}
+
+async function findBoxByGid(page, gid) {
+  return page.evaluate((targetGid) => {
+    const escaped = CSS.escape(targetGid);
+    const node = document.querySelector(`svg #${escaped}, svg [data-fig-id="${escaped}"]`);
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    if (rect.width <= 2 || rect.height <= 2) return null;
+    return {
+      id: node.id || node.getAttribute('data-fig-id') || targetGid,
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
+  }, gid);
+}
+
+async function dragBox(page, box, dx, dy) {
+  const readGeometry = (gid) => page.evaluate((targetGid) => {
+    const escaped = CSS.escape(targetGid);
+    const node = document.querySelector(`svg #${escaped}, svg [data-fig-id="${escaped}"]`);
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      transform: node.getAttribute('transform'),
+    };
+  }, gid);
+  const before = await readGeometry(box.id);
+  await page.mouse.move(box.x, box.y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + dx, box.y + dy, { steps: 10 });
+  await page.waitForTimeout(150);
+  const during = await readGeometry(box.id);
+  await page.mouse.up();
+  await page.waitForTimeout(700);
+  const after = await readGeometry(box.id);
+  return { before, during, after };
 }
 
 async function waitForApiSettle(startIndex, timeoutMs = 60000) {
@@ -415,12 +469,14 @@ async function readFigureState(page) {
   return page.evaluate(() => {
     const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
     const state = raw ? JSON.parse(raw) : {};
-    const figure = state.projectFigures?.[state.activeFigureId || 'fig_1'];
+    const figureId = state.activeFigureId || 'fig_1';
+    const figure = state.projectFigures?.[figureId];
     return {
       revision: figure?.revision || null,
       editLog: figure?.editLog || [],
       manifest: figure?.manifest || null,
       projectDrafts: state.projectDrafts || {},
+      history: state.projectHistory?.[figureId] || { past: [], future: [] },
     };
   });
 }
@@ -439,7 +495,7 @@ function hasEdit(editLog, expected) {
   return Array.isArray(editLog) && editLog.some((entry) => (
     entry.gid === expected.gid
     && entry.prop === expected.prop
-    && String(entry.value).toLowerCase() === String(expected.value).toLowerCase()
+    && patchValueEquals(entry.value, expected.value)
     && entry.mode === (expected.mode || 'backend_patch')
   ));
 }
@@ -450,6 +506,16 @@ async function waitForEdits(page, expectedEdits, timeoutMs = 60000) {
     const state = await readFigureState(page);
     if (expectedEdits.every((edit) => hasEdit(state.editLog, edit))) return state;
     await page.waitForTimeout(500);
+  }
+  return readFigureState(page);
+}
+
+async function waitForHistoryPastLength(page, expectedLength, timeoutMs = 10000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const state = await readFigureState(page);
+    if (state.history.past.length >= expectedLength) return state;
+    await page.waitForTimeout(100);
   }
   return readFigureState(page);
 }
@@ -631,6 +697,7 @@ async function prepareProject(page) {
         id: obj.id,
         kind: obj.kind,
         role: obj.role,
+        children: obj.children || [],
         editable: obj.editable,
         currentProps: obj.currentProps,
         identity: obj.identity,
@@ -640,14 +707,29 @@ async function prepareProject(page) {
         id: obj.id,
         kind: obj.kind,
         role: obj.role,
+        children: obj.children || [],
         editable: obj.editable,
         currentProps: obj.currentProps,
         identity: obj.identity,
         source: obj.source,
       })),
-      inferredArrowObjects: objects.filter((obj) => ['diagram_arrow', 'annotation_arrow', 'ggplot_segment_arrow', 'ggplot_curve_arrow'].includes(obj.role)).map((obj) => ({
+      segmentCurveArrowObjects: objects.filter((obj) => ['ggplot_segment_arrow', 'ggplot_curve_arrow'].includes(obj.role)).map((obj) => ({
         id: obj.id,
         role: obj.role,
+        parentId: obj.parentId,
+        editable: obj.editable,
+        propertyCapabilities: obj.propertyCapabilities,
+        currentProps: obj.currentProps,
+        identity: obj.identity,
+      })),
+      unrelatedArrowObjects: objects.filter((obj) => ['diagram_arrow', 'annotation_arrow'].includes(obj.role)).map((obj) => ({ id: obj.id, role: obj.role })),
+      dataTextObjects: objects.filter((obj) => obj.role === 'ggplot_text_data').map((obj) => ({
+        id: obj.id,
+        role: obj.role,
+        editable: obj.editable,
+        propertyCapabilities: obj.propertyCapabilities,
+        currentProps: obj.currentProps,
+        identity: obj.identity,
       })),
       lineLayers: objects.filter((obj) => String(obj.id).startsWith('r.layer.') && obj.kind === 'line').map((obj) => ({
         id: obj.id,
@@ -700,6 +782,30 @@ async function run() {
     const fixture = await prepareProject(page);
     projectId = fixture.projectId;
     diagnostics.fixture = fixture;
+    const draggableText = fixture.dataTextObjects.find((object) => object.currentProps?.text === 'segment A') || null;
+    const draggableTextPositionCapability = draggableText?.propertyCapabilities?.find((capability) => capability.prop === 'position') || null;
+    const arrowById = new Map(fixture.segmentCurveArrowObjects.map((arrow) => [arrow.id, arrow]));
+    const segmentCurveArrowsOk = [...fixture.segmentLayers, ...fixture.curveLayers].every((layer) => {
+      const arrowId = layer.identity?.relation?.arrowId;
+      const arrow = arrowById.get(arrowId);
+      const expectedRole = layer.currentProps?.adapterFamily === 'segment' ? 'ggplot_segment_arrow' : 'ggplot_curve_arrow';
+      return Boolean(
+        arrowId
+          && arrow
+          && layer.children?.includes(arrowId)
+          && arrow.role === expectedRole
+          && arrow.parentId === layer.id
+          && arrow.identity?.relation?.parentId === layer.id
+          && arrow.identity?.relation?.layerId === layer.id
+          && !layer.identity?.relation?.textId
+          && !arrow.identity?.relation?.textId
+          && Array.isArray(arrow.editable)
+          && arrow.editable.length === 0
+          && Array.isArray(arrow.propertyCapabilities)
+          && arrow.propertyCapabilities.length === 0
+          && arrow.currentProps?.parentOwned === true
+      );
+    });
     record(
       'R0-fixture',
       fixture.generatedBy === 'r_svg'
@@ -730,14 +836,28 @@ async function run() {
         && fixture.contourfLayers.length === 1
         && fixture.contourfLayers.every((layer) => layer.kind === 'contourf' && layer.role === 'ggplot_GeomContourFilled' && layer.source?.adapterClass === 'GeomContourFilled' && layer.editable?.includes('facecolor') && layer.editable?.includes('edgecolor') && layer.editable?.includes('linewidth') && layer.editable?.includes('linestyle') && layer.editable?.includes('alpha') && Array.isArray(layer.currentProps?.levels) && !layer.editable?.includes('levels') && !layer.editable?.includes('bins') && !layer.editable?.includes('breaks'))
         && fixture.segmentLayers.length === 1
-        && fixture.segmentLayers.every((layer) => layer.kind === 'line' && layer.role === 'ggplot_GeomSegment' && layer.source?.adapterClass === 'GeomSegment' && layer.currentProps?.adapterFamily === 'segment' && layer.currentProps?.endpointCount === 2 && layer.currentProps?.lineend === 'round' && layer.currentProps?.linejoin === 'mitre' && layer.currentProps?.arrow?.ends === 'last' && layer.currentProps?.arrow?.type === 'closed' && ['x', 'y', 'xend', 'yend', 'arrow'].every((prop) => layer.currentProps?.structureReadonly?.includes(prop) && !layer.editable?.includes(prop)) && !layer.identity?.relation?.arrowId && !layer.identity?.relation?.textId)
+        && fixture.segmentLayers.every((layer) => layer.kind === 'line' && layer.role === 'ggplot_GeomSegment' && layer.source?.adapterClass === 'GeomSegment' && layer.currentProps?.adapterFamily === 'segment' && layer.currentProps?.endpointCount === 2 && layer.currentProps?.lineend === 'round' && layer.currentProps?.linejoin === 'mitre' && layer.currentProps?.arrow?.ends === 'last' && layer.currentProps?.arrow?.type === 'closed' && ['x', 'y', 'xend', 'yend', 'arrow'].every((prop) => layer.currentProps?.structureReadonly?.includes(prop) && !layer.editable?.includes(prop)))
         && fixture.curveLayers.length === 1
-        && fixture.curveLayers.every((layer) => layer.kind === 'line' && layer.role === 'ggplot_GeomCurve' && layer.source?.adapterClass === 'GeomCurve' && layer.currentProps?.adapterFamily === 'curve' && Number(layer.currentProps?.curvature) === 0.35 && Number(layer.currentProps?.angle) === 75 && Number(layer.currentProps?.ncp) === 8 && layer.currentProps?.arrow?.ends === 'both' && layer.currentProps?.arrow?.type === 'open' && ['x', 'y', 'xend', 'yend', 'curvature', 'angle', 'ncp', 'arrow'].every((prop) => layer.currentProps?.structureReadonly?.includes(prop) && !layer.editable?.includes(prop)) && !layer.identity?.relation?.arrowId && !layer.identity?.relation?.textId)
-        && fixture.inferredArrowObjects.length === 0
+        && fixture.curveLayers.every((layer) => layer.kind === 'line' && layer.role === 'ggplot_GeomCurve' && layer.source?.adapterClass === 'GeomCurve' && layer.currentProps?.adapterFamily === 'curve' && Number(layer.currentProps?.curvature) === 0.35 && Number(layer.currentProps?.angle) === 75 && Number(layer.currentProps?.ncp) === 8 && layer.currentProps?.arrow?.ends === 'both' && layer.currentProps?.arrow?.type === 'open' && ['x', 'y', 'xend', 'yend', 'curvature', 'angle', 'ncp', 'arrow'].every((prop) => layer.currentProps?.structureReadonly?.includes(prop) && !layer.editable?.includes(prop)))
+        && fixture.segmentCurveArrowObjects.length === 2
+        && segmentCurveArrowsOk
+        && fixture.unrelatedArrowObjects.length === 0
         && fixture.fillGroups.some((group) => group.kind === 'distribution' && group.geomFamilies?.includes('GeomBoxplot') && group.geomFamilies?.includes('GeomViolin'))
         && fixture.fillGroups.some((group) => group.kind === 'band' && group.geomFamilies?.includes('GeomRibbon') && group.geomFamilies?.includes('GeomArea'))
         ? 'PASS' : 'FAIL',
       JSON.stringify(fixture),
+    );
+    record(
+      'R0b-data-text-position-authority',
+      draggableText
+        && draggableText.role === 'ggplot_text_data'
+        && draggableText.editable?.includes('position')
+        && draggableTextPositionCapability?.patchMode === 'backend_patch'
+        && draggableText.currentProps?.positionAdapterStatus === 'supported'
+        && draggableText.identity?.relation?.dataKey
+        ? 'PASS'
+        : 'FAIL',
+      JSON.stringify(draggableText),
     );
 
     await clickText(page, '字体中心');
@@ -943,13 +1063,25 @@ async function run() {
     });
     const segmentCurveSvgEvidence = await readSvgGidStyles(
       page,
-      [...fixture.segmentLayers, ...fixture.curveLayers].map((layer) => layer.id),
+      [
+        ...fixture.segmentLayers,
+        ...fixture.curveLayers,
+      ].flatMap((layer) => [layer.id, layer.identity?.relation?.arrowId]).filter(Boolean),
     );
     const segmentSvgEvidence = segmentCurveSvgEvidence[fixture.segmentLayers[0]?.id] || { count: 0, styles: [] };
     const curveSvgEvidence = segmentCurveSvgEvidence[fixture.curveLayers[0]?.id] || { count: 0, styles: [] };
-    const segmentCurveSvgOk = segmentSvgEvidence.count === 4
-      && curveSvgEvidence.count === 3
-      && [...segmentSvgEvidence.styles, ...curveSvgEvidence.styles].every((style) => style.includes('#08519c'));
+    const segmentArrowSvgEvidence = segmentCurveSvgEvidence[fixture.segmentLayers[0]?.identity?.relation?.arrowId] || { count: 0, styles: [] };
+    const curveArrowSvgEvidence = segmentCurveSvgEvidence[fixture.curveLayers[0]?.identity?.relation?.arrowId] || { count: 0, styles: [] };
+    const segmentCurveSvgOk = segmentSvgEvidence.count === 2
+      && segmentArrowSvgEvidence.count === 2
+      && curveSvgEvidence.count === 1
+      && curveArrowSvgEvidence.count === 2
+      && [
+        ...segmentSvgEvidence.styles,
+        ...segmentArrowSvgEvidence.styles,
+        ...curveSvgEvidence.styles,
+        ...curveArrowSvgEvidence.styles,
+      ].every((style) => style.includes('#08519c'));
     const fillGroupSvgEvidence = await readSvgGidStyles(
       page,
       fixture.fillGroups.map((group) => group.groupId),
@@ -1019,7 +1151,7 @@ async function run() {
       && componentBatchExpectedEdits.every((edit) => hasEdit(componentBatchState.editLog, edit));
     record('R2d-r-layer-components', componentBatchOk ? 'PASS' : 'FAIL', `changed=${JSON.stringify({ barLineChanged, errorbarLineChanged, errorbarCapChanged, errorbarMarkerChanged, errorbarMarkerSizeChanged, legacyMedianControlHidden, familyLineColorChanged, familyPatchFillChanged, boxplotOutlierColorChanged, boxplotOutlierShapeChanged, boxplotOutlierSizeChanged, violinEdgeChanged, violinLineChanged, bandFillChanged, bandLineChanged })}, segmentCurveManifestColorOk=${segmentCurveManifestColorOk}, segmentCurveSvg=${JSON.stringify(segmentCurveSvgEvidence)}, fillGroupLineLeak=${fillGroupLineLeak}, draft=${errorbarDraft}, patches=${JSON.stringify(componentBatchPatches)}`);
 
-    const expectedCoreEdits = [
+    const componentCoreEdits = [
       ...pointSizeExpectedEdits,
       ...markerExpectedEdits,
       ...family8ExpectedEdits,
@@ -1028,11 +1160,11 @@ async function run() {
     const saveResult = await saveProjectAndReadPut(page);
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
     await waitForPreviewReady(page);
-    const refreshedState = await waitForEdits(page, expectedCoreEdits);
+    const refreshedState = await waitForEdits(page, componentCoreEdits);
     const refreshOk = saveResult.successful
-      && expectedCoreEdits.length >= 6
-      && expectedCoreEdits.every((edit) => hasEdit(refreshedState.editLog, edit));
-    record('R3b-save-refresh-component-edits', refreshOk ? 'PASS' : 'FAIL', `save=${JSON.stringify({ clicked: saveResult.clicked, successful: saveResult.successful })}, refreshedRevision=${refreshedState.revision}, expected=${JSON.stringify(expectedCoreEdits)}`);
+      && componentCoreEdits.length >= 6
+      && componentCoreEdits.every((edit) => hasEdit(refreshedState.editLog, edit));
+    record('R3b-save-refresh-component-edits', refreshOk ? 'PASS' : 'FAIL', `save=${JSON.stringify({ clicked: saveResult.clicked, successful: saveResult.successful })}, refreshedRevision=${refreshedState.revision}, expected=${JSON.stringify(componentCoreEdits)}`);
 
     const undoResult = await clickHistoryButton(page, '撤销');
     const undoState = await readFigureState(page);
@@ -1048,16 +1180,98 @@ async function run() {
     );
 
     const redoResult = await clickHistoryButton(page, '重做');
-    const redoState = await waitForEdits(page, expectedCoreEdits);
+    const redoState = await waitForEdits(page, componentCoreEdits);
     const redoOk = redoResult.clicked
       && redoResult.renderOk
       && componentBatchExpectedEdits.length >= 5
-      && expectedCoreEdits.every((edit) => hasEdit(redoState.editLog, edit));
+      && componentCoreEdits.every((edit) => hasEdit(redoState.editLog, edit));
     record(
       'R3d-redo-bar-errorbar-batch',
       redoResult.clicked ? (redoOk ? 'PASS' : 'FAIL') : 'BLOCKED',
       `redo=${JSON.stringify(redoResult)}, revision=${redoState.revision}`,
     );
+
+    const dragHistoryBefore = await readFigureState(page);
+    const dragModeEnabled = await ensureDragMode(page, true);
+    const dragBoxBefore = draggableText ? await findBoxByGid(page, draggableText.id) : null;
+    const dragGeometry = dragBoxBefore ? await dragBox(page, dragBoxBefore, 58, -22) : null;
+    const liveMovement = Boolean(
+      dragGeometry?.before
+        && dragGeometry?.during
+        && dragGeometry?.after
+        && Math.hypot(
+          dragGeometry.during.x - dragGeometry.before.x,
+          dragGeometry.during.y - dragGeometry.before.y,
+        ) > 20
+        && Math.hypot(
+          dragGeometry.after.x - dragGeometry.before.x,
+          dragGeometry.after.y - dragGeometry.before.y,
+        ) > 20
+    );
+    const dragPending = (await getBodyText(page)).includes('已累计移动 1 个文本对象');
+    const dragConfirmStart = apiRequests.length;
+    const dragConfirmed = dragPending && await clickText(page, '确认位置');
+    if (dragConfirmed) {
+      await waitForApiSettle(dragConfirmStart, 90000);
+      await waitForPreviewReady(page);
+    }
+    const dragPatchRequests = apiRequests.slice(dragConfirmStart).filter((request) => request.url.includes('/api/figure/patch'));
+    const dragPatches = patchList(parseJson(dragPatchRequests[0]?.postData));
+    const dragPositionPatches = dragPatches.filter((patch) => patch.gid === draggableText?.id && patch.prop === 'position');
+    const dragPositionEdit = dragPositionPatches.length === 1 ? {
+      gid: dragPositionPatches[0].gid,
+      prop: dragPositionPatches[0].prop,
+      value: dragPositionPatches[0].value,
+    } : null;
+    const dragEditState = dragPositionEdit ? await waitForEdits(page, [dragPositionEdit]) : await readFigureState(page);
+    const dragState = dragPositionEdit
+      ? await waitForHistoryPastLength(page, dragHistoryBefore.history.past.length + 1)
+      : dragEditState;
+    const dragHistoryAddedOnce = dragState.history.past.length === dragHistoryBefore.history.past.length + 1
+      && dragState.history.future.length === 0;
+    const dragConfirmedOnce = dragModeEnabled
+      && Boolean(dragBoxBefore)
+      && liveMovement
+      && dragPending
+      && dragConfirmed
+      && dragPatchRequests.length === 1
+      && dragPatches.length === 1
+      && dragPositionPatches.length === 1
+      && dragHistoryAddedOnce
+      && hasEdit(dragState.editLog, dragPositionEdit);
+    diagnostics.rTextDrag = { dragGeometry, dragPatches, historyBefore: dragHistoryBefore.history, historyAfter: dragState.history };
+    record(
+      'R3e-data-text-real-drag',
+      dragConfirmedOnce ? 'PASS' : 'FAIL',
+      `mode=${dragModeEnabled}, box=${Boolean(dragBoxBefore)}, live=${liveMovement}, pending=${dragPending}, confirmed=${dragConfirmed}, requests=${dragPatchRequests.length}, patches=${JSON.stringify(dragPatches)}, historyAddedOnce=${dragHistoryAddedOnce}`,
+    );
+
+    const dragUndoResult = await clickHistoryButton(page, '撤销');
+    const dragUndoState = await readFigureState(page);
+    const dragUndoOk = dragPositionEdit
+      && dragUndoResult.clicked
+      && dragUndoResult.renderOk
+      && !hasEdit(dragUndoState.editLog, dragPositionEdit)
+      && componentCoreEdits.every((edit) => hasEdit(dragUndoState.editLog, edit));
+    record('R3f-data-text-drag-undo', dragUndoResult.clicked ? (dragUndoOk ? 'PASS' : 'FAIL') : 'BLOCKED', `undo=${JSON.stringify(dragUndoResult)}, editLog=${JSON.stringify(dragUndoState.editLog)}`);
+
+    const dragRedoResult = await clickHistoryButton(page, '重做');
+    const dragRedoState = dragPositionEdit ? await waitForEdits(page, [...componentCoreEdits, dragPositionEdit]) : await readFigureState(page);
+    const dragRedoOk = dragPositionEdit
+      && dragRedoResult.clicked
+      && dragRedoResult.renderOk
+      && [...componentCoreEdits, dragPositionEdit].every((edit) => hasEdit(dragRedoState.editLog, edit));
+    record('R3g-data-text-drag-redo', dragRedoResult.clicked ? (dragRedoOk ? 'PASS' : 'FAIL') : 'BLOCKED', `redo=${JSON.stringify(dragRedoResult)}, editLog=${JSON.stringify(dragRedoState.editLog)}`);
+
+    const expectedCoreEdits = dragPositionEdit ? [...componentCoreEdits, dragPositionEdit] : componentCoreEdits;
+    const dragSave = await saveProjectAndReadPut(page);
+    await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+    await waitForPreviewReady(page);
+    const dragRefreshedState = await waitForEdits(page, expectedCoreEdits);
+    const dragRefreshOk = dragSave.successful
+      && Boolean(dragPositionEdit)
+      && expectedCoreEdits.every((edit) => hasEdit(dragRefreshedState.editLog, edit));
+    record('R3h-data-text-drag-save-refresh', dragRefreshOk ? 'PASS' : 'FAIL', `save=${dragSave.successful}, expected=${JSON.stringify(expectedCoreEdits)}, revision=${dragRefreshedState.revision}`);
 
     await clickText(page, '配色中心');
     const paletteV2Expected = process.env.VITE_SCIFIGURE_PALETTE_CONTROLS_V2 !== '0';
@@ -1132,18 +1346,31 @@ async function run() {
       body: JSON.stringify({ figureId: 'fig_1', format: 'svg', dpi: 300, saveToLibrary: true }),
     }) : null;
     const exportAsset = projectExported?.figures?.[0]?.asset || projectExported?.asset || null;
-    await clickText(page, '组件中心');
-    const postExportLineValue = 0.95;
-    const postExportChanged = exportAsset?.assetId ? await setNumberByParam(page, 'component-contours', 'linewidth', postExportLineValue) : false;
-    const postExportApply = postExportChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
-    const postExportPatches = patchList(postExportApply.patchBody);
-    const postExportExpectedEdits = postExportPatches.map((patch) => ({
-      gid: patch.gid,
-      prop: patch.prop,
-      value: patch.value,
-    }));
+    const postExportDragMode = exportAsset?.assetId ? await ensureDragMode(page, true) : false;
+    const postExportBox = postExportDragMode && draggableText ? await findBoxByGid(page, draggableText.id) : null;
+    if (postExportBox) await dragBox(page, postExportBox, -42, 30);
+    const postExportPending = Boolean(postExportBox) && (await getBodyText(page)).includes('已累计移动 1 个文本对象');
+    const postExportStart = apiRequests.length;
+    const postExportConfirmed = postExportPending && await clickText(page, '确认位置');
+    if (postExportConfirmed) {
+      await waitForApiSettle(postExportStart, 90000);
+      await waitForPreviewReady(page);
+    }
+    const postExportRequests = apiRequests.slice(postExportStart).filter((request) => request.url.includes('/api/figure/patch'));
+    const postExportPatches = patchList(parseJson(postExportRequests[0]?.postData));
+    const postExportExpectedEdits = postExportPatches
+      .filter((patch) => patch.gid === draggableText?.id && patch.prop === 'position')
+      .map((patch) => ({ gid: patch.gid, prop: patch.prop, value: patch.value }));
+    const postExportChanged = postExportDragMode
+      && postExportPending
+      && postExportConfirmed
+      && postExportRequests.length === 1
+      && postExportPatches.length === 1
+      && postExportExpectedEdits.length === 1
+      && dragPositionEdit
+      && !patchValueEquals(postExportExpectedEdits[0].value, dragPositionEdit.value);
     const postExportState = await waitForEdits(page, postExportExpectedEdits);
-    const postExportSave = postExportApply.successful ? await saveProjectAndReadPut(page) : { successful: false };
+    const postExportSave = postExportChanged ? await saveProjectAndReadPut(page) : { successful: false };
     const restored = postExportSave.successful ? await requestJson(`/api/projects/${projectId}/export-assets/${exportAsset.assetId}/restore`, {
       method: 'POST',
     }) : null;
@@ -1157,8 +1384,7 @@ async function run() {
       && exportAsset?.assetId
       && exportAsset?.hasEditingSnapshot === true
       && postExportChanged
-      && postExportApply.successful
-      && postExportPatches.length >= 1
+      && postExportPatches.length === 1
       && postExportExpectedEdits.every((edit) => hasEdit(postExportState.editLog, edit))
       && postExportSave.successful
       && restored?.status === 'success'

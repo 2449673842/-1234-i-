@@ -29,6 +29,7 @@ const OUTPUT_DIR = path.join(ROOT, 'output', 'playwright', `drag-extended-${RUN_
 
 const results = [];
 const apiRequests = [];
+const apiResponses = [];
 const consoleErrors = [];
 const pageErrors = [];
 const diagnostics = {};
@@ -48,9 +49,65 @@ function parseJson(value) {
   }
 }
 
+async function readActiveFigureHistory(page) {
+  return page.evaluate(() => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    const state = raw ? JSON.parse(raw) : {};
+    const figureId = state.activeFigureId || 'fig_1';
+    return state.projectHistory?.[figureId] || { past: [], future: [] };
+  });
+}
+
+async function readActiveFigureEditLogLength(page) {
+  return page.evaluate(() => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    const state = raw ? JSON.parse(raw) : {};
+    const figureId = state.activeFigureId || 'fig_1';
+    return Array.isArray(state.projectFigures?.[figureId]?.editLog)
+      ? state.projectFigures[figureId].editLog.length
+      : 0;
+  });
+}
+
+async function waitForHistoryPastLength(page, expectedLength, timeoutMs = 10000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const history = await readActiveFigureHistory(page);
+    if (history.past.length >= expectedLength) return history;
+    await page.waitForTimeout(100);
+  }
+  return readActiveFigureHistory(page);
+}
+
+async function readSvgObjectGeometry(page, gid) {
+  return page.evaluate((targetGid) => {
+    const escaped = CSS.escape(targetGid);
+    const node = document.querySelector(`svg #${escaped}, svg [data-fig-id="${escaped}"]`);
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      transform: node.getAttribute('transform') || '',
+    };
+  }, gid);
+}
+
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
 function interestingApi(request) {
   const url = request.url();
   return url.includes('/api/figure') || url.includes('/api/projects');
+}
+
+function isIgnorableDevServerNoise(message) {
+  return message.includes('[vite] failed to connect to websocket')
+    || /WebSocket connection to 'ws:\/\/[^']+:24678\//.test(message)
+    || message.includes('WebSocket closed without opened');
 }
 
 async function requestJson(pathname, options = {}) {
@@ -491,14 +548,59 @@ async function run() {
   await installBrowserAuthentication(context, authToken);
   const page = await context.newPage();
   let fixtureProjectId = null;
+  const pendingDragFailureGate = {
+    failNext: false,
+    delayNext: false,
+    failedResponses: 0,
+    delayedRequests: 0,
+    delayedRequestStarted: null,
+    releaseDelayedRequest: null,
+  };
+
+  await page.route('**/api/figure/patch', async (route) => {
+    if (pendingDragFailureGate.failNext) {
+      pendingDragFailureGate.failNext = false;
+      pendingDragFailureGate.failedResponses += 1;
+      await route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'conflict', message: 'forced pending drag conflict' }),
+      });
+      return;
+    }
+    if (pendingDragFailureGate.delayNext) {
+      pendingDragFailureGate.delayNext = false;
+      pendingDragFailureGate.delayedRequests += 1;
+      const delayed = createDeferred();
+      pendingDragFailureGate.delayedRequestStarted?.();
+      pendingDragFailureGate.releaseDelayedRequest = delayed.resolve;
+      await delayed.promise;
+    }
+    await route.continue();
+  });
 
   page.on('console', (msg) => {
-    if (['error'].includes(msg.type())) consoleErrors.push(msg.text());
+    if (msg.text().includes('status of 409 (Conflict)') && pendingDragFailureGate.failedResponses > 0) return;
+    if (['error'].includes(msg.type()) && !isIgnorableDevServerNoise(msg.text())) consoleErrors.push(msg.text());
   });
-  page.on('pageerror', (err) => pageErrors.push(err.message));
+  page.on('pageerror', (err) => {
+    if (!isIgnorableDevServerNoise(err.message)) pageErrors.push(err.message);
+  });
   page.on('request', (request) => {
     if (interestingApi(request)) {
       apiRequests.push({ url: request.url(), method: request.method(), postData: request.postData() });
+    }
+  });
+  page.on('response', async (response) => {
+    const request = response.request();
+    if (interestingApi(request)) {
+      apiResponses.push({
+        url: response.url(),
+        method: request.method(),
+        status: response.status(),
+        postData: request.postData(),
+        json: response.url().includes('/api/figure/patch') ? await response.json().catch(() => null) : null,
+      });
     }
   });
 
@@ -537,6 +639,7 @@ async function run() {
       await dragBox(page, freshBoxA || boxA, 70, 25);
       const bodyAfterMultiDrag = await getBodyText(page);
       const multiConfirm = bodyAfterMultiDrag.includes(`已累计移动 ${expectedMultiCount} 个文本对象`);
+      const historyBeforeMultiDrag = await readActiveFigureHistory(page);
       const confirmStart = apiRequests.length;
       const confirmed = multiConfirm && await clickVisibleText(page, '确认位置', 3000);
       if (confirmed) {
@@ -548,10 +651,15 @@ async function run() {
       const positionPatches = Array.isArray(patchBody?.patches)
         ? patchBody.patches.filter((patch) => patch?.prop === 'position')
         : [];
+      const historyAfterMultiDrag = confirmed
+        ? await waitForHistoryPastLength(page, historyBeforeMultiDrag.past.length + 1)
+        : await readActiveFigureHistory(page);
+      const historyAddedOnce = historyAfterMultiDrag.past.length === historyBeforeMultiDrag.past.length + 1
+        && historyAfterMultiDrag.future.length === 0;
       record(
         'D1-multi-drag',
-        dragModeOn && selectionReady && multiConfirm && confirmed && patchRequests.length === 1 && positionPatches.length === expectedMultiCount ? 'PASS' : 'FAIL',
-        `dragMode=${dragModeOn}, selectionReady=${selectionReady}, selected=${multiSelection.selected.join(',')}, states=${JSON.stringify(multiSelection.states)}, confirmBar=${multiConfirm}, confirmed=${confirmed}, patchRequests=${patchRequests.length}, positionPatches=${positionPatches.length}`,
+        dragModeOn && selectionReady && multiConfirm && confirmed && patchRequests.length === 1 && positionPatches.length === expectedMultiCount && historyAddedOnce ? 'PASS' : 'FAIL',
+        `dragMode=${dragModeOn}, selectionReady=${selectionReady}, selected=${multiSelection.selected.join(',')}, states=${JSON.stringify(multiSelection.states)}, confirmBar=${multiConfirm}, confirmed=${confirmed}, patchRequests=${patchRequests.length}, positionPatches=${positionPatches.length}, history=${historyBeforeMultiDrag.past.length}->${historyAfterMultiDrag.past.length}`,
       );
 
       await clearSelectionInUi(page);
@@ -563,6 +671,137 @@ async function run() {
         didObjectFollowDrag(firstDragGeometry) ? 'PASS' : 'FAIL',
         `geometry=${JSON.stringify(firstDragGeometry)}`,
       );
+
+      await clearSelectionInUi(page);
+      await ensureDragMode(page, true);
+      const pendingFailureHistoryBefore = await readActiveFigureHistory(page);
+      const pendingFailureEditLogBefore = await readActiveFigureEditLogLength(page);
+      const pendingFailureStart = apiRequests.length;
+      const pendingFailureResponseStart = apiResponses.length;
+      pendingDragFailureGate.failNext = true;
+      const pendingFailureTargetBox = await findBoxByText(page, 'DRAG_A');
+      const pendingFailureGeometry = await dragBox(page, pendingFailureTargetBox, 38, -22);
+      const pendingFailureBodyBeforeConfirm = await getBodyText(page);
+      const pendingFailureHasConfirm = pendingFailureBodyBeforeConfirm.includes('已累计移动 1 个文本对象')
+        && pendingFailureBodyBeforeConfirm.includes('确认位置');
+      const failedPatchResponse = page.waitForResponse(
+        response => response.url().includes('/api/figure/patch') && response.status() === 409,
+        { timeout: 15000 },
+      ).catch(() => null);
+      const pendingFailureConfirmed = pendingFailureHasConfirm && await clickVisibleText(page, '确认位置', 3000);
+      await failedPatchResponse;
+      await page.waitForTimeout(600);
+      const pendingFailureBodyAfter = await getBodyText(page);
+      const pendingFailureLiveGeometry = await readSvgObjectGeometry(page, pendingFailureTargetBox.id);
+      const pendingFailureHistoryAfter = await readActiveFigureHistory(page);
+      const pendingFailureEditLogAfter = await readActiveFigureEditLogLength(page);
+      const pendingFailurePatchRequests = apiRequests.slice(pendingFailureStart).filter((r) => r.url.includes('/api/figure/patch'));
+      const pendingFailureResponses = apiResponses.slice(pendingFailureResponseStart).filter((r) => r.url.includes('/api/figure/patch'));
+      const pendingFailureLiveTransformRemains = Boolean(
+        pendingFailureGeometry.before
+        && pendingFailureLiveGeometry
+        && Math.hypot(
+          pendingFailureLiveGeometry.x - pendingFailureGeometry.before.x,
+          pendingFailureLiveGeometry.y - pendingFailureGeometry.before.y,
+        ) > 20
+      );
+      const pendingFailureUiRemains = pendingFailureBodyAfter.includes('已累计移动 1 个文本对象')
+        && pendingFailureBodyAfter.includes('确认位置');
+      const pendingFailureRetryHint = pendingFailureBodyAfter.includes('位置未保存')
+        && pendingFailureBodyAfter.includes('可重试');
+      const pendingFailureNoPersistence = pendingFailureHistoryAfter.past.length === pendingFailureHistoryBefore.past.length
+        && pendingFailureHistoryAfter.future.length === pendingFailureHistoryBefore.future.length
+        && pendingFailureEditLogAfter === pendingFailureEditLogBefore;
+
+      pendingDragFailureGate.delayNext = true;
+      const retryStarted = new Promise((resolve) => { pendingDragFailureGate.delayedRequestStarted = resolve; });
+      const retryResponsePromise = page.waitForResponse(
+        response => response.url().includes('/api/figure/patch') && response.status() >= 200 && response.status() < 300,
+        { timeout: 45000 },
+      ).catch(() => null);
+      const retryStart = apiRequests.length;
+      const retryResponseStart = apiResponses.length;
+      const retryConfirmButton = page.getByRole('button', { name: /确认位置|正在保存/ }).first();
+      const retryCancelButton = page.getByRole('button', { name: /^取消$/ }).first();
+      await retryConfirmButton.click();
+      await retryStarted;
+      await page.waitForTimeout(300);
+      const confirmDisabledInFlight = await retryConfirmButton.isDisabled().catch(() => false);
+      const cancelDisabledInFlight = await retryCancelButton.isDisabled().catch(() => false);
+      const inFlightDragGeometry = await dragBox(page, await findBoxByText(page, 'DRAG_B'), 55, 30);
+      const inFlightDragBlocked = Boolean(
+        inFlightDragGeometry.before
+        && inFlightDragGeometry.after
+        && Math.hypot(
+          inFlightDragGeometry.after.x - inFlightDragGeometry.before.x,
+          inFlightDragGeometry.after.y - inFlightDragGeometry.before.y,
+        ) < 2
+      );
+      const inFlightBody = await getBodyText(page);
+      const pendingCountUnchangedInFlight = inFlightBody.includes('已累计移动 1 个文本对象')
+        && !inFlightBody.includes('已累计移动 2 个文本对象');
+      const retryConfirmBox = await retryConfirmButton.boundingBox().catch(() => null);
+      if (retryConfirmBox) {
+        await page.mouse.click(retryConfirmBox.x + retryConfirmBox.width / 2, retryConfirmBox.y + retryConfirmBox.height / 2);
+      }
+      await page.waitForTimeout(500);
+      const inFlightPatchRequests = apiRequests.slice(retryStart).filter((r) => r.url.includes('/api/figure/patch'));
+      pendingDragFailureGate.releaseDelayedRequest?.();
+      const retryResponse = await retryResponsePromise;
+      if (retryResponse) {
+        await waitForPreviewReady(page);
+      }
+      await page.waitForTimeout(800);
+      const pendingFailureBodyAfterRetry = await getBodyText(page);
+      const pendingFailureHistoryAfterRetry = await waitForHistoryPastLength(page, pendingFailureHistoryBefore.past.length + 1);
+      const retryPatchRequests = apiRequests.slice(retryStart).filter((r) => r.url.includes('/api/figure/patch'));
+      const retryPatchBodies = retryPatchRequests.map((request) => parseJson(request.postData));
+      const retrySuccessfulResponses = apiResponses.slice(retryResponseStart).filter((response) => (
+        response.url.includes('/api/figure/patch')
+        && response.status >= 200
+        && response.status < 300
+        && Array.isArray(parseJson(response.postData)?.patches)
+        && parseJson(response.postData).patches.some((patch) => patch?.prop === 'position')
+      ));
+      const retryPositionPatchCount = retryPatchBodies.reduce((count, body) => (
+        count + (Array.isArray(body?.patches) ? body.patches.filter((patch) => patch?.prop === 'position').length : 0)
+      ), 0);
+      const pendingFailureRetryCleared = !pendingFailureBodyAfterRetry.includes('已累计移动 1 个文本对象')
+        && !pendingFailureBodyAfterRetry.includes('确认位置')
+        && !pendingFailureBodyAfterRetry.includes('位置未保存');
+      const pendingFailureHistoryGrewOnce = pendingFailureHistoryAfterRetry.past.length === pendingFailureHistoryBefore.past.length + 1
+        && pendingFailureHistoryAfterRetry.future.length === 0;
+
+      record(
+        'D1b-pending-drag-failure-retry',
+        pendingFailureHasConfirm
+          && pendingFailureConfirmed
+          && pendingDragFailureGate.failedResponses === 1
+          && pendingFailurePatchRequests.length === 1
+          && pendingFailureResponses.length === 1
+          && pendingFailureResponses[0]?.status === 409
+          && pendingFailureUiRemains
+          && pendingFailureLiveTransformRemains
+          && pendingFailureRetryHint
+          && pendingFailureNoPersistence
+          && confirmDisabledInFlight
+          && cancelDisabledInFlight
+          && inFlightDragBlocked
+          && pendingCountUnchangedInFlight
+          && inFlightPatchRequests.length === 1
+          && retryPatchRequests.length === 1
+          && retrySuccessfulResponses.length === 1
+          && retryPositionPatchCount === 1
+          && pendingFailureRetryCleared
+          && pendingFailureHistoryGrewOnce
+          ? 'PASS'
+          : 'FAIL',
+        `failed=${pendingDragFailureGate.failedResponses}, failedRequests=${pendingFailurePatchRequests.length}, pendingAfterFail=${pendingFailureUiRemains}, liveAfterFail=${pendingFailureLiveTransformRemains}, hint=${pendingFailureRetryHint}, noPersistence=${pendingFailureNoPersistence}, disabled=${confirmDisabledInFlight}/${cancelDisabledInFlight}, dragBlocked=${inFlightDragBlocked}, pendingCountUnchanged=${pendingCountUnchangedInFlight}, inFlightRequests=${inFlightPatchRequests.length}, retryRequests=${retryPatchRequests.length}, retrySuccess=${retrySuccessfulResponses.length}, retryPositionPatches=${retryPositionPatchCount}, cleared=${pendingFailureRetryCleared}, history=${pendingFailureHistoryBefore.past.length}->${pendingFailureHistoryAfterRetry.past.length}`,
+      );
+
+      await clearSelectionInUi(page);
+      await ensureDragMode(page, true);
+      await dragBox(page, await findBoxByText(page, 'DRAG_A'), 70, 25);
       const bodyAfterFirstSequentialDrag = await getBodyText(page);
       const firstSequentialPending = bodyAfterFirstSequentialDrag.includes('已累计移动 1 个文本对象');
       await dragBox(page, await findBoxByText(page, 'DRAG_B'), -60, 35);
@@ -787,6 +1026,7 @@ async function run() {
     await page.screenshot({ path: path.join(OUTPUT_DIR, 'final.png'), fullPage: true });
   } finally {
     diagnostics.apiRequests = apiRequests;
+    diagnostics.apiResponses = apiResponses;
     diagnostics.consoleErrors = consoleErrors;
     diagnostics.pageErrors = pageErrors;
     await browser.close();

@@ -150,16 +150,44 @@ function findFamily(manifest, adapterFamily, requireAllStyles = true) {
     }
   }
   const relation = object.identity?.relation || {};
-  assert(!relation.arrowId && !relation.textId, `${adapterFamily} guessed an arrow/text relation: ${JSON.stringify(relation)}`);
+  assert(!relation.textId, `${adapterFamily} guessed a text relation: ${JSON.stringify(relation)}`);
+  const expectedArrowRole = adapterFamily === 'segment' ? 'ggplot_segment_arrow' : 'ggplot_curve_arrow';
+  const arrowObjects = (manifest?.objects || []).filter((candidate) => candidate?.role === expectedArrowRole);
+  if (object.currentProps?.hasArrow) {
+    assert(relation.arrowId, `${adapterFamily} has arrow metadata but no structured arrow relation: ${JSON.stringify(object)}`);
+    const arrow = arrowObjects.find((candidate) => candidate?.id === relation.arrowId);
+    assert(arrow, `${adapterFamily} arrow relation does not resolve: ${JSON.stringify(relation)}`);
+    assert(object.children?.includes(arrow.id), `${adapterFamily} does not own arrow child ${arrow.id}`);
+    assert(arrow.parentId === object.id, `${adapterFamily} arrow parent drifted: ${JSON.stringify(arrow)}`);
+    assert(arrow.identity?.relation?.parentId === object.id, `${adapterFamily} arrow identity parent drifted: ${JSON.stringify(arrow)}`);
+    assert(arrow.identity?.relation?.layerId === object.id, `${adapterFamily} arrow layer relation drifted: ${JSON.stringify(arrow)}`);
+    assert(!arrow.identity?.relation?.textId, `${adapterFamily} arrow guessed a text relation: ${JSON.stringify(arrow)}`);
+    assert(Array.isArray(arrow.editable) && arrow.editable.length === 0, `${adapterFamily} arrow is unexpectedly editable: ${JSON.stringify(arrow)}`);
+    assert(Array.isArray(arrow.propertyCapabilities) && arrow.propertyCapabilities.length === 0, `${adapterFamily} arrow exposes property capabilities: ${JSON.stringify(arrow)}`);
+    assert(arrow.currentProps?.parentOwned === true, `${adapterFamily} arrow is not marked parent-owned: ${JSON.stringify(arrow)}`);
+  } else {
+    assert(!relation.arrowId, `${adapterFamily} without arrow metadata exposes an arrow relation: ${JSON.stringify(relation)}`);
+    assert(arrowObjects.length === 0, `${adapterFamily} without an arrow created a structured arrow child: ${JSON.stringify(arrowObjects)}`);
+  }
   return object;
 }
 
-function assertNoArrowChild(manifest) {
-  const forbiddenRoles = new Set(['diagram_arrow', 'annotation_arrow', 'ggplot_segment_arrow', 'ggplot_curve_arrow']);
+function assertStructuredArrowChildren(manifest) {
+  const objects = manifest?.objects || [];
+  const layers = objects.filter((object) => object?.currentProps?.adapterFamily === 'segment' || object?.currentProps?.adapterFamily === 'curve');
+  const arrows = objects.filter((object) => object?.role === 'ggplot_segment_arrow' || object?.role === 'ggplot_curve_arrow');
+  const unrelatedArrowRoles = new Set(['diagram_arrow', 'annotation_arrow']);
   assert(
-    !(manifest?.objects || []).some((object) => forbiddenRoles.has(object?.role)),
-    `renderer created an unproven arrow child: ${JSON.stringify(manifest?.objects)}`,
+    !objects.some((object) => unrelatedArrowRoles.has(object?.role)),
+    `renderer created an unrelated arrow object: ${JSON.stringify(objects)}`,
   );
+  assert(arrows.length === layers.filter((layer) => layer.currentProps?.hasArrow).length, `structured arrow count drifted: ${JSON.stringify({ layers, arrows })}`);
+  for (const arrow of arrows) {
+    const parent = layers.find((layer) => layer.id === arrow.parentId);
+    assert(parent, `structured arrow has no segment/curve parent: ${JSON.stringify(arrow)}`);
+    assert(parent.identity?.relation?.arrowId === arrow.id, `structured arrow is not linked from its parent: ${JSON.stringify({ parent, arrow })}`);
+    assert(!arrow.identity?.relation?.textId && !parent.identity?.relation?.textId, `structured arrow inferred a text relation: ${JSON.stringify({ parent, arrow })}`);
+  }
 }
 
 function structuralSnapshot(object) {
@@ -249,7 +277,7 @@ async function createProject(token) {
   assert(rendered.response.ok && rendered.data?.status === 'success', `project render failed: ${JSON.stringify(rendered.data)}`);
   const figure = rendered.data.figures?.find((item) => item.figureId === 'fig_1');
   assert(figure?.manifest, `project render returned no manifest: ${JSON.stringify(rendered.data)}`);
-  assertNoArrowChild(figure.manifest);
+  assertStructuredArrowChildren(figure.manifest);
   return {
     projectId,
     figure,
@@ -264,7 +292,7 @@ async function createStandalone(token) {
     body: JSON.stringify({ script: rScript, language: 'r', dataPayload: null, editLog: [], renderOptions: { dpi: 150 } }),
   });
   assert(rendered.response.ok && rendered.data?.status === 'success' && rendered.data?.sessionId, `standalone render failed: ${JSON.stringify(rendered.data)}`);
-  assertNoArrowChild(rendered.data.manifest);
+  assertStructuredArrowChildren(rendered.data.manifest);
   return {
     sessionId: rendered.data.sessionId,
     revision: Number(rendered.data.revision || 1),
@@ -499,7 +527,7 @@ async function main() {
       assertHasPatch('refreshed edit log', refreshedFigure?.editLog, patch);
       assertManifestValue('refreshed manifest', refreshedFigure?.manifest, patch);
     }
-    assertNoArrowChild(refreshedFigure?.manifest);
+    assertStructuredArrowChildren(refreshedFigure?.manifest);
 
     console.log(JSON.stringify({
       status: 'PASS',
@@ -513,7 +541,7 @@ async function main() {
         'mapped segment/curve styles remain scale-owned and reject layer overrides without persistence',
         'style replay preserves endpoint, curvature, and arrow direction metadata',
         'export snapshot and restore preserve export-time segment/curve edits',
-        'no arrow child or text relation is inferred without a structured source',
+        'structured arrow children remain parent-owned and no text relation is guessed',
       ],
     }, null, 2));
   } finally {

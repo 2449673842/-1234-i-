@@ -1,6 +1,37 @@
 import { describe, expect, it } from 'vitest';
 import type { ManifestObject } from '../schemas/manifest';
-import { buildInlineTextPatch, resolveAxesPatchPanelGid, supportsInlineTextEditing } from './ChartPreview';
+import { buildInlineTextPatch, resolveAxesPatchPanelGid, resolvePendingDragSubmissionOutcome, shouldResetPendingDragForRenderChange, supportsInlineTextEditing } from './ChartPreview';
+
+describe('ChartPreview pending drag submission transaction', () => {
+  it('clears pending movement only after renderer success', () => {
+    expect(resolvePendingDragSubmissionOutcome({ status: 'success' })).toEqual({
+      clearPending: true,
+      message: null,
+    });
+  });
+
+  it('retains pending movement after renderer rejection', () => {
+    expect(resolvePendingDragSubmissionOutcome({
+      status: 'conflict',
+      message: 'identity mismatch',
+    })).toEqual({
+      clearPending: false,
+      message: '位置未保存：identity mismatch。待确认移动已保留，可重试。',
+    });
+  });
+
+  it('retains pending movement after request failure', () => {
+    expect(resolvePendingDragSubmissionOutcome(null, new Error('network unavailable'))).toEqual({
+      clearPending: false,
+      message: '位置未保存：network unavailable。待确认移动已保留，可重试。',
+    });
+  });
+
+  it('does not clear pending movement for a render refresh during submission', () => {
+    expect(shouldResetPendingDragForRenderChange(true)).toBe(false);
+    expect(shouldResetPendingDragForRenderChange(false)).toBe(true);
+  });
+});
 
 function textObject(overrides: Partial<ManifestObject> = {}): ManifestObject {
   return {

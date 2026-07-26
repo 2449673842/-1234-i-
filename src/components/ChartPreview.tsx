@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { Minus, Plus, ScanSearch, Move } from 'lucide-react';
 import { FigureSpec } from '../types';
 import { sanitizeSvg } from '../utils/svgEditor';
-import type { PatchEntry, FigureSession, ManifestObject } from '../schemas/manifest';
+import type { PatchEntry, PatchResponse, FigureSession, ManifestObject } from '../schemas/manifest';
 import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent';
 import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
 import { compileEditingIntentWithControlledResolver } from '../utils/targetResolver';
@@ -128,11 +128,35 @@ interface ChartPreviewProps {
   selectedGids?: string[];
   onSelectGids?: (gids: string[]) => void;
   renderedSVG?: string | null;
-  onPatch?: (patches: PatchEntry[]) => void;
-  onImmediatePatch?: (patches: PatchEntry[]) => void | Promise<unknown>;
+  onPatch?: (patches: PatchEntry[]) => Promise<PatchResponse>;
+  onImmediatePatch?: (patches: PatchEntry[]) => Promise<PatchResponse>;
   figSession?: FigureSession | null;
   dragMode?: boolean;
   onPendingPositionCountChange?: (count: number) => void;
+}
+
+export function resolvePendingDragSubmissionOutcome(
+  result?: Pick<PatchResponse, 'status' | 'message'> | null,
+  error?: unknown,
+) {
+  if (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      clearPending: false,
+      message: `位置未保存：${message || '网络异常'}。待确认移动已保留，可重试。`,
+    };
+  }
+  if (result?.status === 'success') {
+    return { clearPending: true, message: null };
+  }
+  return {
+    clearPending: false,
+    message: `位置未保存：${result?.message || '渲染引擎未确认本次修改'}。待确认移动已保留，可重试。`,
+  };
+}
+
+export function shouldResetPendingDragForRenderChange(isSubmitting: boolean): boolean {
+  return !isSubmitting;
 }
 
 interface DragSession {
@@ -204,6 +228,8 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const pendingDragDeltasRef = useRef<Map<string, DragDelta>>(new Map());
   const pendingPatchMapRef = useRef<Map<string, PatchEntry>>(new Map());
   const pendingOriginalTransformsRef = useRef<Map<string, string>>(new Map());
+  const pendingDragSubmitRef = useRef(false);
+  const pendingDragGenerationRef = useRef(0);
   const selectedGidsRef = useRef<string[]>(selectedGids);
 
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
@@ -217,7 +243,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const [overlayFrame, setOverlayFrame] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [dragPreview, setDragPreview] = useState<{ dx: number; dy: number; gids: string[] } | null>(null);
   const [pendingPositionPatches, setPendingPositionPatches] = useState<PatchEntry[]>([]);
-  const [isCommittingPosition, setIsCommittingPosition] = useState(false);
+  const [isSubmittingPendingDrag, setIsSubmittingPendingDrag] = useState(false);
   const [dragHint, setDragHint] = useState<string | null>(null);
   const svgSize = useMemo(() => parseSvgDimensions(safeRenderedSvg), [safeRenderedSvg]);
   const fitScale = useMemo(() => {
@@ -850,9 +876,19 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
   useEffect(() => {
     clearDragPreview();
+    pendingDragGenerationRef.current += 1;
+    pendingDragSubmitRef.current = false;
+    setIsSubmittingPendingDrag(false);
     setPendingPositionPatches([]);
     setDragHint(null);
-  }, [clearDragPreview, figSession?.sessionId, renderedSVG]);
+  }, [clearDragPreview, figSession?.sessionId]);
+
+  useEffect(() => {
+    if (!shouldResetPendingDragForRenderChange(pendingDragSubmitRef.current)) return;
+    clearDragPreview();
+    setPendingPositionPatches([]);
+    setDragHint(null);
+  }, [clearDragPreview, renderedSVG]);
 
   useEffect(() => {
     onPendingPositionCountChange?.(pendingPositionPatches.length);
@@ -1021,6 +1057,12 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
   const handleSvgPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (dragMode && event.button === 0) {
+      if (pendingDragSubmitRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        setDragHint('位置正在保存，请等待当前操作完成后再继续拖动。');
+        return;
+      }
       const foundGid = findDraggableTextGidAtPoint(event.target as HTMLElement, event.clientX, event.clientY);
       if (foundGid && isDraggableTextObject(foundGid)) {
         if (event.ctrlKey || event.metaKey || event.shiftKey) {
@@ -1190,9 +1232,14 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   }, [dragMode, isDraggableTextObject, validGids]);
 
   const confirmPendingDrag = useCallback(async () => {
-    if (pendingPositionPatches.length === 0 || isCommittingPosition) return;
+    if (pendingPositionPatches.length === 0 || pendingDragSubmitRef.current) return;
+    const submit = onImmediatePatch || onPatch;
+    if (!submit) {
+      setDragHint('位置未保存：当前编辑器没有可用的提交通道。待确认移动已保留。');
+      return;
+    }
     const patchesToCommit = [...pendingPositionPatches];
-    const targetObjects = pendingPositionPatches.flatMap((patch) => {
+    const targetObjects = patchesToCommit.flatMap((patch) => {
       if (!('gid' in patch) || patch.prop !== 'position') return [];
       const object = manifestObjectMap.get(patch.gid);
       if (!object) return [];
@@ -1226,23 +1273,34 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       missingIdentityCount: targetObjects.filter(object => !object.identity?.instanceKey).length,
       missingCapabilityCount: targetObjects.filter(object => !Array.isArray(object.propertyCapabilities)).length,
     });
-    setIsCommittingPosition(true);
+    pendingDragSubmitRef.current = true;
+    const submitGeneration = pendingDragGenerationRef.current;
+    setIsSubmittingPendingDrag(true);
     setDragHint(null);
     try {
-      const result = onImmediatePatch
-        ? await onImmediatePatch(patchesToCommit)
-        : (onPatch?.(patchesToCommit), undefined);
-      if (result && typeof result === 'object' && 'status' in result && result.status !== 'success') {
-        throw new Error('位置保存失败，请重试');
+      const result = await submit(patchesToCommit);
+      if (submitGeneration !== pendingDragGenerationRef.current) return;
+      const outcome = resolvePendingDragSubmissionOutcome(result);
+      if (!outcome.clearPending) {
+        setDragHint(outcome.message);
+        applyPendingDragTransforms();
+        return;
       }
       finalizeDragPreviewKeepingTransform();
       setPendingPositionPatches([]);
+      setDragHint(null);
     } catch (error) {
-      setDragHint(error instanceof Error ? error.message : '位置保存失败，请重试');
+      if (submitGeneration !== pendingDragGenerationRef.current) return;
+      const outcome = resolvePendingDragSubmissionOutcome(null, error);
+      setDragHint(outcome.message);
+      applyPendingDragTransforms();
     } finally {
-      setIsCommittingPosition(false);
+      if (submitGeneration === pendingDragGenerationRef.current) {
+        pendingDragSubmitRef.current = false;
+        setIsSubmittingPendingDrag(false);
+      }
     }
-  }, [finalizeDragPreviewKeepingTransform, isCommittingPosition, manifestObjectMap, onImmediatePatch, onPatch, pendingPositionPatches]);
+  }, [applyPendingDragTransforms, finalizeDragPreviewKeepingTransform, manifestObjectMap, onImmediatePatch, onPatch, pendingPositionPatches]);
 
   const cancelPendingDrag = useCallback(() => {
     clearDragPreview();
@@ -1301,17 +1359,17 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
             </span>
             <button
               type="button"
-              onClick={() => void confirmPendingDrag()}
-              disabled={isCommittingPosition}
-              className="pointer-events-auto rounded-md bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700"
+              onClick={confirmPendingDrag}
+              disabled={isSubmittingPendingDrag}
+              className="pointer-events-auto rounded-md bg-blue-600 px-3 py-1.5 font-semibold text-white hover:bg-blue-700 disabled:cursor-wait disabled:bg-blue-400"
             >
-              {isCommittingPosition ? '正在保存...' : '确认位置'}
+              {isSubmittingPendingDrag ? '正在保存...' : '确认位置'}
             </button>
             <button
               type="button"
               onClick={cancelPendingDrag}
-              disabled={isCommittingPosition}
-              className="pointer-events-auto rounded-md border border-slate-200 px-3 py-1.5 font-semibold text-slate-600 hover:bg-slate-50"
+              disabled={isSubmittingPendingDrag}
+              className="pointer-events-auto rounded-md border border-slate-200 px-3 py-1.5 font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-wait disabled:text-slate-300"
             >
               取消
             </button>

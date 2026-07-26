@@ -3602,6 +3602,37 @@ ${inner}
     return value.replace(/[\r\n\t ]+/g, '');
   }
 
+  function parseRStructuralFingerprint(value: unknown): Record<string, unknown> | null {
+    const normalized = normalizeRStructuralFingerprint(value);
+    if (typeof normalized !== 'string' || !normalized.startsWith('r-v2:')) return null;
+    try {
+      const decoded = Buffer.from(normalized.slice('r-v2:'.length), 'base64').toString('utf8');
+      const parsed = JSON.parse(decoded);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function isCompatibleLegacyRTextRoleIdentityEvidence(object: any, evidence: any): boolean {
+    if (object?.role !== 'ggplot_text_data' || !String(object?.id || '').startsWith('r.text.')) return false;
+    if (
+      typeof evidence?.stableKey !== 'string'
+      || evidence.stableKey !== object?.stableKey
+      || typeof evidence?.semanticKey !== 'string'
+      || evidence.semanticKey !== object?.identity?.semanticKey
+      || evidence?.relation?.dataKey === undefined
+      || stableStringifyForExport(evidence.relation.dataKey)
+        !== stableStringifyForExport(object?.identity?.relation?.dataKey)
+    ) return false;
+
+    const legacy = parseRStructuralFingerprint(evidence?.fingerprint);
+    const current = parseRStructuralFingerprint(object?.fingerprint);
+    if (legacy?.role !== 'ggplot_text_annotation' || current?.role !== 'ggplot_text_data') return false;
+    return stableStringifyForExport({ ...legacy, role: current.role })
+      === stableStringifyForExport(current);
+  }
+
   function rPatchIdentityEvidence(patch: any) {
     const relation = patch?.identity?.relation;
     const stableRelation = relation && typeof relation === 'object'
@@ -3631,6 +3662,7 @@ ${inner}
     if (
       evidence.fingerprint !== undefined
       && normalizeRStructuralFingerprint(evidence.fingerprint) !== normalizeRStructuralFingerprint(object?.fingerprint)
+      && !isCompatibleLegacyRTextRoleIdentityEvidence(object, evidence)
     ) return false;
     if (evidence.semanticKey !== undefined && evidence.semanticKey !== object?.identity?.semanticKey) return false;
     if (evidence.seriesKey !== undefined && evidence.seriesKey !== object?.identity?.seriesKey) return false;
@@ -3784,11 +3816,12 @@ ${inner}
         : undefined;
       const editable = Array.isArray(object.editable) ? object.editable : [];
       const hasAuthoritativeCapabilities = Array.isArray(object.propertyCapabilities);
+      const modernRObject = manifest.generatedBy === 'r_svg' && object.fingerprintVersion === 2;
       const replay = typeof capability?.replay === 'string' ? capability.replay : undefined;
       const scopes = Array.isArray(capability?.scopes) ? capability.scopes.map(String) : [];
       const supported = capability
         ? replay !== 'unsupported' && scopes.includes('object')
-        : !hasAuthoritativeCapabilities && editable.includes(prop);
+        : !hasAuthoritativeCapabilities && !modernRObject && editable.includes(prop);
       if (!supported) {
         reject('unsupported_prop', `${gid}.${prop} is not editable or replayable on the current manifest object.`, {
           replay: replay || null,
@@ -3806,6 +3839,7 @@ ${inner}
         && (manifest.generatedBy === 'r_svg'
           ? normalizeRStructuralFingerprint(patch.fingerprint) !== normalizeRStructuralFingerprint(object.fingerprint)
           : patch.fingerprint !== object.fingerprint)
+        && !isCompatibleLegacyRTextRoleIdentityEvidence(object, rPatchIdentityEvidence(patch))
         && !isCompatibleContourChildSnapshotFingerprint(patch, object, prop)
       ) {
         reject('identity_mismatch', `${gid} fingerprint does not match.`, { field: 'fingerprint' });
@@ -4996,6 +5030,7 @@ ${inner}
         : undefined;
       const editable = Array.isArray(object.editable) ? object.editable : [];
       const hasAuthoritativeCapabilities = Array.isArray(object.propertyCapabilities);
+      const modernRObject = manifest.generatedBy === 'r_svg' && object.fingerprintVersion === 2;
       const capabilityScopes = Array.isArray(capability?.scopes) ? capability.scopes.map(String) : [];
       const legacyContourChildReplay = isLegacyContourChildSnapshotEdit(object, prop)
         && (
@@ -5012,7 +5047,7 @@ ${inner}
         && !legacyLineVisibilityReplay
         && (
           (capability && (capability.replay === 'unsupported' || !capabilityScopes.includes('object')))
-          || (!capability && (hasAuthoritativeCapabilities || !editable.includes(prop)))
+          || (!capability && (hasAuthoritativeCapabilities || modernRObject || !editable.includes(prop)))
         )
       ) {
         issues.push({
@@ -5043,6 +5078,7 @@ ${inner}
         && (manifest.generatedBy === 'r_svg'
           ? normalizeRStructuralFingerprint(entry.fingerprint) !== normalizeRStructuralFingerprint(object.fingerprint)
           : entry.fingerprint !== object.fingerprint)
+        && !isCompatibleLegacyRTextRoleIdentityEvidence(object, rPatchIdentityEvidence(entry))
         && !isCompatibleContourChildSnapshotFingerprint(entry, object, prop)
       ) {
         issues.push({

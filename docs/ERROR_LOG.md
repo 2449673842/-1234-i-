@@ -4077,3 +4077,32 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `npm run test:r-semantic-smoke` 14/14。真实组件中心批量改色后，`r.layer.18` 在 SVG 中保留 4 个 Segment body/arrow 图元，`r.layer.19` 保留 3 个 Curve 图元；Draft、重绘、保存刷新、撤销重做、导出和快照恢复一致，console/page error 为 0。
 - `npm run test:r-segment-curve-authority` 与 `npm run test:r-identity-v2-compatibility` 通过；非法结构、mapped style override、mixed batch 和身份漂移继续原子拒绝且零持久化。
 - `npm run lint`、`npm run build` 和 `git diff --check` 通过。后续任何 SVG owner 逻辑不能只用“颜色唯一”证明身份；必须覆盖多个图层收敛为相同样式后的选择、重绘和导出证据。
+
+---
+
+## 2026-07-26 13:45:59 +08:00 R 文本位置 manifest 可编辑但缺少 acknowledgement 值，拖动失败后前端提前清空草稿
+
+**状态与级别**
+
+- 状态：已修复并通过 renderer、旧项目 identity、真实浏览器历史/导出/恢复和共享事务门禁；未推送、未部署。
+- 级别：P1 旧项目兼容与 silent wrong edit 风险。用户拖动 R 数据文字后画布出现即时位移，但 `/api/figure/patch` 返回 conflict，历史不增加；旧界面仍会清空确认条，造成“看起来已移动、实际未保存”。
+
+**根因**
+
+- R 文本 manifest 声明 `position` 可编辑并回读 `x/y/coord_system`，但 `currentProps.position` 不存在。renderer acknowledgement 按补丁属性名读取当前值，因此每个合法位置补丁都得到 `no_setter/renderer_ack_missing/renderer_skipped`。
+- `ChartPreview.confirmPendingDrag()` 在等待 `onImmediatePatch` 前先清空 pending patch、delta 和原 transform；冲突或网络错误无法恢复，重复点击还可能产生并发请求。
+- API 旧兼容测试把对象值转成字符串比较，任意位置对象都变成 `[object Object]`，即使 x/y/coord_system 错误也可能通过。
+- `geom_label` 文本重放冻结 built rows 时遗漏 `fill`，mapped label 背景可能退回白色；能力矩阵仍把数据驱动 `geom_text` 沿用升级前 annotation 角色名。
+
+**修复与防复发**
+
+- R 文本对象对可编辑位置同步输出 `currentProps.position={x,y,coord_system}`；确认测试同时要求补丁进入 `applied` 且 `conflict=false`。
+- 前端把确认改为异步事务：提交期间锁定确认/取消；只有 `status=success` 才清空；conflict/error/异常保留补丁、视觉 transform 和重试提示。真实浏览器强制一次 409 并延迟重试，证明失败零持久化、双击单请求、按钮锁定、重试后历史只增加一次。
+- API patch 值改为稳定深比较，并在项目刷新后再次核对 manifest `currentProps.position` 和 editLog；`geom_label` 冻结数据保留 mapped fill。
+- 能力矩阵按真实语义区分 data/annotation/stat，不再以旧角色名掩盖身份变化。Python 箱线图组件中心补回已由 renderer 支持的中位线颜色控件，R 旧 `median_color` 伪能力继续隐藏。
+
+**验证**
+
+- R renderer 125 个场景完成覆盖；capability matrix 2/2、R identity v2、segment/curve authority、R security precheck 通过。
+- `npm run test:r-semantic-smoke` 19/19；`npm run test:drag-extended-smoke` 包含失败保留/防重复/重试成功；组件容器 42/42。
+- patch rejection、项目历史、cross-Figure、用户隔离、导出矩阵、导出快照 API/UI、Python semantic、`npm test` 213 文件/1720 项、lint、build 与 diff-check 通过。

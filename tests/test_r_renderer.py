@@ -116,6 +116,29 @@ def _decode_r_v2_fingerprint(fingerprint: str) -> Dict[str, Any]:
     return json.loads(base64.b64decode(fingerprint[len("r-v2:"):]).decode("utf-8"))
 
 
+def _legacy_text_role_patch(obj: Dict[str, Any], prop: str, value: Any) -> Dict[str, Any]:
+    payload = _decode_r_v2_fingerprint(obj["fingerprint"])
+    payload["role"] = "ggplot_text_annotation"
+    fingerprint = "r-v2:" + base64.b64encode(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    identity = json.loads(json.dumps(obj["identity"], ensure_ascii=False))
+    relation = identity.setdefault("relation", {})
+    relation.pop("textSource", None)
+    relation.pop("statClass", None)
+    relation["annotationId"] = obj["id"]
+    return {
+        "gid": obj["id"],
+        "prop": prop,
+        "value": value,
+        "mode": "backend_patch",
+        "stableKey": obj["stableKey"],
+        "fingerprint": fingerprint,
+        "fingerprintVersion": 2,
+        "identity": identity,
+    }
+
+
 def _nested_keys(value: Any) -> set:
     if isinstance(value, dict):
         keys = set(value)
@@ -179,6 +202,32 @@ class TestRRenderer(unittest.TestCase):
                 set(replayed_relation) - set(frozen_relation),
                 {"scaleKey", "guideKey"},
             )
+
+    def test_v2_data_text_replays_pre_role_split_identity(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  id=c("sample-a", "sample-b"),
+  x=c(1, 2), y=c(2, 3), label=c("Alpha", "Beta")
+)
+p <- ggplot(df, aes(x, y, label=label)) + geom_text() + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        target = next(
+            obj for obj in _objects(baseline)
+            if obj.get("role") == "ggplot_text_data"
+            and obj.get("identity", {}).get("relation", {}).get("dataKey") == "sample-a"
+        )
+        legacy_patch = _legacy_text_role_patch(target, "color", "#2CA02C")
+
+        replayed = _run_r_renderer(script, [legacy_patch])
+        replayed_target = _object(replayed, target["id"])
+
+        self.assertFalse(replayed["conflict"])
+        self.assertEqual(replayed["skipped"], [])
+        self.assertEqual(replayed_target["role"], "ggplot_text_data")
+        self.assertEqual(replayed_target["currentProps"]["color"], "#2CA02C")
 
 
     def test_frozen_legacy_identity_rejects_semantic_group_drift(self):
@@ -520,7 +569,7 @@ p
             'label=c("C", "A", "B")',
         )
         baseline = _run_r_renderer(baseline_script)
-        target = next(obj for obj in _objects(baseline) if obj.get("role") == "ggplot_text_annotation")
+        target = next(obj for obj in _objects(baseline) if obj.get("role") == "ggplot_text_data")
         self.assertTrue(target["currentProps"]["dataKey"].startswith("semantic:"))
         self.assertEqual(target["currentProps"]["identityStability"], "stable")
 
@@ -547,7 +596,7 @@ p
 """
         drifted_script = baseline_script.replace('label="A"', 'label="B"')
         baseline = _run_r_renderer(baseline_script)
-        target = next(obj for obj in _objects(baseline) if obj.get("role") == "ggplot_text_annotation")
+        target = next(obj for obj in _objects(baseline) if obj.get("role") == "ggplot_text_data")
 
         replayed = _run_r_renderer(drifted_script, [
             _backend_patch(target, "color", "#CC0000"),
@@ -557,7 +606,7 @@ p
         self.assertEqual(replayed["applied"], [])
         self.assertEqual(len(replayed["skipped"]), 1)
         self.assertNotEqual(
-            next(obj for obj in _objects(replayed) if obj.get("role") == "ggplot_text_annotation")["currentProps"]["color"],
+            next(obj for obj in _objects(replayed) if obj.get("role") == "ggplot_text_data")["currentProps"]["color"],
             "#CC0000",
         )
 
@@ -569,7 +618,7 @@ p <- ggplot(df, aes(x, y, label=label)) + geom_text() + theme_classic()
 p
 """
         baseline = _run_r_renderer(script)
-        targets = [obj for obj in _objects(baseline) if obj.get("role") == "ggplot_text_annotation"]
+        targets = [obj for obj in _objects(baseline) if obj.get("role") == "ggplot_text_data"]
         self.assertEqual(len(targets), 2)
         for target in targets:
             self.assertIsNone(target["currentProps"]["dataKey"])
@@ -1333,21 +1382,28 @@ p
             "x", "y", "xend", "yend", "lineend", "curvature", "angle", "ncp", "arrow",
         ])
 
-        for obj in (segment, curve):
+        for index, obj in enumerate((segment, curve)):
             self.assertEqual(obj["editable"], ["color", "linewidth", "linestyle", "alpha"])
             self.assertFalse(any(
                 capability.get("prop") in obj["currentProps"]["structureReadonly"]
                 for capability in obj["propertyCapabilities"]
             ))
             relation = obj["identity"].get("relation", {})
-            self.assertNotIn("arrowId", relation)
+            self.assertEqual(relation["arrowId"], f"r.arrow.{index}")
             self.assertNotIn("textId", relation)
-        self.assertFalse(any(
-            obj.get("role") in {"diagram_arrow", "annotation_arrow", "ggplot_segment_arrow", "ggplot_curve_arrow"}
-            for obj in _objects(result)
-        ))
-        self.assertEqual(result["svg"].count('data-fig-id="r.layer.0"'), 4)
-        self.assertEqual(result["svg"].count('data-fig-id="r.layer.1"'), 3)
+            self.assertIn(f"r.arrow.{index}", obj["children"])
+        segment_arrow = _object(result, "r.arrow.0")
+        curve_arrow = _object(result, "r.arrow.1")
+        self.assertEqual(segment_arrow["role"], "ggplot_segment_arrow")
+        self.assertEqual(curve_arrow["role"], "ggplot_curve_arrow")
+        self.assertEqual(segment_arrow["parentId"], segment["id"])
+        self.assertEqual(curve_arrow["parentId"], curve["id"])
+        self.assertNotIn("textId", segment_arrow["identity"].get("relation", {}))
+        self.assertNotIn("textId", curve_arrow["identity"].get("relation", {}))
+        self.assertEqual(result["svg"].count('data-fig-id="r.layer.0"'), 2)
+        self.assertEqual(result["svg"].count('data-fig-id="r.arrow.0"'), 2)
+        self.assertEqual(result["svg"].count('data-fig-id="r.layer.1"'), 1)
+        self.assertEqual(result["svg"].count('data-fig-id="r.arrow.1"'), 2)
 
     def test_segment_curve_style_replay_preserves_structure_and_rejects_geometry_edits(self):
         script = """
@@ -1462,8 +1518,9 @@ p
         self.assertEqual(result["svg"].count('<polyline data-fig-id="r.layer.0"'), 1)
         self.assertEqual(result["svg"].count('<polyline data-fig-id="r.layer.1"'), 1)
         self.assertEqual(result["svg"].count('<line data-fig-id="r.layer.2"'), 1)
-        self.assertEqual(result["svg"].count('<polygon data-fig-id="r.layer.2"'), 1)
-        self.assertEqual(result["svg"].count('<polyline data-fig-id="r.layer.3"'), 3)
+        self.assertEqual(result["svg"].count('<polygon data-fig-id="r.arrow.2"'), 1)
+        self.assertEqual(result["svg"].count('<polyline data-fig-id="r.layer.3"'), 1)
+        self.assertEqual(result["svg"].count('<polyline data-fig-id="r.arrow.3"'), 2)
         self.assertIn('stroke: #1F78B4', result["svg"])
         self.assertIn('stroke: #D95F02', result["svg"])
 
@@ -1494,8 +1551,10 @@ p
         result = _run_r_renderer(script)
 
         self.assertEqual(result["status"], "success", result)
-        self.assertEqual(result["svg"].count('data-fig-id="r.layer.0"'), 2)
-        self.assertEqual(result["svg"].count('data-fig-id="r.layer.1"'), 3)
+        self.assertEqual(result["svg"].count('data-fig-id="r.layer.0"'), 1)
+        self.assertEqual(result["svg"].count('data-fig-id="r.arrow.0"'), 1)
+        self.assertEqual(result["svg"].count('data-fig-id="r.layer.1"'), 1)
+        self.assertEqual(result["svg"].count('data-fig-id="r.arrow.1"'), 2)
         self.assertNotIn('data-scifigure-unresolved-owner="r.layer.0"', result["svg"])
         self.assertNotIn('data-scifigure-unresolved-owner="r.layer.1"', result["svg"])
 
@@ -4281,7 +4340,8 @@ p
         self.assertEqual(text_obj["currentProps"]["x"], 0.8)
         self.assertEqual(text_obj["currentProps"]["y"], 0.2)
         self.assertEqual(text_obj["currentProps"]["coord_system"], "axes")
-        self.assertEqual(text_obj["identity"]["relation"]["annotationId"], text_obj["id"])
+        self.assertEqual(text_obj["identity"]["relation"]["textSource"], "data")
+        self.assertNotIn("annotationId", text_obj["identity"]["relation"])
         self.assertEqual(text_obj["identity"]["relation"]["layerId"], "r.layer.1")
         self.assertEqual(text_obj["identity"]["relation"]["subplotId"], "subplot.0")
         self.assertEqual(text_obj["identity"]["relation"]["aesthetic"], "label")
@@ -4293,6 +4353,151 @@ p
         ))
         self.assertGreater(text_obj["currentProps"]["data_x"], 1)
         self.assertLess(text_obj["currentProps"]["data_y"], 4)
+
+    def test_text_sources_and_extended_typography_are_explicit_and_replayable(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  id=c("sample-a", "sample-b"),
+  x=c(1, 2),
+  y=c(2, 3),
+  label=c("alpha[1]", "beta[2]")
+)
+p <- ggplot(df, aes(x, y)) +
+  geom_label(
+    aes(label=label), hjust=0.1, vjust=0.9, angle=12,
+    lineheight=0.8, parse=TRUE, color="#1F78B4"
+  ) +
+  annotate("text", x=1.5, y=3.5, label="annotation", hjust=0, vjust=1) +
+  stat_summary(aes(label=after_stat(y)), fun=mean, geom="text", vjust=-0.5) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        data_text = next(
+            obj for obj in _objects(baseline)
+            if obj.get("currentProps", {}).get("dataKey") == "sample-a"
+        )
+        annotation = next(
+            obj for obj in _objects(baseline)
+            if obj.get("currentProps", {}).get("textSource") == "annotation"
+        )
+        stat_text = next(
+            obj for obj in _objects(baseline)
+            if obj.get("currentProps", {}).get("textSource") == "stat"
+        )
+
+        self.assertEqual(data_text["role"], "ggplot_text_data")
+        self.assertEqual(data_text["identity"]["relation"]["textSource"], "data")
+        self.assertEqual(data_text["currentProps"]["hjust"], 0.1)
+        self.assertEqual(data_text["currentProps"]["vjust"], 0.9)
+        self.assertEqual(data_text["currentProps"]["rotation"], 12)
+        self.assertEqual(data_text["currentProps"]["lineheight"], 0.8)
+        self.assertTrue(data_text["currentProps"]["parse"])
+        self.assertEqual(data_text["currentProps"]["textSyntax"], "plotmath")
+        for prop in ("hjust", "vjust", "rotation", "lineheight"):
+            self.assertIn(prop, data_text["editable"])
+
+        self.assertEqual(annotation["role"], "ggplot_text_annotation")
+        self.assertEqual(annotation["identity"]["relation"]["textSource"], "annotation")
+        self.assertEqual(annotation["identity"]["relation"]["annotationId"], annotation["id"])
+        self.assertEqual(stat_text["role"], "ggplot_text_stat")
+        self.assertEqual(stat_text["identity"]["relation"]["textSource"], "stat")
+        self.assertEqual(stat_text["editable"], [])
+        self.assertEqual(stat_text["propertyCapabilities"], [])
+
+        forged_stat_patch = _legacy_text_role_patch(stat_text, "text", "forged statistic")
+        rejected_stat = _run_r_renderer(script, [forged_stat_patch])
+        self.assertTrue(rejected_stat["conflict"])
+        self.assertEqual(rejected_stat["applied"], [])
+        self.assertEqual(rejected_stat["skipped"], [forged_stat_patch])
+        self.assertNotEqual(
+            _object(rejected_stat, stat_text["id"])["currentProps"]["text"],
+            "forged statistic",
+        )
+
+        patched = _run_r_renderer(script, [
+            _backend_patch(data_text, "text", "gamma[3]"),
+            _backend_patch(data_text, "hjust", 0.75),
+            _backend_patch(data_text, "vjust", 0.25),
+            _backend_patch(data_text, "rotation", 37),
+            _backend_patch(data_text, "lineheight", 1.2),
+        ])
+        patched_text = _object(patched, data_text["id"])
+        self.assertFalse(patched["conflict"])
+        self.assertEqual(len(patched["applied"]), 5)
+        self.assertEqual(patched_text["currentProps"]["text"], "gamma[3]")
+        self.assertEqual(patched_text["currentProps"]["hjust"], 0.75)
+        self.assertEqual(patched_text["currentProps"]["vjust"], 0.25)
+        self.assertEqual(patched_text["currentProps"]["rotation"], 37)
+        self.assertEqual(patched_text["currentProps"]["lineheight"], 1.2)
+        self.assertTrue(patched_text["currentProps"]["parse"])
+        self.assertEqual(patched_text["identity"]["relation"]["dataKey"], "sample-a")
+
+    def test_geom_label_text_edit_preserves_mapped_fill(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  id=c("sample-a", "sample-b"),
+  x=c(1, 2), y=c(2, 3), label=c("Alpha", "Beta"), group=c("A", "B")
+)
+p <- ggplot(df, aes(x, y)) +
+  geom_label(aes(label=label, fill=group), color="#222222") +
+  scale_fill_manual(values=c(A="#FDE725", B="#440154")) +
+  theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        data_text = next(
+            obj for obj in _objects(baseline)
+            if obj.get("currentProps", {}).get("dataKey") == "sample-a"
+        )
+        patched = _run_r_renderer(script, [
+            _backend_patch(data_text, "text", "Edited Alpha"),
+        ])
+
+        self.assertFalse(patched["conflict"])
+        self.assertEqual(len(patched["applied"]), 1)
+        self.assertEqual(_object(patched, data_text["id"])["currentProps"]["text"], "Edited Alpha")
+        self.assertIn("#fde725", patched["svg"].lower())
+        self.assertIn("#440154", patched["svg"].lower())
+
+    def test_segment_and_curve_expose_structured_arrow_children_without_text_guessing(self):
+        script = """
+library(ggplot2)
+library(grid)
+segments <- data.frame(
+  id=c("edge-a", "edge-b"),
+  x=c(1, 2), y=c(1, 2), xend=c(2.5, 3.5), yend=c(2.2, 1.2),
+  label=c("near arrow", "another label")
+)
+p <- ggplot() +
+  geom_segment(
+    data=segments,
+    aes(x=x, y=y, xend=xend, yend=yend),
+    colour="#1F78B4", linewidth=0.8,
+    arrow=arrow(length=unit(3, "mm"), type="closed", ends="last")
+  ) +
+  geom_text(data=segments, aes(x=xend, y=yend, label=label)) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script)
+        layer = _object(result, "r.layer.0")
+        arrow = _object(result, "r.arrow.0")
+
+        self.assertEqual(layer["identity"]["relation"]["arrowId"], arrow["id"])
+        self.assertIn(arrow["id"], layer["children"])
+        self.assertEqual(arrow["kind"], "patch")
+        self.assertEqual(arrow["role"], "ggplot_segment_arrow")
+        self.assertEqual(arrow["parentId"], layer["id"])
+        self.assertEqual(arrow["identity"]["relation"]["layerId"], layer["id"])
+        self.assertNotIn("textId", arrow["identity"].get("relation", {}))
+        self.assertEqual(arrow["editable"], [])
+        self.assertEqual(arrow["propertyCapabilities"], [])
+        self.assertEqual(arrow["currentProps"]["ends"], "last")
+        self.assertEqual(arrow["currentProps"]["type"], "closed")
+        self.assertEqual(result["svg"].count('data-fig-id="r.arrow.0"'), 2)
 
     def test_text_data_key_survives_code_row_reordering(self):
         baseline_script = """
@@ -4358,6 +4563,15 @@ p
         self.assertIn("position", text_obj["editable"])
         self.assertAlmostEqual(text_obj["currentProps"]["x"], 0.8, places=5)
         self.assertAlmostEqual(text_obj["currentProps"]["y"], 0.2, places=5)
+        self.assertEqual(
+            text_obj["currentProps"]["position"],
+            {"x": 0.8, "y": 0.2, "coord_system": "axes"},
+        )
+        self.assertFalse(result["conflict"])
+        self.assertTrue(any(
+            entry.get("gid") == "r.text.0.0" and entry.get("prop") == "position"
+            for entry in result["applied"]
+        ))
         self.assertNotIn("positionEditable", text_obj["currentProps"])
         self.assertFalse(any("CoordFlip" in warning for warning in result.get("warnings", [])))
 
@@ -4436,6 +4650,101 @@ p
         self.assertAlmostEqual(text_obj["currentProps"]["x"], baseline_text["currentProps"]["x"], places=5)
         self.assertAlmostEqual(text_obj["currentProps"]["y"], baseline_text["currentProps"]["y"], places=5)
         self.assertTrue(any("could not be inverted" in warning for warning in result.get("warnings", [])))
+
+    def test_coord_sf_text_position_is_shadow_diagnosed_and_readonly(self):
+        script = """
+library(ggplot2)
+df <- data.frame(id=c("a", "b"), x=c(1,2), y=c(2,3), label=c("A","B"))
+if (requireNamespace("sf", quietly=TRUE)) {
+  p <- ggplot(df, aes(x,y,label=label)) + geom_text() + coord_sf() + theme_classic()
+} else {
+  p <- ggplot(df, aes(x,y,label=label)) + geom_text() + theme_classic()
+  coord_sf_fixture <- coord_cartesian()
+  class(coord_sf_fixture) <- c("CoordSf", class(coord_sf_fixture))
+  p$coordinates <- coord_sf_fixture
+}
+p
+"""
+        baseline = _run_r_renderer(script)
+        text_obj = next(obj for obj in _objects(baseline) if obj.get("role") == "ggplot_text_data")
+        diagnostics = baseline["manifest"]["coverageReport"]["coordinateDiagnostics"]
+
+        self.assertNotIn("position", text_obj["editable"])
+        self.assertFalse(text_obj["currentProps"]["positionEditable"])
+        self.assertEqual(text_obj["currentProps"]["positionAdapterStatus"], "shadow_unsupported")
+        self.assertEqual(text_obj["currentProps"]["positionCoordinateClass"], "CoordSf")
+        self.assertIn("CoordSf", text_obj["currentProps"]["positionUnsupportedReason"])
+        self.assertEqual(diagnostics[0]["class"], "CoordSf")
+        self.assertEqual(diagnostics[0]["status"], "shadow_unsupported")
+
+        rejected = _run_r_renderer(script, [_backend_patch(
+            text_obj,
+            "position",
+            {"x": 0.8, "y": 0.2, "coord_system": "axes"},
+        )])
+        self.assertTrue(rejected["conflict"])
+        self.assertEqual(rejected["applied"], [])
+
+    def test_third_party_coord_subclass_does_not_inherit_cartesian_drag_authority(self):
+        script = """
+library(ggplot2)
+df <- data.frame(id=c("a", "b"), x=c(1,2), y=c(2,3), label=c("A","B"))
+p <- ggplot(df, aes(x,y,label=label)) + geom_text() + theme_classic()
+research_projection <- coord_cartesian()
+class(research_projection) <- c("CoordResearchProjection", class(research_projection))
+p$coordinates <- research_projection
+p
+"""
+        result = _run_r_renderer(script)
+        text_obj = next(obj for obj in _objects(result) if obj.get("role") == "ggplot_text_data")
+        diagnostics = result["manifest"]["coverageReport"]["coordinateDiagnostics"]
+
+        self.assertNotIn("position", text_obj["editable"])
+        self.assertFalse(text_obj["currentProps"]["positionEditable"])
+        self.assertEqual(text_obj["currentProps"]["positionAdapterStatus"], "shadow_unsupported")
+        self.assertEqual(text_obj["currentProps"]["positionCoordinateClass"], "CoordResearchProjection")
+        self.assertIn("not a verified SciFigure adapter", text_obj["currentProps"]["positionUnsupportedReason"])
+        self.assertEqual(diagnostics[0]["class"], "CoordResearchProjection")
+
+    def test_multiline_text_and_lineheight_replay_without_mapping_drift(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  id=c("sample-a", "sample-b"),
+  x=c(1,2), y=c(2,3),
+  label=c("First line\\nSecond line", "Control")
+)
+p <- ggplot(df, aes(x,y,label=label)) + geom_label(lineheight=0.9) + theme_classic()
+p
+"""
+        baseline = _run_r_renderer(script)
+        target = next(
+            obj for obj in _objects(baseline)
+            if obj.get("identity", {}).get("relation", {}).get("dataKey") == "sample-a"
+        )
+        original_data_position = (
+            target["currentProps"]["data_x"],
+            target["currentProps"]["data_y"],
+        )
+        self.assertEqual(target["currentProps"]["text"], "First line\nSecond line")
+        self.assertEqual(target["currentProps"]["lineheight"], 0.9)
+
+        replacement = "Updated first\nUpdated second"
+        replayed = _run_r_renderer(script, [
+            _backend_patch(target, "text", replacement),
+            _backend_patch(target, "lineheight", 1.4),
+        ])
+        replayed_target = _object(replayed, target["id"])
+        self.assertFalse(replayed["conflict"])
+        self.assertEqual(replayed_target["currentProps"]["text"], replacement)
+        self.assertEqual(replayed_target["currentProps"]["lineheight"], 1.4)
+        self.assertEqual(replayed_target["identity"]["relation"]["dataKey"], "sample-a")
+        self.assertEqual(
+            (replayed_target["currentProps"]["data_x"], replayed_target["currentProps"]["data_y"]),
+            original_data_position,
+        )
+        self.assertIn("Updated first", replayed["svg"])
+        self.assertIn("Updated second", replayed["svg"])
 
     def test_base_r_output_is_explicitly_unsupported_for_semantic_editing(self):
         result = _run_r_renderer('plot(1:3, 1:3, main="Base R preview")')

@@ -154,8 +154,9 @@
       "file": "r/annotation_text.R",
       "minKindCounts": { "collection": 1, "text": 4 },
       "requiredIds": ["r.text.1.0", "r.text.2.0"],
+      "requiredRoles": ["ggplot_text_data", "ggplot_text_annotation"],
       "relations": [
-        { "from": "r.text.1.0", "field": "annotationId", "equals": "r.text.1.0" },
+        { "from": "r.text.1.0", "field": "textSource", "equals": "data" },
         { "from": "r.text.2.0", "field": "annotationId", "equals": "r.text.2.0" }
       ]
     },
@@ -199,28 +200,28 @@
       "file": "r/geom_text_label.R",
       "minKindCounts": { "collection": 1, "text": 8 },
       "requiredIds": ["r.layer.0", "r.text.1.0", "r.text.2.0"],
-      "requiredRoles": ["ggplot_GeomPoint", "ggplot_text_annotation"]
+      "requiredRoles": ["ggplot_GeomPoint", "ggplot_text_data"]
     },
     {
       "id": "r_coord_flip",
       "file": "r/coord_flip.R",
       "minKindCounts": { "subplot": 1, "patch": 1, "text": 4 },
       "requiredIds": ["subplot.0", "r.layer.0", "r.text.1.0"],
-      "requiredRoles": ["ggplot_panel", "ggplot_GeomCol", "ggplot_text_annotation"]
+      "requiredRoles": ["ggplot_panel", "ggplot_GeomCol", "ggplot_text_data"]
     },
     {
       "id": "r_log_scale",
       "file": "r/log_scale.R",
       "minKindCounts": { "subplot": 1, "collection": 1, "text": 5 },
       "requiredIds": ["subplot.0", "r.layer.0", "r.text.1.0"],
-      "requiredRoles": ["ggplot_panel", "ggplot_GeomPoint", "ggplot_text_annotation"]
+      "requiredRoles": ["ggplot_panel", "ggplot_GeomPoint", "ggplot_text_data"]
     },
     {
       "id": "r_coord_polar",
       "file": "r/coord_polar.R",
       "minKindCounts": { "subplot": 1, "patch": 5, "text": 5 },
       "requiredIds": ["subplot.0", "r.layer.0", "r.text.1.0"],
-      "requiredRoles": ["ggplot_panel", "ggplot_GeomCol", "ggplot_scale_fill", "ggplot_text_annotation"]
+      "requiredRoles": ["ggplot_panel", "ggplot_GeomCol", "ggplot_scale_fill", "ggplot_text_data"]
     },
     {
       "id": "r_raster_colorbar",
