@@ -35,6 +35,30 @@ function assertCapabilityManifest(result, label) {
   assert(capabilityBacked.length > 0, `${label} did not return identity/capability-backed objects`);
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function removeTempDir() {
+  if (!tempDir) return;
+  const resolvedTemp = path.resolve(tempDir);
+  const resolvedOsTemp = path.resolve(os.tmpdir());
+  assert(
+    resolvedTemp.startsWith(`${resolvedOsTemp}${path.sep}`)
+      && path.basename(resolvedTemp).startsWith('scifigure-renderer-sandbox-'),
+    `Refusing to remove unexpected sandbox test path: ${resolvedTemp}`,
+  );
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      fs.rmSync(resolvedTemp, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(error?.code) || attempt === 7) throw error;
+      await delay(250 * (attempt + 1));
+    }
+  }
+}
+
 function reservePort() {
   return new Promise((resolve, reject) => {
     const listener = net.createServer();
@@ -93,7 +117,7 @@ async function ensureServer() {
       SCIFIGURE_TEST_ISOLATED: '1',
       SCIFIGURE_RENDER_MODE: 'docker',
       SCIFIGURE_R_RISK_ENFORCE: '0',
-      SCIFIGURE_R_TIMEOUT_MS: '5000',
+      SCIFIGURE_R_TIMEOUT_MS: '15000',
       NODE_ENV: 'development',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -120,14 +144,7 @@ async function cleanupServer() {
       await waitForExit(ownedServer, 5_000);
     }
   }
-  if (tempDir) {
-    fs.rmSync(tempDir, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 200,
-    });
-  }
+  await removeTempDir();
 }
 
 async function render(token, script, language = 'python') {

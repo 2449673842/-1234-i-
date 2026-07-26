@@ -4183,3 +4183,24 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - R renderer 增加 script eval、semantic preflight、edit resolution/apply、ggplot render 和 device open/close 真实计时；导出增加 render/convert/persist/total 计时，不伪造 package load。
 - 隔离 workflow 覆盖两个真实 CSV、四格式导出、导出后编辑和恢复。超限测试分别比较直接 render、patch 和 export 前后 session/revision/history/preview/cache/asset/snapshot/file；timeout 测试按 jobId 和容器前后集合检查，只禁止本轮新增残留。
 - `test:r-wp9-workflow`、`test:r-wp9-performance-persistence`、`test:r-wp9-timeout-cleanup`、`test:render-performance`、`test:cache-smoke`、R timing 3/3、lint、build、diff-check 和 data audit 通过。数据审计为 25 用户、128 项目、286 文件、112 导出资产、0 issue。
+
+---
+
+## 2026-07-26 21:12:19 +08:00 R-WP10 沙箱门禁被旧镜像、冷启动阈值和 Windows SQLite 锁误报阻断
+
+**状态与级别**
+
+- 状态：测试基础设施已修复，独立候选镜像上的 renderer sandbox 通过；产品运行时逻辑未因该问题放宽。
+- 级别：P2 发布门禁可靠性。首次运行先正确拒绝 stale renderer 镜像，更新镜像后又被固定 5 秒冷启动阈值和临时数据库短暂锁占误报失败。
+
+**根因与修复**
+
+- 本机 `scifigure-renderer:latest` 仍是旧源码且无当前标签，服务端按 fail-closed 合同返回 `renderer_image_stale`。本轮构建独立 `scifigure-renderer:rwp10-candidate`，不覆盖或停止已有容器。
+- `renderer_sandbox_smoke.mjs` 把隔离 R timeout 固定为 5 秒；Windows Docker 冷启动约 5.3 秒。测试阈值提高到 15 秒，产品默认超时和服务器配置不变。
+- 测试进程退出后 SQLite 文件可能短暂保持锁定，直接 `rmSync` 会在功能已通过后抛出 `EBUSY`。清理现在先验证目录位于系统临时目录且名称属于本测试，再仅对 `EBUSY/EPERM/ENOTEMPTY` 有界重试。
+
+**验证与防复发**
+
+- 候选镜像构建验证固定 Python 3.12.13、Matplotlib 3.11.1、R 4.5.0、ggplot2 3.5.1、字体、locale、包版本和 R renderer SHA。
+- `SCIFIGURE_RENDERER_IMAGE=scifigure-renderer:rwp10-candidate npm run test:renderer-sandbox` 通过；测试只创建并清理本轮临时容器和临时目录。
+- 后续沙箱门禁必须区分“源码合同拒绝”“渲染行为失败”和“测试清理失败”，不得通过放宽 stale-image 校验或跳过清理来取得绿色结果。

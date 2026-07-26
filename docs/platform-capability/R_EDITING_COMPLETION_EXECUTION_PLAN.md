@@ -1,8 +1,8 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0-R-WP9 本地候选已合入当前集成分支；当前批次复验待完成，下一工作包为 R-WP10 默认启用、发布门禁与旧路径受控退役
+> 状态：R-WP0-R-WP10 本地候选已合入当前集成分支；生产发布与旧路径退役门禁仍待部署阶段验证
 > 最后修改时间：2026-07-30 16:08:23 +08:00
-> 当前部署状态：R-WP0-R-WP9 已完成子家族仅在本地验证；未推送、未部署
+> 当前部署状态：R-WP0-R-WP10 已完成子家族仅在本地验证；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 现状入口：`docs/R_COMPATIBILITY_PLAN.md`
 > 适用范围：R/ggplot2 渲染、语义图元、对象身份、patch 写回、Draft、历史、导出、复杂坐标、网络图/路径图/SEM 与生产一致性
@@ -710,6 +710,16 @@ persist/export conversion
 -> 监控错误率/渲染时间/身份冲突
 -> 默认启用
 ```
+
+**2026-07-26 本地候选证据**
+
+- 默认 V2 resolver 域开启、legacy adapter 保留、弱跨 Figure score mapper 默认关闭；`test:wp10-default-enable` 17 个文件、248 项通过。
+- `test:r-identity-v2-compatibility` 证明旧 identity-only editLog、旧文本角色、合法唯一 remap、导出后继续编辑和快照恢复仍可工作；缺失 GID、跨 family、身份漂移和歧义对象继续 fail-closed 且零持久化。
+- R-WP9 三条用户链路重新通过：双 CSV 精确路径与四格式导出、超大 SVG 直接渲染/patch/项目导出零持久化、timeout 后 Rscript/临时目录/本轮容器清理。
+- 以独立 `scifigure-renderer:rwp10-candidate` 镜像运行 renderer sandbox；镜像源码 SHA、固定 Python/R/package/font/locale 合同和宿主隔离通过。测试超时仅从 5 秒调整到 15 秒以容纳 Windows Docker 冷启动，产品默认超时未改变；临时 SQLite 清理增加受限路径校验和 EBUSY/EPERM/ENOTEMPTY 重试。
+- `test:r-security-precheck`、`test:user-isolation`、`test:render-performance`、`test:cache-smoke`、lint、build、diff-check 和 data audit 通过。审计仍为 25 用户、128 项目、286 文件、112 导出资产、0 issue。
+- 独立 `gpt-5.5 high` 审查结论为 `APPROVE/CLEAR`，无 HIGH/MEDIUM；确认 15 秒仅是测试隔离阈值，临时目录清理具有受限路径和有界重试。
+- 本地候选不等于生产发布：未推送、未部署，尚未完成生产不可变镜像/构建、线上小范围账号和生产容器人工视觉回归。旧 ordinal、无版本 identity 和 legacy adapter 因此继续保留，不能在本轮退役。
 
 旧 ordinal、颜色匹配或不带版本 identity 的兼容读取至少保留一个稳定发布周期。新 adapter 与旧路径退役不能在同一批次完成。
 

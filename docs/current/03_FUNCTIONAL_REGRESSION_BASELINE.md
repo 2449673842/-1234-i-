@@ -3,7 +3,7 @@
 > 状态：当前有效，所有平台功能升级的合并阻断基线
 > 最后修改时间：2026-07-30 16:08:23 +08:00
 > 证据截止时间：2026-07-30 16:08:23 +08:00
-> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 与 R-WP0-WP3 基线；R-WP4-R-WP9 源分支能力已合入，当前批次复验待完成
+> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 与 R-WP0-WP10 源分支能力已合入，当前批次复验待完成
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -72,6 +72,7 @@
 | R-WP6 文本/annotation/复杂坐标 | 本地候选 | `ggplot_text_data/annotation/stat` 身份分离，stat 只读；文本、字体、对齐、旋转、lineheight、plotmath/多行和 mapped-label fill 保持通过。Cartesian/flip/log/panel 内 polar 位置可逆，CoordSf、第三方 coord 和不可逆位置 shadow/readonly。R `currentProps.position` 与 renderer acknowledgement 对齐；后端拒绝时前端保留待确认拖动和视觉位置、零持久化、禁止重复提交，成功后才清空并形成一次历史。R renderer 125 场景、capability matrix 2/2、R semantic 19/19、drag 扩展失败/重试、组件容器 42/42、identity v2、历史/导出/快照恢复、1720 项单测、lint/build/diff-check 通过；未推送、未部署 |
 | R-WP7 网络图/路径图/SEM | 本地候选 | 显式 `scifigure-sem-v1` marker 输出七类 `diagram_*` role 和完整 node/edge relation；未标记 lookalike 不升级。GID 的四个身份字段均使用 Base64URL，ASCII `a_` 与非 ASCII `b_` 命名空间分离，字段边界无歧义，重复完整 identity 在 manifest 构建期拒绝；同 marker 多行保留为单个有序 path。科学文本、系数、p 值、拟合指标和拓扑只读，非法 mixed batch renderer/API 原子拒绝且 project/session/history/cache/export anchor/snapshot 零持久化。`clip="off"` 时仅在可证明 panel 范围内按图层顺序绑定，范围不可信则精确唯一或 fail-closed。renderer 10/10、R capability matrix、旧动态批次/fingerprint 4/4、隔离 API 和 Chromium live SVG 正确几何选择均通过；未推送、未部署 |
 | R-WP9 用户链路、性能与可观测性 | 本地候选 | `test:r-wp9-workflow` 覆盖双 CSV multipart、精确 `uploaded_file_paths`、一次 revision、刷新、四格式导出、导出后编辑和快照恢复。renderer 输出七个新增真实计时段，cache authority schema v2 纳入 source/image/runtime/package contract；导出返回 render/convert/persist/total。`test:r-wp9-performance-persistence` 证明超大直接渲染、patch、导出均返回 413 且 session/revision/history/preview/cache/asset/snapshot/file 零变化；`test:r-wp9-timeout-cleanup` 证明请求创建的 Rscript job、临时目录和容器无残留 |
+| R-WP10 默认启用与本地发布门禁 | 本地候选 | 默认 V2 resolver 17 文件/248 项、旧 R identity v2 compatibility、安全预检、R-WP9 三条链路、候选 Docker 镜像 sandbox、用户隔离、性能、缓存、lint、build、diff-check 和 data audit 通过；独立审查 APPROVE/CLEAR、0 HIGH/MEDIUM。旧 adapter 与无版本 identity 读取继续保留；未推送、未部署，生产不可变构建、小范围账号和人工视觉回归仍是发布阻断项 |
 | patch/全渲染事务保护 | 通过 | standalone patch、standalone full render 与项目 full render 均由服务端按返回 manifest/renderer 决定；拒绝批次不改变 revision、session、项目脚本、Figure、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |
