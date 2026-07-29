@@ -29,6 +29,33 @@ describe('export preview state recovery', () => {
     ]);
   });
 
+  it('uses explicit session globals instead of stale preview globals', () => {
+    const editLog: EditEntry[] = [
+      ...existing,
+      { gid: 'global', prop: 'figure.width_in', value: 16, mode: 'backend_patch', timestamp: 20 },
+      { gid: 'global', prop: 'figure.dpi', value: 1200, mode: 'backend_patch', timestamp: 21 },
+    ];
+    const manifest = {
+      generatedBy: 'introspection',
+      globals: {
+        'figure.width_in': { type: 'number', value: 14, min: 2, max: 30, step: 0.1 },
+        'figure.height_in': { type: 'number', value: 12, min: 2, max: 30, step: 0.1 },
+        'figure.dpi': { type: 'number', value: 100, min: 72, max: 1200, step: 1 },
+      },
+      objects: [],
+      capabilities: { localPatch: true, backendPatch: true, codePatch: true },
+    } as Manifest;
+
+    const merged = mergePreviewGlobalsIntoEditLog(editLog, manifest);
+    const globals = merged.filter(entry => entry.gid === 'global');
+
+    expect(globals.map(entry => [entry.prop, entry.value])).toEqual([
+      ['figure.width_in', 16],
+      ['figure.dpi', 1200],
+      ['figure.height_in', 12],
+    ]);
+  });
+
   it('keeps global and legacy font-center edits out of drift orphan cleanup', () => {
     expect(isDurableVirtualEditGid('global')).toBe(true);
     expect(isDurableVirtualEditGid('font-center-xticks')).toBe(true);

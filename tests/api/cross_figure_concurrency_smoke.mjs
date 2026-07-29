@@ -9,6 +9,7 @@
  */
 
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
+let authToken = '';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -19,6 +20,7 @@ async function requestJson(path, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
       ...(options.headers || {}),
     },
   });
@@ -119,6 +121,15 @@ async function patchFigureLabel(projectId, figureId, value) {
 }
 
 async function main() {
+  const registered = await requestJson('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      email: `cross-concurrency-${Date.now()}-${Math.random().toString(36).slice(2)}@example.test`,
+      password: 'Cross-Concurrency-Test-Password-2026',
+    }),
+  });
+  assert(registered.token, 'Registration did not return an access token');
+  authToken = registered.token;
   await cleanupSmokeProjects();
   let projectId = null;
   try {

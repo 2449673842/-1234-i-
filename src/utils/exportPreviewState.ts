@@ -43,9 +43,15 @@ export function mergePreviewGlobalsIntoEditLog(
   }
   if (!manifest?.globals) return [...editLog];
 
+  const explicitGlobalProps = new Set(
+    editLog
+      .filter(entry => entry.gid === 'global' && PREVIEW_GLOBAL_PROPS.includes(entry.prop as typeof PREVIEW_GLOBAL_PROPS[number]))
+      .map(entry => entry.prop),
+  );
   const timestamp = editLog.reduce((max, entry) => Math.max(max, Number(entry.timestamp) || 0), 0) + 1;
   const recovered: EditEntry[] = [];
   PREVIEW_GLOBAL_PROPS.forEach((prop) => {
+    if (explicitGlobalProps.has(prop)) return;
     const field = manifest?.globals?.[prop];
     if (!field || field.type !== 'number') return;
     const value = Number(field.value);

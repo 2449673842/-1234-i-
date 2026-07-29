@@ -12,6 +12,7 @@ import { chromium } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { authenticateCapabilitySmokeUser, bearerHeaders, installBrowserAuthentication } from './smokeAuth.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -24,6 +25,7 @@ const apiRequests = [];
 const consoleErrors = [];
 const pageErrors = [];
 const diagnostics = {};
+let authToken = '';
 
 const script = [
   'import matplotlib.pyplot as plt',
@@ -48,7 +50,7 @@ function record(id, status, note) {
 
 function isIgnorableDevServerNoise(message) {
   return message.includes('[vite] failed to connect to websocket')
-    || message.includes("WebSocket connection to 'ws://localhost:24678/")
+    || /WebSocket connection to 'ws:\/\/(?:localhost|127\.0\.0\.1):24678\//.test(message)
     || message.includes('WebSocket closed without opened');
 }
 
@@ -56,8 +58,10 @@ async function requestJson(pathname, options = {}) {
   const res = await fetch(`${BASE_URL}${pathname}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
+      ...bearerHeaders(authToken, {
+        'Content-Type': 'application/json',
+        ...(options.headers || {}),
+      }),
     },
   });
   const data = await res.json().catch(() => null);
@@ -186,10 +190,12 @@ async function startTwoPanelLayout(page) {
 
 async function run() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+  authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'composer-stale-ui');
   await cleanupSmokeProjects();
 
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1500, height: 950 } });
+  await installBrowserAuthentication(context, authToken);
   const page = await context.newPage();
   const dialogs = [];
 

@@ -10,6 +10,12 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function isIgnorableDevServerNoise(message) {
+  return message.includes('[vite] failed to connect to websocket')
+    || message.includes('WebSocket connection to')
+    || message.includes('WebSocket closed without opened');
+}
+
 async function installRoutes(page) {
   await page.route('**/api/auth/me', route => route.fulfill({
     status: 200,
@@ -31,9 +37,11 @@ async function verifyViewport(browser, name, viewport) {
   const context = await browser.newContext({ viewport });
   const page = await context.newPage();
   const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', error => {
+    if (!isIgnorableDevServerNoise(error.message)) errors.push(error.message);
+  });
   page.on('console', message => {
-    if (message.type() === 'error' && !/vite|WebSocket/i.test(message.text())) errors.push(message.text());
+    if (message.type() === 'error' && !isIgnorableDevServerNoise(message.text())) errors.push(message.text());
   });
   await installRoutes(page);
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });

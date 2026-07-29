@@ -67,14 +67,18 @@ async function createSourceProject(label, fileName, yValues) {
   const script = [
     'import pandas as pd',
     'import matplotlib.pyplot as plt',
+    'SOURCE_LINE_COLOR = "#123456"',
+    'SOURCE_MARKER_FACE = "#abcdef"',
     `df = pd.read_csv("${fileName}")`,
-    'fig, ax = plt.subplots(figsize=(3, 2.4))',
-    `ax.plot(df["x"], df["y"], marker="o", label="${label}")`,
-    `ax.set_title("${label}")`,
-    'ax.set_xlabel("Time")',
-    'ax.set_ylabel("Value")',
-    'ax.legend(loc="upper left")',
-    'fig.tight_layout()',
+    'def build_figure(data):',
+    '    fig, ax = plt.subplots(figsize=(3, 2.4))',
+    `    ax.plot(data["x"], data["y"], marker="o", color=SOURCE_LINE_COLOR, markerfacecolor=SOURCE_MARKER_FACE, label="${label}")`,
+    `    ax.set_title("${label}")`,
+    '    ax.set_xlabel("Time")',
+    '    ax.set_ylabel("Value")',
+    '    ax.legend(loc="upper left")',
+    '    fig.tight_layout()',
+    'build_figure(df)',
   ].join('\n');
   const spec = {
     plot_type: 'custom',
@@ -94,7 +98,7 @@ async function createSourceProject(label, fileName, yValues) {
     method: 'POST',
     body: JSON.stringify({
       script,
-      editLogs: { fig_1: [] },
+      editLogs: { fig_1: [{ gid: 'title.0', prop: 'fontsize', value: 16, mode: 'backend_patch', timestamp: 1001 }] },
       language: 'python',
       requestId: `composition-code-render-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     }),
@@ -167,7 +171,11 @@ async function main() {
           {
             projectId: sourceA.projectId,
             figureId: 'fig_1',
-            codeSlice: sourceA.rendered.figures[0].codeSlice,
+            codeSlice: {
+              ...sourceA.rendered.figures[0].codeSlice,
+              startLine: 0,
+              reason: 'smoke intentionally omits startLine to verify referenced-global fallback',
+            },
           },
           {
             projectId: sourceB.projectId,
@@ -186,6 +194,10 @@ async function main() {
     assert(Array.isArray(composed.copiedFiles) && composed.copiedFiles.length === 2, 'Expected copied files from both source projects');
     assert(composed.prompt.includes('Required axes box size: 2.4 in × 1.8 in'), 'Prompt missing exact axes-box requirement');
     assert(composed.prompt.includes('source_a') && composed.prompt.includes('source_b'), 'Prompt missing copied file references');
+    assert(composed.prompt.includes('SOURCE_LINE_COLOR = "#123456"'), 'Prompt missing source constants outside codeSlice');
+    assert(composed.prompt.includes('SOURCE_MARKER_FACE = "#abcdef"'), 'Prompt missing source style constants outside codeSlice');
+    assert(composed.prompt.includes('Applied SciFigure edits on the current rendered source figure'), 'Prompt missing current source figure edit summary');
+    assert(composed.prompt.includes('title.0') && composed.prompt.includes('fontsize = 16'), 'Prompt missing source editLog override details');
     assert(composed.prompt.includes('make_equal_axes_figure'), 'Prompt missing Matplotlib equal-axes helper');
     assert(composed.prompt.includes('Do not replace it with `plt.subplots`'), 'Prompt missing strict no-subplots instruction');
     assert(composed.prompt.includes('_uploaded_file_paths["filename.csv"]'), 'Prompt missing exact uploaded_file_paths instruction');
@@ -252,6 +264,12 @@ async function main() {
     assert(loaded.status === 'success', 'Failed to load created composition project');
     assert(loaded.project?.datasets?.length === 2, 'Created project should contain copied datasets');
     assert(String(loaded.project?.script || '').includes('TARGET_AXES_WIDTH_IN = 2.4'), 'Created project scaffold missing target axes width');
+    const loadedSpec = typeof loaded.project?.spec === 'string'
+      ? JSON.parse(loaded.project.spec)
+      : loaded.project?.spec;
+    assert(loadedSpec?.composition?.aiPrompt === composed.prompt, 'Created project should persist the generated AI prompt for audit/re-copy');
+    assert(String(loadedSpec?.composition?.aiPrompt || '').includes('SOURCE_LINE_COLOR = "#123456"'), 'Persisted prompt missing source constants outside codeSlice');
+    assert(String(loadedSpec?.composition?.aiPrompt || '').includes('fontsize = 16'), 'Persisted prompt missing current source edits');
 
     const rSourceA = await createRSourceProject('R Source A', 'r_source_a.csv', [1, 4, 2]);
     const rSourceB = await createRSourceProject('R Source B', 'r_source_b.csv', [3, 2, 5]);

@@ -125,6 +125,8 @@ async function run() {
   await context.addInitScript((accessToken) => sessionStorage.setItem('scifigure:auth-token', accessToken), token);
   const page = await context.newPage();
   const pageErrors = [];
+  const networkErrors = [];
+  const monacoCdnRequests = [];
   page.on('console', message => {
     if (message.type() === 'error' && !message.text().includes('WebSocket')) {
       pageErrors.push(`console: ${message.text()}`);
@@ -132,6 +134,12 @@ async function run() {
   });
   page.on('pageerror', error => {
     if (!error.message.includes('WebSocket closed without opened')) pageErrors.push(error.message);
+  });
+  page.on('requestfailed', request => {
+    networkErrors.push(`${request.failure()?.errorText || 'request failed'} ${request.url()}`);
+  });
+  page.on('request', request => {
+    if (request.url().includes('cdn.jsdelivr.net/npm/monaco-editor')) monacoCdnRequests.push(request.url());
   });
 
   try {
@@ -143,6 +151,13 @@ async function run() {
     const viewTabs = page.getByTestId('workspace-view-tabs');
     await viewTabs.getByRole('button', { name: '代码', exact: true }).click();
     const editor = page.locator('.monaco-editor').first();
+    const editorReady = await editor.waitFor({ state: 'visible', timeout: 30000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!editorReady) {
+      const bodyText = ((await page.textContent('body').catch(() => '')) || '').slice(-1600);
+      throw new Error(`Code editor did not load. Network errors: ${networkErrors.join(' | ')}. Page errors: ${pageErrors.join(' | ')}. Body: ${bodyText}`);
+    }
     await editor.click({ position: { x: 300, y: 160 } });
     await page.keyboard.press('Control+A');
     await page.keyboard.insertText(updatedScript);
@@ -202,6 +217,9 @@ async function run() {
         persistedFigure,
         codeSnapshots,
       })}`);
+    }
+    if (monacoCdnRequests.length > 0) {
+      throw new Error(`Monaco must load from the application origin: ${JSON.stringify(monacoCdnRequests)}`);
     }
     if (pageErrors.length) throw new Error(`Page errors: ${JSON.stringify(pageErrors)}`);
 

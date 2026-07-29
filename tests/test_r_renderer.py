@@ -585,6 +585,46 @@ p
         for prop in ("left", "bottom", "width", "height"):
             self.assertEqual(colorbar_capabilities[prop]["coordinateSpace"], "figure")
 
+    def test_continuous_point_fill_exposes_restorable_colorbar_alignment(self):
+        script = """
+library(ggplot2)
+df <- data.frame(x=1:6, y=c(2, 4, 3, 6, 5, 7), value=seq(0, 1, length.out=6))
+p <- ggplot(df, aes(x, y, fill=value)) +
+  geom_point(shape=21, size=5, colour="white") +
+  scale_fill_gradientn(
+    colours=c("#F23B20", "#FFD54A", "#43C6B7", "#6548D8"),
+    limits=c(0, 1), breaks=c(0, 0.5, 1), name="Continuous points"
+  ) +
+  theme_classic() +
+  theme(legend.position="right")
+p
+"""
+        baseline = _run_r_renderer(script)
+        self.assertEqual(len([obj for obj in _objects(baseline) if obj["kind"] == "heatmap"]), 0)
+        colorbar = _object(baseline, "r.colorbar.fill.0")
+        subplot = _object(baseline, "subplot.0")
+        self.assertEqual(colorbar["identity"]["relation"]["mappableId"], "r.layer.0")
+        self.assertEqual(colorbar["identity"]["relation"]["subplotIds"], ["subplot.0"])
+        for prop in ("left", "bottom", "width", "height"):
+            self.assertGreater(float(colorbar["currentProps"][prop]), 0)
+            self.assertGreater(float(subplot["currentProps"][prop]), 0)
+
+        edits = [
+            {"gid": "r.colorbar.fill.0", "prop": "left", "value": 0.751, "mode": "backend_patch"},
+            {"gid": "r.colorbar.fill.0", "prop": "bottom", "value": 0.2345, "mode": "backend_patch"},
+            {"gid": "r.colorbar.fill.0", "prop": "width", "value": 0.024, "mode": "backend_patch"},
+            {"gid": "r.colorbar.fill.0", "prop": "height", "value": 0.6244, "mode": "backend_patch"},
+        ]
+        patched = _run_r_renderer(script, edits)
+        self.assertNotEqual(baseline["svg"], patched["svg"])
+        patched_colorbar = _object(patched, "r.colorbar.fill.0")
+        for edit in edits:
+            self.assertAlmostEqual(patched_colorbar["currentProps"][edit["prop"]], edit["value"])
+        self.assertIn("Continuous points", patched["svg"])
+        self.assertIn(">0.0<", patched["svg"])
+        self.assertIn(">0.5<", patched["svg"])
+        self.assertIn(">1.0<", patched["svg"])
+
     def test_text_annotation_position_patch(self):
         script = """
 library(ggplot2)

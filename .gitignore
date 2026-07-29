@@ -14,6 +14,8 @@ __pycache__/
 
 # Temp payload files from spawnPythonWithPayload
 scifigure-payload-*.json
+scifigure-*.tar.gz
+scifigure-*-public-home.png
 
 # Local runtime data and user uploads
 data/

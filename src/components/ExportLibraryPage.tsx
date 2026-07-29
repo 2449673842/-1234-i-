@@ -538,7 +538,7 @@ export function ExportLibraryPage({ projectId, onNavigate, onBack, onRestoreSnap
                       <button 
                         type="button"
                         onClick={() => void handleBatchDelete([asset.assetId])}
-                        className="p-1.5 rounded-lg border border-slate-200 hover:border-red-200 hover:bg-red-50 text-slate-500 hover:text-red-600 transition-all"
+                        className="justify-self-end p-1.5 rounded-lg border border-slate-200 hover:border-red-200 hover:bg-red-50 text-slate-500 hover:text-red-600 transition-all"
                         title="删除此导出"
                       >
                         <Trash2 className="w-3.5 h-3.5" />

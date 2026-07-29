@@ -24,6 +24,12 @@ function record(id, status, note) {
   console.log(`${status} ${id}: ${note}`);
 }
 
+function isIgnorableDevServerNoise(message) {
+  return message.includes('[vite] failed to connect to websocket')
+    || message.includes('WebSocket connection to')
+    || message.includes('WebSocket closed without opened');
+}
+
 function buildFixture() {
   const textObjects = Array.from({ length: OBJECT_COUNT }, (_, index) => ({
     id: `text.${index}`,
@@ -138,9 +144,30 @@ async function main() {
   const consoleErrors = [];
   const pageErrors = [];
   page.on('console', message => {
-    if (message.type() === 'error') consoleErrors.push(message.text());
+    if (message.type() === 'error' && !isIgnorableDevServerNoise(message.text())) consoleErrors.push(message.text());
   });
-  page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('pageerror', error => {
+    if (!isIgnorableDevServerNoise(error.message)) pageErrors.push(error.message);
+  });
+  await page.route('**/api/auth/me', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      status: 'success',
+      user: { id: 'large-figure-ui-user', email: 'large-figure-ui@example.test' },
+      license: { status: 'free' },
+    }),
+  }));
+  await page.route('**/api/projects**', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ status: 'success', projects: [] }),
+  }));
+  await page.route('**/api/export-assets', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ status: 'success', assets: [] }),
+  }));
 
   try {
     const loadStartedAt = Date.now();

@@ -11,6 +11,12 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function isIgnorableDevServerNoise(message) {
+  return message.includes('[vite] failed to connect to websocket')
+    || message.includes('WebSocket connection to')
+    || message.includes('WebSocket closed without opened');
+}
+
 function makeFigure(figureId, index, overrides = {}) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="240" viewBox="0 0 360 240"><rect x="20" y="20" width="320" height="190" fill="white" stroke="#17332c"/><text x="40" y="55">${figureId}</text></svg>`;
   return {
@@ -88,12 +94,14 @@ async function main() {
     const errors = [];
     const failedResponses = [];
     let createPayload = null;
-    page.on('pageerror', error => errors.push(error.message));
+    page.on('pageerror', error => {
+      if (!isIgnorableDevServerNoise(error.message)) errors.push(error.message);
+    });
     page.on('response', response => {
       if (response.status() >= 400) failedResponses.push(`${response.status()} ${response.url()}`);
     });
     page.on('console', message => {
-      if (message.type() === 'error' && !/vite|WebSocket/i.test(message.text())) errors.push(message.text());
+      if (message.type() === 'error' && !isIgnorableDevServerNoise(message.text())) errors.push(message.text());
     });
 
     const currentFigures = Array.from({ length: 30 }, (_, index) => makeFigure(`fig_${index + 1}`, index));

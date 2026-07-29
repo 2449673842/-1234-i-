@@ -1202,15 +1202,9 @@ apply_continuous_scale_edits <- function(plot_obj) {
       has_edit(heatmap_gid, "vmin") ||
       has_edit(heatmap_gid, "vmax") ||
       has_edit(heatmap_gid, "alpha")
-    colorbar_changed <- has_edit(colorbar_gid, "label") ||
-      has_edit(colorbar_gid, "tick_fontsize") ||
-      has_edit(colorbar_gid, "visible") ||
-      has_edit(colorbar_gid, "left") ||
-      has_edit(colorbar_gid, "bottom") ||
-      has_edit(colorbar_gid, "width") ||
-      has_edit(colorbar_gid, "height")
+    label_changed <- has_edit(colorbar_gid, "label")
 
-    if (scale_changed || colorbar_changed) {
+    if (scale_changed || label_changed) {
       cmap <- latest_string(heatmap_gid, "cmap", "custom")
       colors <- if (has_edit(heatmap_gid, "cmap")) cmap_colors(cmap) else current_colors
       vmin <- latest_numeric(heatmap_gid, "vmin", current_vmin)
@@ -1251,23 +1245,38 @@ apply_continuous_scale_edits <- function(plot_obj) {
       has_edit(colorbar_gid, "width") ||
       has_edit(colorbar_gid, "height")
     if (has_bounds_edit) {
-      left <- clamp_numeric(latest_numeric(colorbar_gid, "left", default_colorbar$left), 0, 1)
-      bottom <- clamp_numeric(latest_numeric(colorbar_gid, "bottom", default_colorbar$bottom), 0, 1)
-      width <- clamp_numeric(latest_numeric(colorbar_gid, "width", default_colorbar$width), 0.01, 1)
-      height <- clamp_numeric(latest_numeric(colorbar_gid, "height", default_colorbar$height), 0.01, 1)
+      cb_left <- clamp_numeric(latest_numeric(colorbar_gid, "left", default_colorbar$left), 0, 1)
+      cb_bottom <- clamp_numeric(latest_numeric(colorbar_gid, "bottom", default_colorbar$bottom), 0, 1)
+      cb_width <- clamp_numeric(latest_numeric(colorbar_gid, "width", default_colorbar$width), 0.005, 1)
+      cb_height <- clamp_numeric(latest_numeric(colorbar_gid, "height", default_colorbar$height), 0.01, 1)
       guide <- ggplot2::guide_colourbar(
-        barwidth = ggplot2::unit(width, "npc"),
-        barheight = ggplot2::unit(height, "npc")
+        barwidth = grid::unit(cb_width * width, "in"),
+        barheight = grid::unit(cb_height * height, "in")
       )
       if (kind == "fill") {
         plot_obj <- plot_obj + ggplot2::guides(fill = guide)
       } else {
         plot_obj <- plot_obj + ggplot2::guides(color = guide, colour = guide)
       }
-      plot_obj <- plot_obj + ggplot2::theme(
-        legend.position = c(left, bottom),
-        legend.justification = c(0, 0)
-      )
+      if (cb_left >= 0.65) {
+        vertical_justification <- if (cb_bottom <= 0.35) {
+          "bottom"
+        } else if (cb_bottom + cb_height >= 0.80) {
+          "top"
+        } else {
+          "center"
+        }
+        plot_obj <- plot_obj + ggplot2::theme(
+          legend.position = "right",
+          legend.box.just = vertical_justification,
+          legend.box.spacing = grid::unit(0.12, "in")
+        )
+      } else {
+        plot_obj <- plot_obj + ggplot2::theme(
+          legend.position = c(cb_left, cb_bottom),
+          legend.justification = c(0, 0)
+        )
+      }
     }
 
     if (has_edit(colorbar_gid, "visible")) {
@@ -1854,6 +1863,33 @@ facet_label_from_row <- function(row) {
   paste(parts, collapse = ", ")
 }
 
+manifest_single_subplot_object <- function(plot_obj, layout_bounds = list()) {
+  if (is_faceted_plot(plot_obj)) return(NULL)
+  bounds <- layout_bounds$panel %||% list(left = 0.10, bottom = 0.12, width = 0.72, height = 0.76)
+  list(
+    id = "subplot.0",
+    kind = "subplot",
+    label = "Plot panel",
+    editable = list("aspect"),
+    currentProps = list(
+      subplotIndex = 0,
+      panel = 1,
+      row = 1,
+      col = 1,
+      label = "",
+      left = bounds$left,
+      bottom = bounds$bottom,
+      width = bounds$width,
+      height = bounds$height,
+      aspect = subplot_aspect_value(),
+      unsupportedProps = list("left", "bottom", "width", "height"),
+      unsupportedReason = "ggplot panel bounds are measured from the rendered SVG and are reference-only; independent panel geometry remains controlled by the ggplot gtable."
+    ),
+    role = "ggplot_panel",
+    source = list(artistClass = "ggplot_panel", axesIndex = 0)
+  )
+}
+
 manifest_facet_objects <- function(plot_obj) {
   if (!is_faceted_plot(plot_obj)) return(list())
   built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
@@ -1980,33 +2016,140 @@ manifest_text_layer_objects <- function(plot_obj) {
   })
 }
 
-manifest_heatmap_colorbar_objects <- function(plot_obj) {
-  continuous_scales <- find_continuous_colour_scales(plot_obj)
-  if (length(continuous_scales) == 0) return(list())
-  built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
+svg_tag_number <- function(tag, name) {
+  pattern <- paste0("\\b", name, "\\s*=\\s*['\"]([^'\"]+)['\"]")
+  matched <- regexec(pattern, tag, perl = TRUE)
+  values <- regmatches(tag, matched)[[1]]
+  if (length(values) < 2) return(NA_real_)
+  suppressWarnings(as.numeric(values[[2]]))
+}
 
-  heatmap_layers <- list()
-  if (length(plot_obj$layers) > 0) {
-    for (i in seq_along(plot_obj$layers)) {
-      geom <- geom_class(plot_obj$layers[[i]])
-      if (geom %in% c("GeomTile", "GeomRaster", "GeomRect")) {
-        heatmap_layers[[length(heatmap_layers) + 1]] <- i
+svg_tags <- function(svg, pattern) {
+  matches <- gregexpr(pattern, svg, perl = TRUE)[[1]]
+  if (length(matches) == 1 && matches[[1]] == -1) return(character())
+  regmatches(svg, list(matches))[[1]]
+}
+
+normalized_svg_rect <- function(rect, total_width, total_height) {
+  if (is.null(rect) || !all(is.finite(unlist(rect)))) return(NULL)
+  list(
+    left = rect$x / total_width,
+    bottom = 1 - ((rect$y + rect$height) / total_height),
+    width = rect$width / total_width,
+    height = rect$height / total_height
+  )
+}
+
+svg_plot_layout_bounds <- function(svg) {
+  if (is.null(svg) || !nzchar(svg)) return(list(panel = NULL, colorbar = NULL))
+  viewbox_match <- regexec(
+    "viewBox\\s*=\\s*['\"]\\s*[-+0-9.eE]+\\s+[-+0-9.eE]+\\s+([-+0-9.eE]+)\\s+([-+0-9.eE]+)\\s*['\"]",
+    svg,
+    perl = TRUE
+  )
+  viewbox <- regmatches(svg, viewbox_match)[[1]]
+  if (length(viewbox) < 3) return(list(panel = NULL, colorbar = NULL))
+  total_width <- suppressWarnings(as.numeric(viewbox[[2]]))
+  total_height <- suppressWarnings(as.numeric(viewbox[[3]]))
+  if (!is.finite(total_width) || !is.finite(total_height) || total_width <= 0 || total_height <= 0) {
+    return(list(panel = NULL, colorbar = NULL))
+  }
+
+  panel_candidates <- list()
+  for (block in svg_tags(svg, "<clipPath\\b[\\s\\S]*?</clipPath>")) {
+    rect_tags <- svg_tags(block, "<rect\\b[^>]*>")
+    if (length(rect_tags) == 0) next
+    tag <- rect_tags[[1]]
+    rect <- list(
+      x = svg_tag_number(tag, "x"),
+      y = svg_tag_number(tag, "y"),
+      width = svg_tag_number(tag, "width"),
+      height = svg_tag_number(tag, "height")
+    )
+    values <- unlist(rect)
+    if (!all(is.finite(values)) || rect$width <= 0 || rect$height <= 0) next
+    if (rect$x <= 0.5 || rect$y <= 0.5) next
+    if (rect$width >= total_width * 0.98 || rect$height >= total_height * 0.98) next
+    panel_candidates[[length(panel_candidates) + 1]] <- rect
+  }
+  panel_rect <- NULL
+  if (length(panel_candidates) > 0) {
+    areas <- vapply(panel_candidates, function(rect) rect$width * rect$height, numeric(1))
+    panel_rect <- panel_candidates[[which.max(areas)]]
+  }
+
+  colorbar_candidates <- list()
+  for (tag in svg_tags(svg, "<image\\b[^>]*>")) {
+    rect <- list(
+      x = svg_tag_number(tag, "x"),
+      y = svg_tag_number(tag, "y"),
+      width = svg_tag_number(tag, "width"),
+      height = svg_tag_number(tag, "height")
+    )
+    values <- unlist(rect)
+    if (!all(is.finite(values)) || rect$width <= 0 || rect$height <= 0) next
+    long_side <- max(rect$width, rect$height)
+    short_side <- min(rect$width, rect$height)
+    if (long_side <= 0 || short_side / long_side > 0.40) next
+    if (!is.null(panel_rect)) {
+      center_x <- rect$x + rect$width / 2
+      center_y <- rect$y + rect$height / 2
+      inside_panel <- center_x >= panel_rect$x && center_x <= panel_rect$x + panel_rect$width &&
+        center_y >= panel_rect$y && center_y <= panel_rect$y + panel_rect$height
+      if (inside_panel) next
+    }
+    colorbar_candidates[[length(colorbar_candidates) + 1]] <- rect
+  }
+  colorbar_rect <- NULL
+  if (length(colorbar_candidates) > 0) {
+    areas <- vapply(colorbar_candidates, function(rect) rect$width * rect$height, numeric(1))
+    colorbar_rect <- colorbar_candidates[[which.max(areas)]]
+  }
+
+  list(
+    panel = normalized_svg_rect(panel_rect, total_width, total_height),
+    colorbar = normalized_svg_rect(colorbar_rect, total_width, total_height)
+  )
+}
+
+continuous_scale_layer_usage <- function(plot_obj, built, kind) {
+  aliases <- if (identical(kind, "fill")) c("fill") else c("colour", "color")
+  layer_ids <- character()
+  subplot_ids <- character()
+  heatmap_layer_ids <- character()
+
+  for (layer_index in seq_along(plot_obj$layers)) {
+    layer <- plot_obj$layers[[layer_index]]
+    mapped <- names(layer$mapping %||% list())
+    if (isTRUE(layer$inherit.aes)) mapped <- union(names(plot_obj$mapping %||% list()), mapped)
+    if (!any(mapped %in% aliases)) next
+    layer_id <- paste0("r.layer.", layer_index - 1)
+    layer_ids <- c(layer_ids, layer_id)
+    geom <- geom_class(layer)
+    if (geom %in% c("GeomTile", "GeomRaster", "GeomRect")) {
+      heatmap_layer_ids <- c(heatmap_layer_ids, layer_id)
+    }
+    if (!is.null(built) && !is.null(built$data) && length(built$data) >= layer_index) {
+      data <- built$data[[layer_index]]
+      if (!is.null(data) && nrow(data) > 0 && "PANEL" %in% names(data)) {
+        panels <- unique(as.integer(data$PANEL))
+        panels <- panels[is.finite(panels)]
+        subplot_ids <- c(subplot_ids, paste0("subplot.", panels - 1))
       }
     }
   }
-  if (length(heatmap_layers) == 0) return(list())
-  heatmap_layer_ids <- as.list(paste0("r.layer.", unlist(heatmap_layers) - 1))
-  heatmap_subplot_ids <- character()
-  if (!is.null(built) && !is.null(built$data)) {
-    for (layer_index in heatmap_layers) {
-      data <- built$data[[layer_index]]
-      if (is.null(data) || nrow(data) == 0 || !"PANEL" %in% names(data)) next
-      panels <- unique(as.integer(data$PANEL))
-      panels <- panels[is.finite(panels)]
-      heatmap_subplot_ids <- c(heatmap_subplot_ids, paste0("subplot.", panels - 1))
-    }
-  }
-  heatmap_subplot_ids <- as.list(unique(heatmap_subplot_ids))
+
+  list(
+    layerIds = as.list(unique(layer_ids)),
+    heatmapLayerIds = as.list(unique(heatmap_layer_ids)),
+    subplotIds = as.list(unique(subplot_ids))
+  )
+}
+
+manifest_continuous_colorbar_objects <- function(plot_obj, layout_bounds = list()) {
+  continuous_scales <- find_continuous_colour_scales(plot_obj)
+  if (length(continuous_scales) == 0) return(list())
+  built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
 
   objects <- list()
   for (item in continuous_scales) {
@@ -2020,28 +2163,39 @@ manifest_heatmap_colorbar_objects <- function(plot_obj) {
     heatmap_gid <- paste0("r.heatmap.", kind, ".", scale_index)
     colorbar_gid <- paste0("r.colorbar.", kind, ".", scale_index)
     scale_id <- paste0("r.scale.", kind, ".continuous.", scale_index)
+    usage <- continuous_scale_layer_usage(plot_obj, built, kind)
+    if (length(usage$layerIds) == 0) next
+    subplot_ids <- usage$subplotIds
+    if (length(subplot_ids) == 0 && !is_faceted_plot(plot_obj)) subplot_ids <- list("subplot.0")
+    has_heatmap <- length(usage$heatmapLayerIds) > 0
 
-    objects[[length(objects) + 1]] <- list(
-      id = heatmap_gid,
-      kind = "heatmap",
-      label = paste0("ggplot heatmap ", kind, " scale"),
-      editable = list("cmap", "vmin", "vmax", "alpha"),
-      currentProps = list(
-        cmap = latest_string(heatmap_gid, "cmap", "custom"),
-        vmin = latest_numeric(heatmap_gid, "vmin", current_vmin),
-        vmax = latest_numeric(heatmap_gid, "vmax", current_vmax),
-        alpha = latest_numeric(heatmap_gid, "alpha", 1),
-        scale = kind
-      ),
-      role = "ggplot_heatmap_series",
-      colorbarId = colorbar_gid,
-      layerIds = heatmap_layer_ids,
-      subplotIds = heatmap_subplot_ids,
-      scaleId = scale_id,
-      guideId = colorbar_gid,
-      aesthetic = kind,
-      source = list(artistClass = "ggplot_heatmap_scale", axesIndex = 0, zorder = scale_index)
-    )
+    if (has_heatmap) {
+      objects[[length(objects) + 1]] <- list(
+        id = heatmap_gid,
+        kind = "heatmap",
+        label = paste0("ggplot heatmap ", kind, " scale"),
+        editable = list("cmap", "vmin", "vmax", "alpha"),
+        currentProps = list(
+          cmap = latest_string(heatmap_gid, "cmap", "custom"),
+          vmin = latest_numeric(heatmap_gid, "vmin", current_vmin),
+          vmax = latest_numeric(heatmap_gid, "vmax", current_vmax),
+          alpha = latest_numeric(heatmap_gid, "alpha", 1),
+          scale = kind
+        ),
+        role = "ggplot_heatmap_series",
+        colorbarId = colorbar_gid,
+        layerIds = usage$heatmapLayerIds,
+        subplotIds = subplot_ids,
+        scaleId = scale_id,
+        guideId = colorbar_gid,
+        aesthetic = kind,
+        source = list(artistClass = "ggplot_heatmap_scale", axesIndex = 0, zorder = scale_index)
+      )
+    }
+
+    colorbar_bounds <- layout_bounds$colorbar %||% default_colorbar
+    mappable_ids <- if (has_heatmap) list(heatmap_gid) else usage$layerIds
+    mappable_id <- mappable_ids[[1]]
 
     objects[[length(objects) + 1]] <- list(
       id = colorbar_gid,
@@ -2052,19 +2206,19 @@ manifest_heatmap_colorbar_objects <- function(plot_obj) {
         label = latest_string(colorbar_gid, "label", label),
         tick_fontsize = latest_numeric(colorbar_gid, "tick_fontsize", default_legend$fontsize),
         visible = latest_value(colorbar_gid, "visible", TRUE),
-        left = latest_numeric(colorbar_gid, "left", default_colorbar$left),
-        bottom = latest_numeric(colorbar_gid, "bottom", default_colorbar$bottom),
-        width = latest_numeric(colorbar_gid, "width", default_colorbar$width),
-        height = latest_numeric(colorbar_gid, "height", default_colorbar$height),
+        left = latest_numeric(colorbar_gid, "left", colorbar_bounds$left),
+        bottom = latest_numeric(colorbar_gid, "bottom", colorbar_bounds$bottom),
+        width = latest_numeric(colorbar_gid, "width", colorbar_bounds$width),
+        height = latest_numeric(colorbar_gid, "height", colorbar_bounds$height),
         vmin = latest_numeric(heatmap_gid, "vmin", current_vmin),
         vmax = latest_numeric(heatmap_gid, "vmax", current_vmax),
         cmap = latest_string(heatmap_gid, "cmap", "custom")
       ),
       role = "ggplot_colorbar",
-      mappableId = heatmap_gid,
-      mappableIds = list(heatmap_gid),
-      layerIds = heatmap_layer_ids,
-      subplotIds = heatmap_subplot_ids,
+      mappableId = mappable_id,
+      mappableIds = mappable_ids,
+      layerIds = usage$layerIds,
+      subplotIds = subplot_ids,
       scaleId = scale_id,
       guideId = colorbar_gid,
       aesthetic = kind,
@@ -2586,7 +2740,8 @@ attach_r_manifest_shadow_metadata <- function(obj) {
   obj
 }
 
-build_ggplot_manifest <- function(plot_obj) {
+build_ggplot_manifest <- function(plot_obj, svg = "") {
+  layout_bounds <- svg_plot_layout_bounds(svg)
   title_style <- style_for_gid("title.0", default_title)
   x_label_style <- axis_label_style_for_gid("axis.x.0", "xlabel.0", default_label)
   y_label_style <- axis_label_style_for_gid("axis.y.0", "ylabel.0", default_label)
@@ -2781,6 +2936,10 @@ build_ggplot_manifest <- function(plot_obj) {
   if (length(text_layer_objects) > 0) {
     objects <- c(objects, text_layer_objects)
   }
+  single_subplot <- manifest_single_subplot_object(plot_obj, layout_bounds)
+  if (!is.null(single_subplot)) {
+    objects <- c(objects, list(single_subplot))
+  }
   facet_objects <- manifest_facet_objects(plot_obj)
   if (length(facet_objects) > 0) {
     objects <- c(objects, facet_objects)
@@ -2808,9 +2967,9 @@ build_ggplot_manifest <- function(plot_obj) {
       }
     }
   }
-  heatmap_colorbar_objects <- manifest_heatmap_colorbar_objects(plot_obj)
-  if (length(heatmap_colorbar_objects) > 0) {
-    objects <- c(objects, heatmap_colorbar_objects)
+  continuous_colorbar_objects <- manifest_continuous_colorbar_objects(plot_obj, layout_bounds)
+  if (length(continuous_colorbar_objects) > 0) {
+    objects <- c(objects, continuous_colorbar_objects)
   }
 
   objects <- lapply(objects, attach_r_manifest_shadow_metadata)
@@ -3026,7 +3185,7 @@ result <- tryCatch({
 
   manifest_build_started_ms <- monotonic_ms()
   manifest <- if (!is.null(ggplot_obj)) {
-    build_ggplot_manifest(ggplot_obj)
+    build_ggplot_manifest(ggplot_obj, svg)
   } else {
     list(
       generatedBy = "r_svg",

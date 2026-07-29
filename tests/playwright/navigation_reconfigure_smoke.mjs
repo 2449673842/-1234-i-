@@ -6,6 +6,12 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function isIgnorableDevServerNoise(message) {
+  return message.includes('[vite] failed to connect to websocket')
+    || message.includes('WebSocket connection to')
+    || message.includes('WebSocket closed without opened');
+}
+
 function fixture() {
   const script = `import pandas as pd
 import matplotlib.pyplot as plt
@@ -73,15 +79,28 @@ async function main() {
     }, fixture());
     const page = await context.newPage();
     const errors = [];
+    const failedResponses = [];
     const appliedRequests = [];
-    page.on('pageerror', error => errors.push(error.message));
+    page.on('pageerror', error => {
+      if (!isIgnorableDevServerNoise(error.message)) errors.push(error.message);
+    });
     page.on('console', message => {
-      if (message.type() === 'error' && !/vite|WebSocket/i.test(message.text())) errors.push(message.text());
+      if (message.type() === 'error' && !isIgnorableDevServerNoise(message.text())) {
+        errors.push(`${message.text()} @ ${message.location().url || 'unknown'}`);
+      }
+    });
+    page.on('response', response => {
+      if (response.status() >= 400) failedResponses.push(`${response.status()} ${response.request().method()} ${response.url()}`);
     });
     await page.route('**/api/auth/me', route => route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ status: 'success', user: { id: 'navigation-user' }, license: { status: 'free' } }),
+    }));
+    await page.route('**/api/export-assets', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ status: 'success', assets: [] }),
     }));
     await page.route('**/api/projects/navigation-reconfigure-fixture/export-assets', route => route.fulfill({
       status: 200,
@@ -144,7 +163,8 @@ async function main() {
     assert(Array.isArray(saveRequest?.body?.figures) && saveRequest.body.figures.length === 1, 'Reconfigure did not preserve figure history payload');
     assert(renderRequest?.body?.script === appliedScript, 'Reconfigure did not render the applied script');
     assert(renderRequest?.body?.language === 'python', 'Reconfigure lost the script language');
-    assert(errors.length === 0, `Browser errors: ${errors.join(' | ')}`);
+    assert(errors.length === 0 && failedResponses.length === 0,
+      `Browser errors: ${errors.join(' | ')}. Failed responses: ${failedResponses.join(' | ')}`);
     console.log(JSON.stringify({ status: 'PASS', baseUrl: BASE_URL }, null, 2));
   } finally {
     await browser.close();

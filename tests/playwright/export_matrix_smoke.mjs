@@ -503,17 +503,19 @@ async function runPendingExportBrowserCheck(projectId, spec, rendered) {
     const exportNavClicked = await clickText(page, '导出图形', 3000) || await clickText(page, '导出', 3000);
     await page.waitForTimeout(800);
     const beforeExportRequests = apiRequests.length;
-    const exportClicked = await clickText(page, '导出高质量图形', 5000);
+    const exportButton = page.getByRole('button', { name: /导出高质量图形/ }).first();
+    const exportButtonVisible = await exportButton.isVisible({ timeout: 5000 }).catch(() => false);
+    const exportDisabled = exportButtonVisible && await exportButton.isDisabled().catch(() => false);
     await page.waitForTimeout(1000);
     const exportRequests = apiRequests.slice(beforeExportRequests).filter((req) => req.url.endsWith('/export'));
     const body = await getBodyText(page);
     const alertBlocked = dialogs.some((message) => message.includes('后台引擎正在渲染中'));
-    const disabledOrBlocked = alertBlocked || body.includes('后台引擎正在渲染中');
+    const disabledOrBlocked = exportDisabled || alertBlocked || body.includes('后台引擎正在渲染中');
 
     record(
       'X4-pending-block',
-      renderClicked && exportNavClicked && exportClicked && exportRequests.length === 0 && disabledOrBlocked ? 'PASS' : 'FAIL',
-      `renderClicked=${renderClicked}, exportNav=${exportNavClicked}, exportClicked=${exportClicked}, exportRequests=${exportRequests.length}, dialogs=${JSON.stringify(dialogs)}`,
+      renderClicked && exportNavClicked && exportButtonVisible && exportRequests.length === 0 && disabledOrBlocked ? 'PASS' : 'FAIL',
+      `renderClicked=${renderClicked}, exportNav=${exportNavClicked}, exportVisible=${exportButtonVisible}, exportDisabled=${exportDisabled}, exportRequests=${exportRequests.length}, dialogs=${JSON.stringify(dialogs)}`,
     );
 
     releaseRender();

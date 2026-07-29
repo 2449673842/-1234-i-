@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import Editor from '@monaco-editor/react';
+import Editor, { loader as monacoLoader } from '@monaco-editor/react';
 import { ChartPreview } from './ChartPreview';
 import { WordA4Preview } from './WordA4Preview';
 import { ManifestViewer } from './ManifestViewer';
@@ -17,6 +17,8 @@ import { buildCompositionRisks, planCompositionLayout } from '../utils/compositi
 import { draftsEligibleForDirectPersistence, draftsRequiringEngineApply } from '../utils/draftTransaction';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { isTextContentPatchProp } from '../utils/propertyPatchMode';
+
+monacoLoader.config({ paths: { vs: '/vendor/monaco/vs' } });
 
 interface MainWorkspaceProps {
   spec: FigureSpec;

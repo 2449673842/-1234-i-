@@ -22,6 +22,12 @@ function record(id, status, note) {
   console.log(`${status} ${id}: ${note}`);
 }
 
+function isIgnorableDevServerNoise(message) {
+  return message.includes('[vite] failed to connect to websocket')
+    || message.includes('WebSocket connection to')
+    || message.includes('WebSocket closed without opened');
+}
+
 function makeFigure(figureId, index) {
   const accent = ['#2f6fed', '#d65a31', '#218c74'][index];
   const uniqueId = `text.unique.${index}`;
@@ -160,9 +166,11 @@ async function main() {
   });
   const pageErrors = [];
   const consoleErrors = [];
-  page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('pageerror', error => {
+    if (!isIgnorableDevServerNoise(error.message)) pageErrors.push(error.message);
+  });
   page.on('console', message => {
-    if (message.type() === 'error') consoleErrors.push(message.text());
+    if (message.type() === 'error' && !isIgnorableDevServerNoise(message.text())) consoleErrors.push(message.text());
   });
 
   try {
