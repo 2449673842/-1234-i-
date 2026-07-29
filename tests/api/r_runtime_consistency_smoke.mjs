@@ -152,7 +152,9 @@ const server = spawn(process.execPath, [tsxCli, 'server.ts'], {
     SCIFIGURE_LEGACY_OWNER_EMAIL: '',
     SCIFIGURE_TEST_ISOLATED: '1',
     SCIFIGURE_RENDER_MODE: 'local',
-    SCIFIGURE_R_TIMEOUT_MS: '5000',
+    // This smoke validates a cold local R runtime on Windows as well as timeout cleanup.
+    // Keep normal renders above the service minimum, then assert timeout independently below.
+    SCIFIGURE_R_TIMEOUT_MS: '15000',
     RSCRIPT_BIN: rscriptBin,
     NODE_ENV: 'development',
   },
@@ -190,7 +192,7 @@ try {
   assert(syntaxFailure.diagnostic.type === 'syntax_error', `Syntax error was misclassified: ${JSON.stringify(syntaxFailure.diagnostic)}`);
   const packageFailure = await renderFailure(token, 'library(scifigurePackageThatDoesNotExist)\nplot(1, 1)');
   assert(packageFailure.diagnostic.type === 'missing_package', `Missing package was misclassified: ${JSON.stringify(packageFailure.diagnostic)}`);
-  const timeoutFailure = await renderFailure(token, 'Sys.sleep(7)\nplot(1, 1)');
+  const timeoutFailure = await renderFailure(token, 'Sys.sleep(17)\nplot(1, 1)');
   assert(timeoutFailure.diagnostic.type === 'timeout', `Timeout was misclassified: ${JSON.stringify(timeoutFailure.diagnostic)}`);
   const timeoutJobId = timeoutFailure.diagnostic?.details?.jobId;
   assert(/^scifigure-r-job-[A-Za-z0-9_-]+$/.test(String(timeoutJobId || '')), `Timeout omitted safe job id: ${JSON.stringify(timeoutFailure.diagnostic)}`);
