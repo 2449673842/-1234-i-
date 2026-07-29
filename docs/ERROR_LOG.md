@@ -60,6 +60,43 @@
 
 ---
 
+## 2026-07-29 17:06:34 +08:00 R 雷达图层角色空值导致普通 ggplot2 全面渲染失败
+
+**状态与级别**
+
+- 状态：发布门禁中发现并修复，尚未部署。
+- 级别：P0 R renderer 通用回归。雷达专项可以通过，但普通散点、柱形、箱线、颜色条和 facet 等图会在 manifest 规划阶段报 `argument is of length zero`。
+- 范围：所有没有雷达语义的 ggplot2 图层；不影响 Python renderer、用户数据或 3000 服务。
+
+**根因**
+
+- 雷达适配在图层计划中调用 `r_radar_layer_role()`；普通图返回 `NULL`。
+- 后续分支直接执行 `if (radar_role %in% c(...))`。R 对 `NULL %in% ...` 返回长度为 0 的逻辑向量，不能作为 `if` 条件，因此在普通图进入语义规划时失败。
+- 雷达专项只覆盖识别成功的雷达上下文和 polar 负例，没有运行完整通用 R renderer 基线，导致该跨家族回归未在专项收敛时暴露。
+
+**修复与防复发**
+
+- 图层计划先把角色归一化为单个字符串；无雷达角色时使用空字符串。后续只根据该标量决定是否覆盖 `fill/color` scale 类型。
+- 保留雷达角色、identity、series relation 和 fail-closed 规则，不放宽普通图与雷达图的识别边界。
+- `test_absolute_size_patch_and_size_scale_patch_are_distinct_point_operations` 作为普通映射散点回归：修复前稳定复现 renderer runtime error，修复后必须完成 baseline、绝对大小和比例缩放三次渲染。
+- 发布门禁必须同时运行雷达专项与通用 `tests.test_r_renderer`，不得以专项通过替代全家族兼容验证。
+
+---
+
+## 2026-07-29 17:53:49 +08:00 隔离浏览器验收误把 Vite HMR 端口失败记为产品 page error
+
+**状态与级别**
+
+- 状态：已关闭。R 属性/布局真实浏览器 smoke 在随机隔离端口复证通过，7/7 通过且 `consoleErrors=0`、`pageErrors=0`、`failedRequests=0`。
+- 级别：P2 验收可靠性。编辑、保存和刷新全部通过时，浏览器仍会因开发 HMR websocket 固定连接 `127.0.0.1:24678` 失败而把测试标记为失败。
+- 范围：通过 `scripts/testing/run_with_isolated_server.mjs` 启动的随机端口浏览器验收；不影响本地 3000、生产构建或 renderer。
+
+**根因与修复**
+
+- 隔离服务直接以 Vite middleware 开发模式启动，却没有禁用 HMR。浏览器在随机 HTTP 端口页面中仍尝试连接固定 HMR websocket 端口，测试服务不承载该 socket，产生无关的 `WebSocket closed without opened` page error。
+- 隔离启动器现在显式设置 `DISABLE_HMR=true`。Vite 配置已支持此开关，因此测试浏览器不再注入 HMR transport；真实 console/page errors 仍保持失败。
+- 不在各 smoke 中宽泛忽略 WebSocket 错误，避免掩盖未来真实产品 websocket 故障。
+
 ## 2026-07-29 15:53:40 +08:00 R 雷达图组件已识别但无 Draft，Python 雷达图例正常拖动被身份核验误拒绝
 
 **状态与级别**

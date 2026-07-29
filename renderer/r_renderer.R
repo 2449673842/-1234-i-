@@ -6492,6 +6492,7 @@ layer_svg_plan <- function(plot_obj) {
     geom <- geom_class(layer)
     kind <- layer_kind(geom)
     radar_role <- r_radar_layer_role(radar_context, i)
+    radar_role_key <- if (length(radar_role) > 0) as.character(radar_role[[1]]) else ""
     if (kind == "text") next
     data <- built$data[[i]]
     if (is.null(data) || nrow(data) == 0) next
@@ -6574,9 +6575,9 @@ layer_svg_plan <- function(plot_obj) {
       count <- max(1L, nrow(data))
     }
     scale_kinds <- r_layer_mapped_scale_kinds(layer, plot_obj$mapping)
-    if (identical(radar_role, "fill_layer")) {
+    if (identical(radar_role_key, "fill_layer")) {
       scale_kinds <- "fill"
-    } else if (length(radar_role) == 1 && radar_role %in% c("series_layer", "series_markers_layer")) {
+    } else if (radar_role_key %in% c("series_layer", "series_markers_layer")) {
       scale_kinds <- "color"
     }
     plans[[length(plans) + 1]] <- list(

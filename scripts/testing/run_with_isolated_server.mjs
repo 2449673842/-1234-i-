@@ -73,7 +73,9 @@ async function main() {
     SCIFIGURE_LEGACY_OWNER_EMAIL: '',
     SCIFIGURE_TEST_ISOLATED: '1',
     SCIFIGURE_VITE_HMR_PORT: String(hmrPort),
-    DISABLE_HMR: 'false',
+    // Browser acceptance checks do not exercise Vite's development transport.
+    // Disable it so fixed HMR websocket ports cannot masquerade as app errors.
+    DISABLE_HMR: 'true',
     RENDER_RATE_LIMIT_PER_MINUTE: process.env.RENDER_RATE_LIMIT_PER_MINUTE || '120',
   };
   const tsxCli = path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
