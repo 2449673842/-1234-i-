@@ -75,14 +75,14 @@ const script = [
 
 const checks = [
   { id: 'line', kind: 'line', gidPrefix: 'line.', prop: 'linewidth', value: 2.4, expected: (props) => Number(props.linewidth) === 2.4 },
-  { id: 'collection', kind: 'collection', excludeRole: 'legend_marker', prop: 'alpha', value: 0.55, expected: (props) => Math.abs(Number(props.alpha) - 0.55) < 0.01 },
+  { id: 'collection', kind: 'collection', excludeRole: 'legend_marker', prop: 'linewidth', value: 1.65, expected: (props) => Math.abs(Number(props.linewidth) - 1.65) < 0.01 },
   { id: 'bar-container', kind: 'bar_container', prop: 'linewidth', value: 1.8, expected: (props) => Number(props.linewidth) === 1.8 },
   { id: 'errorbar-container', kind: 'errorbar_container', prop: 'elinewidth', value: 2.1, expected: (props) => Number(props.elinewidth) === 2.1 },
   { id: 'errorbar-capsize', kind: 'errorbar_container', prop: 'capsize', value: 7, expected: (props) => Math.abs(Number(props.capsize) - 7) < 0.01 },
   { id: 'stem-container', kind: 'stem_container', prop: 'stem_linewidth', value: 2.6, expected: (props) => Math.abs(Number(props.stem_linewidth) - 2.6) < 0.01 },
   { id: 'boxplot-container', kind: 'boxplot_container', prop: 'median_color', value: '#d62728', expected: (props) => String(props.median_color).toLowerCase() === '#d62728' },
-  { id: 'violinplot-container', kind: 'violinplot_container', prop: 'alpha', value: 0.45, expected: (props) => Math.abs(Number(props.alpha) - 0.45) < 0.01 },
-  { id: 'heatmap', kind: 'heatmap', prop: 'alpha', value: 0.6, expected: (props) => Math.abs(Number(props.alpha) - 0.6) < 0.01 },
+  { id: 'violinplot-container', kind: 'violinplot_container', prop: 'linewidth', value: 1.55, expected: (props) => Math.abs(Number(props.linewidth) - 1.55) < 0.01 },
+  { id: 'heatmap', kind: 'heatmap', prop: 'vmax', value: 20, expected: (props) => Math.abs(Number(props.vmax) - 20) < 0.01 },
   { id: 'colorbar', kind: 'colorbar', prop: 'label', value: 'Updated Scale', expected: (props) => String(props.label) === 'Updated Scale' },
   { id: 'legend', kind: 'legend', prop: 'title', value: 'Updated Legend', expected: (props) => String(props.title) === 'Updated Legend' },
   { id: 'legend-position', kind: 'legend', prop: 'position', value: { x: 0.72, y: 0.34, coord_system: 'figure' }, expected: (props) => Math.abs(Number(props.x) - 0.72) < 0.03 && Math.abs(Number(props.y) - 0.34) < 0.03 && props.coord_system === 'figure' },
@@ -195,7 +195,7 @@ async function main() {
       const patched = await patchObject(projectId, target.id, check.prop, check.value, check.id, revision);
       revision = patched.revision || revision + 1;
       const updated = findObjectInResponse(patched, target.id);
-      assert(updated, `Patched response does not contain ${target.id}`);
+      assert(updated, `Patched response does not contain ${target.id}; objects=${JSON.stringify((patched.manifest?.objects || []).map((object) => ({ id: object.id, kind: object.kind, role: object.role })))}`);
       assert(check.expected(updated.currentProps || {}), `${check.id} did not persist ${check.prop}=${check.value}; got ${JSON.stringify(updated.currentProps)}`);
       rendered = { figures: [{ manifest: patched.manifest }] };
       summary.push({ id: check.id, gid: target.id, prop: check.prop, value: check.value, revision });

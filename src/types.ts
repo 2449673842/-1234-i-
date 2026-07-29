@@ -5,6 +5,10 @@ export interface SavedEditEntry {
   matchColor?: string;
   mode?: string;
   timestamp?: number;
+  stableKey?: string;
+  fingerprint?: string;
+  fingerprintVersion?: number;
+  identity?: any;
 }
 
 export interface FigureSpec {

@@ -1,8 +1,9 @@
 # R 语言兼容路线与当前边界
 
-> 最后修改时间：2026-07-12 12:32:39 +08:00
+> 最后修改时间：2026-07-18 19:21:01 +08:00
+> 第二阶段执行计划：`docs/platform-capability/R_EDITING_COMPLETION_EXECUTION_PLAN.md`
 
-## 当前已落地：Phase R1-R5-B 渲染、语义编辑与离散组精细化
+## 当前已落地：Phase R1-R5-C 渲染、语义编辑、离散组与坐标身份精细化
 
 SciFigure Studio 当前支持将 R 脚本作为真实渲染输入：
 

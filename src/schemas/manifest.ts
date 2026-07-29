@@ -51,6 +51,7 @@ export type ManifestObjectKind =
   | "legend"
   | "line"
   | "collection"
+  | "fill_between"
   | "patch"
   | "figure"
   | "subplot"
@@ -137,6 +138,18 @@ export interface ManifestPropertyCapability {
   unsupportedReason?: string;
 }
 
+export type SemanticCoverageStatus = "dedicated" | "flattened" | "ambiguous";
+
+export interface ManifestSemanticCoverage {
+  family: string;
+  status: SemanticCoverageStatus;
+  attribution: string;
+  preservedKind: ManifestObjectKind;
+  preservedRole?: string;
+  preservedEditable: string[];
+  reason: string;
+}
+
 export interface ManifestObject {
   id: string;
   kind: ManifestObjectKind;
@@ -150,11 +163,14 @@ export interface ManifestObject {
   children?: string[];
   stableKey?: string;
   fingerprint?: string;
+  fingerprintVersion?: number;
   identity?: ManifestObjectIdentity;
   propertyCapabilities?: ManifestPropertyCapability[];
+  semanticCoverage?: ManifestSemanticCoverage;
   source?: {
     artistClass: string;
     axesIndex: number;
+    callName?: string;
     ownerAxesIndex?: number;
     ownerAxesIndices?: number[];
     zorder?: number;
@@ -167,11 +183,19 @@ export interface CoverageSummary {
   editable: number;
   readonly: number;
   unsupported: number;
+  dedicated?: number;
+  flattened?: number;
+  ambiguous?: number;
 }
 
 export interface CoverageKindDetail {
   count: number;
   editableProps: string[];
+  editablePropsIntersection?: string[];
+  editablePropVariants?: Array<{
+    editableProps: string[];
+    count: number;
+  }>;
 }
 
 export interface UnsupportedArtistDetail {
@@ -180,10 +204,23 @@ export interface UnsupportedArtistDetail {
   reason: string;
 }
 
+export interface ComplexArtistCoverageDetail {
+  id: string;
+  class: string;
+  family: string;
+  status: SemanticCoverageStatus;
+  attribution: string;
+  preservedKind: ManifestObjectKind;
+  preservedRole?: string;
+  preservedEditable: string[];
+  reason: string;
+}
+
 export interface CoverageReport {
   summary: CoverageSummary;
   byKind: Record<string, CoverageKindDetail>;
   unsupportedArtists: UnsupportedArtistDetail[];
+  complexArtists?: ComplexArtistCoverageDetail[];
 }
 
 /* ---- Manifest top-level ---- */
@@ -264,6 +301,10 @@ export interface EditEntry {
   matchColor?: string;
   mode: EditMode;
   timestamp: number;
+  stableKey?: string;
+  fingerprint?: string;
+  fingerprintVersion?: number;
+  identity?: ManifestObjectIdentity;
 }
 
 export interface HistorySnapshot {
@@ -381,6 +422,10 @@ export interface LocalPatchEntry {
   value: unknown;
   matchColor?: string;
   intent?: EditingIntent;
+  stableKey?: string;
+  fingerprint?: string;
+  fingerprintVersion?: number;
+  identity?: ManifestObjectIdentity;
 }
 
 export interface CodePatchEntry {
@@ -404,6 +449,8 @@ export interface PatchResponse {
   message?: string;
   script?: string;
   requestId?: string;
+  rejected?: PatchEntry[];
+  warnings?: unknown[];
   performance?: RenderPerformanceV1;
   cache?: RenderCacheStatus;
 }

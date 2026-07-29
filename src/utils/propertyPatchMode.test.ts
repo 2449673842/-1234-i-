@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { ManifestObject } from '../schemas/manifest';
-import { isTextContentPatchProp, resolvePropertyPatchMode } from './propertyPatchMode';
+import type { Manifest, ManifestObject } from '../schemas/manifest';
+import {
+  isTextContentPatchProp,
+  resolvePatchMode,
+  resolvePatchModeById,
+  resolvePropertyPatchMode,
+} from './propertyPatchMode';
 
 function object(patchMode: 'local_patch' | 'backend_patch', prop = 'color', kind: ManifestObject['kind'] = 'text'): ManifestObject {
   return {
@@ -93,5 +98,76 @@ describe('resolvePropertyPatchMode', () => {
     expect(isTextContentPatchProp('label', { kind: 'axis_y' })).toBe(true);
     expect(isTextContentPatchProp('label', { kind: 'subplot' })).toBe(false);
     expect(isTextContentPatchProp('color', { kind: 'text' })).toBe(false);
+  });
+});
+
+function legacyObject(overrides: Partial<ManifestObject> = {}): ManifestObject {
+  return {
+    id: 'line.0',
+    kind: 'line',
+    label: 'line',
+    editable: ['color', 'linewidth'],
+    currentProps: { color: '#123456', linewidth: 1 },
+    ...overrides,
+  };
+}
+
+function manifest(target: ManifestObject, generatedBy: Manifest['generatedBy'] = 'introspection'): Manifest {
+  return {
+    generatedBy,
+    globals: {},
+    objects: [target],
+    capabilities: { localPatch: true, backendPatch: true, codePatch: true },
+  };
+}
+
+describe('resolvePatchMode', () => {
+  it('allows local only for an exact and stable declared capability', () => {
+    const target = legacyObject({
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'local_patch',
+        scopes: ['object'],
+        preview: 'exact',
+        replay: 'stable',
+      }],
+    });
+    expect(resolvePatchMode(manifest(target), target, 'color')).toBe('local_patch');
+  });
+
+  it('promotes approximate, conditional, text, and R edits to backend validation', () => {
+    const approximate = legacyObject({
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'local_patch',
+        scopes: ['object'],
+        preview: 'approximate',
+        replay: 'stable',
+      }],
+    });
+    const conditional = legacyObject({
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'local_patch',
+        scopes: ['object'],
+        preview: 'exact',
+        replay: 'conditional',
+      }],
+    });
+    const text = legacyObject({ kind: 'text', editable: ['text'], currentProps: { text: 'Title' } });
+    expect(resolvePatchMode(manifest(approximate), approximate, 'color')).toBe('backend_patch');
+    expect(resolvePatchMode(manifest(conditional), conditional, 'color')).toBe('backend_patch');
+    expect(resolvePatchMode(manifest(text), text, 'text')).toBe('backend_patch');
+    expect(resolvePatchMode(manifest(approximate, 'r_svg'), approximate, 'color')).toBe('backend_patch');
+  });
+
+  it('fails closed for omitted capabilities, unsupported props, grids, and missing gids', () => {
+    const omitted = legacyObject({ propertyCapabilities: [] });
+    const unsupported = legacyObject({ currentProps: { color: '#123456', unsupportedProps: ['color'] } });
+    const grid = legacyObject({ kind: 'grid', editable: ['visible'], currentProps: { visible: false } });
+    expect(resolvePatchMode(manifest(omitted), omitted, 'color')).toBe('backend_patch');
+    expect(resolvePatchMode(manifest(unsupported), unsupported, 'color')).toBe('backend_patch');
+    expect(resolvePatchMode(manifest(grid), grid, 'visible')).toBe('backend_patch');
+    expect(resolvePatchModeById(manifest(omitted), 'missing.0', 'color')).toBe('backend_patch');
   });
 });

@@ -50,6 +50,7 @@ Figure.__init__ = patched_fig_init
 
 
 _intercepted_containers = []
+_intercepted_complex_artists = {}
 
 class BoxplotContainer:
     def __init__(self, bp_dict, label=""):
@@ -85,9 +86,11 @@ class ViolinplotContainer:
                 children.append(val)
         return children
 
-# Monkey patch Axes.boxplot and Axes.violinplot
+# Monkey patch plotting calls whose returned artists do not retain enough
+# class-level provenance for semantic introspection on every Matplotlib version.
 original_boxplot = Axes.boxplot
 original_violinplot = Axes.violinplot
+original_fill_between = Axes.fill_between
 
 def patched_boxplot(self, *args, **kwargs):
     res = original_boxplot(self, *args, **kwargs)
@@ -109,8 +112,18 @@ def patched_violinplot(self, *args, **kwargs):
     })
     return res
 
+def patched_fill_between(self, *args, **kwargs):
+    artist = original_fill_between(self, *args, **kwargs)
+    _intercepted_complex_artists[artist] = {
+        "axes": self,
+        "family": "fill_between",
+        "callName": "Axes.fill_between",
+    }
+    return artist
+
 Axes.boxplot = patched_boxplot
 Axes.violinplot = patched_violinplot
+Axes.fill_between = patched_fill_between
 
 
 def _describe_uploaded_data(data: Optional[dict]) -> dict:
@@ -377,6 +390,10 @@ def iter_artists(fig):
             import matplotlib.collections as mcoll
             if isinstance(coll, mcoll.QuadMesh):
                 yield f"heatmap.mesh.{ax_idx}.{i}", "heatmap", coll
+            elif _intercepted_complex_artists.get(coll, {}).get("family") == "fill_between":
+                # Preserve the historical collection GID while exposing a
+                # dedicated semantic kind for controls and target resolution.
+                yield f"collection.{ax_idx}.{i}", "fill_between", coll
             else:
                 yield f"collection.{ax_idx}.{i}", "collection", coll
 
@@ -908,6 +925,14 @@ def _read_collection_props(artist) -> dict:
         "size": size,
         "sizes": sizes_list,
         "size_scale": 1.0,
+    }
+
+
+def _read_fill_between_props(artist) -> dict:
+    props = _read_collection_props(artist)
+    return {
+        key: props.get(key)
+        for key in ("facecolor", "edgecolor", "alpha", "linewidth")
     }
 
 
@@ -1450,6 +1475,7 @@ _READERS = {
     "legend": _read_legend_props,
     "line": _read_line_props,
     "collection": _read_collection_props,
+    "fill_between": _read_fill_between_props,
     "patch": _read_patch_props,
     "axes": _read_axes_props,
     "grid": _read_grid_props,
@@ -1514,6 +1540,7 @@ _EDITABLE = {
     "line": ["color", "linewidth", "linestyle", "alpha", "marker", "markersize", "zorder"],
     "patch": ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
     "collection": ["facecolor", "edgecolor", "alpha", "linewidth", "size", "size_scale", "zorder"],
+    "fill_between": ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
     "axes": ["xlim", "ylim", "show_minor_ticks", "x_tick_rotation", "tick_direction", "zorder"],
     "grid": ["visible", "color", "linewidth", "linestyle", "alpha", "zorder"],
     "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "tick_label_dx", "tick_label_dy", "sci_notation", "use_math_text", "offset_text_size"],
@@ -1532,7 +1559,7 @@ def _get_editable(kind: str) -> list:
     return _EDITABLE.get(kind, [])
 
 
-def _determine_role(gid: str, parent_kind: Optional[str] = None) -> Optional[str]:
+def _determine_role(gid: str, parent_kind: Optional[str] = None, kind: Optional[str] = None) -> Optional[str]:
     if gid.startswith("subplot."):
         return "subplot_panel"
     if gid.startswith("fig_text."):
@@ -1580,6 +1607,9 @@ def _determine_role(gid: str, parent_kind: Optional[str] = None) -> Optional[str
         return "boxplot_group"
     if parent_kind == "violinplot_container":
         return "violin_group"
+
+    if kind == "fill_between":
+        return "fill_between_series"
         
     if gid.startswith("line."):
         return "line_series"
@@ -1606,7 +1636,11 @@ def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) ->
     if label and not label.startswith("_") and not label.startswith("line.") and not label.startswith("patch.") and not label.startswith("collection."):
         clean_label = label
         
-    parts = [f"ax{ax_idx}", kind]
+    # Dedicated fill_between semantics were introduced after collection GIDs
+    # and stable keys were already persisted in user projects. Keep that
+    # structural identity namespace so existing edit logs remain replayable.
+    identity_kind = "collection" if kind == "fill_between" else kind
+    parts = [f"ax{ax_idx}", identity_kind]
     if clean_label:
         parts.append(f"label.{clean_label}")
     else:
@@ -1627,10 +1661,6 @@ def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) ->
             pass
             
     fp_parts.append(type(artist).__name__)
-    for prop in ("color", "facecolor", "edgecolor", "linewidth", "linestyle", "fontsize"):
-        val = obj.get("currentProps", {}).get(prop)
-        if val is not None:
-            fp_parts.append(f"{prop}.{val}")
             
     fp_str = "|".join(fp_parts)
     fingerprint = hashlib.sha256(fp_str.encode("utf-8")).hexdigest()
@@ -1648,7 +1678,7 @@ _CROSS_FIGURE_UNSAFE_PROPS = {
 }
 
 _SERIES_KINDS = {
-    "line", "collection", "patch", "bar_container", "errorbar_container",
+    "line", "collection", "fill_between", "patch", "bar_container", "errorbar_container",
     "stem_container", "boxplot_container", "violinplot_container", "heatmap"
 }
 
@@ -1660,6 +1690,144 @@ _AXIS_TICK_TYPOGRAPHY_GROUP_PROPS = {
     "tick_fontstyle",
     "tick_rotation",
 }
+
+
+_DEDICATED_COMPLEX_KIND_FAMILIES = {
+    "contour": "contour",
+    "contourf": "contourf",
+    "fill_between": "fill_between",
+    "histogram": "histogram",
+    "pie": "pie",
+    "quiver": "quiver",
+    "streamplot": "streamplot",
+    "stairs": "stairs",
+    "step": "step",
+    "wedge": "wedge",
+}
+
+_DEDICATED_COMPLEX_ROLE_FAMILIES = {
+    "contour_series": "contour",
+    "contourf_series": "contourf",
+    "fill_between_series": "fill_between",
+    "histogram_series": "histogram",
+    "pie_slice": "pie",
+    "quiver_field": "quiver",
+    "streamplot_field": "streamplot",
+    "stairs_series": "stairs",
+    "step_series": "step",
+    "wedge_slice": "wedge",
+}
+
+
+def _dedicated_complex_family(obj: dict) -> Optional[str]:
+    return (
+        _DEDICATED_COMPLEX_KIND_FAMILIES.get(obj.get("kind"))
+        or _DEDICATED_COMPLEX_ROLE_FAMILIES.get(obj.get("role"))
+    )
+
+
+def _contour_family(artist: Any) -> str:
+    filled = getattr(artist, "filled", None)
+    if isinstance(filled, bool):
+        return "contourf" if filled else "contour"
+    return "contour_family"
+
+
+def _build_complex_artist_context(raw_elements: list[tuple[str, str, Any]], annotation_links: dict) -> dict:
+    by_axes = {}
+    for gid, kind, artist in raw_elements:
+        axes = getattr(artist, "axes", None)
+        if axes is None:
+            continue
+        cls_name = type(artist).__name__
+        entry = by_axes.setdefault(axes, {"line_collections": [], "fancy_arrows": []})
+        if cls_name == "LineCollection" and kind == "collection":
+            entry["line_collections"].append(gid)
+        elif cls_name == "FancyArrowPatch" and kind == "patch" and gid not in annotation_links:
+            entry["fancy_arrows"].append(gid)
+
+    streamplot_candidate_gids = set()
+    for entry in by_axes.values():
+        if entry["line_collections"] and entry["fancy_arrows"]:
+            streamplot_candidate_gids.update(entry["line_collections"])
+            streamplot_candidate_gids.update(entry["fancy_arrows"])
+    return {"streamplotCandidateGids": streamplot_candidate_gids}
+
+
+def _semantic_coverage_entry(obj: dict, artist: Any, context: Optional[dict] = None) -> Optional[dict]:
+    """Shadow-only semantic coverage; never changes editability or replay."""
+    context = context or {}
+    cls_name = type(artist).__name__
+    gid = obj.get("id", "")
+    kind = obj.get("kind")
+    role = obj.get("role")
+
+    # Exclude support/decorative contexts that happen to reuse data artist
+    # classes; these are already represented by their owning semantic object.
+    if role in {"legend_marker", "annotation_arrow"}:
+        return None
+    if gid.startswith((
+        "legend_line.", "legend_patch.", "legend_collection.",
+        "spine.", "grid.", "xtick.", "ytick.",
+    )):
+        return None
+    if obj.get("_colorbarChild"):
+        return None
+
+    dedicated_family = _dedicated_complex_family(obj)
+    provenance = _intercepted_complex_artists.get(artist, {})
+    status = "ambiguous"
+    family = None
+    reason = ""
+    attribution = "source.artistClass"
+
+    if dedicated_family:
+        status = "dedicated"
+        family = dedicated_family
+        if provenance.get("family") == dedicated_family:
+            attribution = "source.call"
+            reason = f"Dedicated semantics derived from intercepted {provenance.get('callName', dedicated_family)}."
+        else:
+            reason = "Object already has a dedicated semantic kind or role."
+    elif cls_name == "FillBetweenPolyCollection":
+        status = "flattened"
+        family = "fill_between"
+        reason = "fill_between is exposed as a generic collection; existing collection controls are preserved."
+    elif cls_name == "Quiver":
+        status = "flattened"
+        family = "quiver"
+        reason = "quiver is exposed as a generic collection; existing collection controls are preserved."
+    elif cls_name == "StepPatch":
+        status = "flattened"
+        family = "stairs"
+        reason = "stairs is exposed as a generic patch; existing patch controls are preserved."
+    elif cls_name == "Wedge":
+        status = "flattened"
+        family = "wedge"
+        reason = "wedge is exposed as a generic patch; existing patch controls are preserved."
+    elif cls_name in {"QuadContourSet", "ContourSet"}:
+        status = "flattened"
+        family = _contour_family(artist)
+        reason = "contour output is exposed without a dedicated contour manifest object."
+    elif cls_name in {"LineCollection", "FancyArrowPatch"}:
+        if gid not in context.get("streamplotCandidateGids", set()):
+            return None
+        family = "streamplot_candidate"
+        reason = "LineCollection and FancyArrowPatch co-occur on the same axes, which is consistent with streamplot output."
+    else:
+        return None
+
+    entry = {
+        "family": family,
+        "status": status,
+        "attribution": attribution,
+        "preservedKind": kind,
+        "preservedEditable": list(obj.get("editable") or []),
+        "reason": reason,
+    }
+    if role:
+        entry["preservedRole"] = role
+    return entry
 
 
 def _legend_container_gid(gid: str) -> Optional[str]:
@@ -1689,7 +1857,7 @@ def _identity_coordinate_space(obj: dict) -> str:
         return "container"
     if kind in {"subplot", "colorbar"}:
         return "figure"
-    if kind in {"line", "collection", "patch", "heatmap"}:
+    if kind in {"line", "collection", "fill_between", "patch", "heatmap"}:
         return "data"
     if obj.get("subplotId"):
         return "axes"
@@ -1798,6 +1966,10 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
     relation = identity.get("relation", {})
     capabilities = []
     for prop in obj.get("editable", []):
+        requires_backend_patch = (
+            obj.get("kind") == "stem_container"
+            or (obj.get("kind") == "grid" and prop == "visible")
+        )
         scopes = ["object"]
         if obj.get("role") and prop not in {"position", "anchor_position"}:
             scopes.append("group")
@@ -1810,13 +1982,12 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
         if prop not in _CROSS_FIGURE_UNSAFE_PROPS:
             scopes.append("cross_figure")
 
-        preview = "exact" if prop in _LOCAL_PREVIEW_PROPS else "none"
+        preview = "exact" if prop in _LOCAL_PREVIEW_PROPS and not requires_backend_patch else "none"
         replay = "stable"
         capability = {
             "prop": prop,
             "patchMode": (
-                "backend_patch"
-                if obj.get("kind") == "stem_container"
+                "backend_patch" if requires_backend_patch
                 else "local_patch" if prop in _LOCAL_PREVIEW_PROPS
                 else "backend_patch"
             ),
@@ -1824,8 +1995,6 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
             "preview": preview,
             "replay": replay,
         }
-        if obj.get("kind") == "stem_container":
-            capability["preview"] = "none"
         if prop in {"position", "anchor_position"}:
             capability["preview"] = "approximate"
             capability["replay"] = "conditional"
@@ -1987,6 +2156,8 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
                 legend_relationships.setdefault(text_gid, {})["legendMarkerIds"] = [marker_gid]
                 legend_relationships.setdefault(marker_gid, {})["legendTextId"] = text_gid
 
+    complex_artist_context = _build_complex_artist_context(raw_elements, annotation_links)
+
     # Build objects manifest list
     objects = []
     for gid, kind, artist in raw_elements:
@@ -2086,7 +2257,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             obj["parentId"] = parent_id
             
         # Determine semantic role
-        role = _determine_role(gid, parent_kind)
+        role = _determine_role(gid, parent_kind, kind)
         annotation_link = annotation_links.get(gid)
         if annotation_link:
             role = annotation_link["role"]
@@ -2156,6 +2327,9 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             "artistClass": type(artist_obj).__name__,
             "axesIndex": ax_idx,
         }
+        provenance = _intercepted_complex_artists.get(artist_obj, {})
+        if provenance.get("callName"):
+            source_meta["callName"] = provenance["callName"]
         if owner_colorbar_link and owner_colorbar_link.get("subplotId"):
             owner_match = re.match(r"^subplot\.(\d+)$", owner_colorbar_link["subplotId"])
             if owner_match:
@@ -2174,11 +2348,15 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             except Exception:
                 pass
         obj["source"] = source_meta
+        semantic_coverage = _semantic_coverage_entry(obj, artist_obj, complex_artist_context)
+        if semantic_coverage:
+            obj["semanticCoverage"] = semantic_coverage
         
         # Add stableKey and fingerprint
         stable_key, fingerprint = _generate_stable_key_and_fingerprint(obj, artist_obj, ax_idx)
         obj["stableKey"] = stable_key
         obj["fingerprint"] = fingerprint
+        obj["fingerprintVersion"] = 2
         obj["identity"] = _build_object_identity(obj)
         obj.pop("colorbarId", None)
         obj.pop("_colorbarChild", None)
@@ -2286,7 +2464,12 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
     recognized_count = 0
     editable_count = 0
     readonly_count = 0
+    dedicated_count = 0
+    flattened_count = 0
+    ambiguous_count = 0
     by_kind = {}
+    by_kind_meta = {}
+    complex_artists = []
     
     for obj in objects:
         recognized_count += 1
@@ -2296,13 +2479,57 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             editable_count += 1
         else:
             readonly_count += 1
-            
+
+        prop_set = set(str(prop) for prop in editable_props)
         if kind not in by_kind:
-            by_kind[kind] = {
-                "count": 0,
-                "editableProps": editable_props
+            by_kind[kind] = {"count": 0, "editableProps": []}
+            by_kind_meta[kind] = {
+                "union": set(),
+                "intersection": None,
+                "variants": {},
             }
         by_kind[kind]["count"] += 1
+        kind_meta = by_kind_meta[kind]
+        kind_meta["union"].update(prop_set)
+        if kind_meta["intersection"] is None:
+            kind_meta["intersection"] = set(prop_set)
+        else:
+            kind_meta["intersection"].intersection_update(prop_set)
+        variant_key = tuple(sorted(prop_set))
+        kind_meta["variants"][variant_key] = kind_meta["variants"].get(variant_key, 0) + 1
+
+        semantic_coverage = obj.get("semanticCoverage")
+        if semantic_coverage:
+            status = semantic_coverage.get("status")
+            if status == "dedicated":
+                dedicated_count += 1
+            elif status == "flattened":
+                flattened_count += 1
+            elif status == "ambiguous":
+                ambiguous_count += 1
+            complex_artists.append({
+                "id": obj.get("id"),
+                "class": obj.get("source", {}).get("artistClass"),
+                "family": semantic_coverage.get("family"),
+                "status": status,
+                "attribution": semantic_coverage.get("attribution"),
+                "preservedKind": semantic_coverage.get("preservedKind"),
+                "preservedRole": semantic_coverage.get("preservedRole"),
+                "preservedEditable": list(semantic_coverage.get("preservedEditable") or []),
+                "reason": semantic_coverage.get("reason"),
+            })
+
+    for kind, detail in by_kind.items():
+        kind_meta = by_kind_meta[kind]
+        detail["editableProps"] = sorted(kind_meta["union"])
+        detail["editablePropsIntersection"] = sorted(kind_meta["intersection"] or set())
+        detail["editablePropVariants"] = [
+            {
+                "editableProps": list(props),
+                "count": count,
+            }
+            for props, count in sorted(kind_meta["variants"].items())
+        ]
         
     unsupported_artists = [
         {"class": cls, "count": count, "reason": f"Type {cls} is not currently supported for interactive editing"}
@@ -2314,10 +2541,14 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             "recognized": recognized_count,
             "editable": editable_count,
             "readonly": readonly_count,
-            "unsupported": sum(unsupported_map.values())
+            "unsupported": sum(unsupported_map.values()),
+            "dedicated": dedicated_count,
+            "flattened": flattened_count,
+            "ambiguous": ambiguous_count,
         },
         "byKind": by_kind,
-        "unsupportedArtists": unsupported_artists
+        "unsupportedArtists": unsupported_artists,
+        "complexArtists": complex_artists,
     }
 
     # 5. Build manifest
@@ -3226,9 +3457,149 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
     return None
 
 
+def _axes_index_from_gid(gid: str) -> int:
+    ax_idx = 0
+    match = re.search(r'\.(\d+)(?:\.\d+)?$', gid)
+    if match:
+        try:
+            ax_idx = int(match.group(1))
+        except ValueError:
+            pass
+    if gid.startswith("container."):
+        parts = gid.split(".")
+        if len(parts) >= 4:
+            try:
+                ax_idx = int(parts[2])
+            except ValueError:
+                pass
+    return ax_idx
+
+
+def _build_gid_index(fig) -> dict:
+    """Rebuild gid → artist metadata via iter_artists (same source as introspect)."""
+    raw_elements = [
+        (gid, kind, artist)
+        for gid, kind, artist in iter_artists(fig)
+        if artist is not None
+    ]
+    artist_to_gid = {artist: gid for gid, kind, artist in raw_elements}
+    subplot_meta = _build_subplot_layout_meta(raw_elements)
+    child_to_parent = {}
+
+    for gid, kind, artist in raw_elements:
+        if kind not in ("bar_container", "errorbar_container", "boxplot_container", "violinplot_container", "stem_container", "container"):
+            continue
+
+        children_gids = []
+        if kind == "bar_container":
+            for child in artist:
+                if child in artist_to_gid:
+                    children_gids.append(artist_to_gid[child])
+        elif kind in ("errorbar_container", "stem_container", "boxplot_container", "violinplot_container"):
+            for child in artist.get_children():
+                if child in artist_to_gid:
+                    children_gids.append(artist_to_gid[child])
+
+        for child_gid in children_gids:
+            child_to_parent[child_gid] = (gid, kind)
+
+    return {
+        gid: {
+            "kind": kind,
+            "artist": artist,
+            "parent": child_to_parent.get(gid),
+            "subplotMeta": subplot_meta.get(gid, {}),
+        }
+        for gid, kind, artist in raw_elements
+    }
+
+
 def _build_gid_map(fig) -> dict:
     """Rebuild gid → artist mapping via iter_artists (same as introspect)."""
-    return {gid: art for gid, kind, art in iter_artists(fig) if art is not None}
+    return {
+        gid: item["artist"]
+        for gid, item in _build_gid_index(fig).items()
+    }
+
+
+def _entry_identity_metadata(entry: dict) -> dict:
+    expected = {}
+    if "stableKey" in entry:
+        expected["stableKey"] = entry.get("stableKey")
+    if entry.get("fingerprintVersion") == 2 and "fingerprint" in entry:
+        expected["fingerprint"] = entry.get("fingerprint")
+
+    identity = entry.get("identity")
+    if isinstance(identity, dict) and "seriesKey" in identity:
+        expected["seriesKey"] = identity.get("seriesKey")
+
+    return {
+        key: value
+        for key, value in expected.items()
+        if value is not None
+    }
+
+
+def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=None, subplot_meta: Optional[dict] = None) -> dict:
+    current_props = _read_props(artist, kind)
+    label = _safe_artist_label(artist, gid)
+    if kind == "subplot":
+        meta = subplot_meta or {}
+        label = meta.get("label", label)
+        current_props = {
+            **current_props,
+            "subplotIndex": meta.get("subplotIndex", 0),
+            "row": meta.get("row", 0),
+            "col": meta.get("col", 0),
+            "label": label,
+        }
+
+    obj = {
+        "id": gid,
+        "kind": kind,
+        "label": label,
+        "currentProps": current_props,
+    }
+    parent_kind = None
+    if parent_info:
+        parent_id, parent_kind = parent_info
+        obj["parentId"] = parent_id
+    role = _determine_role(gid, parent_kind, kind)
+    if role:
+        obj["role"] = role
+
+    stable_key, fingerprint = _generate_stable_key_and_fingerprint(
+        obj,
+        artist,
+        _axes_index_from_gid(gid),
+    )
+    obj["stableKey"] = stable_key
+    obj["fingerprint"] = fingerprint
+    identity = _build_object_identity(obj)
+    return {
+        "stableKey": stable_key,
+        "fingerprint": fingerprint,
+        "seriesKey": identity.get("seriesKey"),
+    }
+
+
+def _identity_mismatch_warning(gid: str, prop: str, mode: str, value: Any, expected: dict, actual: dict, artist: Any) -> dict:
+    mismatches = [
+        key
+        for key, expected_value in expected.items()
+        if expected_value != actual.get(key)
+    ]
+    return {
+        "type": "identity_mismatch",
+        "mode": mode,
+        "gid": gid,
+        "prop": prop,
+        "value": value,
+        "artist": type(artist).__name__,
+        "expected": expected,
+        "actual": actual,
+        "mismatches": mismatches,
+    }
 
 
 def _apply_global(fig, prop: str, value: Any):
@@ -3280,7 +3651,11 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
 
     Returns a list of warnings for unsupported or failed patch entries.
     """
-    gid_map = _build_gid_map(fig)
+    gid_index = _build_gid_index(fig)
+    gid_map = {
+        gid: item["artist"]
+        for gid, item in gid_index.items()
+    }
     legend_layout_sources = {
         gid: _capture_legend_layout(artist)
         for gid, artist in gid_map.items()
@@ -3306,7 +3681,36 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
 
         artist = gid_map.get(gid)
         if artist is None:
+            warnings.append({
+                "type": "missing_gid",
+                "mode": mode,
+                "gid": gid,
+                "prop": prop,
+                "value": value,
+            })
             continue
+
+        expected_identity = _entry_identity_metadata(entry)
+        if expected_identity:
+            gid_info = gid_index.get(gid, {})
+            actual_identity = _current_identity_signature(
+                gid,
+                gid_info.get("kind", ""),
+                artist,
+                parent_info=gid_info.get("parent"),
+                subplot_meta=gid_info.get("subplotMeta"),
+            )
+            if any(expected != actual_identity.get(key) for key, expected in expected_identity.items()):
+                warnings.append(_identity_mismatch_warning(
+                    gid,
+                    prop,
+                    mode,
+                    value,
+                    expected_identity,
+                    actual_identity,
+                    artist,
+                ))
+                continue
 
         legend_id = gid if gid in legend_layout_sources else _legend_container_gid(gid)
         if legend_id and prop in {
@@ -3617,6 +4021,7 @@ def replay_render(
     # Clear the figure registry for this run
     _figure_registry.clear()
     _intercepted_containers.clear()
+    _intercepted_complex_artists.clear()
 
     # Parse AST / regex static scan
     semantic_manifest = None

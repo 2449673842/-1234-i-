@@ -9,10 +9,10 @@ import type {
   Manifest,
   ManifestEditScope,
   ManifestObject,
-  ManifestPropertyCapability,
   PatchEntry,
 } from '../schemas/manifest';
 import { compileEditingIntent, inferEditingTargetRole } from './editingIntentCompiler';
+import { propertyCapabilityFor, resolvePatchMode } from './propertyPatchMode';
 
 export type ShadowTargetMatch = 'exact' | 'semantic' | 'fanout';
 
@@ -68,15 +68,6 @@ export interface ControlledTargetCompileResult extends EditingIntentCompileResul
   resolution?: ShadowTargetResolution;
 }
 
-const LOCAL_PATCH_PROPS = new Set([
-  'text',
-  'color',
-  'facecolor',
-  'edgecolor',
-  'alpha',
-  'visible',
-]);
-
 const TICK_PROP_MAP: Record<string, string> = {
   fontsize: 'tick_labelsize',
   fontfamily: 'tick_labelfamily',
@@ -86,15 +77,12 @@ const TICK_PROP_MAP: Record<string, string> = {
   rotation: 'tick_rotation',
 };
 
-function capabilityFor(object: ManifestObject, prop: string): ManifestPropertyCapability | undefined {
-  return object.propertyCapabilities?.find(capability => capability.prop === prop);
-}
-
 function supportsProp(object: ManifestObject, prop: string): boolean {
-  const capability = capabilityFor(object, prop);
+  const capability = propertyCapabilityFor(object, prop);
   if (capability) return capability.replay !== 'unsupported';
   const unsupported = object.currentProps?.unsupportedProps;
   if (Array.isArray(unsupported) && unsupported.map(String).includes(prop)) return false;
+  if (Array.isArray(object.propertyCapabilities)) return false;
   return object.editable.includes(prop);
 }
 
@@ -103,15 +91,6 @@ function requiredCapabilityScope(intent: EditingIntent): ManifestEditScope {
   if (intent.scope.selectionMode === 'role_in_subplot') return 'subplot';
   if (intent.scope.selectionMode === 'role_in_figure') return 'figure';
   return 'object';
-}
-
-function patchMode(manifest: Manifest, object: ManifestObject, prop: string): EditMode {
-  const capability = capabilityFor(object, prop);
-  if (capability) return capability.patchMode;
-  if (manifest.generatedBy === 'r_svg') return 'backend_patch';
-  return LOCAL_PATCH_PROPS.has(prop) && object.editable.includes(prop)
-    ? 'local_patch'
-    : 'backend_patch';
 }
 
 function strictSubplotIds(object: ManifestObject): string[] {
@@ -274,7 +253,7 @@ function resolveEditingTargets(
   const identityResult = removeAmbiguousIdentities(candidates);
   const skipped: ShadowTargetIssue[] = [];
   const supported = identityResult.candidates.filter((object) => {
-    const capability = capabilityFor(object, prop);
+    const capability = propertyCapabilityFor(object, prop);
     if (!requirePropertyCapabilities && supportsProp(object, prop)) return true;
     if (requirePropertyCapabilities && capability && capability.replay !== 'unsupported') {
       const requiredScope = requiredCapabilityScope(intent);
@@ -302,7 +281,7 @@ function resolveEditingTargets(
     objectId: object.id,
     instanceKey: object.identity?.instanceKey,
     prop,
-    patchMode: patchMode(manifest, object, prop),
+    patchMode: resolvePatchMode(manifest, object, prop),
     match: requested.has(object.id) ? 'exact' : fanout ? 'fanout' : 'semantic',
   }));
 

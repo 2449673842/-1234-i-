@@ -5,15 +5,7 @@ import type {
   EditingIntentSkippedTarget,
   SemanticTargetRole,
 } from '../schemas/editingIntent';
-
-const LOCAL_PATCH_PROPS = new Set([
-  'text',
-  'color',
-  'facecolor',
-  'edgecolor',
-  'alpha',
-  'visible',
-]);
+import { resolvePatchMode } from './propertyPatchMode';
 
 const TICK_PROP_MAP: Record<string, string> = {
   fontsize: 'tick_labelsize',
@@ -54,6 +46,7 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.role === 'annotation_arrow') return 'annotation_arrow';
   if (object.kind === 'grid') return 'grid';
   if (object.kind === 'line') return 'data_line';
+  if (object.kind === 'fill_between' || object.role === 'fill_between_series') return 'data_band';
   if (object.kind === 'collection') return 'data_point';
   if (object.kind === 'patch' || object.kind.endsWith('_container')) return 'data_patch';
   if (object.kind === 'heatmap') return 'heatmap';
@@ -69,12 +62,10 @@ function objectSubplotId(object: ManifestObject): string | undefined {
 
 function supportsProp(object: ManifestObject, prop: string): boolean {
   if (unsupportedProps(object).includes(prop)) return false;
+  const capability = object.propertyCapabilities?.find(item => item.prop === prop);
+  if (capability) return capability.replay !== 'unsupported';
+  if (Array.isArray(object.propertyCapabilities)) return false;
   return Array.isArray(object.editable) && object.editable.includes(prop);
-}
-
-function patchMode(manifest: Manifest, object: ManifestObject, prop: string): 'local_patch' | 'backend_patch' {
-  if (manifest.generatedBy === 'r_svg') return 'backend_patch';
-  return LOCAL_PATCH_PROPS.has(prop) && supportsProp(object, prop) ? 'local_patch' : 'backend_patch';
 }
 
 function skip(
@@ -117,6 +108,10 @@ export function isContentIntent(intentName: EditingIntent['intent']): boolean {
 
 export function isPositionIntent(intentName: EditingIntent['intent']): boolean {
   return intentName.startsWith('layout.position.');
+}
+
+export function isExplicitlyDeniedCrossFigure(intent: EditingIntent): boolean {
+  return intent.scope.crossFigure === 'deny';
 }
 
 export function isLayoutIntent(intentName: EditingIntent['intent']): boolean {
@@ -226,7 +221,7 @@ export function compileEditingIntent(manifest: Manifest, intent: EditingIntent):
     }
     patches.push({
       op: 'set',
-      mode: patchMode(manifest, object, prop),
+      mode: resolvePatchMode(manifest, object, prop),
       gid: object.id,
       prop,
       value,
@@ -252,8 +247,14 @@ export function retargetEditingIntentForFigure(intent: EditingIntent): EditingIn
   const deniedByDefault = isContentIntent(intent.intent)
     || isPositionIntent(intent.intent)
     || isLayoutIntent(intent.intent);
+  const explicitSelection = intent.scope.selectionMode === 'explicit_objects'
+    || intent.scope.selectionMode === 'selected_only';
 
-  if (intent.scope.crossFigure === 'deny' || (deniedByDefault && intent.scope.crossFigure !== 'allow')) {
+  if (
+    intent.scope.crossFigure === 'deny'
+    || (deniedByDefault && intent.scope.crossFigure !== 'allow')
+    || (explicitSelection && intent.scope.crossFigure !== 'allow')
+  ) {
     return {
       ...intent,
       scope: {

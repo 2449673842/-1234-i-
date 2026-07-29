@@ -43,6 +43,7 @@ export type SemanticTargetRole =
   | 'grid'
   | 'data_line'
   | 'data_point'
+  | 'data_band'
   | 'data_patch'
   | 'data_bar'
   | 'data_errorbar'

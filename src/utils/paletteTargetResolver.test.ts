@@ -361,6 +361,27 @@ describe('palette target resolver', () => {
     }]);
   });
 
+  it('treats a selected fill_between band as a dedicated rendered-color target', () => {
+    const band = object('collection.0.0', 'facecolor', 'confidence-band', 'local_patch');
+    band.kind = 'fill_between';
+    band.role = 'fill_between_series';
+    band.currentProps.facecolor = [[0.2666666667, 0.4666666667, 0.6666666667, 0.45]];
+    const points = object('collection.0.1', 'facecolor', 'scatter-series', 'local_patch');
+    points.kind = 'collection';
+    points.role = 'scatter_series';
+    points.currentProps.facecolor = [[0.2666666667, 0.4666666667, 0.6666666667, 1]];
+    const figure = manifest([band, points], []);
+
+    const fallback = resolvePaletteColorFallbackTargets(figure, 'BAND', '#4477AA', [band.id]);
+
+    expect(fallback.targets).toEqual([expect.objectContaining({
+      objectId: band.id,
+      prop: 'facecolor',
+      patchMode: 'local_patch',
+    })]);
+    expect(fallback.targets.some(target => target.objectId === points.id)).toBe(false);
+  });
+
   it('creates a backend color-subset patch for blue entries inside a multi-color collection', () => {
     const collection = object('collection.1.0', 'facecolor', 'panel-b-scatter', 'local_patch');
     collection.kind = 'collection';

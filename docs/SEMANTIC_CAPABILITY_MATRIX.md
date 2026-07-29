@@ -1,5 +1,7 @@
 # SciFigure Studio 语义能力矩阵
 
+> 最后修改时间：2026-07-18 19:06:26 +08:00
+
 本矩阵记录了 SciFigure Studio 对于各类科研绘图图元的内省识别、可视化编辑以及渲染一致性的支持级别。
 
 ## 1. 语义能力矩阵一览表
@@ -10,8 +12,8 @@
 | **axis** (坐标轴系统) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `xlim`, `ylim`, `show_minor_ticks`, `x_tick_rotation`, `tick_direction`, `zorder` | 🟢 高一致性 | 🟢 有 | 部分复杂的 twinx / twiny 双轴共享需要特别注意坐标轴重叠。 |
 | **tick** (刻度线/刻度标签) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `limits`, `label`, `label_fontsize`, `label_color`, `tick_rotation`, `tick_direction`, `tick_length`, `tick_width`, `tick_color`, `tick_pad`, `show_minor_ticks` | 🟢 高一致性 | 🟢 有 | 动态添加刻度位置在 matplotlib 脚本层 and 图元 patch 层可能有少量偏移。 |
 | **spine** (外框线) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `visible`, `color`, `linewidth`, `zorder` | 🟢 高一致性 | 🟢 有 | 隐藏 top/right spine 后若进行局部修改，可能触发重新着色。 |
-| **grid** (网格线) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `visible`, `color`, `linewidth`, `linestyle`, `alpha`, `zorder` | 🟢 高一致性 | 🟢 有 | 网格线密度与坐标轴 tick 数目自动关联，只读属性为全局设定。 |
-| **legend** (图例) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `visible`, `fontsize`, `frameon`, `facecolor`, `edgecolor`, `linewidth`, `alpha`, `loc`, `ncol`, `markerscale`, `title`, `fontfamily`, `zorder` | 🟢 高一致性 | 🟢 有 | 修改图例的文本可能因字体加载导致图例框尺寸重算，建议启用 `tight_layout`。 |
+| **grid** (网格线) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `visible`, `color`, `linewidth`, `linestyle`, `alpha`, `zorder` | 🟢 高一致性 | 🟢 有 | 显隐属于后端补丁，因为开启网格可能创建新图元；密度与坐标轴 tick 数目自动关联。 |
+| **legend** (图例) | 🟢 是 | 🟢 通过 | 🟢 已验证 | `visible`, `fontsize`, `frameon`, `facecolor`, `edgecolor`, `linewidth`, `alpha`, `loc`, `ncol`, `markerscale`, `title`, `fontfamily`, `zorder` | 🟢 高一致性 | 🟢 有 | 组件中心已支持边框显隐；修改文字或间距会触发图例框尺寸重算。 |
 | **line** (折线) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `color`, `linewidth`, `linestyle`, `alpha`, `marker`, `markersize`, `zorder` | 🟢 高一致性 | 🟢 有 | 单条线中的某个点不支持单独修改颜色（需通过 scatter 替代）。 |
 | **scatter** (散点/集合) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `facecolor`, `edgecolor`, `alpha`, `linewidth`, `size`, `zorder` | 🟢 高一致性 | 🟢 有 | 当数据点数超大（>10,000）时，内省操作可能有几十毫秒延迟。 |
 | **bar** (条形图) | 🟢 是 | 🟢 通过 | 🟡 未验证 | `color`, `facecolor`, `edgecolor`, `alpha`, `linewidth`, `zorder` | 🟢 高一致性 | 🟢 有 | 堆叠柱状图 of rect patches 支持分组改色。 |
@@ -29,6 +31,22 @@
 * **🟢 已验证 / 通过 / 是**：具备完整的 Matplotlib 底层对象类型探测能力，支持属性双向提取，已通过自动化集成测试或 headless 浏览器级的实测验证。
 * **🟡 未验证 / 部分**：源码已实现且测试用例覆盖，但尚未通过 headless 浏览器级的物理点击流程进行最终视觉审查，列为“Code Path 已验证，待物理验证”。
 * **🔴 未接入 / 无**：尚未在该维度覆盖或支持。
+
+### 2.1 Python 复杂图元 Shadow 覆盖
+
+2026-07-18 增加 `semanticCoverage` 与 `coverageReport.complexArtists`，用于区分“专用语义支持”“由普通 kind 承接”和“只有候选关系”。该字段只做事实报告，不改变现有 `kind/role/editable/propertyCapabilities`。
+
+| 对象家族 | 当前 Shadow 状态 | 当前默认编辑行为 | 限制 |
+|---|---|---|---|
+| `fill_between` | `FillBetweenPolyCollection -> flattened` | 保留 collection 既有控件 | 还没有置信带专用上下边界语义 |
+| `quiver` | `Quiver -> flattened` | 保留 collection 既有控件 | 未开放向量方向/尺度专用写回 |
+| `stairs` | `StepPatch -> flattened` | 保留 patch 既有控件 | `ax.step` 的 `Line2D` 暂不猜测来源 |
+| `wedge/pie` | `Wedge -> flattened` | 保留 patch 既有控件 | 只证明 wedge，不把任意 wedge 宣称为完整 pie 语义 |
+| `contour/contourf` | yielded `ContourSet -> flattened` | 保留通用控件 | Matplotlib 版本若只暴露普通 collection，则不伪造专用来源 |
+| `streamplot` | 同 axes 的 `LineCollection + FancyArrowPatch -> ambiguous` | 保留原通用控件 | 只记录候选，不宣称 dedicated |
+| `hist/step` 通用 `BarContainer/Rectangle/Line2D` | 未按类名强行标记 | 继续按已验证 bar/line 基线工作 | 需要后续调用来源 provenance 才能区分 |
+
+对象结构身份使用 `fingerprintVersion=2`。颜色、线宽、字号等可编辑样式不再改变结构 fingerprint；旧 manifest 无版本时只使用兼容 stableKey/seriesKey，不比较历史 fingerprint。
 
 ## 3. 前端语义编辑意图角色
 

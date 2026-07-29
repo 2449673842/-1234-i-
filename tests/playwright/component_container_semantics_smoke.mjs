@@ -31,6 +31,7 @@ const script = [
   'ax0_twin.set_ylabel("Twin scale")',
   'ax0.set_title("Bar")',
   'ax1.errorbar([0, 1, 2], [2.2, 3.1, 1.4], yerr=[0.2, 0.3, 0.1], color="#333333", capsize=4, label="Error")',
+  'ax1.fill_between([0, 1, 2], [1.8, 2.7, 1.1], [2.6, 3.5, 1.7], color="#4477aa", alpha=0.35, label="Confidence band")',
   'ax1.set_title("Errorbar")',
   'shared_scale = plt.cm.ScalarMappable(norm=Normalize(0, 1), cmap="viridis")',
   'shared_scale.set_array([])',
@@ -232,6 +233,26 @@ async function setColorInCard(page, cardText, scopeSuffix, value) {
   return true;
 }
 
+async function setBooleanInCard(page, cardText, prop, value) {
+  const handle = await controlInExactCard(
+    page,
+    cardText,
+    'input[data-param-role="boolean"]',
+    'data-param-prop',
+    prop,
+  );
+  const element = handle.asElement();
+  if (!element) return false;
+  await element.scrollIntoViewIfNeeded().catch(() => {});
+  const current = await element.evaluate(node => Boolean(node.checked));
+  if (current !== value) await element.click({ force: true });
+  await page.waitForTimeout(600);
+  const refreshed = page.locator(
+    `[data-component-group-label="${cardText}"] input[data-param-role="boolean"][data-param-prop="${prop}"]`,
+  ).first();
+  return await refreshed.isChecked().catch(() => false) === value;
+}
+
 async function waitForApiSettle(startIndex, timeoutMs = 20000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -280,6 +301,8 @@ async function run() {
     && object.source?.axesIndex === sharedColorbar?.source?.axesIndex
   ));
   const legend = manifest.objects.find(object => object.kind === 'legend');
+  const grid = manifest.objects.find(object => object.kind === 'grid');
+  const fillBetweenBand = manifest.objects.find(object => object.kind === 'fill_between' && object.role === 'fill_between_series');
   const legendText = manifest.objects.find(object => object.id.startsWith('legend_text.'));
   const legendMarker = manifest.objects.find(object => object.role === 'legend_marker');
   const twinSubplots = manifest.objects.filter(object => object.kind === 'subplot' && object.identity?.relation?.twinSubplotIds?.length > 0);
@@ -313,6 +336,12 @@ async function run() {
       && twinSubplots.every(subplot => twinSubplots.some(peer => subplot.identity.relation.twinSubplotIds.includes(peer.id))) ? 'PASS' : 'FAIL',
     `twins=${twinSubplots.map(subplot => `${subplot.id}->${subplot.identity.relation.twinSubplotIds.join(',')}`).join(';')}`,
   );
+  record(
+    'C0f-fill-between-dedicated',
+    fillBetweenBand?.id?.startsWith('collection.1.')
+      && fillBetweenBand?.stableKey?.startsWith('ax1.collection.') ? 'PASS' : 'FAIL',
+    `id=${fillBetweenBand?.id}, kind=${fillBetweenBand?.kind}, role=${fillBetweenBand?.role}, stableKey=${fillBetweenBand?.stableKey}`,
+  );
 
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 950 } });
@@ -340,7 +369,7 @@ async function run() {
     await page.screenshot({ path: path.join(OUTPUT_DIR, 'component-center.png'), fullPage: true });
     const initialStemControlCount = await page.locator('input[data-param-role="number"][data-param-prop="stem_linewidth"]').count();
     record(
-      'C0f-stem-component-controls',
+      'C0g-stem-component-controls',
       initialComponentText.includes('茎叶图系列') && initialStemControlCount > 0 && initialComponentText.includes('双轴') ? 'PASS' : 'FAIL',
       `clicked=${componentTabClicked}, card=${initialComponentText.includes('茎叶图系列')}, controls=${initialStemControlCount}, labels=${JSON.stringify(rightPanelLabels.slice(0, 20))}`,
     );
@@ -439,9 +468,40 @@ async function run() {
       preservedGapOnlyMovesBottom ? 'PASS' : 'FAIL',
       `visible=${preservedGapVisible}, target=${preservedGapTarget}, patches=${JSON.stringify(preservedGapPatches)}`,
     );
+    await clickText(page, '组件中心');
+    const gridVisibleTarget = !(grid?.currentProps?.visible !== false);
+    const gridChanged = await setBooleanInCard(page, '网格线', 'visible', gridVisibleTarget);
+    const gridDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const gridApplied = gridChanged ? await applyAndRead(page) : { successful: false, patches: [] };
+    const gridPatch = gridApplied.patches?.find(patch => patch.gid === grid?.id && patch.prop === 'visible');
+    record(
+      'C0j-grid-visibility-backend-draft',
+      gridChanged
+        && gridDraftVisible
+        && gridApplied.successful
+        && gridPatch?.value === gridVisibleTarget
+        && gridPatch?.mode === 'backend_patch' ? 'PASS' : 'FAIL',
+      `changed=${gridChanged}, draft=${gridDraftVisible}, requests=${gridApplied.requestCount || 0}, patches=${JSON.stringify(gridApplied.patches)}`,
+    );
+    await clickText(page, '组件中心');
+    const legendFrameTarget = !(legend?.currentProps?.frameon !== false);
+    const legendFrameChanged = await setBooleanInCard(page, '图例容器', 'frameon', legendFrameTarget);
+    const legendFrameDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const legendFrameApplied = legendFrameChanged ? await applyAndRead(page) : { successful: false, patches: [] };
+    const legendFramePatch = legendFrameApplied.patches?.find(patch => patch.gid === legend?.id && patch.prop === 'frameon');
+    record(
+      'C0k-legend-frame-component-control',
+      legendFrameChanged
+        && legendFrameDraftVisible
+        && legendFrameApplied.successful
+        && legendFramePatch?.value === legendFrameTarget
+        && legendFramePatch?.mode === 'backend_patch' ? 'PASS' : 'FAIL',
+      `changed=${legendFrameChanged}, draft=${legendFrameDraftVisible}, requests=${legendFrameApplied.requestCount || 0}, patches=${JSON.stringify(legendFrameApplied.patches)}`,
+    );
     const cases = [
       { id: 'C1-bar-container', card: '柱形系列', prop: 'linewidth', value: 1.8, prefix: 'container.bar.' },
       { id: 'C2-errorbar-container', card: '误差棒系列', prop: 'capsize', value: 7, prefix: 'container.errorbar.' },
+      { id: 'C2a-fill-between-band', card: '置信区间带', prop: 'linewidth', value: 2.15, prefix: 'collection.1.', expectedGid: fillBetweenBand?.id },
       { id: 'C2b-stem-container', card: '茎叶图系列', prop: 'stem_linewidth', value: 2.6, prefix: 'container.stem.' },
       { id: 'C3-boxplot-container', card: '箱线图系列', prop: 'median_color', value: '#cc2255', prefix: 'container.boxplot.', color: true },
       { id: 'C4-violin-container', card: '小提琴图系列', prop: 'linewidth', value: 2.4, prefix: 'container.violinplot.' },
@@ -464,6 +524,7 @@ async function run() {
         && applied.successful
         && applied.patches.length === 1
         && String(applied.patches[0]?.gid || '').startsWith(item.prefix)
+        && (!item.expectedGid || applied.patches[0]?.gid === item.expectedGid)
         && applied.patches[0]?.prop === item.prop
         && !childIds.has(applied.patches[0]?.gid);
       record(item.id, correct ? 'PASS' : 'FAIL', `changed=${changed}, draft=${draftVisible}, requests=${applied.requestCount || 0}, responses=${applied.responseCount || 0}, patches=${JSON.stringify(applied.patches)}`);

@@ -63,7 +63,7 @@ describe('semantic patch mapping', () => {
     expect(result.skipped).toHaveLength(1);
   });
 
-  it('fans out single-panel style patches to every matching subplot in a multi-panel target', () => {
+  it('keeps an explicit single-object style patch scoped to one target object', () => {
     const source = baseManifest([
       {
         id: 'subplot.0',
@@ -110,12 +110,7 @@ describe('semantic patch mapping', () => {
     );
 
     expect(result.skipped).toHaveLength(0);
-    expect(result.patches.map(patch => patch.gid)).toEqual([
-      'spine_group.0',
-      'spine_group.1',
-      'spine_group.2',
-      'spine_group.3',
-    ]);
+    expect(result.patches.map(patch => patch.gid)).toEqual(['spine_group.0']);
   });
 
   it('does not fan out content patches from a single-panel source to a multi-panel target', () => {
@@ -168,7 +163,7 @@ describe('semantic patch mapping', () => {
     expect(result.patches.map(patch => patch.gid)).toEqual(['axis.x.0']);
   });
 
-  it('fans out single spine side style patches to the same side in every target subplot', () => {
+  it('does not fan out an explicit spine-side patch without an editing intent', () => {
     const source = baseManifest([
       {
         id: 'subplot.0',
@@ -217,11 +212,81 @@ describe('semantic patch mapping', () => {
     );
 
     expect(result.skipped).toHaveLength(0);
-    expect(result.patches.map(patch => patch.gid)).toEqual([
-      'spine.left.0',
-      'spine.left.1',
-      'spine.left.2',
-      'spine.left.3',
+    expect(result.patches.map(patch => patch.gid)).toEqual(['spine.left.0']);
+  });
+
+  it('recomputes patch mode from the target object capability', () => {
+    const source = baseManifest([{
+      id: 'line.0',
+      kind: 'line',
+      label: 'Series',
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      stableKey: 'series:one',
+    }]);
+    const target = baseManifest([{
+      id: 'line.7',
+      kind: 'line',
+      label: 'Series',
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      stableKey: 'series:one',
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    }]);
+
+    const result = mapPatchesToTargetFigure(
+      [{ gid: 'line.0', prop: 'color', value: '#abcdef', mode: 'local_patch' }],
+      source,
+      target,
+    );
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toEqual([
+      { gid: 'line.7', prop: 'color', value: '#abcdef', mode: 'backend_patch' },
     ]);
+  });
+
+  it('skips equal-scoring semantic candidates instead of choosing by array order', () => {
+    const source = baseManifest([{
+      id: 'line.source',
+      kind: 'line',
+      label: 'Series',
+      editable: ['color'],
+      currentProps: { color: '#123456' },
+      role: 'data_line',
+    }]);
+    const target = baseManifest([
+      {
+        id: 'line.target.a',
+        kind: 'line',
+        label: 'Series',
+        editable: ['color'],
+        currentProps: { color: '#123456' },
+        role: 'data_line',
+      },
+      {
+        id: 'line.target.b',
+        kind: 'line',
+        label: 'Series',
+        editable: ['color'],
+        currentProps: { color: '#123456' },
+        role: 'data_line',
+      },
+    ]);
+
+    const result = mapPatchesToTargetFigure(
+      [{ gid: 'line.source', prop: 'color', value: '#abcdef', mode: 'local_patch' }],
+      source,
+      target,
+    );
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
   });
 });

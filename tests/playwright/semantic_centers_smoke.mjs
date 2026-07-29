@@ -786,7 +786,10 @@ async function run() {
     const savedLocalColor = savedFigureLog.some((entry) => (
       entry?.mode === 'local_patch' &&
       ['color', 'facecolor', 'edgecolor'].includes(entry?.prop) &&
-      String(entry?.value).toLowerCase() === '#aa3377'
+      String(entry?.value).toLowerCase() === '#aa3377' &&
+      typeof entry?.stableKey === 'string' &&
+      entry?.fingerprintVersion === 2 &&
+      typeof entry?.identity?.instanceKey === 'string'
     ));
     const persistedProject = projectId ? await requestJson(`/api/projects/${projectId}`).catch(() => null) : null;
     const persistedLog = Array.isArray(persistedProject?.project?.figures?.[0]?.editLog)
@@ -795,7 +798,10 @@ async function run() {
     const persistedLocalColor = persistedLog.some((entry) => (
       entry?.mode === 'local_patch' &&
       ['color', 'facecolor', 'edgecolor'].includes(entry?.prop) &&
-      String(entry?.value).toLowerCase() === '#aa3377'
+      String(entry?.value).toLowerCase() === '#aa3377' &&
+      typeof entry?.stableKey === 'string' &&
+      entry?.fingerprintVersion === 2 &&
+      typeof entry?.identity?.instanceKey === 'string'
     ));
     const draftClearedAfterSave = !(await getBodyText(page)).includes('已暂存');
     record(

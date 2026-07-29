@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Manifest } from '../schemas/manifest';
-import { compileEditingIntent, retargetEditingIntentForFigure } from './editingIntentCompiler';
+import { compileEditingIntent, isExplicitlyDeniedCrossFigure, retargetEditingIntentForFigure } from './editingIntentCompiler';
 
 const baseManifest = (objects: Manifest['objects'], generatedBy: Manifest['generatedBy'] = 'introspection'): Manifest => ({
   generatedBy,
@@ -15,6 +15,83 @@ const baseManifest = (objects: Manifest['objects'], generatedBy: Manifest['gener
 });
 
 describe('editing intent compiler', () => {
+  it('keeps an explicit cross-figure deny contract observable to callers', () => {
+    expect(isExplicitlyDeniedCrossFigure({
+      intent: 'style.component',
+      scope: { selectionMode: 'explicit_objects', objectIds: ['line.0'], crossFigure: 'deny' },
+      operation: { prop: 'color', value: '#123456' },
+    })).toBe(true);
+    expect(isExplicitlyDeniedCrossFigure({
+      intent: 'style.component',
+      scope: { selectionMode: 'explicit_objects', objectIds: ['line.0'] },
+      operation: { prop: 'color', value: '#123456' },
+    })).toBe(false);
+  });
+  it('routes virtual grid visibility through backend rendering', () => {
+    const manifest = baseManifest([{
+      id: 'grid.0',
+      kind: 'grid',
+      label: 'Grid',
+      editable: ['visible'],
+      currentProps: { visible: false },
+      role: 'grid',
+      subplotId: 'subplot.0',
+    }]);
+
+    const result = compileEditingIntent(manifest, {
+      intent: 'visibility.component',
+      scope: {
+        selectionMode: 'explicit_objects',
+        objectIds: ['grid.0'],
+        targetKinds: ['grid'],
+        targetRole: 'grid',
+      },
+      operation: { prop: 'visible', value: true },
+    });
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toEqual([
+      { op: 'set', mode: 'backend_patch', gid: 'grid.0', prop: 'visible', value: true },
+    ]);
+  });
+
+  it('does not compile properties omitted or rejected by a modern capability list', () => {
+    const omitted = baseManifest([{
+      id: 'line.0',
+      kind: 'line',
+      label: 'Line',
+      editable: ['color'],
+      currentProps: { color: '#000000' },
+      propertyCapabilities: [],
+    }]);
+    const rejected = baseManifest([{
+      id: 'line.1',
+      kind: 'line',
+      label: 'Line',
+      editable: ['color'],
+      currentProps: { color: '#000000' },
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'backend_patch',
+        scopes: ['object'],
+        preview: 'none',
+        replay: 'unsupported',
+      }],
+    }]);
+    const intent = (gid: string) => ({
+      intent: 'style.component' as const,
+      scope: {
+        selectionMode: 'explicit_objects' as const,
+        objectIds: [gid],
+        targetKinds: ['line' as const],
+      },
+      operation: { prop: 'color', value: '#118833' },
+    });
+
+    expect(compileEditingIntent(omitted, intent('line.0')).patches).toHaveLength(0);
+    expect(compileEditingIntent(rejected, intent('line.1')).patches).toHaveLength(0);
+  });
+
   it('keeps y-axis label color separate from y tick label color', () => {
     const manifest = baseManifest([
       {
@@ -195,6 +272,7 @@ describe('editing intent compiler', () => {
         objectIds: ['ylabel.0'],
         targetRole: 'y_axis_label' as const,
         subplotIds: ['subplot.0'],
+        crossFigure: 'allow' as const,
       },
       operation: { prop: 'color', value: '#118833' },
     };
@@ -203,6 +281,42 @@ describe('editing intent compiler', () => {
 
     expect(result.skipped).toHaveLength(0);
     expect(result.patches.map(patch => 'gid' in patch ? patch.gid : '')).toEqual(['ylabel.0', 'ylabel.1']);
+  });
+
+  it('does not expand an explicit style object across figures without authorization', () => {
+    const targetManifest = baseManifest([
+      {
+        id: 'ylabel.0',
+        kind: 'text',
+        label: 'Y label A',
+        editable: ['color'],
+        currentProps: { color: '#000000' },
+        subplotId: 'subplot.0',
+      },
+      {
+        id: 'ylabel.1',
+        kind: 'text',
+        label: 'Y label B',
+        editable: ['color'],
+        currentProps: { color: '#000000' },
+        subplotId: 'subplot.1',
+      },
+    ]);
+    const sourceIntent = {
+      intent: 'style.text.axis_label' as const,
+      scope: {
+        selectionMode: 'explicit_objects' as const,
+        objectIds: ['ylabel.0'],
+        targetRole: 'y_axis_label' as const,
+        subplotIds: ['subplot.0'],
+      },
+      operation: { prop: 'color', value: '#118833' },
+    };
+
+    const result = compileEditingIntent(targetManifest, retargetEditingIntentForFigure(sourceIntent));
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped[0]?.reason).toBe('not_found');
   });
 
   it('does not retarget source-only intents without a semantic role or kind', () => {
@@ -299,7 +413,7 @@ describe('editing intent compiler', () => {
 
     expect(result.skipped).toHaveLength(0);
     expect(result.patches).toEqual([
-      { op: 'set', mode: 'local_patch', gid: 'ytick.0.0', prop: 'text', value: 'new A' },
+      { op: 'set', mode: 'backend_patch', gid: 'ytick.0.0', prop: 'text', value: 'new A' },
     ]);
   });
 

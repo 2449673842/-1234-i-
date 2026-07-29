@@ -151,6 +151,23 @@ async function findBoxByText(page, marker) {
   }, marker);
 }
 
+async function findBoxByGid(page, gid) {
+  return page.evaluate((targetGid) => {
+    const node = document.querySelector(`svg #${CSS.escape(targetGid)}, svg [data-fig-id="${targetGid}"]`);
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    if (rect.width <= 2 || rect.height <= 2) return null;
+    return {
+      id: node.id || node.getAttribute('data-fig-id') || targetGid,
+      text: node.textContent || '',
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      width: rect.width,
+      height: rect.height,
+    };
+  }, gid);
+}
+
 async function findUnsupportedLineBox(page) {
   return page.evaluate(() => {
     const candidates = Array.from(document.querySelectorAll('svg [id]'))
@@ -378,31 +395,30 @@ async function injectRNativeCoordinateFixture(page) {
     figure: { width: 120, height: 80, unit: 'mm', dpi: 300 },
   };
   await page.evaluate(({ svg, manifest, spec }) => {
-    const projectFigures = {
-      fig_1: {
-        figureId: 'fig_1',
-        index: 0,
-        manifest,
-        editLog: [],
-        revision: 1,
-        svg,
-        fingerprint: 'r-native-protection',
-        codeSlice: null,
-        renderStatus: 'success',
-      },
+    const figSession = {
+      sessionId: 'drag-r-protection-fixture',
+      script: spec.script,
+      language: 'r',
+      dataPayload: {},
+      editLog: [],
+      revision: 1,
+      svg,
+      manifest,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
     };
     window.sessionStorage.setItem('scifigure:app-state:v2', JSON.stringify({
       spec,
       history: [spec],
       historyIndex: 0,
-      projectId: 'drag-r-protection-fake',
+      projectId: null,
       projectName: 'Drag R native protection fixture',
-      projectFigures,
+      projectFigures: {},
       activeFigureId: 'fig_1',
       datasets: [],
       selectedGids: [],
       projectHistory: {},
-      figSession: null,
+      figSession,
       renderLog: ['> Drag R native fixture ready'],
       currentView: 'workspace',
       subView: 'home',
@@ -689,7 +705,9 @@ async function run() {
     }
 
     await injectRNativeCoordinateFixture(page);
-    const rBox = await findBoxByText(page, 'R_NATIVE_TEXT');
+    // The reload path now relies on the exact SVG gid; the literal text can be
+    // sanitized or wrapped differently, so verify the native object by id.
+    const rBox = await findBoxByGid(page, 'r.text.0') || await findBoxByText(page, 'R_NATIVE_TEXT');
     if (!rBox) {
       record('D4-r-native-protection', 'BLOCKED', 'missing R native coordinate text fixture');
     } else {

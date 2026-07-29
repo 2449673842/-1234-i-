@@ -3,6 +3,7 @@ import { FileCode, FileSpreadsheet, FileJson, Layout, Eye, EyeOff, ChevronDown, 
 import { FigureSession, ManifestObject, PatchEntry, Binding } from '../schemas/manifest';
 import { FigureSpec, DatasetEntry } from '../types';
 import { takeBoundedWithPinned, TREE_CHILD_RENDER_LIMIT } from '../utils/largeFigureUi';
+import { resolvePatchModeById } from '../utils/propertyPatchMode';
 
 interface LeftSidebarProps {
   spec: FigureSpec;
@@ -533,7 +534,7 @@ export function LeftSidebar({
         const nextValue = !isAnyVisible;
         const patches = groupGids.map((gid: string) => ({
           op: 'set' as const,
-          mode: 'local_patch' as const,
+          mode: resolvePatchModeById(figSession?.manifest, gid, 'visible'),
           gid,
           prop: 'visible',
           value: nextValue
@@ -547,7 +548,7 @@ export function LeftSidebar({
         onPatch([
           {
             op: 'set',
-            mode: 'local_patch',
+            mode: resolvePatchModeById(figSession?.manifest, id, 'visible'),
             gid: id,
             prop: 'visible',
             value: !isCurrentlyVisible,
@@ -615,7 +616,7 @@ export function LeftSidebar({
       gids.forEach(gid => {
         patches.push({
           op: 'set',
-          mode: 'backend_patch',
+          mode: resolvePatchModeById(figSession?.manifest, gid, 'zorder'),
           gid,
           prop: 'zorder',
           value: zValue

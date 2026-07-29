@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional
 
 
-ALLOWED_KINDS = {'patch', 'line', 'collection', 'legend_patch', 'legend_line'}
+ALLOWED_KINDS = {'patch', 'line', 'collection', 'fill_between', 'legend_patch', 'legend_line'}
 
 def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """

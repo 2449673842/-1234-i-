@@ -35,8 +35,10 @@ export function normalizeFigureObject(object: ManifestObject): StandardFigureObj
     children: object.children,
     stableKey: object.stableKey,
     fingerprint: object.fingerprint,
+    fingerprintVersion: object.fingerprintVersion,
     identity: object.identity,
     propertyCapabilities: object.propertyCapabilities,
+    semanticCoverage: object.semanticCoverage,
     source: object.source,
   };
 }
@@ -79,6 +81,11 @@ function normalizeSavedEditLog(editLog: SavedEditEntry[] | undefined): EditEntry
     ...(entry.matchColor ? { matchColor: entry.matchColor } : {}),
     mode: entry.mode === 'local_patch' ? 'local_patch' : 'backend_patch',
     timestamp: entry.timestamp ?? 0,
+    matchColor: entry.matchColor,
+    stableKey: entry.stableKey,
+    fingerprint: entry.fingerprint,
+    fingerprintVersion: entry.fingerprintVersion,
+    identity: entry.identity,
   }));
 }
 

@@ -1,5 +1,6 @@
 import type { Manifest, ManifestObject } from '../schemas/manifest';
 import type { DraftPatch } from '../schemas/draftPatchBatch';
+import { propertyCapabilityFor, resolvePatchMode } from './propertyPatchMode';
 
 type PatchLike = DraftPatch | {
   gid?: string;
@@ -18,89 +19,12 @@ function objectList(manifest: Manifest | null | undefined): ManifestObject[] {
 
 function supportsProp(object: ManifestObject, prop: string | undefined): boolean {
   if (!prop) return true;
+  const capability = propertyCapabilityFor(object, prop);
+  if (capability) return capability.replay !== 'unsupported';
+  if (Array.isArray(object.propertyCapabilities)) return false;
+  const unsupported = object.currentProps?.unsupportedProps;
+  if (Array.isArray(unsupported) && unsupported.map(String).includes(prop)) return false;
   return Array.isArray(object.editable) && object.editable.includes(prop);
-}
-
-const FANOUT_KINDS = new Set([
-  'axis_x',
-  'axis_y',
-  'grid',
-  'spine',
-  'spine_group',
-  'line',
-  'collection',
-  'bar_container',
-  'errorbar_container',
-  'boxplot_container',
-  'violinplot_container',
-  'heatmap',
-  'colorbar',
-  'legend',
-]);
-
-const FANOUT_PROPS = new Set([
-  'alpha',
-  'box_color',
-  'capthick',
-  'color',
-  'edgecolor',
-  'elinewidth',
-  'facecolor',
-  'fontfamily',
-  'fontsize',
-  'fontstyle',
-  'fontweight',
-  'frameon',
-  'grid_color',
-  'grid_linewidth',
-  'grid_linestyle',
-  'label_color',
-  'label_fontsize',
-  'linewidth',
-  'linestyle',
-  'handletextpad',
-  'marker',
-  'marker_yoffset',
-  'markerscale',
-  'markersize',
-  'labelspacing',
-  'median_color',
-  'minor_tick_color',
-  'minor_tick_length',
-  'minor_tick_width',
-  'ncol',
-  'offset_text_size',
-  'sci_notation',
-  'show_minor_ticks',
-  'tick_color',
-  'tick_direction',
-  'tick_fontstyle',
-  'tick_fontweight',
-  'tick_labelcolor',
-  'tick_labelfamily',
-  'tick_labelsize',
-  'tick_length',
-  'tick_pad',
-  'tick_rotation',
-  'tick_width',
-  'use_math_text',
-  'visible',
-  'zorder',
-]);
-
-function subplotCount(manifest: Manifest | null | undefined): number {
-  return objectList(manifest).filter(object => object.kind === 'subplot').length;
-}
-
-function isStyleFanoutCandidate(
-  source: ManifestObject,
-  sourceManifest: Manifest | null | undefined,
-  targetManifest: Manifest | null | undefined,
-  prop: string | undefined,
-): boolean {
-  if (!prop || !FANOUT_PROPS.has(prop)) return false;
-  if (!FANOUT_KINDS.has(source.kind)) return false;
-  return subplotCount(sourceManifest) <= 1 && subplotCount(targetManifest) > 1;
 }
 
 function findSourceObject(sourceManifest: Manifest | null | undefined, gid: string | undefined) {
@@ -112,7 +36,10 @@ function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop
   if (!supportsProp(target, prop)) return -1;
 
   let score = 0;
+  if (source.identity?.instanceKey && source.identity.instanceKey === target.identity?.instanceKey) score += 140;
   if (source.stableKey && target.stableKey && source.stableKey === target.stableKey) score += 100;
+  if (source.identity?.seriesKey && source.identity.seriesKey === target.identity?.seriesKey) score += 80;
+  if (source.identity?.semanticKey && source.identity.semanticKey === target.identity?.semanticKey) score += 60;
   if (source.role && target.role && source.role === target.role) score += 40;
   if (source.kind === target.kind) score += 30;
   if (source.subplotId && target.subplotId && source.subplotId === target.subplotId) score += 20;
@@ -122,36 +49,16 @@ function scoreSemanticMatch(source: ManifestObject, target: ManifestObject, prop
   return score;
 }
 
-function semanticFanoutTargets(
-  source: ManifestObject,
+function mapPatchToObject(
+  patch: PatchLike,
   targetManifest: Manifest | null | undefined,
-  prop: string | undefined,
-): ManifestObject[] {
-  const targets = objectList(targetManifest)
-    .filter(candidate => supportsProp(candidate, prop))
-    .filter(candidate => candidate.kind === source.kind)
-    .filter(candidate => !source.role || !candidate.role || source.role === candidate.role)
-    .filter(candidate => {
-      if (source.kind !== 'spine') return true;
-      const sourceSide = source.id.match(/^spine\.([^.]+)\./)?.[1];
-      const targetSide = candidate.id.match(/^spine\.([^.]+)\./)?.[1];
-      return Boolean(sourceSide && targetSide && sourceSide === targetSide);
-    });
-
-  if (targets.length <= 1) return targets;
-
-  // One target per subplot for subplot-bound objects. This avoids duplicate
-  // legend handles or child artists while still applying frame/tick/line style
-  // from a single-panel source figure to every panel in a multi-panel target.
-  const seenSubplots = new Set<string>();
-  const scoped: ManifestObject[] = [];
-  for (const target of targets) {
-    const scope = target.subplotId || target.id;
-    if (seenSubplots.has(scope)) continue;
-    seenSubplots.add(scope);
-    scoped.push(target);
-  }
-  return scoped;
+  target: ManifestObject,
+): PatchLike {
+  return {
+    ...patch,
+    gid: target.id,
+    mode: resolvePatchMode(targetManifest, target, patch.prop || ''),
+  };
 }
 
 export function mapPatchToTargetFigure(
@@ -167,28 +74,20 @@ export function mapPatchToTargetFigure(
   if (!sourceObject) return null;
 
   const targetObjects = objectList(targetManifest);
-  if (isStyleFanoutCandidate(sourceObject, sourceManifest, targetManifest, patch.prop)) {
-    const targets = semanticFanoutTargets(sourceObject, targetManifest, patch.prop);
-    if (targets.length > 1) {
-      return { ...patch, gid: targets[0].id };
-    }
-  }
-
   const exactTarget = targetObjects.find(object => object.id === patch.gid && supportsProp(object, patch.prop));
   if (exactTarget) {
-    return { ...patch, gid: exactTarget.id };
+    return mapPatchToObject(patch, targetManifest, exactTarget);
   }
 
-  let best: { object: ManifestObject; score: number } | null = null;
-  for (const candidate of targetObjects) {
-    const score = scoreSemanticMatch(sourceObject, candidate, patch.prop);
-    if (score < 50) continue;
-    if (!best || score > best.score) {
-      best = { object: candidate, score };
-    }
-  }
-
-  return best ? { ...patch, gid: best.object.id } : null;
+  const candidates = targetObjects
+    .map(object => ({ object, score: scoreSemanticMatch(sourceObject, object, patch.prop) }))
+    .filter(candidate => candidate.score >= 50);
+  if (candidates.length === 0) return null;
+  const bestScore = Math.max(...candidates.map(candidate => candidate.score));
+  const best = candidates.filter(candidate => candidate.score === bestScore);
+  return best.length === 1
+    ? mapPatchToObject(patch, targetManifest, best[0].object)
+    : null;
 }
 
 export function mapPatchToTargetFigureMany(
@@ -202,13 +101,6 @@ export function mapPatchToTargetFigureMany(
 
   const sourceObject = findSourceObject(sourceManifest, patch.gid);
   if (!sourceObject) return [];
-
-  if (isStyleFanoutCandidate(sourceObject, sourceManifest, targetManifest, patch.prop)) {
-    const targets = semanticFanoutTargets(sourceObject, targetManifest, patch.prop);
-    if (targets.length > 1) {
-      return targets.map(target => ({ ...patch, gid: target.id }));
-    }
-  }
 
   const mapped = mapPatchToTargetFigure(patch, sourceManifest, targetManifest);
   return mapped ? [mapped] : [];

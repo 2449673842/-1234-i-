@@ -50,6 +50,35 @@ function capability(
 }
 
 describe('shadow target resolver', () => {
+  it('overrides stale local capabilities for virtual grid visibility', () => {
+    const figure = manifest([{
+      id: 'grid.0',
+      kind: 'grid',
+      label: 'Grid',
+      editable: ['visible'],
+      currentProps: { visible: false },
+      role: 'grid',
+      subplotId: 'subplot.0',
+      identity: identity('grid.0', 'subplot.0'),
+      propertyCapabilities: [capability('visible', 'local_patch')],
+    }]);
+
+    const result = compileEditingIntentWithControlledResolver(figure, {
+      intent: 'visibility.component',
+      scope: {
+        selectionMode: 'explicit_objects',
+        objectIds: ['grid.0'],
+        targetKinds: ['grid'],
+        targetRole: 'grid',
+      },
+      operation: { prop: 'visible', value: true },
+    }, true);
+
+    expect(result.patches).toEqual([
+      { op: 'set', mode: 'backend_patch', gid: 'grid.0', prop: 'visible', value: true },
+    ]);
+  });
+
   it('matches the current compiler for explicit axis-label edits', () => {
     const figure = manifest([{
       id: 'ylabel.0',

@@ -15,6 +15,26 @@ from semantic_scanner import scan_source
 from binding_engine import build_bindings
 
 class TestArtistIntrospection(unittest.TestCase):
+    def test_grid_visibility_capability_requires_backend_render(self):
+        result = replay_render("""
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1], [0, 1])
+ax.grid(False)
+""")
+
+        grid = next(
+            obj for obj in result["figures"][0]["manifest"]["objects"]
+            if obj["id"] == "grid.0"
+        )
+        visible = next(
+            capability for capability in grid["propertyCapabilities"]
+            if capability["prop"] == "visible"
+        )
+
+        self.assertEqual(visible["patchMode"], "backend_patch")
+        self.assertEqual(visible["preview"], "none")
+
 
     @staticmethod
     def _binding_artist(gid, kind, label, props, series_key):

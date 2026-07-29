@@ -31,8 +31,10 @@ export interface StandardFigureObject {
   children?: string[];
   stableKey?: string;
   fingerprint?: string;
+  fingerprintVersion?: number;
   identity?: ManifestObjectIdentity;
   propertyCapabilities?: ManifestPropertyCapability[];
+  semanticCoverage?: ManifestObject['semanticCoverage'];
   source?: ManifestObject['source'];
 }
 

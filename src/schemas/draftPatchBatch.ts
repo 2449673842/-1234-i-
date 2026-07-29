@@ -1,3 +1,4 @@
+import type { ManifestObjectIdentity } from './manifest';
 import type { EditingIntent } from './editingIntent';
 
 export type DraftPatchMode = 'local_patch' | 'backend_patch';
@@ -8,6 +9,11 @@ export interface DraftPatch {
   value: unknown;
   matchColor?: string;
   mode: DraftPatchMode;
+  /** Identity captured when the draft was created; never overwrite on apply. */
+  stableKey?: string;
+  fingerprint?: string;
+  fingerprintVersion?: number;
+  identity?: ManifestObjectIdentity;
   // Support code patches
   type?: 'code_patch';
   target_id?: string;

@@ -6,6 +6,7 @@ import type {
   Manifest,
   ManifestObject,
 } from '../schemas/manifest';
+import { propertyCapabilityFor, resolvePatchMode } from './propertyPatchMode';
 
 export type PaletteTargetStrategy = 'legacy' | 'strict';
 
@@ -51,10 +52,10 @@ export interface PaletteTargetResolution {
   warnings: string[];
 }
 
-const LOCAL_COLOR_PROPS = new Set(['color', 'facecolor', 'edgecolor', 'alpha', 'visible']);
 const COLOR_FALLBACK_KINDS = new Set([
   'line',
   'collection',
+  'fill_between',
   'patch',
   'bar_container',
   'errorbar_container',
@@ -126,19 +127,6 @@ function fallbackProp(binding: Binding, object: ManifestObject): string {
   if (object.editable.includes('facecolor')) return 'facecolor';
   if (object.editable.includes('color')) return 'color';
   return binding.props?.[0] || 'color';
-}
-
-function propertyCapability(object: ManifestObject, prop: string) {
-  return object.propertyCapabilities?.find(capability => capability.prop === prop);
-}
-
-function resolvePatchMode(manifest: Manifest, object: ManifestObject, prop: string): EditMode {
-  const capability = propertyCapability(object, prop);
-  if (capability) return capability.patchMode;
-  if (manifest.generatedBy === 'r_svg') return 'backend_patch';
-  return LOCAL_COLOR_PROPS.has(prop) && object.editable.includes(prop)
-    ? 'local_patch'
-    : 'backend_patch';
 }
 
 function identityOwners(manifest: Manifest): Map<string, string[]> {
@@ -361,7 +349,7 @@ export function resolvePaletteTargets(
         });
         return;
       }
-      const capability = propertyCapability(object, target.prop);
+      const capability = propertyCapabilityFor(object, target.prop);
       if (!capability || capability.replay === 'unsupported' || !capability.scopes.includes('object')) {
         skipped.push({
           objectId: target.gid,
@@ -377,7 +365,7 @@ export function resolvePaletteTargets(
         seriesKey: target.seriesKey,
         match: target.match,
         confidence: target.confidence,
-        patchMode: capability.patchMode,
+        patchMode: resolvePatchMode(manifest, object, target.prop),
         replayMode: replayModeForTarget(object, target.prop, target.replayMode),
       });
     });

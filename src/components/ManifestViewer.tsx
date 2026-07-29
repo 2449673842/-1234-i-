@@ -151,6 +151,12 @@ export function ManifestViewer({ manifest, debugModel }: ManifestViewerProps) {
               {Object.entries(manifest.coverageReport.byKind).map(([kind, detail]) => (
                 <span key={kind} className="bg-slate-800/70 text-slate-300 px-2 py-0.5 rounded text-[11px]">
                   {kind}: {detail.count} / {detail.editableProps.length} props
+                  {detail.editablePropsIntersection
+                    ? ` · common ${detail.editablePropsIntersection.length}`
+                    : ''}
+                  {detail.editablePropVariants && detail.editablePropVariants.length > 1
+                    ? ` · ${detail.editablePropVariants.length} variants`
+                    : ''}
                 </span>
               ))}
             </div>

@@ -1,0 +1,222 @@
+import os
+import sys
+import unittest
+
+import matplotlib.colors as mcolors
+
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(PROJECT_ROOT, "renderer"))
+
+from introspector import replay_render
+
+
+DRIFT_COLOR = "#cc00cc"
+
+
+BASE_SCRIPT = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 2, 3], label="alpha", color="#1f77b4")
+ax.plot([0, 1, 2], [2, 3, 4], label="beta", color="#ff7f0e")
+ax.plot([0, 1, 2], [3, 4, 5], label="gamma", color="#2ca02c")
+"""
+
+
+PREPENDED_SCRIPT = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [9, 9, 9], label="inserted", color="#444444")
+ax.plot([0, 1, 2], [1, 2, 3], label="alpha", color="#1f77b4")
+ax.plot([0, 1, 2], [2, 3, 4], label="beta", color="#ff7f0e")
+ax.plot([0, 1, 2], [3, 4, 5], label="gamma", color="#2ca02c")
+"""
+
+
+DELETED_PREVIOUS_SIBLING_SCRIPT = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [2, 3, 4], label="beta", color="#ff7f0e")
+ax.plot([0, 1, 2], [3, 4, 5], label="gamma", color="#2ca02c")
+"""
+
+
+REORDERED_SCRIPT = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1, 2], [1, 2, 3], label="alpha", color="#1f77b4")
+ax.plot([0, 1, 2], [3, 4, 5], label="gamma", color="#2ca02c")
+ax.plot([0, 1, 2], [2, 3, 4], label="beta", color="#ff7f0e")
+"""
+
+
+class TestStructuralIdentityDrift(unittest.TestCase):
+    def _line_objects(self, result):
+        self.assertEqual(result.get("status"), "success", result.get("message"))
+        return [
+            obj
+            for obj in result["figures"][0]["manifest"]["objects"]
+            if obj["id"].startswith("line.0.")
+        ]
+
+    def _line_by_id(self, result, gid):
+        return next(obj for obj in self._line_objects(result) if obj["id"] == gid)
+
+    def _line_by_label(self, result, label):
+        return next(obj for obj in self._line_objects(result) if obj["label"] == label)
+
+    def _color(self, obj):
+        return mcolors.to_hex(obj["currentProps"]["color"], keep_alpha=False).lower()
+
+    def _baseline_beta_edit(self):
+        baseline = replay_render(BASE_SCRIPT)
+        beta = self._line_by_label(baseline, "beta")
+        return {
+            "gid": beta["id"],
+            "prop": "color",
+            "value": DRIFT_COLOR,
+            "mode": "backend_patch",
+            "identity": beta["identity"],
+            "stableKey": beta["stableKey"],
+            "fingerprint": beta["fingerprint"],
+            "fingerprintVersion": beta["fingerprintVersion"],
+        }
+
+    def _has_identity_mismatch_warning(self, result, gid):
+        warning_types = {
+            "identity_mismatch",
+            "series_mismatch",
+            "fingerprint_mismatch",
+            "stale_identity",
+            "missing_identity",
+            "unverified_identity",
+        }
+        return any(
+            warning.get("gid") == gid and warning.get("type") in warning_types
+            for warning in result.get("warnings", [])
+        )
+
+    def _assert_no_silent_wrong_gid_patch(self, script, expected_old_gid_label):
+        edit = self._baseline_beta_edit()
+        result = replay_render(script, edit_log=[edit])
+        old_gid_object = self._line_by_id(result, edit["gid"])
+        beta = self._line_by_label(result, "beta")
+        old_gid_was_wrong_object = old_gid_object["label"] != "beta"
+
+        self.assertEqual(
+            old_gid_object["label"],
+            expected_old_gid_label,
+            "fixture no longer exercises the intended GID drift shape",
+        )
+        self.assertFalse(
+            old_gid_was_wrong_object and self._color(old_gid_object) == DRIFT_COLOR,
+            (
+                f"stale edit gid {edit['gid']} silently patched "
+                f"{old_gid_object['label']!r} instead of the original 'beta' series"
+            ),
+        )
+
+        if self._color(beta) != DRIFT_COLOR:
+            self.assertTrue(
+                self._has_identity_mismatch_warning(result, edit["gid"]),
+                "stale identity was neither safely remapped to 'beta' nor reported as a mismatch",
+            )
+
+    def test_editable_style_change_does_not_change_structural_fingerprint(self):
+        baseline = replay_render(BASE_SCRIPT)
+        styled = replay_render(
+            BASE_SCRIPT,
+            edit_log=[
+                {
+                    "gid": "line.0.1",
+                    "prop": "linewidth",
+                    "value": 5,
+                    "mode": "backend_patch",
+                }
+            ],
+        )
+        baseline_beta = self._line_by_label(baseline, "beta")
+        styled_beta = self._line_by_label(styled, "beta")
+
+        self.assertEqual(
+            baseline["figures"][0]["fingerprint"],
+            styled["figures"][0]["fingerprint"],
+        )
+        self.assertEqual(baseline_beta["identity"], styled_beta["identity"])
+        self.assertEqual(
+            baseline_beta["fingerprint"],
+            styled_beta["fingerprint"],
+            "object fingerprint should represent structural identity, not editable style",
+        )
+
+    def test_identity_verified_edit_applies_without_drift(self):
+        edit = self._baseline_beta_edit()
+        result = replay_render(BASE_SCRIPT, edit_log=[edit])
+        beta = self._line_by_label(result, "beta")
+
+        self.assertEqual(self._color(beta), DRIFT_COLOR)
+        self.assertFalse(
+            self._has_identity_mismatch_warning(result, edit["gid"]),
+            "matching identity metadata should not block the intended edit",
+        )
+
+    def test_missing_gid_returns_structured_warning(self):
+        edit = {
+            "gid": "line.0.99",
+            "prop": "color",
+            "value": DRIFT_COLOR,
+            "mode": "backend_patch",
+        }
+        result = replay_render(BASE_SCRIPT, edit_log=[edit])
+
+        self.assertIn(edit, [
+            {
+                "gid": warning.get("gid"),
+                "prop": warning.get("prop"),
+                "value": warning.get("value"),
+                "mode": warning.get("mode"),
+            }
+            for warning in result.get("warnings", [])
+            if warning.get("type") == "missing_gid"
+        ])
+
+    def test_stale_gid_is_not_silently_reused_after_same_kind_prepend(self):
+        self._assert_no_silent_wrong_gid_patch(PREPENDED_SCRIPT, "alpha")
+
+    def test_stale_gid_is_not_silently_reused_after_same_kind_delete(self):
+        self._assert_no_silent_wrong_gid_patch(DELETED_PREVIOUS_SIBLING_SCRIPT, "gamma")
+
+    def test_stale_gid_is_not_silently_reused_after_same_kind_reorder(self):
+        self._assert_no_silent_wrong_gid_patch(REORDERED_SCRIPT, "gamma")
+
+    def test_gid_only_edit_without_identity_proof_keeps_legacy_replay_behavior(self):
+        edit = {
+            "gid": "line.0.1",
+            "prop": "color",
+            "value": DRIFT_COLOR,
+            "mode": "backend_patch",
+        }
+        result = replay_render(PREPENDED_SCRIPT, edit_log=[edit])
+        old_gid_object = self._line_by_id(result, edit["gid"])
+
+        self.assertEqual(
+            old_gid_object["label"],
+            "alpha",
+            "fixture no longer leaves old line.0.1 pointing at a different semantic series",
+        )
+        self.assertEqual(
+            self._color(old_gid_object),
+            DRIFT_COLOR,
+            "legacy gid-only edits must continue to replay by gid for old projects",
+        )
+        self.assertFalse(
+            self._has_identity_mismatch_warning(result, edit["gid"]),
+            (
+                "renderer cannot prove structural drift without old identity metadata; "
+                "that risk is handled by the server code-drift layer"
+            ),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

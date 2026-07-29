@@ -347,7 +347,18 @@ describe('normalizeProjectFigure (legacy compatibility)', () => {
       index: 2,
       manifest: makePythonManifest(),
       editLog: [
-        { gid: 'title.0', prop: 'text', value: 'New', mode: 'backend_patch', timestamp: 1234 },
+        {
+          gid: 'title.0',
+          prop: 'text',
+          value: 'New',
+          mode: 'backend_patch',
+          timestamp: 1234,
+          matchColor: '#112233',
+          stableKey: 'ax0.text.idx.0',
+          fingerprint: 'structural-fingerprint',
+          fingerprintVersion: 2,
+          identity: { semanticKey: 'axes_title:subplot.0', instanceKey: 'subplot:title.0', scope: 'subplot' },
+        },
       ],
       revision: 5,
       svg: '<svg>fig3</svg>',
@@ -361,6 +372,13 @@ describe('normalizeProjectFigure (legacy compatibility)', () => {
     expect(model!.editLog).toHaveLength(1);
     expect(model!.editLog[0].mode).toBe('backend_patch');
     expect(model!.editLog[0].timestamp).toBe(1234);
+    expect(model!.editLog[0]).toMatchObject({
+      matchColor: '#112233',
+      stableKey: 'ax0.text.idx.0',
+      fingerprint: 'structural-fingerprint',
+      fingerprintVersion: 2,
+      identity: { instanceKey: 'subplot:title.0' },
+    });
   });
 
   it('normalizes legacy SavedEditEntry with missing mode and timestamp', () => {

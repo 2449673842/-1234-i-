@@ -22,6 +22,7 @@ import Papa from 'papaparse';
 import * as archiver from 'archiver';
 import { applyColorCodePatch } from './src/utils/codeColorPatch';
 import { isDurableVirtualEditGid, mergePreviewGlobalsIntoEditLog } from './src/utils/exportPreviewState';
+import { resolveAuthoritativeProjectPatchMode } from './src/utils/propertyPatchMode';
 import { sanitizeLegacyRetireObservationBatch } from './src/utils/legacyRetireObservation';
 import { KeyedMutationGate } from './src/utils/keyedMutationGate';
 import {
@@ -163,6 +164,8 @@ async function startServer() {
       console.error('Failed to write to render cache:', e);
     }
   }
+
+  const validatedPythonPatchCacheKeys = new Set<string>();
 
   async function computeRenderCacheKey(session: any, projectContext: any, editLogOverride?: any[]): Promise<string> {
     const engine = session.language === 'r' ? 'r_ggplot' : 'python_matplotlib';
@@ -2065,6 +2068,10 @@ ${inner}
     prop: string;
     value: unknown;
     matchColor?: string;
+    stableKey?: string;
+    fingerprint?: string;
+    fingerprintVersion?: number;
+    identity?: any;
     mode: 'local_patch' | 'backend_patch';
     timestamp: number;
   }
@@ -2190,6 +2197,20 @@ ${inner}
       args.sessionId,
       args.sessionId,
     );
+  }
+
+  function invalidateProjectFigurePreview(sessionId: string, revision: number): void {
+    getDb().prepare(`
+      UPDATE project_figures
+      SET revision = ?,
+          preview_svg = NULL,
+          manifest = NULL,
+          code_slice = NULL,
+          fingerprint = NULL,
+          edit_log = COALESCE((SELECT edit_log FROM sessions WHERE id = ?), edit_log),
+          preview_updated_at = NULL
+      WHERE session_id = ?
+    `).run(revision, sessionId, sessionId);
   }
 
   function persistProjectScript(projectId: string, userId: string, script: string): void {
@@ -3001,6 +3022,231 @@ ${inner}
 
   function cleanScript(script: string): string {
     return script.replace(/^```[a-z]*\n?/im, '').replace(/\n?```\s*$/i, '');
+  }
+
+  const PATCH_VIRTUAL_FONT_CENTER_PROPS = new Set([
+    'fontsize',
+    'fontfamily',
+    'color',
+    'fontweight',
+    'fontstyle',
+  ]);
+
+  function parseManifestValue(value: unknown): any | null {
+    if (!value) return null;
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return null;
+      }
+    }
+    return typeof value === 'object' ? value : null;
+  }
+
+  function buildPatchConflictResponse(session: any, requestId: string, rejected: any[], warnings: any[]) {
+    return {
+      status: 'conflict',
+      message: '部分修改未通过目标身份或 renderer 应用确认，本批次未写入。',
+      sessionId: session.sessionId,
+      revision: session.revision,
+      editLog: session.editLog,
+      script: session.script,
+      applied: [],
+      rejected,
+      warnings,
+      requestId,
+    };
+  }
+
+  function normalizeProjectFigurePatchModes(figRow: any, patches: any[]) {
+    const manifest = parseManifestValue(figRow?.manifest);
+    if (!manifest) {
+      return patches.map((patch: any) => ({ ...patch, mode: 'backend_patch' }));
+    }
+
+    const objectById = new Map<string, any>(
+      (Array.isArray(manifest.objects) ? manifest.objects : [])
+        .map((object: any) => [String(object.id), object] as const),
+    );
+    return patches.map((patch: any) => {
+      if (patch?.gid === 'global' || isDurableVirtualEditGid(String(patch?.gid || ''))) {
+        return { ...patch, mode: 'backend_patch' };
+      }
+      const object = objectById.get(String(patch?.gid || ''));
+      const mode = resolveAuthoritativeProjectPatchMode(
+        manifest,
+        object,
+        String(patch?.prop || ''),
+      );
+      return patch?.mode === mode ? patch : { ...patch, mode };
+    });
+  }
+
+  function precheckManifestPatches(manifestValue: unknown, patches: any[]) {
+    const manifest = parseManifestValue(manifestValue);
+    if (!manifest) return { ok: false, warnings: [{ type: 'manifest_unavailable', message: '可信 manifest 不可用。' }] };
+
+    const objectById = new Map<string, any>(
+      (Array.isArray(manifest.objects) ? manifest.objects : [])
+        .map((object: any) => [String(object.id), object] as const),
+    );
+    const warnings: any[] = [];
+
+    patches.forEach((patch: any, patchIndex: number) => {
+      const gid = typeof patch?.gid === 'string' ? patch.gid : '';
+      const prop = typeof patch?.prop === 'string' ? patch.prop : '';
+      const reject = (type: string, message: string, extra: Record<string, unknown> = {}) => {
+        warnings.push({ type, gid, prop, patchIndex, message, ...extra });
+      };
+
+      if (!gid) {
+        reject('missing_gid', 'Patch is missing a gid.');
+        return;
+      }
+      if (gid === 'global') {
+        if (!manifest.globals?.[prop]) reject('unsupported_prop', `Global patch ${gid}.${prop} is not declared.`);
+        return;
+      }
+      if (isDurableVirtualEditGid(gid)) {
+        if (!PATCH_VIRTUAL_FONT_CENTER_PROPS.has(prop)) {
+          reject('unsupported_prop', `Virtual patch ${gid}.${prop} is not supported.`);
+        }
+        return;
+      }
+
+      const object = objectById.get(gid);
+      if (!object) {
+        reject('missing_gid', `Manifest is missing gid ${gid}.`);
+        return;
+      }
+      const capability = Array.isArray(object.propertyCapabilities)
+        ? object.propertyCapabilities.find((item: any) => item?.prop === prop)
+        : undefined;
+      const editable = Array.isArray(object.editable) ? object.editable : [];
+      if (capability ? capability.replay === 'unsupported' : !editable.includes(prop)) {
+        reject('unsupported_prop', `${gid}.${prop} is not editable or replayable.`);
+        return;
+      }
+      if (patch.stableKey !== undefined && patch.stableKey !== object.stableKey) {
+        reject('identity_mismatch', `${gid} stableKey does not match.`, { field: 'stableKey' });
+      }
+      if (
+        patch.fingerprintVersion === 2
+        && object.fingerprintVersion === 2
+        && patch.fingerprint !== undefined
+        && patch.fingerprint !== object.fingerprint
+      ) {
+        reject('identity_mismatch', `${gid} fingerprint does not match.`, { field: 'fingerprint' });
+      }
+      if (patch.identity?.seriesKey !== undefined && patch.identity.seriesKey !== object.identity?.seriesKey) {
+        reject('identity_mismatch', `${gid} identity.seriesKey does not match.`, { field: 'identity.seriesKey' });
+      }
+    });
+
+    return { ok: warnings.length === 0, warnings };
+  }
+
+  function precheckProjectFigurePatches(figRow: any, patches: any[]) {
+    const manifest = parseManifestValue(figRow?.manifest);
+    return manifest ? precheckManifestPatches(manifest, patches) : { ok: true, warnings: [] as any[] };
+  }
+
+  function sameProjectEditValue(left: any, right: any): boolean {
+    return left?.gid === right?.gid
+      && left?.prop === right?.prop
+      && stableStringifyForExport(left?.value) === stableStringifyForExport(right?.value);
+  }
+
+  function preflightProjectFigureEditLog(
+    figRow: any,
+    existingEditLog: any[],
+    incomingPatches: any[],
+    knownEditLog: any[] = existingEditLog,
+  ) {
+    const normalizedPatches = normalizeProjectFigurePatchModes(figRow, incomingPatches);
+    const manifest = parseManifestValue(figRow?.manifest);
+    if (manifest) {
+      const precheck = precheckManifestPatches(manifest, normalizedPatches);
+      const warnings = precheck.warnings.filter((warning: any) => {
+        const patch = typeof warning?.patchIndex === 'number'
+          ? normalizedPatches[warning.patchIndex]
+          : null;
+        return !knownEditLog.some(existing => sameProjectEditValue(existing, patch));
+      });
+      const rejectedIndexes = new Set(
+        warnings
+          .map((warning: any) => warning.patchIndex)
+          .filter((index: unknown): index is number => typeof index === 'number'),
+      );
+      return {
+        patches: normalizedPatches,
+        ok: warnings.length === 0,
+        warnings,
+        rejected: normalizedPatches.filter((_: any, index: number) => rejectedIndexes.has(index)),
+      };
+    }
+
+    const warnings: any[] = [];
+    const rejected: any[] = [];
+    normalizedPatches.forEach((patch: any, patchIndex: number) => {
+      if (knownEditLog.some(existing => sameProjectEditValue(existing, patch))) return;
+      warnings.push({
+        type: 'manifest_unavailable',
+        gid: typeof patch?.gid === 'string' ? patch.gid : '',
+        prop: typeof patch?.prop === 'string' ? patch.prop : '',
+        patchIndex,
+        message: '当前 Figure 没有可信 manifest，新增编辑必须先经过 renderer 验证。',
+      });
+      rejected.push(patch);
+    });
+    return { patches: normalizedPatches, ok: warnings.length === 0, warnings, rejected };
+  }
+
+  function preflightProjectFigureHistory(
+    figRow: any,
+    existingEditLog: any[],
+    existingHistory: { past: any[]; future: any[] },
+    incomingHistory: { past: any[]; future: any[] },
+  ) {
+    const knownEditLog = [
+      ...existingEditLog,
+      ...existingHistory.past.flatMap(snapshot => Array.isArray(snapshot?.editLog) ? snapshot.editLog : []),
+      ...existingHistory.future.flatMap(snapshot => Array.isArray(snapshot?.editLog) ? snapshot.editLog : []),
+    ];
+    const warnings: any[] = [];
+    const rejected: any[] = [];
+    const history: { past: any[]; future: any[] } = { past: [], future: [] };
+
+    for (const historyKey of ['past', 'future'] as const) {
+      const snapshots = Array.isArray(incomingHistory[historyKey]) ? incomingHistory[historyKey] : [];
+      history[historyKey] = snapshots.map((snapshot: any, snapshotIndex: number) => {
+        if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+          warnings.push({ type: 'invalid_history_snapshot', historyKey, snapshotIndex, message: '历史快照格式无效。' });
+          return snapshot;
+        }
+        if (snapshot.editLog === undefined) return { ...snapshot };
+        if (!Array.isArray(snapshot.editLog)) {
+          warnings.push({ type: 'invalid_history_edit_log', historyKey, snapshotIndex, message: '历史快照 editLog 格式无效。' });
+          return { ...snapshot };
+        }
+        const preflight = preflightProjectFigureEditLog(
+          figRow,
+          existingEditLog,
+          snapshot.editLog,
+          knownEditLog,
+        );
+        preflight.warnings.forEach((warning: any) => warnings.push({ ...warning, historyKey, snapshotIndex }));
+        preflight.rejected.forEach((patch: any) => rejected.push({ ...patch, historyKey, snapshotIndex }));
+        return { ...snapshot, editLog: preflight.patches };
+      });
+    }
+
+    return { history, ok: warnings.length === 0 && rejected.length === 0, warnings, rejected };
+  }
+
+  function precheckRenderedPythonPatches(manifest: unknown, patches: any[]) {
+    return precheckManifestPatches(manifest, patches);
   }
 
   function resolveDatasetAbsolutePath(storedPath: string): string {
@@ -4003,7 +4249,37 @@ ${inner}
         : null;
 
       const codePatches = (patches || []).filter((p: any) => p.type === 'code_patch');
-      const regularPatches = (patches || []).filter((p: any) => p.type !== 'code_patch');
+      let regularPatches = (patches || []).filter((p: any) => p.type !== 'code_patch');
+      if (session.language !== 'r') {
+        regularPatches = normalizeProjectFigurePatchModes(projectContext?.figRow, regularPatches);
+      }
+      const sessionBeforePatch = {
+        sessionId: session.sessionId,
+        revision: session.revision,
+        editLog: [...session.editLog],
+        script: session.script,
+      };
+
+      if (session.language !== 'r' && projectContext?.figRow && regularPatches.length > 0) {
+        const precheck = precheckProjectFigurePatches(projectContext.figRow, regularPatches);
+        if (!precheck.ok) {
+          const rejectedIndexes = new Set(
+            precheck.warnings
+              .map((warning: any) => warning.patchIndex)
+              .filter((index: unknown): index is number => typeof index === 'number'),
+          );
+          const rejected = regularPatches.filter((_: any, index: number) => rejectedIndexes.has(index));
+          const response = buildPatchConflictResponse(
+            sessionBeforePatch,
+            requestId,
+            rejected,
+            [...precheck.warnings, ...(revisionWarning ? [revisionWarning] : [])],
+          );
+          processedIds.add(requestId);
+          cache.set(requestId, response);
+          return res.json(response);
+        }
+      }
 
       if (session.language === 'r') {
         if (codePatches.length > 0) {
@@ -4123,18 +4399,27 @@ ${inner}
         value: p.value,
         mode: p.mode || 'backend_patch',
         timestamp: patchTimestamp,
-        ...(typeof p.matchColor === 'string' ? { matchColor: p.matchColor } : {}),
+        ...(p.matchColor !== undefined ? { matchColor: p.matchColor } : {}),
+        ...(p.stableKey !== undefined ? { stableKey: p.stableKey } : {}),
+        ...(p.fingerprint !== undefined ? { fingerprint: p.fingerprint } : {}),
+        ...(p.fingerprintVersion !== undefined ? { fingerprintVersion: p.fingerprintVersion } : {}),
+        ...(p.identity !== undefined ? { identity: p.identity } : {}),
       }));
 
       const backendPatches = newEdits.filter(e => e.mode === 'backend_patch');
       const localPatches = newEdits.filter(e => e.mode === 'local_patch');
 
-      // If it's purely local patches and no code patches, only append to editLog
       if (backendPatches.length === 0 && codePatches.length === 0) {
         session.editLog.push(...localPatches);
         session.revision++;
-        persistSession(session);
-        syncProjectFigureRevision(session.sessionId, session.revision);
+        if (projectContext) {
+          getDb().transaction(() => {
+            persistSession(session);
+            invalidateProjectFigurePreview(session.sessionId, session.revision);
+          })();
+        } else {
+          persistSession(session);
+        }
         const response = {
           status: 'success',
           sessionId: resolvedSessionId,
@@ -4159,7 +4444,7 @@ ${inner}
         session.dataPayload = projectContext.dataPayload;
       }
 
-      const mergedEditLog = [...session.editLog, ...backendPatches];
+      const mergedEditLog = [...session.editLog, ...newEdits];
 
       // E3 CodePatch project-wide invalidation (V1)
       if (projectContext && codePatches.length > 0) {
@@ -4238,7 +4523,9 @@ ${inner}
       // Cache lookup for Python figure patch
       const cacheLookupStartedAt = performance.now();
       const cacheKey = await computeRenderCacheKey(session, projectContext, mergedEditLog);
-      const cached = getCachedRender(cacheKey);
+      const cached = validatedPythonPatchCacheKeys.has(cacheKey)
+        ? getCachedRender(cacheKey)
+        : null;
       const cacheLookupMs = roundedDuration(cacheLookupStartedAt);
       if (cached) {
         const persistStartedAt = performance.now();
@@ -4278,27 +4565,38 @@ ${inner}
         editLogs: projectContext ? { [projectContext.figureId]: compressEditLog(mergedEditLog) } : undefined
       }, { req, label: 'patch' });
 
+      const renderedFigure = projectContext
+        ? result.figures?.find((figure: any) => figure.figureId === projectContext.figureId)
+        : null;
+      const renderedPrecheck = result.status === 'success'
+        ? precheckRenderedPythonPatches(renderedFigure?.manifest || result.manifest, newEdits)
+        : { ok: true, warnings: [] as any[] };
+      if (!renderedPrecheck.ok) {
+        const response = buildPatchConflictResponse(
+          sessionBeforePatch,
+          requestId,
+          newEdits,
+          [...renderedPrecheck.warnings, ...(revisionWarning ? [revisionWarning] : [])],
+        );
+        processedIds.add(requestId);
+        cache.set(requestId, response);
+        return res.json(response);
+      }
+
       let persistMs = 0;
       let cacheWriteMs = 0;
       if (result.status === 'success') {
         const persistStartedAt = performance.now();
         session.editLog = mergedEditLog;
         session.revision++;
-        persistSession(session);
-        syncProjectFigureRevision(session.sessionId, session.revision);
-        result.sessionId = session.sessionId;
-        result.revision = session.revision;
-        result.editLog = session.editLog;
-        result.script = session.script;
-        persistMs = roundedDuration(persistStartedAt);
 
         let targetFigSvg = result.svg;
         let targetFigManifest = result.manifest;
         let targetFigCodeSlice = result.codeSlice;
+        let targetFigFingerprint = result.fingerprint;
 
         if (projectContext) {
-          const targetFigId = projectContext.figureId;
-          const matchedFig = result.figures?.find((f: any) => f.figureId === targetFigId);
+          const matchedFig = renderedFigure;
           if (matchedFig) {
             result.svg = matchedFig.svg;
             result.manifest = matchedFig.manifest;
@@ -4306,11 +4604,34 @@ ${inner}
             targetFigSvg = matchedFig.svg;
             targetFigManifest = matchedFig.manifest;
             targetFigCodeSlice = matchedFig.codeSlice;
+            targetFigFingerprint = matchedFig.fingerprint;
           }
         }
 
+        if (projectContext) {
+          getDb().transaction(() => {
+            persistSession(session);
+            syncProjectFigurePreview({
+              sessionId: session.sessionId,
+              revision: session.revision,
+              svg: targetFigSvg,
+              manifest: targetFigManifest,
+              codeSlice: targetFigCodeSlice,
+              fingerprint: targetFigFingerprint ?? projectContext.figRow?.fingerprint ?? null,
+            });
+          })();
+        } else {
+          persistSession(session);
+        }
+        result.sessionId = session.sessionId;
+        result.revision = session.revision;
+        result.editLog = session.editLog;
+        result.script = session.script;
+        persistMs = roundedDuration(persistStartedAt);
+
         const cacheWriteStartedAt = performance.now();
         setCachedRender(cacheKey, targetFigSvg, targetFigManifest, targetFigCodeSlice);
+        validatedPythonPatchCacheKeys.add(cacheKey);
         cacheWriteMs = roundedDuration(cacheWriteStartedAt);
       }
       const response: any = attachServerPerformance(
@@ -4746,12 +5067,15 @@ ${inner}
           message: '项目正在恢复导出状态，请等待恢复完成后再保存。',
         });
       }
-      if (spec) {
-        const script = spec.custom_script || spec.script || '';
-        updateProject(req.params.id, userId, name, spec, script);
-      } else {
-        getDb().prepare('UPDATE projects SET name = ?, updated_at = datetime(\'now\') WHERE id = ? AND user_id = ?').run(name, req.params.id, userId);
-      }
+      const figurePlans: Array<{
+        row: any;
+        session: FigureSession | null;
+        nextEditLog: any[];
+        nextRevision: number;
+        nextHistory: { past: any[]; future: any[] };
+      }> = [];
+      const rejected: any[] = [];
+      const warnings: any[] = [];
       if (Array.isArray(figures)) {
         const figRows = listProjectFigures(projectId);
         const rowsByFigureId = new Map<string, any>();
@@ -4768,15 +5092,63 @@ ${inner}
           if (!row) return;
           const session = loadSession(row.session_id, userId);
           const durableEditLog = parseStoredArray(row.edit_log);
-          const nextEditLog = Array.isArray(figure.editLog)
-            ? compressEditLog([...(session?.editLog || durableEditLog), ...figure.editLog])
-            : (session?.editLog || durableEditLog);
+          const existingEditLog = session?.editLog || durableEditLog;
+          const existingHistory = parseStoredHistory(row.history);
+          const incomingEditLog = Array.isArray(figure.editLog) ? figure.editLog : null;
+          let normalizedIncoming: any[] = [];
+          if (incomingEditLog) {
+            const preflight = preflightProjectFigureEditLog(
+              row,
+              existingEditLog,
+              incomingEditLog,
+              existingEditLog,
+            );
+            normalizedIncoming = preflight.patches;
+            preflight.warnings.forEach((warning: any) => warnings.push({ ...warning, figureId }));
+            preflight.rejected.forEach((patch: any) => rejected.push({ ...patch, figureId }));
+          }
+          const nextEditLog = incomingEditLog
+            ? compressEditLog(normalizedIncoming)
+            : existingEditLog;
           const nextRevision = typeof figure.revision === 'number'
             ? Math.max(figure.revision, session?.revision || row.revision || 1)
             : (session?.revision || row.revision || 1);
-          const nextHistory = figure.history
-            ? parseStoredHistory(figure.history)
-            : parseStoredHistory(row.history);
+          let nextHistory = existingHistory;
+          if (figure.history) {
+            const historyPreflight = preflightProjectFigureHistory(
+              row,
+              existingEditLog,
+              existingHistory,
+              parseStoredHistory(figure.history),
+            );
+            nextHistory = historyPreflight.history;
+            historyPreflight.warnings.forEach((warning: any) => warnings.push({ ...warning, figureId }));
+            historyPreflight.rejected.forEach((patch: any) => rejected.push({ ...patch, figureId }));
+          }
+          figurePlans.push({ row, session, nextEditLog, nextRevision, nextHistory });
+        });
+      }
+
+      if (rejected.length > 0 || warnings.length > 0) {
+        return res.status(409).json({
+          status: 'conflict',
+          message: '项目保存包含未通过可信 Figure manifest 预检的编辑，本次保存未写入。',
+          projectId,
+          applied: [],
+          rejected,
+          warnings,
+        });
+      }
+
+      getDb().transaction(() => {
+        if (spec) {
+          const script = spec.custom_script || spec.script || '';
+          updateProject(req.params.id, userId, name, spec, script);
+        } else {
+          getDb().prepare('UPDATE projects SET name = ?, updated_at = datetime(\'now\') WHERE id = ? AND user_id = ?')
+            .run(name, req.params.id, userId);
+        }
+        figurePlans.forEach(({ row, session, nextEditLog, nextRevision, nextHistory }) => {
           saveSession(
             row.session_id,
             userId,
@@ -4791,7 +5163,7 @@ ${inner}
             WHERE session_id = ?
           `).run(nextRevision, JSON.stringify(nextEditLog), JSON.stringify(nextHistory), row.session_id);
         });
-      }
+      })();
       res.json({ status: 'success' });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
