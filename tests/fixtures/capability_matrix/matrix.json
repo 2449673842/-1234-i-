@@ -41,6 +41,18 @@
       ]
     },
     {
+      "id": "python_contour_colorbar",
+      "file": "python/contour_colorbar.py",
+      "expectedFigures": 1,
+      "minKindCounts": { "subplot": 2, "contour": 1, "contourf": 1, "colorbar": 1 },
+      "requiredIds": ["container.contourf.0.0", "container.contour.1.0", "colorbar.2"],
+      "requiredRoles": ["contour_series", "contourf_series", "colorbar"],
+      "relations": [
+        { "from": "container.contourf.0.0", "field": "colorbarId", "equals": "colorbar.2" },
+        { "from": "colorbar.2", "field": "mappableId", "equals": "container.contourf.0.0" }
+      ]
+    },
+    {
       "id": "python_twin_axes",
       "file": "python/twin_axes.py",
       "expectedFigures": 1,

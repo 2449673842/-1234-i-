@@ -65,6 +65,20 @@ const COLOR_FALLBACK_KINDS = new Set([
 ]);
 const COLOR_FALLBACK_PROPS = ['facecolor', 'color', 'edgecolor'];
 
+function isContourParent(object: ManifestObject | undefined): boolean {
+  return object?.kind === 'contour'
+    || object?.kind === 'contourf'
+    || object?.role === 'contour_series'
+    || object?.role === 'contourf_series';
+}
+
+function isContourChildCollection(manifest: Manifest, object: ManifestObject): boolean {
+  if (object.role === 'contour_child_collection') return true;
+  const parentId = object.parentId ?? object.identity?.relation?.parentId;
+  if (!parentId) return false;
+  return isContourParent(objectById(manifest, parentId));
+}
+
 function matchingBindings(manifest: Manifest, paletteId: string): Binding[] {
   return (manifest.bindings ?? []).filter(binding => binding.paletteId === paletteId);
 }
@@ -406,6 +420,7 @@ export function resolvePaletteColorFallbackTargets(
   (manifest.objects ?? []).forEach((object) => {
     if (selected && !selected.has(object.id)) return;
     if (!COLOR_FALLBACK_KINDS.has(object.kind)) return;
+    if (object.kind === 'collection' && isContourChildCollection(manifest, object)) return;
     COLOR_FALLBACK_PROPS.forEach((prop) => {
       if (!Object.prototype.hasOwnProperty.call(object.currentProps ?? {}, prop)) return;
       if (!colorValueContains(object.currentProps?.[prop], targetHex)) return;

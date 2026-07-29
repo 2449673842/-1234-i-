@@ -33,15 +33,21 @@ const script = [
   'ax1.errorbar([0, 1, 2], [2.2, 3.1, 1.4], yerr=[0.2, 0.3, 0.1], color="#333333", capsize=4, label="Error")',
   'ax1.fill_between([0, 1, 2], [1.8, 2.7, 1.1], [2.6, 3.5, 1.7], color="#4477aa", alpha=0.35, label="Confidence band")',
   'ax1.set_title("Errorbar")',
+  'grid_x = np.linspace(-2, 2, 18)',
+  'grid_y = np.linspace(-2, 2, 18)',
+  'X, Y = np.meshgrid(grid_x, grid_y)',
+  'Z = np.sin(X) + np.cos(Y)',
   'shared_scale = plt.cm.ScalarMappable(norm=Normalize(0, 1), cmap="viridis")',
   'shared_scale.set_array([])',
   'fig.colorbar(shared_scale, ax=[ax0, ax1], label="Shared scale")',
   'rng = np.random.default_rng(42)',
   'ax2.boxplot([rng.normal(0, 1, 40), rng.normal(1, 1, 40)], patch_artist=True)',
   'ax2.scatter([0, 1, 2], [0.8, 1.5, 1.1], s=45, color="#dd8844", label="Points")',
+  'ax2.contourf(X, Y, Z, levels=4, cmap="viridis", alpha=0.65)',
   'ax2.set_title("Boxplot")',
   'ax3.violinplot([rng.normal(0, 1, 40), rng.normal(1, 1, 40)], showmeans=True)',
   'ax3.stem([1, 2], [1.4, 1.9], label="Stem signal")',
+  'ax3.contour(X, Y, Z, levels=[-1, 0, 1], cmap="magma", linewidths=1.1)',
   'ax3.annotate("Arrow note", xy=(1, 0), xytext=(1.55, 1.6), arrowprops=dict(arrowstyle="->"))',
   'ax3.set_title("Violin Stem")',
   'fig.tight_layout()',
@@ -253,6 +259,22 @@ async function setBooleanInCard(page, cardText, prop, value) {
   return await refreshed.isChecked().catch(() => false) === value;
 }
 
+async function setSelectInCard(page, cardText, prop, value) {
+  const handle = await controlInExactCard(
+    page,
+    cardText,
+    'select[data-param-role="select"]',
+    'data-param-prop',
+    prop,
+  );
+  const element = handle.asElement();
+  if (!element) return false;
+  await element.scrollIntoViewIfNeeded().catch(() => {});
+  await element.selectOption(value);
+  await page.waitForTimeout(600);
+  return true;
+}
+
 async function waitForApiSettle(startIndex, timeoutMs = 20000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -303,6 +325,10 @@ async function run() {
   const legend = manifest.objects.find(object => object.kind === 'legend');
   const grid = manifest.objects.find(object => object.kind === 'grid');
   const fillBetweenBand = manifest.objects.find(object => object.kind === 'fill_between' && object.role === 'fill_between_series');
+  const contourParents = manifest.objects.filter(object => object.kind === 'contour' || object.kind === 'contourf');
+  const contourLine = contourParents.find(object => object.kind === 'contour');
+  const contourFill = contourParents.find(object => object.kind === 'contourf');
+  const contourChildIds = new Set(contourParents.flatMap(parent => parent.children || []));
   const legendText = manifest.objects.find(object => object.id.startsWith('legend_text.'));
   const legendMarker = manifest.objects.find(object => object.role === 'legend_marker');
   const twinSubplots = manifest.objects.filter(object => object.kind === 'subplot' && object.identity?.relation?.twinSubplotIds?.length > 0);
@@ -342,6 +368,20 @@ async function run() {
       && fillBetweenBand?.stableKey?.startsWith('ax1.collection.') ? 'PASS' : 'FAIL',
     `id=${fillBetweenBand?.id}, kind=${fillBetweenBand?.kind}, role=${fillBetweenBand?.role}, stableKey=${fillBetweenBand?.stableKey}`,
   );
+  record(
+    'C0g-contour-dedicated-parents',
+    contourLine?.role === 'contour_series'
+      && contourFill?.role === 'contourf_series'
+      && contourParents.every(parent => Array.isArray(parent.children) && parent.children.length > 0)
+      && contourParents.every(parent => !parent.editable?.includes('levels'))
+      && contourParents.every(parent => !parent.editable?.includes('paths'))
+      && contourParents.every(parent => !parent.editable?.includes('segments'))
+      && contourParents.every(parent => (parent.children || []).every(childId => {
+        const child = manifest.objects.find(object => object.id === childId);
+        return child?.parentId === parent.id && child?.role === 'contour_child_collection';
+      })) ? 'PASS' : 'FAIL',
+    `parents=${contourParents.map(parent => `${parent.id}:${parent.kind}:${parent.role}`).join(',')}, children=${contourChildIds.size}`,
+  );
 
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 950 } });
@@ -366,6 +406,16 @@ async function run() {
     const componentTabClicked = await clickText(page, '组件中心');
     const initialComponentText = await getBodyText(page);
     const rightPanelLabels = await page.locator('.scifig-editor-panel-right [data-component-group-id]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-component-group-label')));
+    const contourCardState = await page.locator('.scifig-editor-panel-right [data-component-group-id]').evaluateAll((nodes, childIds) => {
+      const childIdSet = new Set(childIds);
+      return nodes.map((node) => ({
+        id: node.getAttribute('data-component-group-id'),
+        label: node.getAttribute('data-component-group-label'),
+        objectIds: Array.from(node.querySelectorAll('[data-component-object-id]')).map(child => child.getAttribute('data-component-object-id')),
+        props: Array.from(node.querySelectorAll('[data-param-prop], select[data-param-prop]')).map(child => child.getAttribute('data-param-prop')),
+        hasContourChild: Array.from(node.querySelectorAll('[data-component-object-id]')).some(child => childIdSet.has(child.getAttribute('data-component-object-id'))),
+      }));
+    }, Array.from(contourChildIds));
     await page.screenshot({ path: path.join(OUTPUT_DIR, 'component-center.png'), fullPage: true });
     const initialStemControlCount = await page.locator('input[data-param-role="number"][data-param-prop="stem_linewidth"]').count();
     record(
@@ -398,6 +448,124 @@ async function run() {
       componentControlsV2Ok ? 'PASS' : 'FAIL',
       `expected=${componentControlsV2Expected}, groups=${componentControlsV2Count}, barLinewidth=${barLinewidthCount}, contract=${JSON.stringify(barLinewidthContract)}`,
     );
+    const contourCard = contourCardState.find(group => group.id === 'contours');
+    const pointCard = contourCardState.find(group => group.id === 'points');
+    const requiredContourProps = ['cmap', 'vmin', 'vmax', 'alpha', 'visible', 'zorder', 'linewidth', 'linestyle'];
+    record(
+      'C0h-contour-component-card',
+      initialComponentText.includes('等高线/填充等高线')
+        && contourCard?.objectIds?.includes(contourLine?.id)
+        && contourCard?.objectIds?.includes(contourFill?.id)
+        && requiredContourProps.every(prop => contourCard?.props?.includes(prop))
+        && !contourCard?.hasContourChild
+        && !pointCard?.hasContourChild ? 'PASS' : 'FAIL',
+      `card=${JSON.stringify(contourCard)}, pointHasContourChild=${Boolean(pointCard?.hasContourChild)}`,
+    );
+    const contourChildSelectionIds = [contourFill?.children?.[0], contourLine?.children?.[0]].filter(Boolean);
+    let contourChildHitRetargeted = false;
+    if (contourChildSelectionIds.length === 2 && contourFill?.id && contourLine?.id) {
+      const firstChild = page.locator(`svg [id="${contourChildSelectionIds[0]}"], svg [data-fig-id="${contourChildSelectionIds[0]}"]`).first();
+      const secondChild = page.locator(`svg [id="${contourChildSelectionIds[1]}"], svg [data-fig-id="${contourChildSelectionIds[1]}"]`).first();
+      if (await firstChild.count() > 0 && await secondChild.count() > 0) {
+        const patchCountBefore = apiRequests.length;
+        await firstChild.dispatchEvent('click', { button: 0, ctrlKey: true });
+        await page.waitForTimeout(300);
+        await secondChild.dispatchEvent('click', { button: 0, ctrlKey: true });
+        await page.waitForTimeout(250);
+        const selectedGids = await page.evaluate(() => {
+          const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+          const state = raw ? JSON.parse(raw) : {};
+          return Array.isArray(state.selectedGids) ? state.selectedGids : [];
+        });
+        contourChildHitRetargeted = selectedGids.length === 2
+          && selectedGids.includes(contourFill.id)
+          && selectedGids.includes(contourLine.id)
+          && selectedGids.every(gid => !contourChildIds.has(gid))
+          && apiRequests.length === patchCountBefore;
+      }
+    }
+    record(
+      'C0h2-contour-child-hit-retarget',
+      contourChildHitRetargeted ? 'PASS' : 'FAIL',
+      `children=${contourChildSelectionIds.join(',')}, parents=${contourFill?.id},${contourLine?.id}, retargeted=${contourChildHitRetargeted}`,
+    );
+    let contourSelectionCleared = false;
+    if (contourChildHitRetargeted && contourChildSelectionIds.length === 2) {
+      const firstChild = page.locator(`svg [id="${contourChildSelectionIds[0]}"], svg [data-fig-id="${contourChildSelectionIds[0]}"]`).first();
+      const secondChild = page.locator(`svg [id="${contourChildSelectionIds[1]}"], svg [data-fig-id="${contourChildSelectionIds[1]}"]`).first();
+      await firstChild.dispatchEvent('click', { button: 0, ctrlKey: true });
+      await page.waitForTimeout(250);
+      await secondChild.dispatchEvent('click', { button: 0, ctrlKey: true });
+      await page.waitForTimeout(250);
+      contourSelectionCleared = await page.waitForFunction(() => {
+        const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+        const state = raw ? JSON.parse(raw) : {};
+        return Array.isArray(state.selectedGids) && state.selectedGids.length === 0;
+      }, null, { timeout: 5000 }).then(() => true).catch(() => false);
+    }
+    let contourChildDragModeMultiSelect = false;
+    let contourChildDragModeSelectionStates = [];
+    if (contourSelectionCleared && contourChildSelectionIds.length === 2 && contourFill?.id && contourLine?.id) {
+      const dragModeButton = page.getByRole('button', { name: /拖拽微调/ }).first();
+      const dragModeVisible = await dragModeButton.isVisible().catch(() => false);
+      if (dragModeVisible) {
+        const dragModeText = (await dragModeButton.textContent().catch(() => '')) || '';
+        if (!dragModeText.includes('开')) await dragModeButton.click();
+        await page.waitForTimeout(250);
+        const firstChild = page.locator(`svg [id="${contourChildSelectionIds[0]}"], svg [data-fig-id="${contourChildSelectionIds[0]}"]`).first();
+        const secondChild = page.locator(`svg [id="${contourChildSelectionIds[1]}"], svg [data-fig-id="${contourChildSelectionIds[1]}"]`).first();
+        const firstLeaf = firstChild.locator('path, use, polygon, polyline').first();
+        const secondLeaf = secondChild.locator('path, use, polygon, polyline').first();
+        const firstTarget = await firstLeaf.count() > 0 ? firstLeaf : firstChild;
+        const secondTarget = await secondLeaf.count() > 0 ? secondLeaf : secondChild;
+        if (await firstTarget.count() > 0 && await secondTarget.count() > 0) {
+          const dispatchCtrlPointerClick = async (target, pointerId) => {
+            const box = await target.boundingBox();
+            const clientX = box ? box.x + box.width / 2 : 1;
+            const clientY = box ? box.y + box.height / 2 : 1;
+            const common = {
+              pointerId,
+              pointerType: 'mouse',
+              isPrimary: true,
+              button: 0,
+              ctrlKey: true,
+              clientX,
+              clientY,
+            };
+            await target.dispatchEvent('pointerdown', { ...common, buttons: 1 });
+            await target.dispatchEvent('pointerup', { ...common, buttons: 0 });
+            await target.dispatchEvent('click', { button: 0, ctrlKey: true, clientX, clientY });
+          };
+          await dispatchCtrlPointerClick(firstTarget, 41);
+          await page.waitForTimeout(250);
+          contourChildDragModeSelectionStates.push(await page.evaluate(() => {
+            const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+            const state = raw ? JSON.parse(raw) : {};
+            return Array.isArray(state.selectedGids) ? state.selectedGids : [];
+          }));
+          await dispatchCtrlPointerClick(secondTarget, 42);
+          await page.waitForTimeout(250);
+          const selectedGids = await page.evaluate(() => {
+            const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+            const state = raw ? JSON.parse(raw) : {};
+            return Array.isArray(state.selectedGids) ? state.selectedGids : [];
+          });
+          contourChildDragModeSelectionStates.push(selectedGids);
+          contourChildDragModeMultiSelect = selectedGids.length === 2
+            && selectedGids.includes(contourFill.id)
+            && selectedGids.includes(contourLine.id)
+            && selectedGids.every(gid => !contourChildIds.has(gid));
+        }
+        const enabledText = (await dragModeButton.textContent().catch(() => '')) || '';
+        if (enabledText.includes('开')) await dragModeButton.click();
+        await page.waitForTimeout(250);
+      }
+    }
+    record(
+      'C0h3-contour-child-drag-mode-multiselect',
+      contourChildDragModeMultiSelect ? 'PASS' : 'FAIL',
+      `cleared=${contourSelectionCleared}, children=${contourChildSelectionIds.join(',')}, parents=${contourFill?.id},${contourLine?.id}, states=${JSON.stringify(contourChildDragModeSelectionStates)}, preserved=${contourChildDragModeMultiSelect}`,
+    );
     await clickText(page, '布局中心');
     const layoutSelectAll = page.getByRole('button', { name: '选中全部', exact: true }).first();
     const layoutSelectAllVisible = await layoutSelectAll.isVisible().catch(() => false);
@@ -426,7 +594,7 @@ async function run() {
       }
     }
     record(
-      'C0h-component-ctrl-deselect',
+      'C0i-component-ctrl-deselect',
       ctrlDeselectCorrect ? 'PASS' : 'FAIL',
       `layoutSelectAll=${layoutSelectAllVisible}, rows=${subplotRowCount}, before=${JSON.stringify(selectedBefore)}, after=${JSON.stringify(selectedAfter)}`,
     );
@@ -464,7 +632,7 @@ async function run() {
       && preservedGapPatches.every(patch => String(patch.gid).startsWith('subplot.') || String(patch.gid).startsWith('colorbar.'))
       && !preservedGapPatches.some(patch => patch.gid === 'global' || ['left', 'width', 'height'].includes(patch.prop));
     record(
-      'C0i-preserve-vertical-gap',
+      'C0j-preserve-vertical-gap',
       preservedGapOnlyMovesBottom ? 'PASS' : 'FAIL',
       `visible=${preservedGapVisible}, target=${preservedGapTarget}, patches=${JSON.stringify(preservedGapPatches)}`,
     );
@@ -475,7 +643,7 @@ async function run() {
     const gridApplied = gridChanged ? await applyAndRead(page) : { successful: false, patches: [] };
     const gridPatch = gridApplied.patches?.find(patch => patch.gid === grid?.id && patch.prop === 'visible');
     record(
-      'C0j-grid-visibility-backend-draft',
+      'C0k-grid-visibility-backend-draft',
       gridChanged
         && gridDraftVisible
         && gridApplied.successful
@@ -490,7 +658,7 @@ async function run() {
     const legendFrameApplied = legendFrameChanged ? await applyAndRead(page) : { successful: false, patches: [] };
     const legendFramePatch = legendFrameApplied.patches?.find(patch => patch.gid === legend?.id && patch.prop === 'frameon');
     record(
-      'C0k-legend-frame-component-control',
+      'C0l-legend-frame-component-control',
       legendFrameChanged
         && legendFrameDraftVisible
         && legendFrameApplied.successful
@@ -503,6 +671,9 @@ async function run() {
       { id: 'C2-errorbar-container', card: '误差棒系列', prop: 'capsize', value: 7, prefix: 'container.errorbar.' },
       { id: 'C2a-fill-between-band', card: '置信区间带', prop: 'linewidth', value: 2.15, prefix: 'collection.1.', expectedGid: fillBetweenBand?.id },
       { id: 'C2b-stem-container', card: '茎叶图系列', prop: 'stem_linewidth', value: 2.6, prefix: 'container.stem.' },
+      { id: 'C2c-contour-linewidth', card: '等高线/填充等高线', prop: 'linewidth', value: 2.45, prefix: 'container.contour.', expectedGid: contourLine?.id },
+      { id: 'C2d-contour-vmax', card: '等高线/填充等高线', prop: 'vmax', value: 1.75, prefix: 'container.contour', expectedCount: 2 },
+      { id: 'C2e-contour-cmap', card: '等高线/填充等高线', prop: 'cmap', value: 'plasma', prefix: 'container.contour', select: true, expectedCount: 2 },
       { id: 'C3-boxplot-container', card: '箱线图系列', prop: 'median_color', value: '#cc2255', prefix: 'container.boxplot.', color: true },
       { id: 'C4-violin-container', card: '小提琴图系列', prop: 'linewidth', value: 2.4, prefix: 'container.violinplot.' },
       { id: 'C5-annotation-arrow', card: '标注箭头', prop: 'linewidth', value: 2.2, prefix: 'annotation_arrow.' },
@@ -516,17 +687,20 @@ async function run() {
       await clickText(page, '组件中心');
       const changed = item.color
         ? await setColorInCard(page, item.card, `:${item.prop}`, item.value)
+        : item.select
+          ? await setSelectInCard(page, item.card, item.prop, item.value)
         : await setNumberInCard(page, item.card, item.prop, item.value);
       const draftVisible = (await getBodyText(page)).includes('已暂存');
       const applied = changed ? await applyAndRead(page) : { successful: false, patches: [] };
       const correct = changed
         && draftVisible
         && applied.successful
-        && applied.patches.length === 1
-        && String(applied.patches[0]?.gid || '').startsWith(item.prefix)
+        && applied.patches.length === (item.expectedCount || 1)
+        && applied.patches.every(patch => String(patch?.gid || '').startsWith(item.prefix))
         && (!item.expectedGid || applied.patches[0]?.gid === item.expectedGid)
-        && applied.patches[0]?.prop === item.prop
-        && !childIds.has(applied.patches[0]?.gid);
+        && applied.patches.every(patch => patch?.prop === item.prop)
+        && applied.patches.every(patch => !childIds.has(patch?.gid))
+        && applied.patches.every(patch => !contourChildIds.has(patch?.gid));
       record(item.id, correct ? 'PASS' : 'FAIL', `changed=${changed}, draft=${draftVisible}, requests=${applied.requestCount || 0}, responses=${applied.responseCount || 0}, patches=${JSON.stringify(applied.patches)}`);
     }
     await clickText(page, '组件中心');

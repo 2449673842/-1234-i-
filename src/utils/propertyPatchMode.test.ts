@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Manifest, ManifestObject } from '../schemas/manifest';
 import {
+  isParentOwnedManifestObject,
+  resolveCrossFigurePolicy,
   isTextContentPatchProp,
   resolvePatchMode,
   resolvePatchModeById,
@@ -169,5 +171,69 @@ describe('resolvePatchMode', () => {
     expect(resolvePatchMode(manifest(unsupported), unsupported, 'color')).toBe('backend_patch');
     expect(resolvePatchMode(manifest(grid), grid, 'visible')).toBe('backend_patch');
     expect(resolvePatchModeById(manifest(omitted), 'missing.0', 'color')).toBe('backend_patch');
+  });
+});
+
+describe('resolveCrossFigurePolicy', () => {
+  it('allows cross-Figure replay only when every target explicitly supports it', () => {
+    const first = legacyObject({
+      id: 'contourf.0.0',
+      kind: 'contourf',
+      propertyCapabilities: [{
+        prop: 'alpha',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'group', 'cross_figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+    const second = legacyObject({
+      id: 'contourf.1.0',
+      kind: 'contourf',
+      propertyCapabilities: [{
+        prop: 'alpha',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'group', 'cross_figure'],
+        preview: 'none',
+        replay: 'conditional',
+      }],
+    });
+
+    expect(resolveCrossFigurePolicy([first, second], 'alpha')).toBe('allow');
+  });
+
+  it('denies cross-Figure replay for object-only, unsupported, legacy, or empty targets', () => {
+    const objectOnly = legacyObject({
+      propertyCapabilities: [{
+        prop: 'cmap',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'group'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    });
+    const unsupported = legacyObject({
+      propertyCapabilities: [{
+        prop: 'cmap',
+        patchMode: 'backend_patch',
+        scopes: ['object', 'cross_figure'],
+        preview: 'none',
+        replay: 'unsupported',
+      }],
+    });
+
+    expect(resolveCrossFigurePolicy([objectOnly], 'cmap')).toBe('deny');
+    expect(resolveCrossFigurePolicy([unsupported], 'cmap')).toBe('deny');
+    expect(resolveCrossFigurePolicy([legacyObject()], 'cmap')).toBe('deny');
+    expect(resolveCrossFigurePolicy([], 'cmap')).toBe('deny');
+  });
+});
+
+describe('isParentOwnedManifestObject', () => {
+  it('recognizes contour child collections by semantic role or ownership marker', () => {
+    expect(isParentOwnedManifestObject(legacyObject({ role: 'contour_child_collection' }))).toBe(true);
+    expect(isParentOwnedManifestObject(legacyObject({ currentProps: { parentOwned: true } }))).toBe(true);
+    expect(isParentOwnedManifestObject(legacyObject())).toBe(false);
+    expect(isParentOwnedManifestObject(undefined)).toBe(false);
   });
 });

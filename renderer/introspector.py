@@ -91,6 +91,8 @@ class ViolinplotContainer:
 original_boxplot = Axes.boxplot
 original_violinplot = Axes.violinplot
 original_fill_between = Axes.fill_between
+original_contour = Axes.contour
+original_contourf = Axes.contourf
 
 def patched_boxplot(self, *args, **kwargs):
     res = original_boxplot(self, *args, **kwargs)
@@ -121,9 +123,31 @@ def patched_fill_between(self, *args, **kwargs):
     }
     return artist
 
+def _register_contour_set(artist, axes, family, call_name, kwargs):
+    linewidth = kwargs.get("linewidths")
+    linestyle = kwargs.get("linestyles")
+    _intercepted_complex_artists[artist] = {
+        "axes": axes,
+        "family": family,
+        "callName": call_name,
+        "linewidth": linewidth,
+        "linestyle": linestyle,
+    }
+    return artist
+
+def patched_contour(self, *args, **kwargs):
+    artist = original_contour(self, *args, **kwargs)
+    return _register_contour_set(artist, self, "contour", "Axes.contour", kwargs)
+
+def patched_contourf(self, *args, **kwargs):
+    artist = original_contourf(self, *args, **kwargs)
+    return _register_contour_set(artist, self, "contourf", "Axes.contourf", kwargs)
+
 Axes.boxplot = patched_boxplot
 Axes.violinplot = patched_violinplot
 Axes.fill_between = patched_fill_between
+Axes.contour = patched_contour
+Axes.contourf = patched_contourf
 
 
 def _describe_uploaded_data(data: Optional[dict]) -> dict:
@@ -357,19 +381,28 @@ def iter_artists(fig):
             texts = legend.get_texts()
             for i, text in enumerate(texts):
                 yield f"legend_text.{ax_idx}.{i}", "text", text
+            handles = _get_legend_handles(legend)
+            handle_labels = {
+                id(handle): texts[i].get_text()
+                for i, handle in enumerate(handles)
+                if i < len(texts)
+            }
             for i, line in enumerate(legend.get_lines()):
-                if i < len(texts):
-                    line.set_label(texts[i].get_text())
+                label = handle_labels.get(id(line))
+                if label is not None:
+                    line.set_label(label)
                 yield f"legend_line.{ax_idx}.{i}", "line", line
             for i, patch in enumerate(legend.get_patches()):
-                if i < len(texts):
-                    patch.set_label(texts[i].get_text())
+                label = handle_labels.get(id(patch))
+                if label is not None:
+                    patch.set_label(label)
                 yield f"legend_patch.{ax_idx}.{i}", "patch", patch
-            for i, handle in enumerate(_get_legend_handles(legend)):
+            for i, handle in enumerate(handles):
                 if not hasattr(handle, "get_sizes"):
                     continue
-                if i < len(texts):
-                    handle.set_label(texts[i].get_text())
+                label = handle_labels.get(id(handle))
+                if label is not None:
+                    handle.set_label(label)
                 yield f"legend_collection.{ax_idx}.{i}", "collection", handle
 
         annotation_arrow_patches = set()
@@ -385,6 +418,15 @@ def iter_artists(fig):
 
         for i, line in enumerate(ax.lines):
             yield f"line.{ax_idx}.{i}", "line", line
+
+        contour_counts = {"contour": 0, "contourf": 0}
+        for contour_set, provenance in _intercepted_complex_artists.items():
+            family = provenance.get("family")
+            if provenance.get("axes") is not ax or family not in contour_counts:
+                continue
+            contour_idx = contour_counts[family]
+            contour_counts[family] += 1
+            yield f"container.{family}.{ax_idx}.{contour_idx}", family, contour_set
 
         for i, coll in enumerate(ax.collections):
             import matplotlib.collections as mcoll
@@ -440,19 +482,28 @@ def iter_artists(fig):
         texts = legend.get_texts()
         for i, text in enumerate(texts):
             yield f"legend_text.figure.{fig_legend_idx}.{i}", "text", text
+        handles = _get_legend_handles(legend)
+        handle_labels = {
+            id(handle): texts[i].get_text()
+            for i, handle in enumerate(handles)
+            if i < len(texts)
+        }
         for i, line in enumerate(legend.get_lines()):
-            if i < len(texts):
-                line.set_label(texts[i].get_text())
+            label = handle_labels.get(id(line))
+            if label is not None:
+                line.set_label(label)
             yield f"legend_line.figure.{fig_legend_idx}.{i}", "line", line
         for i, patch in enumerate(legend.get_patches()):
-            if i < len(texts):
-                patch.set_label(texts[i].get_text())
+            label = handle_labels.get(id(patch))
+            if label is not None:
+                patch.set_label(label)
             yield f"legend_patch.figure.{fig_legend_idx}.{i}", "patch", patch
-        for i, handle in enumerate(_get_legend_handles(legend)):
+        for i, handle in enumerate(handles):
             if not hasattr(handle, "get_sizes"):
                 continue
-            if i < len(texts):
-                handle.set_label(texts[i].get_text())
+            label = handle_labels.get(id(handle))
+            if label is not None:
+                handle.set_label(label)
             yield f"legend_collection.figure.{fig_legend_idx}.{i}", "collection", handle
 
 
@@ -1335,6 +1386,115 @@ def _read_violinplot_container_props(container) -> dict:
     return props
 
 
+def _contour_owned_collections(artist) -> list:
+    """Return legacy collection artists owned by a contour set.
+
+    Matplotlib 3.7 stores one PathCollection per level on the Axes. From 3.8
+    onward the QuadContourSet itself occupies that legacy collection slot.
+    Keeping both shapes here preserves the GIDs produced by each renderer
+    version while the new semantic parent remains version-independent.
+    """
+    axes = getattr(artist, "axes", None)
+    axes_collections = list(getattr(axes, "collections", []) or []) if axes is not None else []
+    if artist in axes_collections:
+        return [artist]
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return list(getattr(artist, "collections", []) or [])
+    except Exception:
+        return []
+
+
+def _first_contour_collection_value(artist, getter_name: str):
+    for child in _contour_owned_collections(artist):
+        getter = getattr(child, getter_name, None)
+        if not callable(getter):
+            continue
+        try:
+            value = getter()
+        except Exception:
+            continue
+        if value is None:
+            continue
+        try:
+            if len(value) > 0:
+                return value[0]
+        except TypeError:
+            return value
+    return None
+
+
+def _normalize_contour_linestyle(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)) and value:
+        first = value[0]
+        if isinstance(first, str):
+            return first
+    return "solid"
+
+
+def _read_contour_props(artist) -> dict:
+    mappable_props = _read_heatmap_props(artist)
+    provenance = _intercepted_complex_artists.get(artist, {})
+    children = _contour_owned_collections(artist)
+    props = {
+        key: mappable_props.get(key)
+        for key in ("cmap", "vmin", "vmax", "alpha")
+    }
+    try:
+        levels = getattr(artist, "levels", None)
+        props["levels"] = [float(value) for value in list(levels)] if levels is not None else []
+    except Exception:
+        props["levels"] = []
+    props["filled"] = bool(getattr(artist, "filled", False))
+
+    visible_getter = getattr(artist, "get_visible", None)
+    if callable(visible_getter):
+        try:
+            props["visible"] = bool(visible_getter())
+        except Exception:
+            props["visible"] = True
+    else:
+        props["visible"] = all(
+            bool(child.get_visible())
+            for child in children
+            if callable(getattr(child, "get_visible", None))
+        )
+
+    zorder_getter = getattr(artist, "get_zorder", None)
+    zorder = None
+    if callable(zorder_getter):
+        try:
+            zorder = float(zorder_getter())
+        except Exception:
+            zorder = None
+    if zorder is None:
+        child_zorder = _first_contour_collection_value(artist, "get_zorder")
+        try:
+            zorder = float(child_zorder) if child_zorder is not None else 1.0
+        except Exception:
+            zorder = 1.0
+    props["zorder"] = zorder
+
+    if not props["filled"]:
+        linewidth = _first_contour_collection_value(artist, "get_linewidths")
+        if linewidth is None:
+            linewidth = _first_contour_collection_value(artist, "get_linewidth")
+        try:
+            props["linewidth"] = float(linewidth)
+        except Exception:
+            props["linewidth"] = 1.0
+        props["linestyle"] = _normalize_contour_linestyle(
+            provenance.get("linestyle")
+            if provenance.get("linestyle") is not None
+            else _first_contour_collection_value(artist, "get_linestyles")
+        )
+    return props
+
+
 def _read_heatmap_props(artist) -> dict:
     from matplotlib.collections import QuadMesh
     props = {}
@@ -1476,6 +1636,8 @@ _READERS = {
     "line": _read_line_props,
     "collection": _read_collection_props,
     "fill_between": _read_fill_between_props,
+    "contour": _read_contour_props,
+    "contourf": _read_contour_props,
     "patch": _read_patch_props,
     "axes": _read_axes_props,
     "grid": _read_grid_props,
@@ -1541,6 +1703,8 @@ _EDITABLE = {
     "patch": ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
     "collection": ["facecolor", "edgecolor", "alpha", "linewidth", "size", "size_scale", "zorder"],
     "fill_between": ["facecolor", "edgecolor", "alpha", "linewidth", "zorder"],
+    "contour": ["cmap", "vmin", "vmax", "alpha", "linewidth", "linestyle", "visible", "zorder"],
+    "contourf": ["cmap", "vmin", "vmax", "alpha", "visible", "zorder"],
     "axes": ["xlim", "ylim", "show_minor_ticks", "x_tick_rotation", "tick_direction", "zorder"],
     "grid": ["visible", "color", "linewidth", "linestyle", "alpha", "zorder"],
     "axis_x": ["limits", "label", "label_fontsize", "label_color", "tick_rotation", "tick_direction", "tick_length", "tick_width", "tick_color", "tick_pad", "minor_tick_length", "minor_tick_width", "minor_tick_color", "show_minor_ticks", "tick_labelsize", "tick_labelcolor", "tick_labelfamily", "tick_fontweight", "tick_fontstyle", "tick_label_dx", "tick_label_dy", "sci_notation", "use_math_text", "offset_text_size"],
@@ -1607,9 +1771,15 @@ def _determine_role(gid: str, parent_kind: Optional[str] = None, kind: Optional[
         return "boxplot_group"
     if parent_kind == "violinplot_container":
         return "violin_group"
+    if parent_kind in {"contour", "contourf"}:
+        return "contour_child_collection"
 
     if kind == "fill_between":
         return "fill_between_series"
+    if kind == "contour":
+        return "contour_series"
+    if kind == "contourf":
+        return "contourf_series"
         
     if gid.startswith("line."):
         return "line_series"
@@ -1678,7 +1848,7 @@ _CROSS_FIGURE_UNSAFE_PROPS = {
 }
 
 _SERIES_KINDS = {
-    "line", "collection", "fill_between", "patch", "bar_container", "errorbar_container",
+    "line", "collection", "fill_between", "contour", "contourf", "patch", "bar_container", "errorbar_container",
     "stem_container", "boxplot_container", "violinplot_container", "heatmap"
 }
 
@@ -1764,7 +1934,7 @@ def _semantic_coverage_entry(obj: dict, artist: Any, context: Optional[dict] = N
 
     # Exclude support/decorative contexts that happen to reuse data artist
     # classes; these are already represented by their owning semantic object.
-    if role in {"legend_marker", "annotation_arrow"}:
+    if role in {"legend_marker", "annotation_arrow", "contour_child_collection"}:
         return None
     if gid.startswith((
         "legend_line.", "legend_patch.", "legend_collection.",
@@ -1857,7 +2027,7 @@ def _identity_coordinate_space(obj: dict) -> str:
         return "container"
     if kind in {"subplot", "colorbar"}:
         return "figure"
-    if kind in {"line", "collection", "fill_between", "patch", "heatmap"}:
+    if kind in {"line", "collection", "fill_between", "contour", "contourf", "patch", "heatmap"}:
         return "data"
     if obj.get("subplotId"):
         return "axes"
@@ -1967,7 +2137,7 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
     capabilities = []
     for prop in obj.get("editable", []):
         requires_backend_patch = (
-            obj.get("kind") == "stem_container"
+            obj.get("kind") in {"stem_container", "contour", "contourf"}
             or (obj.get("kind") == "grid" and prop == "visible")
         )
         scopes = ["object"]
@@ -2014,6 +2184,37 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
     return capabilities
 
 
+_PARENT_OBJECT_KINDS = {
+    "bar_container",
+    "errorbar_container",
+    "boxplot_container",
+    "violinplot_container",
+    "stem_container",
+    "container",
+    "contour",
+    "contourf",
+}
+
+
+def _parent_child_gids(kind: str, artist: Any, raw_elements, artist_to_gid) -> list[str]:
+    if kind == "bar_container":
+        return [artist_to_gid[child] for child in artist if child in artist_to_gid]
+    if kind in {"errorbar_container", "stem_container", "boxplot_container", "violinplot_container"}:
+        return [
+            artist_to_gid[child]
+            for child in artist.get_children()
+            if child in artist_to_gid
+        ]
+    if kind in {"contour", "contourf"}:
+        owned = set(_contour_owned_collections(artist))
+        return [
+            child_gid
+            for child_gid, child_kind, child in raw_elements
+            if child_kind == "collection" and child in owned
+        ]
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Kind from gid prefix
 # ---------------------------------------------------------------------------
@@ -2043,6 +2244,13 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         raw_elements.append((gid, kind, artist))
 
     _normalise_runtime_fonts(raw_elements)
+
+    # Matplotlib 3.8 also exposes QuadContourSet through ax.collections. The
+    # semantic parent must remain the authoritative mappable for colorbars,
+    # while the collection GID remains available only for legacy replay.
+    for gid, kind, artist in raw_elements:
+        if kind in {"contour", "contourf"}:
+            artist_to_gid[artist] = gid
 
     subplot_meta = _build_subplot_layout_meta(raw_elements)
 
@@ -2095,7 +2303,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         explicit_norm = getattr(mappable, "norm", None)
         explicit_cmap = getattr(getattr(mappable, "cmap", None), "name", None)
         for candidate_gid, candidate_kind, candidate in raw_elements:
-            if candidate_gid == mappable_gid or candidate_kind not in {"heatmap", "collection"}:
+            if candidate is mappable or candidate_gid == mappable_gid or candidate_kind not in {"heatmap", "collection", "contour", "contourf"}:
                 continue
             if getattr(candidate, "axes", None) not in owner_axes_list:
                 continue
@@ -2224,16 +2432,8 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
     # Build parent-child relationships
     child_to_parent = {}
     for gid, kind, artist in raw_elements:
-        if kind in ("bar_container", "errorbar_container", "boxplot_container", "violinplot_container", "stem_container", "container"):
-            children_gids = []
-            if kind == "bar_container":
-                for child in artist:
-                    if child in artist_to_gid:
-                        children_gids.append(artist_to_gid[child])
-            elif kind in ("errorbar_container", "stem_container", "boxplot_container", "violinplot_container"):
-                for child in artist.get_children():
-                    if child in artist_to_gid:
-                        children_gids.append(artist_to_gid[child])
+        if kind in _PARENT_OBJECT_KINDS:
+            children_gids = _parent_child_gids(kind, artist, raw_elements, artist_to_gid)
             
             # Update container object in objects list
             container_obj = next((o for o in objects if o["id"] == gid), None)
@@ -2242,6 +2442,16 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             
             for child_gid in children_gids:
                 child_to_parent[child_gid] = (gid, kind)
+
+                if kind in {"contour", "contourf"}:
+                    child_obj = next((o for o in objects if o["id"] == child_gid), None)
+                    if child_obj:
+                        child_obj["editable"] = []
+                        child_obj["currentProps"] = {
+                            **child_obj.get("currentProps", {}),
+                            "parentOwned": True,
+                            "editingUnsupportedReason": "Contour level collections are owned by the contour parent; edit the parent object instead.",
+                        }
 
     # Populate parentId, role, source, stableKey, and fingerprint for each object
     for obj in objects:
@@ -2392,6 +2602,8 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
 
     color_groups = {}
     for obj in objects:
+        if obj.get("role") == "contour_child_collection":
+            continue
         hex_color = None
         for prop in ('facecolor', 'color', 'edgecolor'):
             val = obj.get('currentProps', {}).get(prop)
@@ -2914,6 +3126,71 @@ def _apply_color_subset_patch(artist, prop: str, value: Any, match_color: Any):
     return "no_matching_color_subset"
 
 
+def _refresh_contour_mappable(artist) -> None:
+    changed = getattr(artist, "changed", None)
+    if callable(changed):
+        try:
+            changed()
+        except Exception:
+            pass
+    colorbar = getattr(artist, "colorbar", None)
+    if colorbar is not None:
+        try:
+            colorbar.update_normal(artist)
+        except Exception:
+            pass
+
+
+def _apply_contour_patch(artist, prop: str, value: Any):
+    if prop == "cmap":
+        artist.set_cmap(value)
+    elif prop in {"vmin", "vmax"}:
+        current_vmin, current_vmax = artist.get_clim()
+        if prop == "vmin":
+            artist.set_clim(vmin=float(value), vmax=current_vmax)
+        else:
+            artist.set_clim(vmin=current_vmin, vmax=float(value))
+    elif prop == "alpha":
+        artist.set_alpha(float(value))
+        for child in _contour_owned_collections(artist):
+            if child is artist:
+                continue
+            setter = getattr(child, "set_alpha", None)
+            if callable(setter):
+                setter(float(value))
+    elif prop in {"linewidth", "linestyle", "visible", "zorder"}:
+        setter_name = {
+            "linewidth": "set_linewidth",
+            "linestyle": "set_linestyle",
+            "visible": "set_visible",
+            "zorder": "set_zorder",
+        }[prop]
+        converted = (
+            float(value) if prop in {"linewidth", "zorder"}
+            else bool(value) if prop == "visible"
+            else value
+        )
+        applied = False
+        for child in _contour_owned_collections(artist):
+            setter = getattr(child, setter_name, None)
+            if not callable(setter):
+                plural_setter = getattr(child, f"{setter_name}s", None)
+                setter = plural_setter if callable(plural_setter) else None
+            if callable(setter):
+                setter(converted)
+                applied = True
+        if not applied:
+            return "no_setter"
+        provenance = _intercepted_complex_artists.get(artist)
+        if provenance is not None and prop in {"linewidth", "linestyle"}:
+            provenance[prop] = converted
+    else:
+        return "unsupported_prop"
+
+    _refresh_contour_mappable(artist)
+    return None
+
+
 def _apply_single(artist, prop: str, value: Any, gid: str = ""):
     if gid.startswith(("xtick.", "ytick.")) and prop == "text":
         _set_tick_label_text_override(artist, gid, value)
@@ -2949,6 +3226,9 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
         elif prop == "alpha":
             artist.set_alpha(float(value))
         return
+
+    if gid.startswith(("container.contour.", "container.contourf.")):
+        return _apply_contour_patch(artist, prop, value)
 
     if gid.startswith("colorbar."):
         # artist is the Colorbar wrapper object
@@ -3483,22 +3763,17 @@ def _build_gid_index(fig) -> dict:
         if artist is not None
     ]
     artist_to_gid = {artist: gid for gid, kind, artist in raw_elements}
+    for gid, kind, artist in raw_elements:
+        if kind in {"contour", "contourf"}:
+            artist_to_gid[artist] = gid
     subplot_meta = _build_subplot_layout_meta(raw_elements)
     child_to_parent = {}
 
     for gid, kind, artist in raw_elements:
-        if kind not in ("bar_container", "errorbar_container", "boxplot_container", "violinplot_container", "stem_container", "container"):
+        if kind not in _PARENT_OBJECT_KINDS:
             continue
 
-        children_gids = []
-        if kind == "bar_container":
-            for child in artist:
-                if child in artist_to_gid:
-                    children_gids.append(artist_to_gid[child])
-        elif kind in ("errorbar_container", "stem_container", "boxplot_container", "violinplot_container"):
-            for child in artist.get_children():
-                if child in artist_to_gid:
-                    children_gids.append(artist_to_gid[child])
+        children_gids = _parent_child_gids(kind, artist, raw_elements, artist_to_gid)
 
         for child_gid in children_gids:
             child_to_parent[child_gid] = (gid, kind)
@@ -3602,6 +3877,25 @@ def _identity_mismatch_warning(gid: str, prop: str, mode: str, value: Any, expec
     }
 
 
+def _is_compatible_contour_child_fingerprint_drift(
+    gid_info: dict,
+    expected: dict,
+    actual: dict,
+    mismatches: list[str],
+) -> bool:
+    parent_info = gid_info.get("parent")
+    parent_kind = parent_info[1] if parent_info else None
+    return (
+        gid_info.get("kind") == "collection"
+        and parent_kind in {"contour", "contourf"}
+        and set(mismatches) == {"fingerprint"}
+        and "stableKey" in expected
+        and "seriesKey" in expected
+        and expected["stableKey"] == actual.get("stableKey")
+        and expected["seriesKey"] == actual.get("seriesKey")
+    )
+
+
 def _apply_global(fig, prop: str, value: Any):
     if prop == "figure.width_in":
         fig.set_size_inches(float(value), fig.get_figheight(), forward=True)
@@ -3700,7 +3994,17 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
                 parent_info=gid_info.get("parent"),
                 subplot_meta=gid_info.get("subplotMeta"),
             )
-            if any(expected != actual_identity.get(key) for key, expected in expected_identity.items()):
+            identity_mismatches = [
+                key
+                for key, expected in expected_identity.items()
+                if expected != actual_identity.get(key)
+            ]
+            if identity_mismatches and not _is_compatible_contour_child_fingerprint_drift(
+                gid_info,
+                expected_identity,
+                actual_identity,
+                identity_mismatches,
+            ):
                 warnings.append(_identity_mismatch_warning(
                     gid,
                     prop,

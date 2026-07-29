@@ -153,6 +153,29 @@ colors = [PROMOTION, INHIBITION, PROMOTION]
         self.assertEqual(target_props, {"line.0.0": "color", "patch.0.0": "facecolor"})
         self.assertEqual(binding["props"], ["facecolor", "color"])
 
+    def test_palette_binding_ignores_parent_owned_contour_collections(self):
+        semantic = {
+            "palettes": [{"id": "CONTOUR_COLOR", "color": "#4477aa"}],
+            "groups": [{
+                "groupId": "group_contour",
+                "label": "Contour level",
+                "paletteId": "CONTOUR_COLOR",
+            }],
+        }
+        contour_child = self._binding_artist(
+            "collection.0.0",
+            "collection",
+            "Contour level",
+            {"facecolor": "#4477aa"},
+            "legacy-contour-level",
+        )
+        contour_child.update({
+            "role": "contour_child_collection",
+            "parentId": "container.contourf.0.0",
+        })
+
+        self.assertEqual(build_bindings(semantic, [contour_child]), [])
+
     def test_palette_binding_rejects_duplicate_exact_label_and_color_signature(self):
         semantic = {
             "palettes": [
@@ -1355,6 +1378,43 @@ ax.legend()
         )
         self.assertEqual(patched_line["identity"]["relation"]["legendTextId"], "legend_text.0.0")
         self.assertEqual(patched_collection["identity"]["relation"]["legendTextId"], "legend_text.0.1")
+
+    def test_mixed_legend_handles_keep_entry_labels_and_relations(self):
+        result = replay_render("""
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.plot([0, 1], [0, 1], label="Line A")
+ax.scatter([0, 1], [1, 0], label="Points")
+ax.plot([0, 1], [0.2, 0.8], label="Weak")
+ax.plot([0, 1], [0.8, 0.2], label="Mixed")
+ax.plot([0, 1], [0.5, 0.6], label="Data driven")
+ax.legend()
+""")
+        self.assertEqual(result.get("status"), "success")
+        objects = {
+            obj["id"]: obj
+            for obj in result["figures"][0]["manifest"]["objects"]
+        }
+
+        expected_lines = [
+            ("legend_line.0.0", "Line A", "legend_text.0.0"),
+            ("legend_line.0.1", "Weak", "legend_text.0.2"),
+            ("legend_line.0.2", "Mixed", "legend_text.0.3"),
+            ("legend_line.0.3", "Data driven", "legend_text.0.4"),
+        ]
+        for gid, label, text_gid in expected_lines:
+            marker = objects[gid]
+            self.assertEqual(marker["label"], label)
+            self.assertEqual(marker["stableKey"], f"ax0.line.label.{label}")
+            self.assertEqual(marker["identity"]["seriesKey"], marker["stableKey"])
+            self.assertEqual(marker["identity"]["relation"]["legendTextId"], text_gid)
+
+        scatter_marker = objects["legend_collection.0.1"]
+        self.assertEqual(scatter_marker["label"], "Points")
+        self.assertEqual(
+            scatter_marker["identity"]["relation"]["legendTextId"],
+            "legend_text.0.1",
+        )
 
     def test_legend_layout_rebuild_keeps_large_marker_aligned_and_inside_frame(self):
         import matplotlib.pyplot as plt

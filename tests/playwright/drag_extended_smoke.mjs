@@ -174,10 +174,24 @@ async function findUnsupportedLineBox(page) {
       .map((node) => {
         const id = node.id || '';
         const rect = node.getBoundingClientRect();
+        const path = node instanceof SVGGeometryElement
+          ? node
+          : node.querySelector('path');
+        let x = rect.left + rect.width / 2;
+        let y = rect.top + rect.height / 2;
+        if (path instanceof SVGGeometryElement) {
+          const point = path.getPointAtLength(path.getTotalLength() * 0.08);
+          const matrix = path.getScreenCTM();
+          if (matrix) {
+            const screenPoint = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+            x = screenPoint.x;
+            y = screenPoint.y;
+          }
+        }
         return {
           id,
-          x: rect.left + rect.width / 2,
-          y: rect.top + rect.height / 2,
+          x,
+          y,
           width: rect.width,
           height: rect.height,
         };
@@ -354,6 +368,41 @@ async function setSelectedGidsAndReload(page, gids) {
   await clickVisibleText(page, '属性编辑', 3000);
 }
 
+async function clearSelectionInUi(page) {
+  const clearButton = page.getByRole('button', { name: /^取消选择$/ }).first();
+  if (await clearButton.isVisible({ timeout: 1000 }).catch(() => false)) {
+    await clearButton.click();
+    await page.waitForTimeout(300);
+  }
+  return !(await getBodyText(page)).includes('批量编辑已选图元');
+}
+
+async function selectTextBoxesWithControl(page, labels) {
+  const states = [];
+  for (const label of labels) {
+    const box = await findBoxByText(page, label);
+    if (!box) return { selected: [], states, body: await getBodyText(page) };
+    await page.keyboard.down('Control');
+    try {
+      await page.mouse.click(box.x, box.y);
+    } finally {
+      await page.keyboard.up('Control');
+    }
+    await page.waitForTimeout(250);
+    const actual = await page.evaluate(() => {
+      const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+      const state = raw ? JSON.parse(raw) : {};
+      return Array.isArray(state.selectedGids) ? state.selectedGids : [];
+    });
+    states.push({ label, expectedGid: box.id, actual });
+  }
+  return {
+    selected: states.at(-1)?.actual || [],
+    states,
+    body: await getBodyText(page),
+  };
+}
+
 async function injectRNativeCoordinateFixture(page) {
   const svg = [
     '<svg width="420" height="260" viewBox="0 0 420 260" xmlns="http://www.w3.org/2000/svg">',
@@ -394,38 +443,41 @@ async function injectRNativeCoordinateFixture(page) {
     script_language: 'r',
     figure: { width: 120, height: 80, unit: 'mm', dpi: 300 },
   };
-  await page.evaluate(({ svg, manifest, spec }) => {
-    const figSession = {
-      sessionId: 'drag-r-protection-fixture',
-      script: spec.script,
-      language: 'r',
-      dataPayload: {},
-      editLog: [],
-      revision: 1,
-      svg,
-      manifest,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    window.sessionStorage.setItem('scifigure:app-state:v2', JSON.stringify({
-      spec,
-      history: [spec],
-      historyIndex: 0,
-      projectId: null,
-      projectName: 'Drag R native protection fixture',
-      projectFigures: {},
-      activeFigureId: 'fig_1',
-      datasets: [],
-      selectedGids: [],
-      projectHistory: {},
-      figSession,
-      renderLog: ['> Drag R native fixture ready'],
-      currentView: 'workspace',
-      subView: 'home',
-    }));
-  }, { svg, manifest, spec });
-  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
-  await waitForPreviewReady(page);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await page.evaluate(({ svg, manifest, spec }) => {
+      const figSession = {
+        sessionId: 'drag-r-protection-fixture',
+        script: spec.script,
+        language: 'r',
+        dataPayload: {},
+        editLog: [],
+        revision: 1,
+        svg,
+        manifest,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      window.sessionStorage.setItem('scifigure:app-state:v2', JSON.stringify({
+        spec,
+        history: [spec],
+        historyIndex: 0,
+        projectId: null,
+        projectName: 'Drag R native protection fixture',
+        projectFigures: {},
+        activeFigureId: 'fig_1',
+        datasets: [],
+        selectedGids: [],
+        projectHistory: {},
+        figSession,
+        renderLog: ['> Drag R native fixture ready'],
+        currentView: 'workspace',
+        subView: 'home',
+      }));
+    }, { svg, manifest, spec });
+    await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+    await waitForPreviewReady(page);
+    if (await findBoxByGid(page, 'r.text.0')) break;
+  }
   await clickVisibleText(page, '属性编辑', 3000);
 }
 
@@ -475,7 +527,34 @@ async function run() {
     } else {
       record('D0-fixture', 'PASS', `found text boxes ${boxA.id}, ${boxB.id}`);
 
-      await setSelectedGidsAndReload(page, []);
+      const dragModeOn = await ensureDragMode(page, true);
+      const multiLabels = ['DRAG_A', 'DRAG_B', ...(boxC ? ['DRAG_C'] : [])];
+      const multiSelection = await selectTextBoxesWithControl(page, multiLabels);
+      const expectedMultiCount = boxC ? 3 : 2;
+      const selectionReady = multiSelection.selected.length === expectedMultiCount
+        && multiSelection.body.includes(`已选择 ${expectedMultiCount} 个对象`);
+      const freshBoxA = await findBoxByText(page, 'DRAG_A');
+      await dragBox(page, freshBoxA || boxA, 70, 25);
+      const bodyAfterMultiDrag = await getBodyText(page);
+      const multiConfirm = bodyAfterMultiDrag.includes(`已累计移动 ${expectedMultiCount} 个文本对象`);
+      const confirmStart = apiRequests.length;
+      const confirmed = multiConfirm && await clickVisibleText(page, '确认位置', 3000);
+      if (confirmed) {
+        await waitForApiSettle(page, confirmStart, 30000);
+        await waitForPreviewReady(page);
+      }
+      const patchRequests = apiRequests.slice(confirmStart).filter((r) => r.url.includes('/api/figure/patch'));
+      const patchBody = parseJson(patchRequests[0]?.postData);
+      const positionPatches = Array.isArray(patchBody?.patches)
+        ? patchBody.patches.filter((patch) => patch?.prop === 'position')
+        : [];
+      record(
+        'D1-multi-drag',
+        dragModeOn && selectionReady && multiConfirm && confirmed && patchRequests.length === 1 && positionPatches.length === expectedMultiCount ? 'PASS' : 'FAIL',
+        `dragMode=${dragModeOn}, selectionReady=${selectionReady}, selected=${multiSelection.selected.join(',')}, states=${JSON.stringify(multiSelection.states)}, confirmBar=${multiConfirm}, confirmed=${confirmed}, patchRequests=${patchRequests.length}, positionPatches=${positionPatches.length}`,
+      );
+
+      await clearSelectionInUi(page);
       const sequentialDragModeOn = await ensureDragMode(page, true);
       const firstDragGeometry = await dragBox(page, await findBoxByText(page, 'DRAG_A'), 70, 25);
       diagnostics.firstDragGeometry = firstDragGeometry;
@@ -506,30 +585,6 @@ async function run() {
         'D1-sequential-drag',
         sequentialDragModeOn && firstSequentialPending && secondSequentialPending && sequentialConfirmed && sequentialPatchRequests.length === 1 && sequentialPositionPatches.length === 2 && hasDistinctSequentialGids ? 'PASS' : 'FAIL',
         `dragMode=${sequentialDragModeOn}, firstPending=${firstSequentialPending}, secondPending=${secondSequentialPending}, confirmed=${sequentialConfirmed}, patchRequests=${sequentialPatchRequests.length}, positionPatches=${sequentialPositionPatches.length}, gids=${sequentialGids.join(',')}`,
-      );
-
-      await setSelectedGidsAndReload(page, [boxA.id, boxB.id, boxC?.id].filter(Boolean));
-      const dragModeOn = await ensureDragMode(page, true);
-      const freshBoxA = await findBoxByText(page, 'DRAG_A');
-      await dragBox(page, freshBoxA || boxA, 70, 25);
-      const bodyAfterMultiDrag = await getBodyText(page);
-      const multiConfirm = bodyAfterMultiDrag.includes(`已累计移动 ${boxC ? 3 : 2} 个文本对象`);
-      const confirmStart = apiRequests.length;
-      const confirmed = multiConfirm && await clickVisibleText(page, '确认位置', 3000);
-      if (confirmed) {
-        await waitForApiSettle(page, confirmStart, 30000);
-        await waitForPreviewReady(page);
-      }
-      const patchRequests = apiRequests.slice(confirmStart).filter((r) => r.url.includes('/api/figure/patch'));
-      const patchBody = parseJson(patchRequests[0]?.postData);
-      const positionPatches = Array.isArray(patchBody?.patches)
-        ? patchBody.patches.filter((patch) => patch?.prop === 'position')
-        : [];
-      const expectedMultiCount = boxC ? 3 : 2;
-      record(
-        'D1-multi-drag',
-        dragModeOn && multiConfirm && confirmed && patchRequests.length === 1 && positionPatches.length === expectedMultiCount ? 'PASS' : 'FAIL',
-        `dragMode=${dragModeOn}, confirmBar=${multiConfirm}, confirmed=${confirmed}, patchRequests=${patchRequests.length}, positionPatches=${positionPatches.length}`,
       );
 
       await setSelectedGidsAndReload(page, []);
@@ -641,7 +696,7 @@ async function run() {
         );
       }
 
-      await setSelectedGidsAndReload(page, [boxA.id]);
+      await clearSelectionInUi(page);
       await ensureDragMode(page, true);
       await dragBox(page, await findBoxByText(page, 'DRAG_A'), 45, 18);
       const cancelBody = await getBodyText(page);

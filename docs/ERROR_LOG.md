@@ -1,7 +1,7 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-16 23:13:24 +08:00
+> 最后修改时间：2026-07-30 02:46:41 +08:00
 
 ---
 
@@ -2430,3 +2430,178 @@ Workbook parsing failed: [Errno 13] Permission denied: '/work/input.xlsx'
 - 新增受认证 API 根路径时，必须同步加入中央认证匹配器并增加请求头断言。
 - 页面级组件不得绕过中央 refresh/retry 链路自行管理 Bearer Token。
 - 认证回归不能只 mock `200` 响应，必须验证实际发出的 Authorization 请求头。
+- 通用 artist class 不能证明复杂图元来源；专用语义必须来自可信调用 provenance 或等强证据。
+- 语义 kind 升级不得改变已持久化的 GID/stableKey/seriesKey，除非提供版本化迁移和旧项目回归。
+- 新专用 kind 必须同步 renderer reader/editable、binding、schema、resolver、组件中心、配色和完整用户链路。
+- local 属性与 backend 属性必须由 capability 决定；测试不得通过伪报 mode 把 local 路径冒充 renderer 重放。
+- 专用对象不得开放会改变科学含义的数据参数，除非另有明确产品与审计门禁。
+
+---
+
+## 2026-07-19 04:59:37 +08:00 contour 属性无 Draft、子层绕过与旧项目身份兼容
+
+**状态与级别**
+
+- 状态：已修复并通过两套 Matplotlib、浏览器、跨 Figure、导出和旧项目专项回归；尚未提交、推送或部署。
+- 级别：P0 编辑正确性。不会删除源数据，但可能让可用属性显示“无法绑定”、把编辑写到 contour 内部子层，或让旧项目在版本差异后误判身份漂移。
+
+**现象**
+
+- 组件中心能够显示 contour 的 `cmap/vmin/vmax`，但修改后不生成 Draft；`alpha` 等部分属性却正常。
+- `contour/contourf` 在不同 Matplotlib 版本中可能表现为一个 `ContourSet` 或多个 collection，旧 editLog 的内部 GID 和 fingerprint 容易漂移。
+- 虽然专用组件卡只展示 contour 父对象，用户仍可能从 SVG/图层选择子 collection，再通过普通批量属性入口生成新的子层 editLog。
+- 项目级代码 patch 重绘曾丢失新返回的 manifest、codeSlice 和 fingerprint，后续编辑可能继续使用过期对象模型。
+
+**根因**
+
+- 组件意图把所有属性硬编码为 `crossFigure: allow`；严格 resolver 因此要求 `cross_figure` capability，并把只允许 object/group 的科学属性当作作用域不安全跳过。
+- 旧批量能力回退只按 `kind=collection` 判断，没有优先尊重 `role=contour_child_collection`、`parentOwned` 和空 capability 列表。
+- Matplotlib 3.7/3.8 的 contour 内部 artist 结构不同，不能把内部 collection class 或数量作为稳定产品身份。
+- 代码重绘响应合并遗漏了新的 Figure 语义字段。
+
+**修复**
+
+- renderer 输出 `contour`/`contourf` 专用父对象、父子 relation、mappable/colorbar relation 和结构 v2 fingerprint；`levels/X/Y/Z/paths/segments` 保持只读。
+- 新增按属性能力计算的跨 Figure 策略：只有全部目标明确声明 `cross_figure` 才允许 fanout，否则使用当前对象作用域。
+- contour child 标记 `contour_child_collection` 与 `parentOwned`；组件、配色和普通批量面板都不再产生新的子层 patch，并向用户显示父对象托管说明。
+- 旧 identity-bearing child editLog 仅在 stableKey/seriesKey 一致且差异只限 fingerprint 时兼容；其他身份漂移继续拒绝。
+- 项目代码重绘保留 previewSvg、manifest、codeSlice 和 fingerprint；导出 warning 按目标 Figure 过滤。
+
+**验证**
+
+- Vitest 143 文件/923 项通过；Matplotlib 3.7.2 和 3.8.4 均为 Python 105/105。
+- 组件中心 30/30、Python 完整用户链路、跨 Figure 11/11、语义中心 11/11 通过。
+- SVG/PNG/PDF/TIFF、子图导出、快照恢复并发/文件事务和旧 contour 项目加载/PUT/history/export/restore 通过。
+- R renderer 31/31、R 浏览器 5/5、R 安全预检、生产构建和仓库数据边界通过。
+- `npm run data:audit`：25 用户、121 项目、263 文件、101 导出资产，完整性问题 0；23 条历史测试账号警告未清理。
+
+**防复发规则**
+
+- 入口不得因为“希望支持跨 Figure”就无条件声明 `allow`；必须由目标属性 capability 决定。
+- 专用父对象的内部 child 只用于关系、渲染和旧历史兼容；现代 UI 不得生成新的 child editLog。
+- 兼容 Matplotlib 版本差异只能放宽已证明会变化的字段，不得同时忽略 stableKey、seriesKey 或其他 identity 字段。
+- 新复杂对象必须覆盖当前 Figure、跨 Figure、旧项目、四格式导出和快照恢复，不能只验证 renderer setter。
+
+---
+
+## 2026-07-19 04:59:37 +08:00 拖拽命中吸附错误、多选被覆盖与测试状态污染
+
+**状态与级别**
+
+- 状态：已修复并由真实 Ctrl 三选和完整拖拽浏览器门禁验证；尚未提交、推送或部署。
+- 级别：P0 用户编辑正确性。错误可能把用户拖动线条的动作记到附近文字，或把上一个未确认文本与下一次 annotation 一起提交。
+
+**现象**
+
+- 拖拽模式点击明确的只读线条时，有时不显示“不支持拖拽”，反而进入附近文本的位置确认。
+- Ctrl/Shift 连续选择多个文字后，选择可能退回单个对象，无法整体拖动。
+- 一次错误命中的 pending 文本未清理时，下一次 annotation 拖动会把两个对象合并进同一 patch batch。
+- 旧测试直接修改 `sessionStorage.selectedGids`，与每 Figure 选择缓存和自动保存竞争，既可能制造假失败，也无法证明真实用户操作。
+
+**根因**
+
+- 命中函数在已经找到有效但不可拖拽的 GID 后仍继续扫描附近文本，覆盖了更精确的事件目标。
+- 修饰键分支先调用多选回调，随后又调用单选回调；快速连续操作时内部 `selectedGidsRef` 也没有同步更新。
+- 测试场景先移动文字导致后续文字重叠，又使用整条折线包围框中心和会话注入，命中证据不可靠。
+
+**修复**
+
+- 已命中有效只读对象时立即保留该 GID，不再吸附附近文本；只有目标本身是已 pending 的可拖拽文字时才寻找下一个候选。
+- Ctrl/Shift 分支只提交多选状态，并同步更新内部选择引用，不再调用会覆盖数组的单选回调。
+- 浏览器回归改为在原始非重叠位置真实 Ctrl 点击三个文字，再整体拖动并确认；顺序拖拽、取消和只读命中作为后续独立场景。
+- 折线只读用例从真实 SVG path 的 8% 位置取屏幕坐标，避免包围框中心被移动后的文字覆盖；R native fixture 增加状态安装验证重试。
+
+**验证**
+
+- `test:drag-extended-smoke` 10/10：Ctrl 三选生成 3 个 position patch；顺序拖动生成 2 个不同 GID；取消不请求 patch；只读线条仅提示；annotation 只提交自身；R native 不生成位置 patch。
+- `test:component-container-smoke` 30/30、`test:semantic-smoke` 11/11、TypeScript、Vitest 和生产构建通过。
+
+**防复发规则**
+
+- SVG 事件目标已有有效 GID 时，几何邻近搜索不能覆盖更精确的命中结果。
+- 多选回调与单选回调不得在同一修饰键操作中连续写同一状态。
+- 拖拽测试必须通过真实指针/键盘操作并读取实际选择结果；禁止仅修改持久化状态冒充用户多选。
+- 连续场景必须清理选择和 pending 状态，且点击点应落在真实绘制路径而不是大包围框中心。
+
+---
+
+## 2026-07-19 06:19:06 +08:00 跨 Figure 重放冲突、批量导出部分落库与 contour 子层多选
+
+**状态与级别**
+
+- 状态：已修复，新增失败回归后通过全部受影响门禁和独立复审；尚未提交、推送或部署。
+- 级别：P0 状态一致性。错误不会删除源数据，但可能让项目级代码修改在其他 Figure 已过期时仍写入、让批量导出留下部分资产，或让 contour 子层的 Ctrl/Shift 多选被覆盖。
+
+**现象**
+
+- 从 `fig_1` 发起项目级代码 patch 时，renderer 可能报告 `fig_2` 的旧 editLog 无法重放；旧路径只核对当前请求的新 patch，未把其他 Figure 的 warning 当作整批冲突。
+- 无 `figureId` 的全项目导出逐 Figure 渲染并立即保存；若 `fig_1` 成功、`fig_2` 出现 replay warning，接口返回 409 前已经留下 `fig_1` 资产和恢复快照。
+- SVG contour child 已重定向到父对象，但开启拖拽微调后，非拖拽对象分支会用单选覆盖 Ctrl/Shift 选择；原测试只派发 `click`，没有覆盖 `pointerdown -> click` 顺序。
+
+**根因**
+
+- 项目代码 patch 的冲突检查没有按 Figure 遍历完整 effective editLog。
+- 导出把 renderer 校验与资产持久化放在同一个逐 Figure 循环中，没有先完成全部目标的只读预检。
+- 拖拽模式的不可拖拽命中分支没有复用 modifier toggle 语义，也没有抑制后续 click 的二次处理。
+
+**修复**
+
+- 新增按 Figure 收集 renderer replay conflict 的检查；任一 Figure 冲突时恢复内存 session 的 script/editLog/revision，并在任何项目、session、history、cache、export anchor 或 snapshot 写入前返回 conflict。
+- 全项目导出拆成两阶段：先渲染并检查全部 target Figure；全部通过后才保存主图、子图资产和编辑快照。任一 replay warning 返回 `EXPORT_REPLAY_CONFLICT` 且零资产写入。
+- contour child 点击统一重定向到父对象；拖拽模式下 Ctrl/Meta/Shift 对不可拖拽父对象使用同步 toggle，只更新多选，不调用单选回调，并抑制同一次 click 二次处理。
+- 浏览器测试使用明确的 `pointerdown -> pointerup -> click` 序列覆盖拖拽模式，不再用单独 click 代替完整事件链。
+
+**验证**
+
+- `test:replay-warning-persistence` 通过：其他 Figure 的 stale edit 阻断项目代码 patch；单 Figure 和全项目导出冲突均不写资产或快照；持久化状态逐字段保持不变。
+- `test:component-container-smoke` 31/31：普通点击和拖拽模式 modifier 点击都只选择 contour/contourf 父对象，两个父对象可同时保留。
+- `test:export-matrix-smoke`、`test:python-semantic-workflow`、`test:drag-extended-smoke` 10/10、跨 Figure 11/11、R semantic 5/5 通过。
+- TypeScript、Vitest 143 文件/923 项、两套升级验证环境 Python 105/105、生产构建、安全、用户隔离、renderer 沙箱和仓库边界通过。
+- `npm run data:audit`：25 用户、121 项目、263 文件、101 导出资产，完整性问题 0；23 条历史测试账号警告保持不变。
+- 最终独立 5.5 high 复审：PASS，HIGH/MEDIUM/LOW 均为 0。
+
+**防复发规则**
+
+- 项目级代码重绘必须按全部 Figure 的实际 editLog 检查 warning，不能只检查当前 Figure 或本次新增 patch。
+- 批量导出在全部目标通过 renderer 重放检查前不得创建任何主图、子图资产或恢复快照。
+- 同一 modifier 操作不得同时调用多选和单选写入；测试必须覆盖 pointerdown 与 click 的组合顺序。
+- 生产 renderer 固定唯一镜像和精确依赖版本；旧 Matplotlib 环境只作为升级期历史项目兼容门禁，不作为长期多版本支持承诺。
+
+---
+
+## 2026-07-30 04:35:45 +08:00 V2 组件布尔控件缺口与跨 Figure 测试误点
+
+**状态与级别**
+
+- 状态：已修复并通过隔离浏览器回归；当前仅存在于生产集成候选，尚未部署。
+- 级别：P1 编辑入口与验证可靠性。图例边框在 V2 组件中心没有控件；旧测试定位器还可能把刻度字号操作误点到标题字号。
+
+**现象**
+
+- 组件中心开启 V2 后，网格显隐和图例背景框测试不产生 Draft。
+- 跨 Figure 字体回归报告生成 `title.0:fontsize`，而用户场景要求 `axis.x.*:tick_labelsize`。
+- contour 跨 Figure 回归显示 `changed=false`，但 renderer 已输出正确的 contour/contourf 父对象能力。
+
+**根因**
+
+- 通用 `visible` descriptor 已存在，但 V2 开关把既有 DOM 角色从 `boolean` 改为 `toggle`；`frameon` 未注册到属性 descriptor。
+- 字体测试按整个右侧栏祖先文本查找 `fontsize`，V2 下会命中第一个标题控件，没有使用 `data-font-group="xticks"` 与 canonical `data-property-control="fontsize"`。
+- contour 测试只寻找旧版 `range` 透明度滑块，没有兼容 V2 的 number descriptor 控件。
+
+**修复**
+
+- 注册 `frameon` 布尔 descriptor，并恢复开关的 `data-param-role="boolean"` 兼容契约。
+- 增加 grid `visible` 与 legend `frameon` 的 capability 投影单测。
+- 跨 Figure 浏览器助手优先按 `data-font-group` 和 `data-property-control` 定位 V2 控件，同时保留旧控件回退；透明度助手同时支持 V2 number 和 legacy range。
+
+**验证**
+
+- `test:component-container-smoke`：35/35，通过网格 backend Draft、图例 `frameon`、等高线父对象和分组控件。
+- `test:cross-figure-smoke`：11/11，刻度字号只写 `axis.x.*:tick_labelsize`，contour/contourf 只写父对象。
+- `test:drag-extended-smoke`、`test:export-matrix-smoke`、TypeScript、Vitest 43 文件/284 项、Python renderer 63/63 均通过。
+
+**防复发规则**
+
+- 新旧控件并存期间，自动化必须以语义容器和 canonical control key 定位，不得依赖整个侧栏的祖先文本或控件出现顺序。
+- descriptor 控件替换旧控件前，必须覆盖所有原有布尔属性，并保留稳定的测试与可访问性 DOM 契约。
+- 测试出现 `changed=false` 时先证明目标控件是否被真实操作，不能把定位器失效误判为 resolver 或 renderer 失败。

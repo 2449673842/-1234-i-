@@ -8,7 +8,11 @@ import { compileEditingIntentWithControlledResolver } from '../utils/targetResol
 import { recordTargetResolverShadowDiagnostic } from '../utils/targetResolverDiagnostics';
 import { recordPropertyProjectionShadowDiagnostic } from '../utils/propertyProjectionDiagnostics';
 import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
-import { resolvePropertyPatchMode } from '../utils/propertyPatchMode';
+import {
+  isParentOwnedManifestObject,
+  resolveCrossFigurePolicy,
+  resolvePropertyPatchMode,
+} from '../utils/propertyPatchMode';
 import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolvePaletteColorFallbackTargets, resolvePaletteTargets } from '../utils/paletteTargetResolver';
 import { projectPaletteColorControl } from '../utils/palettePropertyProjection';
 import { computeEqualAxesPhysicalLayout } from '../utils/subplotPhysicalLayout';
@@ -59,6 +63,17 @@ const LEGEND_LAYOUT_PROPS = new Set([
   'columnspacing',
   'borderpad',
   'borderaxespad',
+]);
+const STEM_PROPS = new Set([
+  'color',
+  'stem_color',
+  'stem_linewidth',
+  'marker_color',
+  'baseline_color',
+  'baseline_linewidth',
+  'baseline_visible',
+  'markersize',
+  'alpha',
 ]);
 const FONT_TARGET_RESOLVER_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
@@ -557,6 +572,7 @@ export function RightSidebar({
   const [lastSelectedGroupId, setLastSelectedGroupId] = useState<string | null>(null);
   const [componentSubplotScope, setComponentSubplotScope] = useState<string>('all');
   const [fontSubplotScope, setFontSubplotScope] = useState<string>('all');
+  const [componentPatchNotice, setComponentPatchNotice] = useState<string | null>(null);
   const [fontBrushStyle, setFontBrushStyle] = useState<FontBrushStyle | null>(null);
   const textInputRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const [textSelections, setTextSelections] = useState<Record<string, { start: number; end: number }>>({});
@@ -573,6 +589,7 @@ export function RightSidebar({
   useEffect(() => {
     setSelectedGroupIds(new Set());
     setLastSelectedGroupId(null);
+    setComponentPatchNotice(null);
     setPreservedVerticalGap(null);
   }, [figSession?.revision]);
 
@@ -903,6 +920,9 @@ export function RightSidebar({
   };
   const getSemanticObjectLabel = (obj: ManifestObject) => {
     const id = obj.id;
+    if (obj.kind === 'fill_between' || obj.role === 'fill_between_series') return '置信区间带';
+    if (obj.kind === 'contour') return '等高线';
+    if (obj.kind === 'contourf') return '填充等高线';
     if (id.startsWith('title.')) return '主标题';
     if (id.startsWith('suptitle.')) return '总标题';
     if (id.startsWith('xlabel.')) return 'X 轴标签';
@@ -1507,6 +1527,8 @@ export function RightSidebar({
       boxplot_container: '箱线图',
       violinplot_container: '小提琴图',
       stem_container: '茎叶图',
+      contour: '等高线',
+      contourf: '填充等高线',
     };
     return labels[kind] || kind;
   };
@@ -2001,6 +2023,9 @@ export function RightSidebar({
           {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="已修改（未保存至引擎）" />}
         </span>
         <select
+          data-param-role="select"
+          data-param-gid={gid || undefined}
+          data-param-prop={prop}
           className="border border-slate-200 rounded p-1.5 w-full outline-none bg-white text-slate-700 text-xs"
           value={value}
           onChange={(event) => onValue(event.target.value)}
@@ -2066,6 +2091,9 @@ export function RightSidebar({
       <div key={`${gid}-${prop}`} className="flex flex-col gap-1.5 text-sm">
         <span className="text-slate-600 font-medium">{PROP_LABELS[prop] || prop}</span>
         <select
+          data-param-role="select"
+          data-param-gid={gid}
+          data-param-prop={prop}
           className="border border-slate-200 rounded p-1.5 text-xs text-slate-700 bg-white focus:border-blue-500 outline-none w-full"
           value={currentValue || 'viridis'}
           onChange={(e) => onChange(e.target.value)}
@@ -3720,15 +3748,19 @@ export function RightSidebar({
 
   const supportsBatchProp = (obj: ManifestObject | undefined, prop: string): boolean => {
     if (!obj) return false;
+    if (isParentOwnedManifestObject(obj)) return false;
     const declaredCapability = obj.propertyCapabilities?.find(capability => capability.prop === prop);
     if (declaredCapability) return declaredCapability.replay !== 'unsupported';
     if (obj.editable.includes(prop) && !getUnsupportedProps(obj).includes(prop)) return true;
     if (prop === 'visible') return true;
-    if (prop === 'alpha') return ['line', 'patch', 'collection', 'legend', 'grid', 'text', 'figure', 'bar_container', 'errorbar_container', 'boxplot_container', 'violinplot_container'].includes(obj.kind);
-    if (prop === 'color') return ['line', 'patch', 'collection', 'text', 'spine', 'spine_group', 'grid', 'xtick', 'ytick', 'bar_container', 'errorbar_container', 'boxplot_container', 'violinplot_container'].includes(obj.kind);
-    if (prop === 'facecolor') return ['patch', 'collection', 'legend', 'bar_container', 'violinplot_container'].includes(obj.kind);
-    if (prop === 'edgecolor') return ['patch', 'collection', 'legend', 'bar_container', 'violinplot_container'].includes(obj.kind);
-    if (prop === 'linewidth') return ['line', 'patch', 'collection', 'spine', 'spine_group', 'grid', 'bar_container', 'errorbar_container', 'boxplot_container', 'violinplot_container'].includes(obj.kind);
+    if (STEM_PROPS.has(prop)) return obj.kind === 'stem_container' && !getUnsupportedProps(obj).includes(prop);
+    if (prop === 'alpha') return ['line', 'patch', 'collection', 'fill_between', 'legend', 'grid', 'text', 'figure', 'bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container', 'heatmap', 'contour', 'contourf'].includes(obj.kind);
+    if (prop === 'color') return ['line', 'patch', 'collection', 'text', 'spine', 'spine_group', 'grid', 'xtick', 'ytick', 'bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container'].includes(obj.kind);
+    if (prop === 'facecolor') return ['patch', 'collection', 'fill_between', 'legend', 'bar_container', 'violinplot_container'].includes(obj.kind);
+    if (prop === 'edgecolor') return ['patch', 'collection', 'fill_between', 'legend', 'bar_container', 'violinplot_container'].includes(obj.kind);
+    if (prop === 'linewidth') return ['line', 'patch', 'collection', 'fill_between', 'spine', 'spine_group', 'grid', 'bar_container', 'errorbar_container', 'boxplot_container', 'violinplot_container', 'contour'].includes(obj.kind);
+    if (['cmap', 'vmin', 'vmax'].includes(prop)) return ['heatmap', 'contour', 'contourf'].includes(obj.kind);
+    if (prop === 'zorder') return ['line', 'patch', 'collection', 'fill_between', 'bar_container', 'errorbar_container', 'stem_container', 'boxplot_container', 'violinplot_container', 'heatmap', 'contour', 'contourf'].includes(obj.kind);
     if (['elinewidth', 'capsize', 'capthick'].includes(prop)) return obj.kind === 'errorbar_container';
     if (prop === 'box_color' || prop === 'median_color') return obj.kind === 'boxplot_container';
     if (prop === 'markersize') return obj.kind === 'line';
@@ -3744,7 +3776,7 @@ export function RightSidebar({
     if (['left', 'bottom', 'width', 'height', 'tick_fontsize', 'label'].includes(prop)) {
       return obj.kind === 'colorbar';
     }
-    if (prop === 'linestyle') return ['line', 'grid', 'spine', 'spine_group'].includes(obj.kind);
+    if (prop === 'linestyle') return ['line', 'grid', 'spine', 'spine_group', 'contour'].includes(obj.kind);
     if (['tick_rotation', 'tick_label_dx', 'tick_label_dy'].includes(prop)) {
       return ['axis_x', 'axis_y'].includes(obj.kind);
     }
@@ -3824,6 +3856,7 @@ export function RightSidebar({
     const stemContainerObjects = scopedObjects.filter(obj => obj.kind === 'stem_container');
     const boxplotContainerObjects = scopedObjects.filter(obj => obj.kind === 'boxplot_container');
     const violinContainerObjects = scopedObjects.filter(obj => obj.kind === 'violinplot_container');
+    const contourObjects = scopedObjects.filter(obj => obj.kind === 'contour' || obj.kind === 'contourf');
     const claimedChildIds = new Set(
       [
         ...barContainerObjects,
@@ -3831,6 +3864,7 @@ export function RightSidebar({
         ...stemContainerObjects,
         ...boxplotContainerObjects,
         ...violinContainerObjects,
+        ...contourObjects,
       ].flatMap(container => container.children || []),
     );
     const claimedContainerIds = new Set([
@@ -3839,6 +3873,7 @@ export function RightSidebar({
       ...stemContainerObjects,
       ...boxplotContainerObjects,
       ...violinContainerObjects,
+      ...contourObjects,
     ].map(container => container.id));
     const isClaimedContainerChild = (obj: ManifestObject) => (
       COMPONENT_TARGET_RESOLVER_V2_ENABLED && (
@@ -3848,6 +3883,9 @@ export function RightSidebar({
     );
     const lineObjects = scopedObjects.filter(obj => obj.kind === 'line' && !isLegendChild(obj) && !isMarkerLine(obj) && !isClaimedContainerChild(obj));
     const pointObjects = scopedObjects.filter(obj => !isLegendChild(obj) && !isClaimedContainerChild(obj) && (isMarkerLine(obj) || isScatterCollection(obj)));
+    const bandObjects = scopedObjects.filter(obj => (
+      obj.kind === 'fill_between' || obj.role === 'fill_between_series'
+    ) && !isLegendChild(obj) && !isClaimedContainerChild(obj));
     const legacyErrorbarObjects = scopedObjects.filter(obj => obj.kind === 'collection' && !isLegendChild(obj) && !isScatterCollection(obj) && !isClaimedContainerChild(obj));
     const errorbarObjects = COMPONENT_TARGET_RESOLVER_V2_ENABLED && errorbarContainerObjects.length > 0
       ? errorbarContainerObjects
@@ -3924,6 +3962,23 @@ export function RightSidebar({
         colorProp: 'facecolor',
         edgeColorProp: 'edgecolor',
         sizeProp: 'size',
+      },
+      {
+        id: 'bands',
+        label: '置信区间带',
+        description: 'fill_between 数据带，只调整填充色、边框色、透明度、线宽和层级，不改变数据上下界。',
+        objects: bandObjects,
+        colorProp: 'facecolor',
+        edgeColorProp: 'edgecolor',
+        sizeProp: null,
+      },
+      {
+        id: 'contours',
+        label: '等高线/填充等高线',
+        description: 'ContourSet 父对象统一控制色带、色阶、透明度、显隐和层级；levels 与几何路径只读，内部 collection 不作为散点或独立组件编辑。',
+        objects: contourObjects,
+        colorProp: null,
+        sizeProp: null,
       },
       {
         id: 'bars',
@@ -4038,6 +4093,9 @@ export function RightSidebar({
       if (items.every(obj => obj.kind === 'grid')) return 'grid';
       if (items.every(isLegendChild)) return 'legend_marker';
       if (items.every(obj => obj.kind === 'line' && !isLegendChild(obj))) return 'data_line';
+      if (items.every(obj => obj.kind === 'fill_between' || obj.role === 'fill_between_series')) return 'data_band';
+      if (items.every(obj => obj.kind === 'contour' || obj.role === 'contour_series')) return 'data_contour';
+      if (items.every(obj => obj.kind === 'contourf' || obj.role === 'contourf_series')) return 'data_contourf';
       if (items.every(obj => obj.kind === 'collection' && !isLegendChild(obj))) return 'data_point';
       if (items.every(obj => obj.role === 'annotation_arrow')) return 'annotation_arrow';
       if (items.every(obj => obj.kind === 'patch' && !isLegendChild(obj))) return 'data_patch';
@@ -4045,6 +4103,20 @@ export function RightSidebar({
       if (items.every(obj => obj.kind === 'heatmap')) return 'heatmap';
       if (items.every(obj => obj.kind === 'colorbar')) return 'colorbar';
       return undefined;
+    };
+
+    const splitComponentIntentGroups = (items: ManifestObject[]): ManifestObject[][] => {
+      const contourItems = items.filter(obj => obj.kind === 'contour' || obj.role === 'contour_series');
+      const contourfItems = items.filter(obj => obj.kind === 'contourf' || obj.role === 'contourf_series');
+      if (contourItems.length === 0 || contourfItems.length === 0) return [items];
+      const otherItems = items.filter(obj => (
+        !contourItems.includes(obj) && !contourfItems.includes(obj)
+      ));
+      return [
+        contourItems,
+        contourfItems,
+        ...(otherItems.length > 0 ? [otherItems] : []),
+      ];
     };
 
     const buildComponentGroupPatches = (
@@ -4057,22 +4129,25 @@ export function RightSidebar({
         ? items
         : items.filter(obj => supportsBatchProp(obj, prop));
       if (supportedItems.length === 0) return [];
-      const migratedRole = componentRoleForItems(supportedItems);
-      const intent: EditingIntent = {
-        intent: prop === 'visible' ? 'visibility.component' : 'style.component',
-        scope: {
-          selectionMode: 'explicit_objects',
-          objectIds: supportedItems.map(obj => obj.id),
-          targetKinds: Array.from(new Set(supportedItems.map(obj => obj.kind))),
-          ...(COMPONENT_TARGET_RESOLVER_V2_ENABLED && migratedRole ? { targetRole: migratedRole } : {}),
-        },
-        operation: { prop, value },
-        commit: { mode: 'draft', applyAsOneHistoryStep: true },
-        fallback: { onUnsupported: 'skip_with_warning' },
-      };
-      const patches = COMPONENT_TARGET_RESOLVER_V2_ENABLED && migratedRole
-        ? compileComponentIntentPatches(intent)
-        : compileIntentPatches(intent);
+      const patches = splitComponentIntentGroups(supportedItems).flatMap((intentItems) => {
+        const migratedRole = componentRoleForItems(intentItems);
+        const intent: EditingIntent = {
+          intent: prop === 'visible' ? 'visibility.component' : 'style.component',
+          scope: {
+            selectionMode: 'explicit_objects',
+            objectIds: intentItems.map(obj => obj.id),
+            targetKinds: Array.from(new Set(intentItems.map(obj => obj.kind))),
+            ...(COMPONENT_TARGET_RESOLVER_V2_ENABLED && migratedRole ? { targetRole: migratedRole } : {}),
+            crossFigure: resolveCrossFigurePolicy(intentItems, prop),
+          },
+          operation: { prop, value },
+          commit: { mode: 'draft', applyAsOneHistoryStep: true },
+          fallback: { onUnsupported: 'skip_with_warning' },
+        };
+        return COMPONENT_TARGET_RESOLVER_V2_ENABLED && migratedRole
+          ? compileComponentIntentPatches(intent)
+          : compileIntentPatches(intent);
+      });
       if (prop === 'fontsize') {
         patches.push(...buildLegendMarkerScalePatches(supportedItems, value));
       }
@@ -4081,7 +4156,17 @@ export function RightSidebar({
 
     const patchComponentGroup = (items: ManifestObject[], prop: string, value: unknown) => {
       const patches = buildComponentGroupPatches(items, prop, value);
-      if (patches.length > 0) void onPatch(patches);
+      if (patches.length > 0) {
+        setComponentPatchNotice(null);
+        void onPatch(patches);
+        return;
+      }
+      setComponentPatchNotice(`当前选中的组件不支持“${getPropLabel(prop)}”，没有生成可应用的修改。`);
+      console.warn('[ComponentCenter] no supported targets for patch', {
+        prop,
+        requestedIds: items.map(obj => obj.id),
+        requestedKinds: Array.from(new Set(items.map(obj => obj.kind))),
+      });
     };
 
     const projectComponentGroupControls = (items: ManifestObject[], groupId: string) => {
@@ -4129,6 +4214,56 @@ export function RightSidebar({
       if (patches.length > 0) void onPatch(patches);
     };
 
+    const patchComponentFontVariant = (
+      items: ManifestObject[],
+      prop: 'fontweight' | 'fontstyle',
+      value: unknown,
+    ) => {
+      const axisProp = prop === 'fontweight' ? 'tick_fontweight' : 'tick_fontstyle';
+      const directItems = items.filter(obj => supportsBatchProp(obj, prop));
+      const axisItems = items.filter(obj => supportsBatchProp(obj, axisProp));
+      const patches: PatchEntry[] = [];
+
+      if (directItems.length > 0) {
+        const intent: EditingIntent = {
+          intent: 'style.component',
+          scope: {
+            selectionMode: 'explicit_objects',
+            objectIds: directItems.map(obj => obj.id),
+            targetKinds: Array.from(new Set(directItems.map(obj => obj.kind))),
+            crossFigure: resolveCrossFigurePolicy(directItems, prop),
+          },
+          operation: { prop, value },
+          commit: { mode: 'draft', applyAsOneHistoryStep: true },
+          fallback: { onUnsupported: 'skip_with_warning' },
+        };
+        patches.push(...compileIntentPatches(intent));
+      }
+
+      if (axisItems.length > 0) {
+        const intent: EditingIntent = {
+          intent: 'style.component',
+          scope: {
+            selectionMode: 'explicit_objects',
+            objectIds: axisItems.map(obj => obj.id),
+            targetKinds: Array.from(new Set(axisItems.map(obj => obj.kind))),
+            crossFigure: resolveCrossFigurePolicy(axisItems, axisProp),
+          },
+          operation: { prop: axisProp, value },
+          commit: { mode: 'draft', applyAsOneHistoryStep: true },
+          fallback: { onUnsupported: 'skip_with_warning' },
+        };
+        patches.push(...compileIntentPatches(intent));
+      }
+
+      if (patches.length > 0) {
+        setComponentPatchNotice(null);
+        void onPatch(patches);
+      } else {
+        setComponentPatchNotice('当前字体参数无法安全绑定到选中的组件，已跳过。');
+      }
+    };
+
     const patchPointFillColor = (items: ManifestObject[], value: unknown) => {
       const patches = items.flatMap(obj => {
         const prop = obj.kind === 'line' ? 'color' : obj.kind === 'collection' ? 'facecolor' : null;
@@ -4141,6 +4276,7 @@ export function RightSidebar({
             objectIds: [obj.id],
             targetKinds: [obj.kind],
             ...(COMPONENT_TARGET_RESOLVER_V2_ENABLED ? { targetRole } : {}),
+            crossFigure: resolveCrossFigurePolicy([obj], prop),
           },
           operation: { prop, value },
           commit: { mode: 'draft', applyAsOneHistoryStep: true },
@@ -4150,7 +4286,12 @@ export function RightSidebar({
           ? compileComponentIntentPatches(intent)
           : compileIntentPatches(intent);
       });
-      if (patches.length > 0) void onPatch(patches);
+      if (patches.length > 0) {
+        setComponentPatchNotice(null);
+        void onPatch(patches);
+      } else {
+        setComponentPatchNotice('当前点/线填充色无法安全绑定到选中的组件，已跳过。');
+      }
     };
 
     if (componentGroups.length === 0) {
@@ -4166,6 +4307,11 @@ export function RightSidebar({
       <div className="space-y-5">
         {renderPanelTitle('组件中心')}
         <p className="text-xs text-slate-400">按真实 matplotlib 图元聚合，不依赖脚本 label。线、点、误差棒分开控制，避免改错对象。</p>
+        {componentPatchNotice && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-800">
+            {componentPatchNotice}
+          </div>
+        )}
         {allSubplotOptions.length > 0 && (
           <div className="rounded-lg border border-blue-100 bg-blue-50/60 p-3 space-y-2">
             <div className="flex flex-col gap-3">
@@ -4224,6 +4370,16 @@ export function RightSidebar({
           const boxColor = resolvePickerColor(commonComponentProp(targetObjects, 'box_color', '#000000'));
           const medianColor = resolvePickerColor(commonComponentProp(targetObjects, 'median_color', '#000000'));
           const alpha = commonComponentProp(targetObjects, 'alpha', 1) as number | undefined;
+          const cmap = String(commonComponentProp(targetObjects, 'cmap', 'viridis') || 'viridis');
+          const vmin = commonComponentProp(targetObjects, 'vmin', undefined) as number | undefined;
+          const vmax = commonComponentProp(targetObjects, 'vmax', undefined) as number | undefined;
+          const zorder = commonComponentProp(targetObjects, 'zorder', undefined) as number | undefined;
+          const contourLevelSummaries = group.id === 'contours'
+            ? targetObjects
+              .map(obj => Array.isArray(obj.currentProps.levels) ? obj.currentProps.levels : null)
+              .filter(Boolean)
+              .map(levels => (levels as unknown[]).map(level => String(level)).join(', '))
+            : [];
           const visible = targetObjects.every(obj => obj.currentProps.visible !== false);
           const previewObjects = group.objects.slice(0, 8);
           const targetKey = targetObjects.map(obj => obj.id).join('|');
@@ -4362,6 +4518,34 @@ export function RightSidebar({
                 {group.id === 'boxplots' && targetObjects.some(obj => supportsBatchProp(obj, 'median_color')) && (
                   renderColorInput('中位线颜色', medianColor, (value) => patchComponentGroup(targetObjects, 'median_color', value), `component:${group.id}:${targetKey}:median_color`)
                 )}
+                {group.id === 'contours' && (
+                  <div className="space-y-2 rounded-md border border-slate-100 bg-white/80 p-2">
+                    <div className="text-[11px] font-semibold text-slate-500">等高线安全控件</div>
+                    <div className="text-[11px] leading-relaxed text-slate-400">
+                      只修改 ContourSet 父对象样式；levels 和几何路径由数据生成，当前为只读。
+                    </div>
+                    {targetObjects.some(obj => supportsBatchProp(obj, 'cmap')) && (
+                      renderCmapSelect(`component-${group.id}`, 'cmap', cmap, (value) => patchComponentGroup(targetObjects, 'cmap', value))
+                    )}
+                    {targetObjects.some(obj => supportsBatchProp(obj, 'vmin')) && (
+                      renderNumberInput(`component-${group.id}`, 'vmin', vmin, (value) => patchComponentGroup(targetObjects, 'vmin', value), { step: 0.05 })
+                    )}
+                    {targetObjects.some(obj => supportsBatchProp(obj, 'vmax')) && (
+                      renderNumberInput(`component-${group.id}`, 'vmax', vmax, (value) => patchComponentGroup(targetObjects, 'vmax', value), { step: 0.05 })
+                    )}
+                    {targetObjects.some(obj => supportsBatchProp(obj, 'zorder')) && (
+                      renderNumberInput(`component-${group.id}`, 'zorder', zorder, (value) => patchComponentGroup(targetObjects, 'zorder', value), { min: -100, max: 100, step: 0.5 })
+                    )}
+                    {contourLevelSummaries.length > 0 && (
+                      <div className="rounded border border-slate-100 bg-slate-50 px-2 py-1.5 text-[10px] leading-relaxed text-slate-500">
+                        <div className="font-semibold text-slate-500">levels（只读）</div>
+                        <div className="font-mono truncate" title={contourLevelSummaries.join(' | ')}>
+                          {contourLevelSummaries.join(' | ')}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {group.id === 'errorbars' && targetObjects.some(obj => supportsBatchProp(obj, 'elinewidth')) && (
                   renderNumberInput(`component-${group.id}`, 'elinewidth', errorbarLineWidth, (value) => patchComponentGroup(targetObjects, 'elinewidth', value), { min: 0, max: 20, step: 0.25, displayLabel: '误差线宽' })
                 )}
@@ -4446,7 +4630,14 @@ export function RightSidebar({
                   </div>
                 )}
                 {targetObjects.some(obj => supportsBatchProp(obj, 'linestyle')) && (
-                  renderSelectInput('线型', commonComponentProp(targetObjects, 'linestyle', '-') as string, ['-', '--', '-.', ':'], (value) => patchComponentGroup(targetObjects, 'linestyle', value))
+                  renderSelectInput(
+                    '线型',
+                    commonComponentProp(targetObjects, 'linestyle', group.id === 'contours' ? 'solid' : '-') as string,
+                    group.id === 'contours' ? ['solid', 'dashed', 'dashdot', 'dotted'] : ['-', '--', '-.', ':'],
+                    (value) => patchComponentGroup(targetObjects, 'linestyle', value),
+                    `component-${group.id}`,
+                    'linestyle',
+                  )
                 )}
                 {targetObjects.some(obj => supportsBatchProp(obj, 'tick_direction')) && (
                   renderSelectInput('刻度方向', commonComponentProp(targetObjects, 'tick_direction', 'out') as string, ['out', 'in', 'inout'], (value) => patchComponentGroup(targetObjects, 'tick_direction', value))
@@ -4504,6 +4695,9 @@ export function RightSidebar({
                     <span className="text-xs text-slate-500 font-medium">透明度</span>
                     <input
                       type="range"
+                      data-param-role="range"
+                      data-param-group={group.id}
+                      data-param-prop="alpha"
                       min="0"
                       max="1"
                       step="0.05"
@@ -4534,7 +4728,9 @@ export function RightSidebar({
   };
 
   const renderBatchPanel = () => {
-    const batchObjects = objects.filter(o => selectedGids.includes(o.id));
+    const selectedBatchObjects = objects.filter(o => selectedGids.includes(o.id));
+    const parentOwnedObjects = selectedBatchObjects.filter(isParentOwnedManifestObject);
+    const batchObjects = selectedBatchObjects.filter(o => !isParentOwnedManifestObject(o));
     const commonColor = (() => {
       const colors = batchObjects.map(o => o.currentProps.color || o.currentProps.facecolor).filter(Boolean);
       return colors.length > 0 && colors.every(c => c === colors[0]) ? resolvePickerColor(colors[0]) : '#000000';
@@ -4559,9 +4755,7 @@ export function RightSidebar({
     })();
 
     const handleBatchPatch = (prop: string, value: unknown) => {
-      const selectedObjects = selectedGids
-        .map(gid => objects.find(o => o.id === gid))
-        .filter(Boolean) as ManifestObject[];
+      const selectedObjects = batchObjects;
       if (prop === 'fontsize' || prop === 'fontfamily' || prop === 'color') {
         const tickPatches = selectedObjects
           .map(obj => normalizeTickTextPatch(obj.id, prop))
@@ -4623,8 +4817,8 @@ export function RightSidebar({
         // fall through: non-tick objects handled by the loop below
       }
 
-      const patches: PatchEntry[] = selectedGids.map(gid => {
-        const obj = objects.find(o => o.id === gid);
+      const patches: PatchEntry[] = selectedObjects.map(obj => {
+        const gid = obj.id;
         // Skip tick objects that were already routed to axis.x/axis.y above
         if (hasAxisTick && (prop === 'fontsize' || prop === 'fontfamily' || prop === 'color')
           && (gid.startsWith('xtick.') || gid.startsWith('ytick.'))) return null;
@@ -4645,8 +4839,28 @@ export function RightSidebar({
       if (patches.length > 0) void onPatch(patches);
     };
 
+    if (batchObjects.length === 0) {
+      return (
+        <div className="mb-6 space-y-3 rounded-lg border border-amber-200 bg-amber-50/60 p-4 shadow-sm" data-batch-selection-panel="parent-owned">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold text-amber-900">已选择 {selectedGids.length} 个父对象托管图元</h3>
+            <button
+              type="button"
+              onClick={() => onSelectGids?.([])}
+              className="text-xs font-medium text-amber-700 hover:text-amber-900"
+            >
+              取消选择
+            </button>
+          </div>
+          <p className="text-xs leading-relaxed text-amber-800" data-parent-owned-selection-notice="true">
+            等高线子层由对应的等高线/填充等高线父对象统一管理，请在组件中心修改父对象，避免单独改动某一级图层造成身份漂移。
+          </p>
+        </div>
+      );
+    }
+
     return (
-      <div className="mb-6 p-4 border border-indigo-200 rounded-lg bg-indigo-50/30 space-y-4 shadow-sm">
+      <div className="mb-6 p-4 border border-indigo-200 rounded-lg bg-indigo-50/30 space-y-4 shadow-sm" data-batch-selection-panel="editable">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-indigo-900 flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
@@ -4661,6 +4875,11 @@ export function RightSidebar({
           </button>
         </div>
         <div className="space-y-3 pt-2 border-t border-indigo-100">
+          {parentOwnedObjects.length > 0 && (
+            <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800" data-parent-owned-selection-notice="true">
+              已跳过 {parentOwnedObjects.length} 个由等高线父对象托管的子层；以下修改只作用于其余可编辑图元。
+            </p>
+          )}
           {fontObjects.length > 0 && (
             <div className="rounded-md border border-indigo-100 bg-white/70 p-3 space-y-3">
               <div className="text-[11px] font-semibold text-indigo-900">字体批量编辑（文本/标签 {fontObjects.length} 个）</div>

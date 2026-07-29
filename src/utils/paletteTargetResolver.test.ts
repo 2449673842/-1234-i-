@@ -412,4 +412,31 @@ describe('palette target resolver', () => {
       matchColor: '#0f3cf0',
     }]);
   });
+
+  it('does not use parent-owned contour child collections for rendered-color fallback', () => {
+    const contourParent = object('contour.0.0', 'cmap', 'contour-series', 'backend_patch');
+    contourParent.kind = 'contour' as any;
+    contourParent.role = 'contour_series';
+    contourParent.children = ['collection.0.20'];
+    contourParent.identity!.semanticKey = 'contour_series:subplot.0';
+    const contourChild = object('collection.0.20', 'facecolor', 'contour-child', 'local_patch');
+    contourChild.kind = 'collection';
+    contourChild.role = 'contour_child_collection';
+    contourChild.parentId = contourParent.id;
+    contourChild.identity!.relation = { subplotId: 'subplot.0', parentId: contourParent.id };
+    contourChild.currentProps.facecolor = [[0.2666666667, 0.4666666667, 0.6666666667, 1]];
+    const scatter = object('collection.0.21', 'facecolor', 'scatter-series', 'local_patch');
+    scatter.kind = 'collection';
+    scatter.role = 'scatter_series';
+    scatter.currentProps.facecolor = [[0.2666666667, 0.4666666667, 0.6666666667, 1]];
+    const figure = manifest([contourParent, contourChild, scatter], []);
+
+    const fallback = resolvePaletteColorFallbackTargets(figure, 'CONTOUR_BLUE', '#4477AA', [
+      contourChild.id,
+      scatter.id,
+    ]);
+
+    expect(fallback.targets.map(item => item.objectId)).toEqual([scatter.id]);
+    expect(fallback.targets.some(item => item.objectId === contourChild.id)).toBe(false);
+  });
 });

@@ -1,6 +1,7 @@
 import type { EditEntry } from './manifest';
 
-export const EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 1 as const;
+export const LEGACY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 1 as const;
+export const EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION = 2 as const;
 
 export interface ExportDatasetSnapshotV1 {
   datasetId: string;
@@ -19,8 +20,12 @@ export interface ExportFigureSnapshotV1 {
   editLog: EditEntry[];
 }
 
-export interface ExportEditingSnapshotV1 {
-  schemaVersion: typeof EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION;
+export interface ExportFigureSnapshotV2 extends ExportFigureSnapshotV1 {
+  script: string;
+  scriptLanguage: 'python' | 'r';
+}
+
+interface ExportEditingSnapshotBase {
   capturedAt: string;
   projectId: string;
   projectName: string;
@@ -28,17 +33,33 @@ export interface ExportEditingSnapshotV1 {
   projectScript: string;
   scriptLanguage: 'python' | 'r';
   projectSpec: Record<string, unknown>;
-  figures: ExportFigureSnapshotV1[];
   datasets: ExportDatasetSnapshotV1[];
   exportOptions: { requestedFormat: string; effectiveFormat: string; dpi: number | null };
 }
+
+export interface ExportEditingSnapshotV1 extends ExportEditingSnapshotBase {
+  schemaVersion: typeof LEGACY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION;
+  figures: ExportFigureSnapshotV1[];
+}
+
+export interface ExportEditingSnapshotV2 extends ExportEditingSnapshotBase {
+  schemaVersion: typeof EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION;
+  figures: ExportFigureSnapshotV2[];
+}
+
+export type ExportEditingSnapshot = ExportEditingSnapshotV1 | ExportEditingSnapshotV2;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapshotV1 | null {
-  if (!isRecord(value) || value.schemaVersion !== EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION) return null;
+export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapshot | null {
+  if (!isRecord(value)) return null;
+  const schemaVersion = value.schemaVersion;
+  if (
+    schemaVersion !== LEGACY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+    && schemaVersion !== EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+  ) return null;
   if (
     typeof value.capturedAt !== 'string'
     || typeof value.projectId !== 'string'
@@ -53,7 +74,7 @@ export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapsho
     || !isRecord(value.exportOptions)
   ) return null;
 
-  const figures: ExportFigureSnapshotV1[] = [];
+  const figures: Array<ExportFigureSnapshotV1 | ExportFigureSnapshotV2> = [];
   for (const rawFigure of value.figures) {
     if (
       !isRecord(rawFigure)
@@ -66,7 +87,14 @@ export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapsho
       || !Number.isFinite(rawFigure.revision)
       || !Array.isArray(rawFigure.editLog)
     ) return null;
-    figures.push(rawFigure as unknown as ExportFigureSnapshotV1);
+    if (
+      schemaVersion === EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+      && (
+        typeof rawFigure.script !== 'string'
+        || (rawFigure.scriptLanguage !== 'python' && rawFigure.scriptLanguage !== 'r')
+      )
+    ) return null;
+    figures.push(rawFigure as unknown as ExportFigureSnapshotV1 | ExportFigureSnapshotV2);
   }
 
   const datasets: ExportDatasetSnapshotV1[] = [];
@@ -93,17 +121,26 @@ export function parseExportEditingSnapshot(value: unknown): ExportEditingSnapsho
     || (dpi !== null && (typeof dpi !== 'number' || !Number.isFinite(dpi)))
   ) return null;
 
-  return {
-    schemaVersion: EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
+  const base = {
     capturedAt: value.capturedAt,
     projectId: value.projectId,
     projectName: value.projectName,
     targetFigureId: value.targetFigureId,
     projectScript: value.projectScript,
-    scriptLanguage: value.scriptLanguage,
+    scriptLanguage: value.scriptLanguage as 'python' | 'r',
     projectSpec: value.projectSpec,
-    figures,
     datasets,
     exportOptions: { requestedFormat, effectiveFormat, dpi: dpi === null ? null : dpi as number },
   };
+  return schemaVersion === EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
+    ? {
+        ...base,
+        schemaVersion,
+        figures: figures as ExportFigureSnapshotV2[],
+      }
+    : {
+        ...base,
+        schemaVersion,
+        figures: figures as ExportFigureSnapshotV1[],
+      };
 }

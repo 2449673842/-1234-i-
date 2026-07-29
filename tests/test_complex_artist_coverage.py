@@ -1,3 +1,4 @@
+import hashlib
 import os
 import sys
 import unittest
@@ -254,9 +255,8 @@ ax.fill_between(x, x, x + 0.2, color=BAND_COLOR, label="band")
         self.assertIn(band["id"], bindings[0].get("gids", []), bindings[0])
         self.assertIn("facecolor", bindings[0].get("props", []), bindings[0])
 
-    def test_contourf_with_colorbar_keeps_colorbar_and_reports_complex_rows(self):
-        manifest = self._render_manifest(
-            """
+    def test_contourf_has_dedicated_parent_children_and_colorbar_relation(self):
+        script = """
 import matplotlib.pyplot as plt
 import numpy as np
 fig, ax = plt.subplots()
@@ -267,7 +267,43 @@ Z = X**2 + Y**2
 cs = ax.contourf(X, Y, Z, levels=4, cmap="viridis")
 fig.colorbar(cs, ax=ax, label="level")
 """
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success", initial)
+        manifest = initial["figures"][0]["manifest"]
+        objects = self._objects_by_id(manifest)
+
+        contour_sets = [
+            obj for obj in manifest.get("objects", [])
+            if obj.get("kind") == "contourf"
+        ]
+        self.assertEqual(len(contour_sets), 1, manifest.get("coverageReport"))
+        contour_set = contour_sets[0]
+        self.assertTrue(contour_set["id"].startswith("container.contourf.0."), contour_set)
+        self.assertEqual(contour_set.get("role"), "contourf_series", contour_set)
+        self.assertEqual(
+            contour_set.get("editable"),
+            ["cmap", "vmin", "vmax", "alpha", "visible", "zorder"],
+            contour_set,
         )
+        rendered_levels = contour_set.get("currentProps", {}).get("levels")
+        self.assertGreaterEqual(len(rendered_levels), 5, contour_set)
+        self.assertAlmostEqual(rendered_levels[0], 0.0)
+        self.assertAlmostEqual(rendered_levels[-1], 2.0)
+        for scientific_prop in ("levels", "X", "Y", "Z"):
+            self.assertNotIn(scientific_prop, contour_set.get("editable", []), contour_set)
+            self.assertNotIn(
+                scientific_prop,
+                [item.get("prop") for item in contour_set.get("propertyCapabilities", [])],
+                contour_set,
+            )
+        self.assertTrue(contour_set.get("children"), contour_set)
+        for child_gid in contour_set["children"]:
+            child = objects[child_gid]
+            self.assertEqual(child.get("kind"), "collection", child)
+            self.assertEqual(child.get("parentId"), contour_set["id"], child)
+            self.assertEqual(child.get("role"), "contour_child_collection", child)
+            self.assertEqual(child.get("editable"), [], child)
+            self.assertEqual(child.get("propertyCapabilities"), [], child)
 
         colorbars = [obj for obj in manifest.get("objects", []) if obj.get("kind") == "colorbar"]
         self.assertEqual(
@@ -276,12 +312,195 @@ fig.colorbar(cs, ax=ax, label="level")
             f"contourf fixture should expose the colorbar separately; coverage={manifest.get('coverageReport')}",
         )
         self.assertEqual(colorbars[0].get("role"), "colorbar", colorbars[0])
+        colorbar_relation = colorbars[0].get("identity", {}).get("relation", {})
+        self.assertEqual(colorbar_relation.get("mappableId"), contour_set["id"], colorbars[0])
+        contour_relation = contour_set.get("identity", {}).get("relation", {})
+        self.assertEqual(contour_relation.get("colorbarId"), colorbars[0]["id"], contour_set)
 
         rows = self._complex_rows(manifest, {"ContourSet", "QuadContourSet"})
+        self.assertEqual(len(rows), 1, rows)
         for row in rows:
-            self.assertEqual(row.get("status"), "flattened", row)
-            self.assertIn(row.get("family"), {"contour", "contourf", "contour_family"}, row)
-        self._assert_classes_not_reported(manifest, {"PathCollection", "PolyCollection"})
+            self.assertEqual(row.get("status"), "dedicated", row)
+            self.assertEqual(row.get("family"), "contourf", row)
+
+        edits = [
+            {
+                "gid": contour_set["id"],
+                "prop": prop,
+                "value": value,
+                "mode": "backend_patch",
+                "stableKey": contour_set.get("stableKey"),
+                "fingerprint": contour_set.get("fingerprint"),
+                "fingerprintVersion": 2,
+                "identity": contour_set.get("identity"),
+            }
+            for prop, value in (
+                ("cmap", "plasma"),
+                ("vmin", 0.25),
+                ("vmax", 1.75),
+                ("alpha", 0.6),
+            )
+        ]
+        replayed = replay_render(script, edit_logs={"fig_1": edits})
+        self.assertEqual(replayed.get("status"), "success", replayed)
+        self.assertEqual(replayed.get("warnings", []), [], replayed)
+        replayed_manifest = replayed["figures"][0]["manifest"]
+        replayed_contour = next(
+            obj for obj in replayed_manifest["objects"]
+            if obj.get("id") == contour_set["id"]
+        )
+        replayed_colorbar = next(
+            obj for obj in replayed_manifest["objects"]
+            if obj.get("id") == colorbars[0]["id"]
+        )
+        self.assertEqual(replayed_contour["currentProps"]["cmap"], "plasma")
+        self.assertAlmostEqual(replayed_contour["currentProps"]["vmin"], 0.25)
+        self.assertAlmostEqual(replayed_contour["currentProps"]["vmax"], 1.75)
+        self.assertAlmostEqual(replayed_contour["currentProps"]["alpha"], 0.6)
+        self.assertIn("fill-opacity: 0.6", replayed["figures"][0]["svg"])
+        self.assertEqual(replayed_colorbar["currentProps"]["cmap"], "plasma")
+        self.assertAlmostEqual(replayed_colorbar["currentProps"]["vmin"], 0.25)
+        self.assertAlmostEqual(replayed_colorbar["currentProps"]["vmax"], 1.75)
+        self.assertEqual(replayed_contour.get("stableKey"), contour_set.get("stableKey"))
+        self.assertEqual(replayed_contour.get("fingerprint"), contour_set.get("fingerprint"))
+        self.assertEqual(
+            replayed_contour.get("identity", {}).get("seriesKey"),
+            contour_set.get("identity", {}).get("seriesKey"),
+        )
+        replayed_objects = self._objects_by_id(replayed_manifest)
+        self.assertNotEqual(
+            replayed_objects[contour_set["children"][0]]["currentProps"].get("facecolor"),
+            objects[contour_set["children"][0]]["currentProps"].get("facecolor"),
+        )
+
+        legacy_child_gid = contour_set["children"][0]
+        legacy_replayed = replay_render(script, edit_logs={"fig_1": [{
+            "gid": legacy_child_gid,
+            "prop": "alpha",
+            "value": 0.35,
+            "mode": "local_patch",
+        }]})
+        self.assertEqual(legacy_replayed.get("status"), "success", legacy_replayed)
+        self.assertEqual(legacy_replayed.get("warnings", []), [], legacy_replayed)
+        legacy_child = next(
+            obj for obj in legacy_replayed["figures"][0]["manifest"]["objects"]
+            if obj.get("id") == legacy_child_gid
+        )
+        self.assertAlmostEqual(legacy_child["currentProps"]["alpha"], 0.35)
+
+        identity_child = objects[legacy_child_gid]
+        current_artist_class = identity_child["source"]["artistClass"]
+        other_artist_class = (
+            "QuadContourSet"
+            if current_artist_class == "PathCollection"
+            else "PathCollection"
+        )
+        cross_version_fingerprint = hashlib.sha256(
+            f"{identity_child['stableKey']}|{other_artist_class}".encode("utf-8")
+        ).hexdigest()
+        identity_edit = {
+            "gid": legacy_child_gid,
+            "prop": "alpha",
+            "value": 0.45,
+            "mode": "local_patch",
+            "stableKey": identity_child["stableKey"],
+            "fingerprint": cross_version_fingerprint,
+            "fingerprintVersion": 2,
+            "identity": {
+                "seriesKey": identity_child["identity"]["seriesKey"],
+            },
+        }
+        cross_version_replayed = replay_render(
+            script,
+            edit_logs={"fig_1": [identity_edit]},
+        )
+        self.assertEqual(cross_version_replayed.get("status"), "success", cross_version_replayed)
+        self.assertEqual(cross_version_replayed.get("warnings", []), [], cross_version_replayed)
+        cross_version_child = next(
+            obj for obj in cross_version_replayed["figures"][0]["manifest"]["objects"]
+            if obj.get("id") == legacy_child_gid
+        )
+        self.assertAlmostEqual(cross_version_child["currentProps"]["alpha"], 0.45)
+
+        wrong_series_edit = {
+            **identity_edit,
+            "identity": {"seriesKey": f"{identity_child['identity']['seriesKey']}.wrong"},
+        }
+        rejected = replay_render(script, edit_logs={"fig_1": [wrong_series_edit]})
+        self.assertEqual(rejected.get("status"), "success", rejected)
+        self.assertEqual(
+            [warning.get("type") for warning in rejected.get("warnings", [])],
+            ["identity_mismatch"],
+            rejected,
+        )
+
+    def test_contour_line_parent_replays_line_style_without_editing_levels(self):
+        script = """
+import matplotlib.pyplot as plt
+import numpy as np
+fig, ax = plt.subplots()
+x = np.linspace(-1, 1, 5)
+y = np.linspace(-1, 1, 6)
+X, Y = np.meshgrid(x, y)
+Z = X**2 + Y**2
+ax.contour(X, Y, Z, levels=[0.25, 0.75, 1.25], cmap="viridis", linewidths=1.2)
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success", initial)
+        manifest = initial["figures"][0]["manifest"]
+        contour = next(obj for obj in manifest["objects"] if obj.get("kind") == "contour")
+        self.assertEqual(contour.get("role"), "contour_series", contour)
+        self.assertEqual(
+            contour.get("editable"),
+            ["cmap", "vmin", "vmax", "alpha", "linewidth", "linestyle", "visible", "zorder"],
+            contour,
+        )
+        self.assertEqual(contour.get("currentProps", {}).get("levels"), [0.25, 0.75, 1.25])
+        self.assertNotIn("levels", contour.get("editable", []), contour)
+        for capability in contour.get("propertyCapabilities", []):
+            self.assertEqual(capability.get("patchMode"), "backend_patch", capability)
+            self.assertEqual(capability.get("preview"), "none", capability)
+
+        edits = [
+            {
+                "gid": contour["id"],
+                "prop": prop,
+                "value": value,
+                "mode": "backend_patch",
+            }
+            for prop, value in (
+                ("linewidth", 2.5),
+                ("linestyle", "dashed"),
+                ("alpha", 0.55),
+                ("zorder", 7),
+            )
+        ]
+        replayed = replay_render(script, edit_logs={"fig_1": edits})
+        self.assertEqual(replayed.get("status"), "success", replayed)
+        self.assertEqual(replayed.get("warnings", []), [], replayed)
+        replayed_contour = next(
+            obj for obj in replayed["figures"][0]["manifest"]["objects"]
+            if obj.get("id") == contour["id"]
+        )
+        self.assertAlmostEqual(replayed_contour["currentProps"]["linewidth"], 2.5)
+        self.assertEqual(replayed_contour["currentProps"]["linestyle"], "dashed")
+        self.assertAlmostEqual(replayed_contour["currentProps"]["alpha"], 0.55)
+        self.assertAlmostEqual(replayed_contour["currentProps"]["zorder"], 7.0)
+
+    def test_pyplot_contourf_uses_the_same_dedicated_parent(self):
+        manifest = self._render_manifest(
+            """
+import matplotlib.pyplot as plt
+import numpy as np
+x = np.linspace(-1, 1, 5)
+X, Y = np.meshgrid(x, x)
+plt.figure()
+plt.contourf(X, Y, X + Y, levels=4, cmap="viridis")
+"""
+        )
+        contour = next(obj for obj in manifest["objects"] if obj.get("kind") == "contourf")
+        self.assertEqual(contour.get("role"), "contourf_series", contour)
+        self.assertEqual(contour.get("source", {}).get("callName"), "Axes.contourf", contour)
 
     def test_pie_wedges_are_reported_as_flattened_editable(self):
         manifest = self._render_manifest(

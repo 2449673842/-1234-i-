@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { EditingIntent } from '../schemas/editingIntent';
 import type { Manifest } from '../schemas/manifest';
 import { compileEditingIntent, isExplicitlyDeniedCrossFigure, retargetEditingIntentForFigure } from './editingIntentCompiler';
 
@@ -690,5 +691,104 @@ describe('editing intent compiler', () => {
 
     expect(result.patches).toHaveLength(0);
     expect(result.skipped[0]?.reason).toBe('not_found');
+  });
+
+  it('forces contour parent style edits through backend patches', () => {
+    const manifest = baseManifest([
+      {
+        id: 'contour.0.0',
+        kind: 'contour' as any,
+        label: 'Contour',
+        editable: ['alpha'],
+        currentProps: { alpha: 0.8 },
+        role: 'contour_series',
+        subplotId: 'subplot.0',
+        identity: {
+          semanticKey: 'contour_series:subplot.0',
+          instanceKey: 'subplot.0:contour.0',
+          seriesKey: 'contour:panel-a',
+          scope: 'subplot',
+          coordinateSpace: 'data',
+          relation: { subplotId: 'subplot.0' },
+        },
+        propertyCapabilities: [{
+          prop: 'alpha',
+          patchMode: 'local_patch',
+          scopes: ['object', 'figure'],
+          preview: 'exact',
+          replay: 'stable',
+        }],
+      },
+    ]);
+
+    const result = compileEditingIntent(manifest, {
+      intent: 'style.component',
+      scope: {
+        selectionMode: 'explicit_objects',
+        objectIds: ['contour.0.0'],
+        targetKinds: ['contour' as any],
+      },
+      operation: { prop: 'alpha', value: 0.4 },
+    } as EditingIntent);
+
+    expect(result.skipped).toHaveLength(0);
+    expect(result.patches).toEqual([
+      { op: 'set', mode: 'backend_patch', gid: 'contour.0.0', prop: 'alpha', value: 0.4 },
+    ]);
+  });
+
+  it.each(['levels', 'X', 'Y', 'Z'])('does not compile contour structural data prop %s', (prop) => {
+    const manifest = baseManifest([
+      {
+        id: 'contour.0.0',
+        kind: 'contour' as any,
+        label: 'Contour',
+        editable: ['alpha', 'levels', 'X', 'Y', 'Z'],
+        currentProps: {
+          alpha: 0.8,
+          levels: [0, 1, 2],
+          X: [[0, 1]],
+          Y: [[0], [1]],
+          Z: [[0, 1], [1, 0]],
+        },
+        role: 'contour_series',
+        subplotId: 'subplot.0',
+        identity: {
+          semanticKey: 'contour_series:subplot.0',
+          instanceKey: 'subplot.0:contour.0',
+          seriesKey: 'contour:panel-a',
+          scope: 'subplot',
+          coordinateSpace: 'data',
+          relation: { subplotId: 'subplot.0' },
+        },
+        propertyCapabilities: ['alpha', 'levels', 'X', 'Y', 'Z'].map(item => ({
+          prop: item,
+          patchMode: 'backend_patch' as const,
+          scopes: ['object' as const, 'figure' as const],
+          preview: item === 'alpha' ? 'none' as const : 'none' as const,
+          replay: 'stable' as const,
+        })),
+      },
+    ]);
+
+    const result = compileEditingIntent(manifest, {
+      intent: 'style.component',
+      scope: {
+        selectionMode: 'explicit_objects',
+        objectIds: ['contour.0.0'],
+        targetKinds: ['contour' as any],
+      },
+      operation: { prop, value: [] },
+    } as EditingIntent);
+
+    expect(result.patches).toHaveLength(0);
+    expect(result.skipped).toEqual([
+      {
+        gid: 'contour.0.0',
+        role: undefined,
+        reason: 'unsupported_prop',
+        detail: `contour.0.0 does not support ${prop}.`,
+      },
+    ]);
   });
 });

@@ -291,6 +291,39 @@ describe('property descriptor projection', () => {
     }
   });
 
+  it('projects backend grid visibility and legend frame controls in the component center', () => {
+    const grid = object({
+      id: 'grid.0',
+      kind: 'grid',
+      role: 'grid',
+      currentProps: { visible: false },
+      propertyCapabilities: [capability('visible')],
+    });
+    const legend = object({
+      id: 'legend.0',
+      kind: 'legend',
+      role: 'legend_container',
+      currentProps: { frameon: false },
+      propertyCapabilities: [capability('frameon')],
+    });
+
+    const gridVisible = byKey(projectPropertyDescriptors({
+      center: 'components',
+      objects: [grid],
+      scope: 'group',
+    }), 'visible');
+    const legendFrame = byKey(projectPropertyDescriptors({
+      center: 'components',
+      objects: [legend],
+      scope: 'group',
+    }), 'frameon');
+
+    expect(gridVisible.state).toBe('editable');
+    expect(gridVisible.propByObjectId['grid.0']).toBe('visible');
+    expect(legendFrame.state).toBe('editable');
+    expect(legendFrame.propByObjectId['legend.0']).toBe('frameon');
+  });
+
   it('reuses typography descriptors for text objects in the component center', () => {
     const text = object({
       id: 'text.0',

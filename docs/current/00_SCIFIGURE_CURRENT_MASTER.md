@@ -1,8 +1,9 @@
 # SciFigure Studio 当前主文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-16 23:07:15 +08:00
-> 复核范围：当前本地工作区与生产 release `e35f4a4-jd22`
+> 更新时间：2026-07-30 02:46:41 +08:00
+> 证据截止时间：2026-07-30 02:46:41 +08:00
+> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；候选尚未部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
 
@@ -90,11 +91,7 @@ P3：管理员后台剩余页面/受控操作、更多编辑能力和 AI 接入
 
 已购买 2 核 4 GB Ubuntu 24.04 调试服务器，统一编辑候选版已完成单机部署和公网 HTTP 健康检查。域名、可信 TLS、备份目标、恢复演练和完整云端渲染/隔离回归仍属于上线前阻断项。
 
-2026-07-14 生产双端回归发现字体/组件 strict 目标映射、重复 patch 和 XLSX staging 权限缺口。XLSX 权限已在本地升级分支修复并通过容器测试，但尚未部署；生产状态以最新回归报告为准。
-
-2026-07-14 22:21:29 +08:00，生产已升级到 `6f6fcb7-jd8`：X/Y 轴标题坐标写回和拖拽时真实 SVG 对象跟随已恢复。公网拖拽回归全部通过，服务 ready，数据库完整性与用户项目计数保持正常。该发布不代表上段所列字体/组件 strict 映射和 XLSX staging 缺口已经部署。
-
-当前工作区还存在大量未提交改动。它们可以作为本地开发事实，但不能直接视为可复现的生产发布版本。部署前必须形成经过审查、测试和备份的不可变提交。
+生产当前仍运行不可变 release `e35f4a4-jd22`。Python/R 编辑升级在独立工作树 `prod-integration-v3` 中按功能提交边界移植，不能把工作树状态视为已经上线，也不得用候选整线覆盖生产认证、安全、资源限制或部署基线。部署前必须形成经过审查、测试、数据审计和备份的不可变制品。
 
 ### 3.3 工作区视觉基线
 
@@ -114,6 +111,36 @@ P3：管理员后台剩余页面/受控操作、更多编辑能力和 AI 接入
 页面导航与导入流程已进一步收敛：导出资产返回按钮按真实来源页返回；编辑器“重新配置”进入已有项目的增量配置页，不再进入会清空项目身份的旧单文件导入页。新建项目支持脚本优先，平台先提取 Python/R 脚本引用的数据文件名，再提示补齐数据；用户额外上传的所有表格仍按原有契约进入 AI 提示词。
 
 组合代码项目选择器 C1-C5 已于 2026-07-12 完成实现和阶段验收。当前支持来源项目搜索、项目类型与最近使用筛选、更新时间、Figure 缩略图和语义摘要、已选队列排序、`auto` 明确布局、物理尺寸预览、panel 位置映射以及重复、嵌套、版面和数据依赖检查。30 Figure fixture 已验证仅清洗可见区附近 SVG；Python/R 组合提示词按目标语言分别生成。详细状态和限制见能力架构文档第 13.1 节。
+
+### 3.4 Python 编辑正确性保护（2026-07-19 06:19:06 +08:00）
+
+本轮没有增加默认可见控件，而是补齐对象身份和 patch 持久化边界：
+
+```text
+新 patch 携带 stableKey / identity / v2 structural fingerprint
+旧 manifest 不比较无版本的历史 fingerprint
+missing、unsupported、identity mismatch 返回 conflict
+冲突批次不增加 revision，不写 history、cache、导出锚点或快照
+项目级代码 patch 检查全部 Figure 的有效 editLog，其他 Figure 冲突同样整批拒绝
+全项目导出先预检全部目标 Figure，再统一进入资产和快照持久化
+项目 Figure 路径以 propertyCapabilities.patchMode 为服务端权威
+合法 local + backend 混合批次完整重放并只形成一个 revision
+复杂图元仅增加 Shadow coverage，不改变现有 kind、editable 或控件
+项目 PUT 保存 editLog/history 先按可信 manifest 预检，再单事务写入
+现代 manifest 的 patch mode 由统一 capability helper 决定，跨 Figure 显式对象默认不 fanout
+```
+
+新隔离 E2E 已连续证明选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和导出快照恢复。R semantic、跨 Figure、历史、导出、组合、安全、页面导航和数据审计均重新通过。该结论不等于 `hist/stairs/step`、`streamplot`、pie、向量场等已经具备专用细粒度写回。
+
+独立代码审查发现的 standalone mode 权威、项目 PUT 侧门、跨 Figure replay warning、批量导出部分落库和 contour 拖拽模式多选缺口均已修复。`test:patch-rejection-persistence`、`test:project-save-preflight`、`test:replay-warning-persistence`、跨 Figure 11/11 和组件浏览器 31/31 通过；最终复审没有 HIGH/MEDIUM/LOW 未解决问题。
+
+WP8 已完成首轮收敛：导出快照先经 renderer dry-run，再在数据库事务内复核并发状态；错误恢复不会写入项目、session、history 或快照。导出文件创建和资产删除具备失败补偿，单 Figure v1 保持兼容，信息不足的旧多 Figure 快照安全拒绝。相关 API、数据库、UI、并发、文件事务和完整导出矩阵均已通过隔离回归。
+
+WP6 已完成 `fill_between` 与 `contour/contourf` 两个复杂对象家族。`fill_between` 具有专用 `fill_between/fill_between_series/data_band` 语义并保留旧 `collection.*` GID；`contour/contourf` 使用独立父对象、只读父对象托管子层和显式 colorbar 关系。平台只开放视觉样式，不修改 band 数据上下界或 contour 的 levels/X/Y/Z；旧 contour child editLog 仅用于兼容重放，现代 UI 不再产生新的子层编辑。
+
+contour 的 `cmap/vmin/vmax` 按属性能力留在当前对象/Figure；只有属性在全部目标上明确声明 `cross_figure` 才允许 fanout。原候选分支已形成父对象 Draft、后端重绘、跨 Figure、导出和旧项目兼容证据，当前生产集成仍需重新完成浏览器、导出、旧项目和生产 Docker 门禁。Python 后续 `hist/stairs/step`、pie、向量场、特殊 axes、性能和默认启用能力必须按独立批次继续验证，不能据此宣布计划全部完成。
+
+生产部署只运行一套内容固定的 renderer 镜像，并锁定 Python、R、绘图库、字体和系统依赖。两套 Matplotlib 测试只用于当前升级期间证明旧项目、旧 manifest 和旧 editLog 可被新代码安全读取，不表示服务器同时运行多版本，也不形成长期任意版本兼容承诺。
 
 ## 4. 用户数据红线
 
@@ -190,7 +217,7 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 | 能力 | 当前状态 | 说明 |
 |---|---|---|
 | 公开宣传页与注册门禁 | 已实现，邮箱生产通道待配置 | 匿名访问先进入宣传页；启用邮箱验证后，新账号必须完成六位验证码验证才会获得会话；现有账号兼容迁移 |
-| Python 渲染与图元编辑 | 已实现 | 主链路成熟度高，仍需真实复杂项目回归 |
+| Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选已加入 `fill_between`、`contour/contourf` 专用语义，完成门禁和部署前不视为线上能力 |
 | R 渲染与语义编辑 | 已实现 MVP | ggplot2 主链路可用，细粒度仍弱于 Python |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |

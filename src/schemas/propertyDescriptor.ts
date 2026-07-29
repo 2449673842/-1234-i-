@@ -10,6 +10,7 @@ export type CanonicalPropertyKey =
   | 'ha'
   | 'va'
   | 'visible'
+  | 'frameon'
   | 'alpha'
   | 'linewidth'
   | 'left'

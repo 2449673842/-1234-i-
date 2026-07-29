@@ -1,8 +1,8 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：规划完成，等待按工作包执行
-> 最后修改时间：2026-07-18 19:27:27 +08:00
-> 当前部署状态：仅新增开发计划，未修改产品代码、未推送、未部署
+> 状态：规划完成；Python 阶段仍在执行，R 产品工作包尚未开始
+> 最后修改时间：2026-07-19 06:19:06 +08:00
+> 当前部署状态：R 计划尚未进入产品实现；本轮仅完成共享协议回归，未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 现状入口：`docs/R_COMPATIBILITY_PLAN.md`
 > 适用范围：R/ggplot2 渲染、语义图元、对象身份、patch 写回、Draft、历史、导出、复杂坐标、网络图/路径图/SEM 与生产一致性
@@ -71,9 +71,11 @@ R script + uploaded data
 
 ### 2.3 与当前 Python 专项的关系
 
-2026-07-18 第二轮代码审查确认：项目 Figure 路径已经具备服务端 mode 权威，但无 `projectId/projectContext` 的 standalone Python patch 仍可能保留客户端伪报的 `local_patch`。R 计划必须等待该共享 `/api/figure/patch` 缺口完成修复和验证，再开始修改共享 patch 主链路。原因是 R 与 Python 共用前端 Draft、history、export 和部分服务端事务代码，不能在已知共享缺口上叠加第二套行为。
+standalone Python patch 的客户端 mode 绕过已经修复：无 `projectId/projectContext` 时也会保守进入服务端/renderer 验证；拒绝请求不会增加 revision 或写入 session、history、cache、导出锚点和快照。该前置阻断项已由 `test:patch-rejection-persistence` 证明关闭，但 R 产品工作仍须等待 Python 完整 release gate 和稳定候选提交，避免两种 renderer 同时修改共享主链路。
 
 Python 专项修改共享协议时，R renderer、R semantic smoke 和导出回归仍是强制门禁；R 专项修改共享协议时，同样必须回归 Python，不允许以“只改 R”为理由跳过 Python 基线。
+
+2026-07-19 的 Python contour 工作包已重新通过 R renderer 31/31、R semantic 浏览器 5/5、R 安全预检和共享导出门禁。该证据只表示现有 R 基线未回退，不表示 R-WP0 至 R-WP10 已开始或完成。
 
 ## 3. 执行原则
 
@@ -106,6 +108,7 @@ Baseline
 7. 任何位置写回必须证明坐标可逆；无法证明时保持 readonly/unsupported。
 8. 任何涉及统计结果、路径系数或显著性的内容默认不可通过样式控件改写科学含义。
 9. 下载 R、包、字体或系统依赖时使用批准的国内镜像、固定版本和校验值；生产 renderer 运行时继续禁网。
+10. 生产只运行一套固定 R renderer 镜像，精确锁定 R、包、字体、locale 和图形设备；旧环境只用于升级期历史项目回归，不作为长期并行版本。
 
 ### 3.3 非目标
 

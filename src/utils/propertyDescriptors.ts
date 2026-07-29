@@ -112,6 +112,10 @@ export const PROPERTY_DESCRIPTOR_REGISTRY: readonly PropertyDescriptor[] = [
     centers: ['properties', 'components', 'fonts'], props: ['visible'], coordinateSpace: 'none',
   },
   {
+    key: 'frameon', label: '显示图例背景框', family: 'visibility', valueType: 'boolean', control: 'toggle', unit: 'none',
+    centers: ['properties', 'components'], props: ['frameon'], coordinateSpace: 'none',
+  },
+  {
     key: 'alpha', label: '不透明度', family: 'appearance', valueType: 'number', control: 'number', unit: 'ratio',
     min: 0, max: 1, step: 0.05, centers: ['properties', 'components', 'palette', 'fonts'], props: ['alpha'], coordinateSpace: 'none',
   },

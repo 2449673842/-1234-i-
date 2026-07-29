@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
+import numpy as np
 
-fig, ax = plt.subplots(figsize=(5.6, 3.6))
+fig, (ax, contour_ax) = plt.subplots(1, 2, figsize=(5.6, 3.6))
 ax.fill_between(
     [0, 1, 2, 3],
     [0.7, 1.3, 1.2, 1.9],
@@ -16,4 +17,19 @@ ax.set_title("Semantic Workflow Regression")
 ax.set_xlabel("Time")
 ax.set_ylabel("Value")
 ax.legend(loc="upper left")
+
+grid = np.linspace(-1.5, 1.5, 24)
+grid_x, grid_y = np.meshgrid(grid, grid)
+surface = np.sin(grid_x) + np.cos(grid_y)
+contour_ax.contourf(
+    grid_x,
+    grid_y,
+    surface,
+    levels=[-1.5, -0.75, 0.0, 0.75, 1.5],
+    cmap="viridis",
+    alpha=0.85,
+)
+contour_ax.set_title("Filled contour")
+contour_ax.set_xlabel("X")
+contour_ax.set_ylabel("Y")
 plt.tight_layout()

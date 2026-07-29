@@ -1,8 +1,9 @@
 # SciFigure 能力与架构副文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-16 23:07:15 +08:00
-> 复核范围：当前本地工作区；尚未等同于已提交发布版本  
+> 更新时间：2026-07-30 02:46:41 +08:00
+> 证据截止时间：2026-07-30 02:46:41 +08:00
+> 复核范围：隔离集成分支 `deploy/prod-integration-v3` 与生产 release `e35f4a4-jd22`；候选尚未部署
 > 适用范围：产品能力、前后端协议、Python/R 渲染、编辑与导出链路
 
 ## 1. 总体设计
@@ -657,6 +658,21 @@ git diff --check                            PASS
 
 这表示显式关系和当前 fixture 已通过，不表示任意第三方 annotation、嵌套 parasite axes 或超大真实项目已经全覆盖。
 
+### 13.3 Python 复杂对象父级语义（2026-07-19 04:59:37 +08:00）
+
+`fill_between` 和 `contour/contourf` 已从通用 collection 提升为可审计的专用语义：
+
+```text
+fill_between -> fill_between_series -> data_band
+contour      -> contour_series      -> 专用父对象
+contourf     -> contourf_series     -> 专用父对象 + mappable/colorbar relation
+child collection -> contour_child_collection + parentOwned + readonly
+```
+
+父对象持有可证明的视觉能力；contour 子 collection 只保留用于渲染关系和旧 editLog 重放，现代组件中心、配色中心和批量属性入口不会新建子层编辑。结构属性 `levels/X/Y/Z/paths/segments` 不开放。跨 Figure 只有在属性能力明确包含 `cross_figure` 时才允许 fanout，否则保守作用于当前对象。
+
+兼容范围不是支持任意历史版本：新 manifest 使用 v2 结构 fingerprint；旧 contour child 只在 stableKey/seriesKey 一致且差异仅为已知 fingerprint 漂移时兼容。项目加载、PUT、history、四格式导出、子图导出和快照恢复均有隔离测试。
+
 ## 14. Python/R 对齐表
 
 | 能力 | Python | R | 当前判断 |
@@ -688,6 +704,7 @@ R 未知 geom 会只读显示并记录 unsupported；没有显式数据键的 te
 AI 自动改图尚未接入
 annotation/箭头仍只达到部分覆盖；tick line 与 tick label 的样式隔离已通过当前 Python fixture
 twinx/twiny、复杂共享轴和超大 scatter 的真实项目验证不足
+`hist/stairs/step`、pie、向量场和 streamplot 尚未完成与 contour 同等级的专用用户链路
 生产构建仍有主 bundle 大于 500 kB 和 CJS import.meta warning
 ```
 
@@ -730,7 +747,9 @@ npm run test:export-snapshot-restore-ui
 
 自动化通过不代表真实复杂项目完全覆盖。涉及坐标、布局、字体和导出的修改必须保留人工视觉检查。
 
-2026-07-16 20:41:53 +08:00 候选回归：41 个 Vitest 文件/250 项、Python 48 项、R 30 项、Python 语义 16/16、组件/布局 24/24、严格行为 15/15、R 语义 7/7、扩展拖拽、作用域跟随、导出快照 DB/API/UI、生产构建和 production bundle 均通过。该能力集已随 `7e33044-jd21` 部署；静态资源安全边界修复随后随 `e35f4a4-jd22` 部署并完成公网复测。
+2026-07-16 20:41:53 +08:00 生产基线证据：41 个 Vitest 文件/250 项、Python 48 项、R 30 项及既有语义、组件、拖拽、导出快照和 production bundle 门禁通过；该能力集随 `7e33044-jd21` 部署，静态资源安全边界修复随后随 `e35f4a4-jd22` 部署并完成公网复测。
+
+2026-07-30 02:46:41 +08:00 集成候选证据：服务端权威与持久化保护批次已通过 TypeScript、271 项 Vitest、66 项 Python renderer 测试及专项原子拒绝门禁；contour 兼容批次正在隔离工作树中集成，尚未完成浏览器、生产 Docker 或部署验收。
 
 ## 17. 详细参考文档
 

@@ -45,8 +45,8 @@ async function cleanupSmokeProjects() {
 const script = [
   'import numpy as np',
   'import matplotlib.pyplot as plt',
-  'fig, axes = plt.subplots(2, 3, figsize=(9, 6))',
-  'ax0, ax1, ax2, ax3, ax4, ax5 = axes.ravel()',
+  'fig, axes = plt.subplots(3, 3, figsize=(10, 8))',
+  'ax0, ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8 = axes.ravel()',
   'ax0.plot([0, 1, 2], [1, 3, 2], color="#225577", linewidth=1.2, marker="o", label="line")',
   'ax0.scatter([0, 1, 2], [1.2, 2.6, 2.1], c="#cc5500", s=55, label="scatter")',
   'ax0.legend(title="Legend")',
@@ -70,6 +70,16 @@ const script = [
   'ax5.stem([0, 1, 2], [1, 2, 1])',
   'ax5.text(0.5, 0.7, "Matrix Text", transform=ax5.transAxes, ha="center")',
   'ax5.set_title("Stem Text")',
+  'grid_x = np.linspace(-2, 2, 24)',
+  'grid_y = np.linspace(-2, 2, 24)',
+  'X, Y = np.meshgrid(grid_x, grid_y)',
+  'Z = np.sin(X) + np.cos(Y)',
+  'cf = ax6.contourf(X, Y, Z, levels=4, cmap="viridis", alpha=0.65)',
+  'fig.colorbar(cf, ax=ax6, label="Contourf scale")',
+  'ax6.set_title("Contourf")',
+  'ax7.contour(X, Y, Z, levels=[-1, 0, 1], cmap="magma", linewidths=1.2)',
+  'ax7.set_title("Contour")',
+  'ax8.axis("off")',
   'fig.tight_layout()',
 ].join('\n');
 
@@ -83,6 +93,9 @@ const checks = [
   { id: 'boxplot-container', kind: 'boxplot_container', prop: 'median_color', value: '#d62728', expected: (props) => String(props.median_color).toLowerCase() === '#d62728' },
   { id: 'violinplot-container', kind: 'violinplot_container', prop: 'linewidth', value: 1.55, expected: (props) => Math.abs(Number(props.linewidth) - 1.55) < 0.01 },
   { id: 'heatmap', kind: 'heatmap', prop: 'vmax', value: 20, expected: (props) => Math.abs(Number(props.vmax) - 20) < 0.01 },
+  { id: 'contourf', kind: 'contourf', prop: 'vmax', value: 1.75, expected: (props) => Math.abs(Number(props.vmax) - 1.75) < 0.01 },
+  { id: 'contour-linewidth', kind: 'contour', prop: 'linewidth', value: 2.5, expected: (props) => Math.abs(Number(props.linewidth) - 2.5) < 0.01 },
+  { id: 'contour-linestyle', kind: 'contour', prop: 'linestyle', value: 'dashed', expected: (props) => String(props.linestyle) === 'dashed' },
   { id: 'colorbar', kind: 'colorbar', prop: 'label', value: 'Updated Scale', expected: (props) => String(props.label) === 'Updated Scale' },
   { id: 'legend', kind: 'legend', prop: 'title', value: 'Updated Legend', expected: (props) => String(props.title) === 'Updated Legend' },
   { id: 'legend-position', kind: 'legend', prop: 'position', value: { x: 0.72, y: 0.34, coord_system: 'figure' }, expected: (props) => Math.abs(Number(props.x) - 0.72) < 0.03 && Math.abs(Number(props.y) - 0.34) < 0.03 && props.coord_system === 'figure' },
@@ -187,10 +200,25 @@ async function main() {
         assert(child?.parentId === container.id, `${childId} is not linked back to ${container.id}`);
       });
     });
+    const contourParents = objects.filter((object) => object.kind === 'contour' || object.kind === 'contourf');
+    assert(contourParents.length === 2, `Expected contour and contourf parents, got ${JSON.stringify(contourParents.map((object) => ({ id: object.id, kind: object.kind, role: object.role })))}`);
+    contourParents.forEach((parent) => {
+      assert(Array.isArray(parent.children) && parent.children.length > 0, `${parent.id} has no owned contour children`);
+      assert(!parent.editable.includes('levels'), `${parent.id} exposes levels as editable`);
+      assert(!parent.editable.includes('paths'), `${parent.id} exposes geometry paths as editable`);
+      assert(!parent.editable.includes('segments'), `${parent.id} exposes geometry segments as editable`);
+      parent.children.forEach((childId) => {
+        const child = objects.find((object) => object.id === childId);
+        assert(child?.parentId === parent.id, `${childId} is not linked back to ${parent.id}`);
+        assert(child?.role === 'contour_child_collection', `${childId} is not marked as a contour child collection`);
+      });
+    });
+    const contourChildIds = new Set(contourParents.flatMap((parent) => parent.children || []));
 
     for (const check of checks) {
       const target = findObject(rendered, check);
       assert(target?.id, `No editable ${check.kind} object found`);
+      assert(!contourChildIds.has(target.id), `${check.id} targeted contour child collection ${target.id} instead of the parent object`);
       assert(target.editable.includes(check.prop), `${target.id} does not list ${check.prop} as editable`);
       const patched = await patchObject(projectId, target.id, check.prop, check.value, check.id, revision);
       revision = patched.revision || revision + 1;

@@ -53,6 +53,8 @@
     "test:project-history-persistence": "tsx tests/api/project_history_persistence_smoke.ts",
     "test:export-snapshot-db": "tsx tests/api/export_asset_snapshot_persistence_smoke.ts",
     "test:export-snapshot-restore": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/export_snapshot_restore_smoke.mjs",
+    "test:legacy-contour-project-compatibility": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/legacy_contour_project_compatibility_smoke.mjs",
+    "test:replay-warning-persistence": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/replay_warning_persistence_smoke.mjs",
     "test:export-snapshot-concurrency": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/export_snapshot_restore_concurrency_smoke.mjs",
     "test:export-file-transaction": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/export_file_transaction_smoke.mjs",
     "test:capability-matrix": "python -m unittest tests/test_capability_matrix.py -v",

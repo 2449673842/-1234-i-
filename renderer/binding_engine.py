@@ -61,6 +61,8 @@ def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict
         for artist in artist_manifest:
             if artist.get("kind") not in ALLOWED_KINDS:
                 continue
+            if artist.get("role") == "contour_child_collection":
+                continue
             label_match = _normalize_label(artist.get("label")) == _normalize_label(group_label)
             matched_prop = _matching_color_prop(artist, target_color)
             if label_match and matched_prop:
@@ -126,6 +128,8 @@ def build_bindings(semantic_manifest: Dict[str, Any], artist_manifest: List[Dict
         targets = []
         for artist in artist_manifest:
             if artist.get("kind") not in ALLOWED_KINDS:
+                continue
+            if artist.get("role") == "contour_child_collection":
                 continue
             matched_prop = _matching_color_prop(artist, target_color)
             if matched_prop:

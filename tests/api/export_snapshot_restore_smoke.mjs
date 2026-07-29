@@ -47,9 +47,30 @@ const script = `
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 
 fig, ax = plt.subplots(figsize=(4, 3))
 ax.plot([0, 1, 2], [1, 3, 2], color="#176b5b")
+grid = np.linspace(-1.5, 1.5, 24)
+x_grid, y_grid = np.meshgrid(grid, grid)
+surface = np.sin(x_grid) + np.cos(y_grid)
+filled = ax.contourf(
+    x_grid,
+    y_grid,
+    surface,
+    levels=[-1.5, -0.75, 0.0, 0.75, 1.5],
+    cmap="viridis",
+    alpha=0.8,
+)
+ax.contour(
+    x_grid,
+    y_grid,
+    surface,
+    levels=[-1.0, 0.0, 1.0],
+    cmap="magma",
+    linewidths=1.2,
+)
+fig.colorbar(filled, ax=ax, label="Response")
 ax.set_title("Export snapshot smoke")
 ax.set_xlabel("Time")
 plt.show()
@@ -85,6 +106,14 @@ async function main() {
       Array.isArray(object.editable) && object.editable.includes('color') && object.kind === 'text'
     )) || figure.manifest?.objects?.find(object => Array.isArray(object.editable) && object.editable.includes('color'));
     assert(target?.id, 'rendered manifest has no editable color target');
+    const contourFill = figure.manifest?.objects?.find(object => (
+      object.kind === 'contourf' && object.role === 'contourf_series'
+    ));
+    const contourLine = figure.manifest?.objects?.find(object => (
+      object.kind === 'contour' && object.role === 'contour_series'
+    ));
+    assert(contourFill?.id, 'rendered manifest has no editable contourf target');
+    assert(contourLine?.id, 'rendered manifest has no editable contour target');
 
     const exportedEdit = {
       gid: target.id,
@@ -93,9 +122,34 @@ async function main() {
       mode: 'backend_patch',
       timestamp: 100,
     };
+    const exportedContourAlphaEdit = {
+      gid: contourFill.id,
+      prop: 'alpha',
+      value: 0.35,
+      mode: 'backend_patch',
+      timestamp: 101,
+    };
+    const exportedContourVmaxEdit = {
+      gid: contourFill.id,
+      prop: 'vmax',
+      value: 1.25,
+      mode: 'backend_patch',
+      timestamp: 102,
+    };
+    const exportedContourLineWidthEdit = {
+      gid: contourLine.id,
+      prop: 'linewidth',
+      value: 2.4,
+      mode: 'backend_patch',
+      timestamp: 103,
+    };
     const editedRender = await jsonRequest(`/api/projects/${projectId}/figures/render`, ownerToken, {
       method: 'POST',
-      body: JSON.stringify({ script, editLogs: { fig_1: [exportedEdit] }, language: 'python' }),
+      body: JSON.stringify({
+        script,
+        editLogs: { fig_1: [exportedEdit, exportedContourAlphaEdit, exportedContourVmaxEdit, exportedContourLineWidthEdit] },
+        language: 'python',
+      }),
     });
     assert(editedRender.response.ok && editedRender.data?.status === 'success', `edited render failed: ${JSON.stringify(editedRender.data)}`);
 
@@ -106,6 +160,10 @@ async function main() {
     assert(exported.response.ok && exported.data?.status === 'success', `export failed: ${JSON.stringify(exported.data)}`);
     const asset = exported.data.figures?.[0]?.asset;
     assert(asset?.assetId && asset.hasEditingSnapshot === true, `export did not persist a restorable snapshot: ${JSON.stringify(asset)}`);
+    assert(
+      typeof exported.data.figures?.[0]?.svg === 'string' && exported.data.figures[0].svg.includes('fill-opacity: 0.35'),
+      `exported SVG does not contain the export-time contourf alpha style: ${JSON.stringify(exported.data.figures?.[0]?.warnings || [])}`,
+    );
 
     const postExportEdit = {
       gid: target.id,
@@ -114,12 +172,26 @@ async function main() {
       mode: 'backend_patch',
       timestamp: 200,
     };
+    const postExportContourAlphaEdit = {
+      gid: contourFill.id,
+      prop: 'alpha',
+      value: 0.9,
+      mode: 'backend_patch',
+      timestamp: 201,
+    };
+    const postExportContourLineWidthEdit = {
+      gid: contourLine.id,
+      prop: 'linewidth',
+      value: 0.7,
+      mode: 'backend_patch',
+      timestamp: 202,
+    };
     const updated = await jsonRequest(`/api/projects/${projectId}`, ownerToken, {
       method: 'PUT',
       body: JSON.stringify({
         name: 'Export snapshot restore smoke',
         spec: { plot_type: 'custom', custom_script: script, script_language: 'python' },
-        figures: [{ figureId: 'fig_1', editLog: [postExportEdit], revision: 2 }],
+        figures: [{ figureId: 'fig_1', editLog: [postExportEdit, postExportContourAlphaEdit, postExportContourLineWidthEdit], revision: 2 }],
       }),
     });
     assert(updated.response.ok, `post-export edit persistence failed: ${JSON.stringify(updated.data)}`);
@@ -130,7 +202,13 @@ async function main() {
     const slowScript = `import time\ntime.sleep(1.5)\n${script}`;
     const slowRenderPromise = jsonRequest(`/api/projects/${projectId}/figures/render`, ownerToken, {
       method: 'POST',
-      body: JSON.stringify({ script: slowScript, editLogs: { fig_1: [postExportEdit] }, language: 'python' }),
+      body: JSON.stringify({
+        script: slowScript,
+        editLogs: {
+          fig_1: [postExportEdit, postExportContourAlphaEdit, postExportContourLineWidthEdit],
+        },
+        language: 'python',
+      }),
     });
     await delay(150);
     const restorePromise = jsonRequest(`/api/projects/${projectId}/export-assets/${asset.assetId}/restore`, ownerToken, { method: 'POST' });
@@ -153,9 +231,15 @@ async function main() {
     const restoredFigure = projectAfterRestore.data?.project?.figures?.find(item => item.figureId === 'fig_1');
     assert(restoredFigure, 'restored Figure is missing from project load');
     assert(restoredFigure.editLog.some(entry => entry.gid === target.id && entry.prop === 'color' && entry.value === '#b42318'), 'export-time edit is missing after restore');
+    assert(restoredFigure.editLog.some(entry => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.35), 'export-time contourf alpha is missing after restore');
+    assert(restoredFigure.editLog.some(entry => entry.gid === contourFill.id && entry.prop === 'vmax' && Number(entry.value) === 1.25), 'export-time contourf vmax is missing after restore');
+    assert(restoredFigure.editLog.some(entry => entry.gid === contourLine.id && entry.prop === 'linewidth' && Number(entry.value) === 2.4), 'export-time contour linewidth is missing after restore');
     assert(!restoredFigure.editLog.some(entry => entry.gid === target.id && entry.prop === 'fontsize' && entry.value === 21), 'post-export edit leaked into restored state');
+    assert(!restoredFigure.editLog.some(entry => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.9), 'post-export contourf alpha leaked into restored state');
+    assert(!restoredFigure.editLog.some(entry => entry.gid === contourLine.id && entry.prop === 'linewidth' && Number(entry.value) === 0.7), 'post-export contour linewidth leaked into restored state');
     const checkpoint = restoredFigure.history?.past?.at(-1);
     assert(checkpoint?.editLog?.some(entry => entry.gid === target.id && entry.prop === 'fontsize' && entry.value === 21), 'restore did not save the current state as a history checkpoint');
+    assert(checkpoint?.editLog?.some(entry => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.9), 'restore checkpoint did not preserve the newer contourf style');
 
     const extraUpload = await uploadCsv(projectId, ownerToken, 'snapshot-data.csv', 'x,y\n0,9\n1,8\n');
     assert(extraUpload.response.ok && extraUpload.data?.fileId, `same-name extra upload failed: ${JSON.stringify(extraUpload.data)}`);
@@ -218,6 +302,7 @@ async function main() {
     console.log('PASS restore reinstates export-time edits and checkpoints the newer state');
     console.log('PASS restore drains an in-flight render and blocks new project mutations');
     console.log('PASS restore rejects extra same-name datasets and export blocks concurrent upload/deletion');
+    console.log('PASS contour and contourf export-time styles survive snapshot restore');
     console.log('PASS restore enforces ownership and keeps legacy assets compatible');
   } finally {
     await jsonRequest(`/api/projects/${projectId}`, ownerToken, { method: 'DELETE' }).catch(() => null);

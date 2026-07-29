@@ -462,14 +462,20 @@ async function clickFirstPaletteAffectedObject(page, sectionText) {
 
 async function applyDraftAndReadPatch(page) {
   const start = apiRequests.length;
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/figure/patch'
+  ), { timeout: 60000 });
   const clicked = await clickText(page, '应用当前图');
   if (!clicked) return { clicked: false, patchRequest: null, patchBody: null, successful: false };
+  const patchResponse = await responsePromise;
+  const responseData = await patchResponse.json().catch(() => null);
   await waitForApiSettle(start, 60000);
   await waitForPreviewReady(page);
   const patchRequest = apiRequests.slice(start).find((request) => request.url.includes('/api/figure/patch')) || null;
   const patchBody = parseJson(patchRequest?.postData);
   const successful = apiResponses.slice(start).some((response) => response.url.includes('/api/figure/patch') && response.status >= 200 && response.status < 300);
-  return { clicked, patchRequest, patchBody, successful };
+  return { clicked, patchRequest, patchBody, responseData, successful };
 }
 
 async function saveProjectAndReadPut(page) {
@@ -478,7 +484,13 @@ async function saveProjectAndReadPut(page) {
   if (!(await saveButton.isVisible({ timeout: 5000 }).catch(() => false))) {
     return { clicked: false, putRequest: null, putBody: null, successful: false };
   }
+  const responsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'PUT'
+    && /\/api\/projects\/[^/]+$/.test(new URL(response.url()).pathname)
+  ), { timeout: 40000 });
   await saveButton.click();
+  const putResponse = await responsePromise;
+  const responseData = await putResponse.json().catch(() => null);
   await waitForApiSettle(start, 40000);
   const putRequest = apiRequests.slice(start).find((request) => (
     request.method === 'PUT' && /\/api\/projects\/[^/]+$/.test(new URL(request.url).pathname)
@@ -490,7 +502,7 @@ async function saveProjectAndReadPut(page) {
     response.status >= 200 &&
     response.status < 300
   ));
-  return { clicked: true, putRequest, putBody, successful };
+  return { clicked: true, putRequest, putBody, successful, responseData };
 }
 
 function patchList(body) {
@@ -668,6 +680,9 @@ async function run() {
     const dynamicPatches = patchList(dynamicApply.patchBody);
     const dynamicCodePatch = dynamicPatches.find((patch) => patch.type === 'code_patch' && patch.target_id === 'DYNAMIC_COLOR');
     const dynamicObjectPatches = dynamicPatches.filter((patch) => patch.type !== 'code_patch');
+    const dynamicApplied = Array.isArray(dynamicApply.responseData?.applied)
+      ? dynamicApply.responseData.applied.filter((patch) => patch?.gid && patch?.prop)
+      : [];
     const dynamicRuntime = await readRuntimePaletteBinding(page, 'DYNAMIC_COLOR');
     const dynamicFallbackOk = dynamicChanged
       && dynamicDraft
@@ -683,12 +698,16 @@ async function run() {
         entry.gid === gid
         && ['color', 'facecolor', 'edgecolor'].includes(entry.prop)
         && String(entry.value).toLowerCase() === '#654321'
-        && entry.mode === 'backend_patch'
+        && dynamicApplied.some((applied) => (
+          applied.gid === entry.gid
+          && applied.prop === entry.prop
+          && applied.mode === entry.mode
+        ))
       )));
     record(
       'H1c-data-driven-color-fallback',
       dynamicFallbackOk ? 'PASS' : 'FAIL',
-      `changed=${dynamicChanged}, draft=${dynamicDraft}, patches=${JSON.stringify(dynamicPatches)}, runtime=${JSON.stringify(dynamicRuntime)}`,
+      `changed=${dynamicChanged}, draft=${dynamicDraft}, patches=${JSON.stringify(dynamicPatches)}, response=${JSON.stringify(dynamicApply.responseData)}, runtime=${JSON.stringify(dynamicRuntime)}`,
     );
 
     await clickText(page, '配色中心');
@@ -807,7 +826,7 @@ async function run() {
     record(
       'H2-save-local-draft',
       selectedForSave.clicked && saveDraftChanged && saveDraftVisible && saveResult.clicked && saveResult.successful && savedLocalColor && persistedLocalColor && draftClearedAfterSave ? 'PASS' : 'FAIL',
-      `selected=${JSON.stringify(selectedForSave)}, changed=${saveDraftChanged}, draft=${saveDraftVisible}, savedLocalColor=${savedLocalColor}, persistedLocalColor=${persistedLocalColor}, persistedLog=${JSON.stringify(persistedLog)}, draftCleared=${draftClearedAfterSave}`,
+      `selected=${JSON.stringify(selectedForSave)}, changed=${saveDraftChanged}, draft=${saveDraftVisible}, savedLocalColor=${savedLocalColor}, persistedLocalColor=${persistedLocalColor}, response=${JSON.stringify(saveResult.responseData)}, persistedLog=${JSON.stringify(persistedLog)}, draftCleared=${draftClearedAfterSave}`,
     );
 
     await clickText(page, '配色中心');

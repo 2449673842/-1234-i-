@@ -22,6 +22,10 @@ const ROOT = path.resolve(__dirname, '../..');
 const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
 const OUTPUT_DIR = path.join(ROOT, 'output', 'playwright', `export-matrix-${RUN_ID}`);
+const CONTOUR_FIXTURE_SCRIPT = fs.readFileSync(
+  path.join(ROOT, 'tests', 'fixtures', 'capability_matrix', 'python', 'contour_colorbar.py'),
+  'utf8',
+);
 
 const results = [];
 const apiRequests = [];
@@ -185,6 +189,33 @@ async function createProjectAndRender() {
   });
   if (codeSynced.status !== 'success') throw new Error(codeSynced.message || 'code sync failed');
   return { projectId: created.id, spec, rendered, resized, codeSynced };
+}
+
+async function createContourProjectAndRender() {
+  const spec = {
+    plot_type: 'custom',
+    custom_script: CONTOUR_FIXTURE_SCRIPT,
+    script: CONTOUR_FIXTURE_SCRIPT,
+    script_language: 'python',
+    figure: { width: 120, height: 85, unit: 'mm', dpi: 300 },
+    export: { format: 'SVG', dpi: 300, color_mode: 'RGB', embed_fonts: true },
+  };
+  const created = await requestJson('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name: `Export matrix smoke contour ${Date.now()}`, spec }),
+  });
+  if (created.status !== 'success') throw new Error(created.message || 'create contour project failed');
+  const rendered = await requestJson(`/api/projects/${created.id}/figures/render`, {
+    method: 'POST',
+    body: JSON.stringify({
+      script: CONTOUR_FIXTURE_SCRIPT,
+      editLogs: { fig_1: [] },
+      language: 'python',
+      requestId: `export-matrix-contour-${Date.now()}`,
+    }),
+  });
+  if (rendered.status !== 'success') throw new Error(rendered.message || 'render contour fixture failed');
+  return { projectId: created.id, spec, rendered };
 }
 
 async function runApiExportMatrix(projectId) {
@@ -357,6 +388,101 @@ async function runApiExportMatrix(projectId) {
 
   diagnostics.matrix = matrix;
   diagnostics.assets = assets.assets;
+}
+
+async function runContourExportMatrix(projectId, rendered) {
+  const figure = rendered.figures?.[0];
+  const objects = figure?.manifest?.objects || [];
+  const contourf = objects.find((object) => object.kind === 'contourf' && object.role === 'contourf_series');
+  const contour = objects.find((object) => object.kind === 'contour' && object.role === 'contour_series');
+  const colorbar = objects.find((object) => object.kind === 'colorbar');
+  const contourfRelation = contourf?.identity?.relation || {};
+  const colorbarRelation = colorbar?.identity?.relation || {};
+  record(
+    'C0-contour-fixture',
+    rendered.figures?.length === 1
+      && contourf?.id === 'container.contourf.0.0'
+      && contour?.id === 'container.contour.1.0'
+      && colorbar?.id
+      && contourfRelation.colorbarId === colorbar.id
+      && colorbarRelation.mappableId === contourf.id
+      ? 'PASS'
+      : 'FAIL',
+    `figures=${rendered.figures?.length}, contourf=${contourf?.id}->${contourfRelation.colorbarId}, contour=${contour?.id}, colorbar=${colorbar?.id}->${colorbarRelation.mappableId}`,
+  );
+
+  const formats = ['svg', 'png', 'pdf', 'tiff'];
+  const matrix = {};
+  for (const format of formats) {
+    const data = await requestJson(`/api/projects/${projectId}/export`, {
+      method: 'POST',
+      body: JSON.stringify({ figureId: 'fig_1', format, dpi: 300, saveToLibrary: true, includeSubplots: true }),
+    });
+    const exported = Array.isArray(data.figures) ? data.figures[0] : null;
+    const svg = exported?.svg || '';
+    const subplotAssets = Array.isArray(exported?.subplotAssets) ? exported.subplotAssets : [];
+    const expectedFormat = exported?.format;
+    const formatOk = format === 'svg'
+      ? expectedFormat === 'svg' && !exported?.binary_b64
+      : expectedFormat === format && bufferMagic(format, exported?.binary_b64);
+    const assetOk = exported?.asset?.figureId === 'fig_1'
+      && exported?.asset?.format === expectedFormat
+      && exported?.asset?.metadata?.exportedFrom === 'fig_1'
+      && exported?.asset?.metadata?.requestedFormat === format
+      && exported?.asset?.hasEditingSnapshot === true;
+    const subplotAssetsOk = subplotAssets.length === 2
+      && subplotAssets.every((asset, index) => (
+        asset.figureId === `fig_1:subplot.${index}`
+        && asset.format === expectedFormat
+        && asset.metadata?.exportedFrom === 'fig_1'
+        && asset.metadata?.subplotId === `subplot.${index}`
+        && asset.metadata?.requestedFormat === format
+        && asset.metadata?.effectiveFormat === expectedFormat
+        && asset.metadata?.cropMode === 'axes_bounds'
+        && asset.tags?.includes('subplot')
+        && asset.tags?.includes('axes-bounds')
+      ));
+    const svgOk = svg.includes('Filled contour') && svg.includes('Contour lines');
+    matrix[format] = {
+      status: data.status,
+      figureId: exported?.figureId,
+      format: exported?.format,
+      formatOk,
+      assetOk,
+      subplotCount: subplotAssets.length,
+      subplotFormats: subplotAssets.map((asset) => asset.format),
+      subplotFormatNotes: exported?.subplot_format_notes || [],
+      svgOk,
+    };
+    record(
+      `C1-contour-${format}`,
+      data.status === 'success'
+        && exported?.figureId === 'fig_1'
+        && formatOk
+        && assetOk
+        && subplotAssetsOk
+        && svgOk
+        ? 'PASS'
+        : 'FAIL',
+      JSON.stringify(matrix[format]),
+    );
+  }
+
+  const assets = await requestJson(`/api/projects/${projectId}/export-assets`);
+  const figureFormats = new Set((assets.assets || []).filter((asset) => asset.figureId === 'fig_1').map((asset) => asset.format));
+  const subplotAssets = (assets.assets || []).filter((asset) => String(asset.figureId || '').startsWith('fig_1:subplot.'));
+  const subplotFormats = new Set(subplotAssets.map((asset) => asset.format));
+  record(
+    'C2-contour-assets',
+    formats.every((format) => figureFormats.has(format))
+      && formats.every((format) => subplotFormats.has(format))
+      && subplotAssets.length >= 8
+      ? 'PASS'
+      : 'FAIL',
+    `figureFormats=${JSON.stringify(Array.from(figureFormats).sort())}, subplotFormats=${JSON.stringify(Array.from(subplotFormats).sort())}, subplotAssets=${subplotAssets.length}`,
+  );
+  diagnostics.contourMatrix = matrix;
+  diagnostics.contourAssets = assets.assets;
 }
 
 async function getBodyText(page) {
@@ -547,6 +673,8 @@ async function run() {
     );
 
     await runApiExportMatrix(projectId);
+    const contourFixture = await createContourProjectAndRender();
+    await runContourExportMatrix(contourFixture.projectId, contourFixture.rendered);
     await runPendingExportBrowserCheck(projectId, fixture.spec, fixture.rendered);
 
     record(

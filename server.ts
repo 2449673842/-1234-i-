@@ -29,8 +29,11 @@ import {
   EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   parseExportEditingSnapshot,
   type ExportDatasetSnapshotV1,
+  type ExportEditingSnapshot,
   type ExportEditingSnapshotV1,
+  type ExportEditingSnapshotV2,
   type ExportFigureSnapshotV1,
+  type ExportFigureSnapshotV2,
 } from './src/schemas/exportEditingSnapshot';
 import {
   AbortableWorkQueue,
@@ -1131,7 +1134,7 @@ async function startServer() {
     thumbnailSvg?: string | null;
     metadata?: Record<string, unknown>;
     tags?: string[];
-    editingSnapshot?: ExportEditingSnapshotV1;
+    editingSnapshot?: ExportEditingSnapshot;
   }): ExportAsset {
     const owner = getDb().prepare('SELECT user_id AS userId FROM projects WHERE id = ?').get(args.projectId) as { userId: string | null } | undefined;
     if (!owner?.userId) {
@@ -3249,6 +3252,31 @@ ${inner}
     return precheckManifestPatches(manifest, patches);
   }
 
+  function isConflictWarningForPatch(warning: any, patch: any): boolean {
+    if (!warning || !patch || typeof warning !== 'object' || typeof patch !== 'object') return false;
+    if (warning.gid !== patch.gid || warning.prop !== patch.prop) return false;
+    return isSnapshotReplayWarning(warning);
+  }
+
+  function collectRendererReplayConflictsByFigure(
+    resultWarnings: any,
+    editLogs: Record<string, EditEntry[]>,
+  ): Array<{ figureId: string; patch: EditEntry; warning: any }> {
+    const conflicts: Array<{ figureId: string; patch: EditEntry; warning: any }> = [];
+    const warnings = Array.isArray(resultWarnings) ? resultWarnings : [];
+    for (const [figureId, patches] of Object.entries(editLogs)) {
+      for (const patch of patches) {
+        for (const warning of warnings) {
+          if (warning?.figureId && warning.figureId !== figureId) continue;
+          if (isConflictWarningForPatch(warning, patch)) {
+            conflicts.push({ figureId, patch, warning });
+          }
+        }
+      }
+    }
+    return conflicts;
+  }
+
   function resolveDatasetAbsolutePath(storedPath: string): string {
     return safeResolveUnder(PROJECTS_ROOT, storedPath);
   }
@@ -3583,7 +3611,7 @@ ${inner}
     requestedFormat: string;
     effectiveFormat: string;
     dpi: number | null;
-  }): ExportEditingSnapshotV1 {
+  }): ExportEditingSnapshotV2 {
     const figureRows = listProjectFigures(args.project.id);
     const targetRow = figureRows.find(row => `fig_${row.figure_index + 1}` === args.targetFigureId);
     const targetSession = targetRow ? loadSession(targetRow.session_id, args.userId) : null;
@@ -3598,7 +3626,7 @@ ${inner}
     }
     projectSpec = { ...projectSpec, custom_script: targetSession.script, script_language: scriptLanguage };
 
-    const figures = figureRows.map((row): ExportFigureSnapshotV1 => {
+    const figures = figureRows.map((row): ExportFigureSnapshotV2 => {
       const figureId = `fig_${row.figure_index + 1}`;
       const session = loadSession(row.session_id, args.userId);
       if (!session) throw new Error(`无法记录 ${figureId} 的导出编辑状态`);
@@ -3607,6 +3635,8 @@ ${inner}
         index: row.figure_index,
         sessionId: row.session_id,
         revision: session.revision || row.revision || 1,
+        script: session.script,
+        scriptLanguage: inferScriptLanguage(session.script),
         editLog: compressEditLog(figureId === args.targetFigureId ? args.targetEditLog : session.editLog),
       };
     });
@@ -3662,6 +3692,347 @@ ${inner}
       }
     });
     return issues;
+  }
+
+  type ExportSnapshotReplayIssue = {
+    type: string;
+    figureId?: string;
+    gid?: string;
+    prop?: string;
+    message: string;
+    warning?: unknown;
+  };
+
+  function snapshotManifestObject(manifest: any, gid: string): any | null {
+    if (!manifest || !Array.isArray(manifest.objects)) return null;
+    return manifest.objects.find((object: any) => String(object?.id || '') === gid) || null;
+  }
+
+  const LEGACY_CONTOUR_CHILD_REPLAY_PROPS = new Set([
+    'facecolor',
+    'edgecolor',
+    'alpha',
+    'linewidth',
+    'size',
+    'size_scale',
+    'zorder',
+  ]);
+
+  function isLegacyContourChildSnapshotEdit(object: any, prop: string): boolean {
+    const parentId = object?.parentId || object?.identity?.relation?.parentId;
+    return object?.kind === 'collection'
+      && object?.role === 'contour_child_collection'
+      && typeof parentId === 'string'
+      && /^container\.contourf?\./.test(parentId)
+      && LEGACY_CONTOUR_CHILD_REPLAY_PROPS.has(prop);
+  }
+
+  function isCompatibleContourChildSnapshotFingerprint(entry: any, object: any, prop: string): boolean {
+    const entrySeriesKey = entry?.identity?.seriesKey;
+    const objectSeriesKey = object?.identity?.seriesKey;
+    return isLegacyContourChildSnapshotEdit(object, prop)
+      && entry?.stableKey !== undefined
+      && entrySeriesKey !== undefined
+      && entry.stableKey === object?.stableKey
+      && entrySeriesKey === objectSeriesKey;
+  }
+
+  function validateSnapshotEditLogAgainstManifest(
+    figureId: string,
+    manifest: any,
+    editLog: unknown,
+  ): ExportSnapshotReplayIssue[] {
+    const issues: ExportSnapshotReplayIssue[] = [];
+    if (!Array.isArray(editLog)) {
+      return [{
+        type: 'malformed_edit_log',
+        figureId,
+        message: `${figureId} 快照 editLog 不是数组。`,
+      }];
+    }
+
+    const globals = manifest?.globals && typeof manifest.globals === 'object'
+      ? manifest.globals
+      : {};
+    editLog.forEach((entry: any, index: number) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        issues.push({
+          type: 'malformed_edit',
+          figureId,
+          message: `${figureId} 快照第 ${index + 1} 条编辑不是对象。`,
+        });
+        return;
+      }
+
+      const gid = typeof entry.gid === 'string' ? entry.gid : '';
+      const prop = typeof entry.prop === 'string' ? entry.prop : '';
+      if (!gid || !prop) {
+        issues.push({
+          type: 'malformed_edit',
+          figureId,
+          gid,
+          prop,
+          message: `${figureId} 快照第 ${index + 1} 条编辑缺少 gid 或 prop。`,
+        });
+        return;
+      }
+
+      if (entry.type === 'code_patch') {
+        issues.push({
+          type: 'unsupported_code_patch',
+          figureId,
+          gid,
+          prop,
+          message: `${figureId} 快照包含无法在恢复阶段安全重放的 code patch。`,
+        });
+        return;
+      }
+
+      if (gid === 'global') {
+        if (!Object.prototype.hasOwnProperty.call(globals, prop)) {
+          issues.push({
+            type: 'unsupported_prop',
+            figureId,
+            gid,
+            prop,
+            message: `${figureId} 快照引用了当前 renderer 未声明的全局属性 ${prop}。`,
+          });
+        }
+        return;
+      }
+
+      if (isDurableVirtualEditGid(gid)) {
+        if (!PATCH_VIRTUAL_FONT_CENTER_PROPS.has(prop)) {
+          issues.push({
+            type: 'unsupported_prop',
+            figureId,
+            gid,
+            prop,
+            message: `${figureId} 快照引用了不支持的虚拟字体属性 ${gid}.${prop}。`,
+          });
+        }
+        return;
+      }
+
+      const object = snapshotManifestObject(manifest, gid);
+      if (!object) {
+        issues.push({
+          type: 'missing_gid',
+          figureId,
+          gid,
+          prop,
+          message: `${figureId} 快照目标 ${gid} 不存在，已停止恢复。`,
+        });
+        return;
+      }
+
+      const capability = Array.isArray(object.propertyCapabilities)
+        ? object.propertyCapabilities.find((item: any) => item?.prop === prop)
+        : undefined;
+      const editable = Array.isArray(object.editable) ? object.editable : [];
+      const legacyContourChildReplay = isLegacyContourChildSnapshotEdit(object, prop);
+      if (
+        !legacyContourChildReplay
+        && ((capability && capability.replay === 'unsupported') || (!capability && !editable.includes(prop)))
+      ) {
+        issues.push({
+          type: 'unsupported_prop',
+          figureId,
+          gid,
+          prop,
+          message: `${figureId} 快照目标 ${gid}.${prop} 当前不可重放。`,
+        });
+        return;
+      }
+
+      if (entry.stableKey !== undefined && object.stableKey !== undefined && entry.stableKey !== object.stableKey) {
+        issues.push({
+          type: 'identity_mismatch',
+          figureId,
+          gid,
+          prop,
+          message: `${figureId} 快照目标 ${gid} 的 stableKey 已变化。`,
+        });
+        return;
+      }
+      if (
+        entry.fingerprintVersion === 2
+        && object.fingerprintVersion === 2
+        && entry.fingerprint !== undefined
+        && object.fingerprint !== undefined
+        && entry.fingerprint !== object.fingerprint
+        && !isCompatibleContourChildSnapshotFingerprint(entry, object, prop)
+      ) {
+        issues.push({
+          type: 'identity_mismatch',
+          figureId,
+          gid,
+          prop,
+          message: `${figureId} 快照目标 ${gid} 的结构 fingerprint 已变化。`,
+        });
+        return;
+      }
+      const entrySeriesKey = entry.identity?.seriesKey;
+      const objectSeriesKey = object.identity?.seriesKey;
+      if (entrySeriesKey !== undefined && objectSeriesKey !== undefined && entrySeriesKey !== objectSeriesKey) {
+        issues.push({
+          type: 'identity_mismatch',
+          figureId,
+          gid,
+          prop,
+          message: `${figureId} 快照目标 ${gid} 的 seriesKey 已变化。`,
+        });
+      }
+    });
+    return issues;
+  }
+
+  function isSnapshotReplayWarning(warning: any): boolean {
+    if (warning && typeof warning === 'object') {
+      const type = String(warning.type || '').toLowerCase();
+      return type === 'missing_gid'
+        || type === 'identity_mismatch'
+        || type === 'unsupported_prop'
+        || type === 'no_setter'
+        || type.startsWith('unsupported_')
+        || type.startsWith('apply_error:');
+    }
+    if (typeof warning !== 'string') return false;
+    return /(unsupported|ignored|could not|cannot|failed|missing|not found|identity|ambiguous|不支持|忽略|无法|失败|缺失|不存在|身份|歧义)/i.test(warning);
+  }
+
+  async function dryRunExportEditingSnapshot(args: {
+    snapshot: ExportEditingSnapshot;
+    projectId: string;
+    req: express.Request;
+  }): Promise<{ ok: boolean; issues: ExportSnapshotReplayIssue[] }> {
+    const issues: ExportSnapshotReplayIssue[] = [];
+    let datasets: DatasetEntry[];
+    let dataPayload: Record<string, unknown> | null;
+    try {
+      datasets = listProjectFiles(args.projectId);
+      dataPayload = await buildProjectDataPayload(datasets);
+    } catch (error: any) {
+      return {
+        ok: false,
+        issues: [{
+          type: 'renderer_data_error',
+          message: `快照 renderer 数据准备失败: ${error?.message || String(error)}`,
+        }],
+      };
+    }
+
+    const uploadedFilePaths: Record<string, string> = {};
+    datasets.forEach(dataset => addUploadedFilePathAliases(uploadedFilePaths, dataset.fileName, dataset.filePath));
+    const filesDir = projectFilesDir(args.projectId);
+    const cwd = fs.existsSync(filesDir) && fs.statSync(filesDir).isDirectory()
+      ? filesDir.replace(/\\/g, '/')
+      : undefined;
+    const figures = args.snapshot.figures;
+    const groups = new Map<string, Array<ExportFigureSnapshotV1 | ExportFigureSnapshotV2>>();
+    figures.forEach(figure => {
+      const script = 'script' in figure ? figure.script : args.snapshot.projectScript;
+      const language = 'scriptLanguage' in figure ? figure.scriptLanguage : args.snapshot.scriptLanguage;
+      const key = `${language}\u0000${script}`;
+      const group = groups.get(key) || [];
+      group.push(figure);
+      groups.set(key, group);
+    });
+
+    for (const group of groups.values()) {
+      const first = group[0];
+      const script = 'script' in first ? first.script : args.snapshot.projectScript;
+      const language = 'scriptLanguage' in first ? first.scriptLanguage : args.snapshot.scriptLanguage;
+      if (language === 'r' && group.length !== 1) {
+        issues.push({
+          type: 'unsupported_r_multi_figure',
+          figureId: first.figureId,
+          message: '当前 R renderer 只能验证单 Figure 快照，已停止恢复该多 Figure R 状态。',
+        });
+        continue;
+      }
+      let result: any;
+      try {
+        if (language === 'python') {
+          const editLogs: Record<string, EditEntry[]> = {};
+          group.forEach(figure => {
+            editLogs[figure.figureId] = compressEditLog(figure.editLog || []);
+          });
+          result = await spawnPythonWithPayload('introspector.py', {
+            script,
+            dataPayload,
+            cwd,
+            uploaded_file_paths: uploadedFilePaths,
+            editLogs,
+            renderOptions: { dpi: 150 },
+          }, { req: args.req, label: 'export-snapshot-dry-run' });
+        } else {
+          // The R renderer currently returns one ggplot Figure per invocation.
+          result = await spawnRWithPayload({
+            script,
+            dataPayload,
+            cwd,
+            uploaded_file_paths: prepareUploadedFilePathsForR(uploadedFilePaths, filesDir),
+            editLog: compressEditLog(first.editLog || []),
+            renderOptions: { width_in: 7, height_in: 5 },
+          }, { req: args.req, label: 'export-snapshot-r-dry-run' });
+        }
+      } catch (error: any) {
+        issues.push({
+          type: 'renderer_error',
+          figureId: first.figureId,
+          message: `${first.figureId} 快照 renderer 执行失败: ${error?.message || String(error)}`,
+        });
+        continue;
+      }
+
+      if (!result || result.status !== 'success') {
+        issues.push({
+          type: 'renderer_error',
+          figureId: first.figureId,
+          message: `${first.figureId} 快照 renderer 未成功完成: ${result?.message || '未知错误'}`,
+        });
+        continue;
+      }
+
+      const renderedFigures = language === 'r'
+        ? [{ figureId: first.figureId, manifest: result.manifest }]
+        : (Array.isArray(result.figures) ? result.figures : []);
+      for (const figure of group) {
+        const rendered = renderedFigures.find((candidate: any) => candidate?.figureId === figure.figureId)
+          || (group.length === 1 ? renderedFigures[0] : null);
+        if (!rendered?.manifest) {
+          issues.push({
+            type: 'figure_missing',
+            figureId: figure.figureId,
+            message: `${figure.figureId} 快照 renderer 没有返回可验证的 Figure manifest。`,
+          });
+          continue;
+        }
+
+        issues.push(...validateSnapshotEditLogAgainstManifest(
+          figure.figureId,
+          rendered.manifest,
+          figure.editLog,
+        ));
+
+        const figureWarnings = (Array.isArray(result.warnings) ? result.warnings : [])
+          .filter((warning: any) => !warning?.figureId || warning.figureId === figure.figureId)
+          .filter(isSnapshotReplayWarning);
+        figureWarnings.forEach((warning: any) => {
+          issues.push({
+            type: typeof warning === 'object' ? String(warning.type || 'renderer_warning') : 'renderer_warning',
+            figureId: figure.figureId,
+            gid: typeof warning === 'object' && typeof warning.gid === 'string' ? warning.gid : undefined,
+            prop: typeof warning === 'object' && typeof warning.prop === 'string' ? warning.prop : undefined,
+            message: `${figure.figureId} 快照 renderer 拒绝或无法确认一项编辑。`,
+            warning,
+          });
+        });
+      }
+    }
+
+    return { ok: issues.length === 0, issues };
   }
 
   interface CompositionProjectSourceInput {
@@ -4474,6 +4845,39 @@ ${inner}
           uploaded_file_paths,
         }, { req, label: 'patch-project-code' });
 
+        const replayConflicts = collectRendererReplayConflictsByFigure(
+          result.warnings,
+          compressedEditLogs,
+        );
+        if (result.status === 'success' && replayConflicts.length > 0) {
+          session.script = sessionBeforePatch.script;
+          session.editLog = [...sessionBeforePatch.editLog];
+          session.revision = sessionBeforePatch.revision;
+          const rendererConflicts = Array.from(new Map(
+            replayConflicts.map(conflict => [JSON.stringify(conflict.warning), conflict.warning]),
+          ).values());
+          const rejected = [
+            ...codePatches,
+            ...newEdits,
+            ...replayConflicts.map(conflict => ({
+              ...conflict.patch,
+              figureId: conflict.figureId,
+            })),
+          ];
+          const response = buildPatchConflictResponse(
+            sessionBeforePatch,
+            requestId,
+            rejected,
+            [
+              ...rendererConflicts,
+              ...(revisionWarning ? [revisionWarning] : []),
+            ],
+          );
+          processedIds.add(requestId);
+          cache.set(requestId, response);
+          return res.json(response);
+        }
+
         if (result.status === 'success') {
           const newFigures = result.figures || [];
           const figInputs: FigSessionInput[] = [];
@@ -4489,7 +4893,11 @@ ${inner}
               figureIndex: i,
               sessionId: figSessionIdResolved,
               editLog: incomingEditLog,
-              revision: nextRev
+              revision: nextRev,
+              previewSvg: fig.svg || null,
+              manifest: fig.manifest || null,
+              codeSlice: fig.codeSlice ?? null,
+              fingerprint: fig.fingerprint ?? null,
             });
             fig.revision = nextRev;
             fig.editLog = incomingEditLog;
@@ -5981,7 +6389,12 @@ ${inner}
       let rawSnapshot: unknown;
       try { rawSnapshot = JSON.parse(storedSnapshot.snapshotJson); } catch { rawSnapshot = null; }
       const snapshot = parseExportEditingSnapshot(rawSnapshot);
-      if (!snapshot || snapshot.projectId !== projectId || snapshot.targetFigureId !== storedSnapshot.figureId) {
+      if (
+        !snapshot
+        || snapshot.schemaVersion !== storedSnapshot.schemaVersion
+        || snapshot.projectId !== projectId
+        || snapshot.targetFigureId !== storedSnapshot.figureId
+      ) {
         return res.status(409).json({
           status: 'error',
           code: 'EXPORT_SNAPSHOT_INVALID',
@@ -6007,7 +6420,19 @@ ${inner}
       }
 
       const currentRows = listProjectFigures(projectId);
-      const expectedByIndex = new Map(snapshot.figures.map(figure => [figure.index, figure]));
+      if (snapshot.schemaVersion === 1 && snapshot.figures.length > 1) {
+        return res.status(409).json({
+          status: 'error',
+          code: 'EXPORT_SNAPSHOT_LEGACY_MULTI_FIGURE_UNSAFE',
+          message: '该旧版多 Figure 快照没有保存各 Figure 的独立脚本，已停止恢复以避免覆盖项目内容。',
+        });
+      }
+      const expectedByIndex = new Map<number, ExportFigureSnapshotV1 | ExportFigureSnapshotV2>(
+        snapshot.figures.map(figure => [
+          figure.index,
+          figure,
+        ] as [number, ExportFigureSnapshotV1 | ExportFigureSnapshotV2]),
+      );
       const structureMatches = currentRows.length === snapshot.figures.length
         && currentRows.every(row => expectedByIndex.has(row.figure_index));
       if (!structureMatches) {
@@ -6027,25 +6452,33 @@ ${inner}
           issues: datasetIssues,
         });
       }
-      if (snapshot.scriptLanguage === 'python') {
-        const astCheck = await validateAst(snapshot.projectScript, req);
-        if (!astCheck.ok) {
-          return res.status(400).json({
-            status: 'error',
-            code: 'EXPORT_SNAPSHOT_SCRIPT_REJECTED',
-            message: `快照脚本安全校验失败: ${astCheck.message || ''}`,
-            errors: astCheck.errors,
-          });
-        }
-      } else {
-        const rRisk = validateRScriptRisk(snapshot.projectScript, req);
-        if (!rRisk.ok) {
-          return res.status(400).json({
-            status: 'error',
-            code: 'EXPORT_SNAPSHOT_SCRIPT_REJECTED',
-            message: rRisk.message || 'R 脚本风险预检失败',
-            findings: rRisk.findings,
-          });
+      const checkedScripts = new Set<string>();
+      for (const figure of snapshot.figures) {
+        const figureScript = 'script' in figure ? figure.script : snapshot.projectScript;
+        const figureLanguage = 'scriptLanguage' in figure ? figure.scriptLanguage : snapshot.scriptLanguage;
+        const checkKey = `${figureLanguage}:${figureScript}`;
+        if (checkedScripts.has(checkKey)) continue;
+        checkedScripts.add(checkKey);
+        if (figureLanguage === 'python') {
+          const astCheck = await validateAst(figureScript, req);
+          if (!astCheck.ok) {
+            return res.status(400).json({
+              status: 'error',
+              code: 'EXPORT_SNAPSHOT_SCRIPT_REJECTED',
+              message: `${figure.figureId} 快照脚本安全校验失败: ${astCheck.message || ''}`,
+              errors: astCheck.errors,
+            });
+          }
+        } else {
+          const rRisk = validateRScriptRisk(figureScript, req);
+          if (!rRisk.ok) {
+            return res.status(400).json({
+              status: 'error',
+              code: 'EXPORT_SNAPSHOT_SCRIPT_REJECTED',
+              message: `${figure.figureId}: ${rRisk.message || 'R 脚本风险预检失败'}`,
+              findings: rRisk.findings,
+            });
+          }
         }
       }
 
@@ -6069,6 +6502,15 @@ ${inner}
           if (!session) throw new Error(`当前 Figure 会话不存在: fig_${row.figure_index + 1}`);
           return { row, session };
         });
+        const replayCheck = await dryRunExportEditingSnapshot({ snapshot, projectId, req });
+        if (!replayCheck.ok) {
+          return res.status(409).json({
+            status: 'error',
+            code: 'EXPORT_SNAPSHOT_REPLAY_REJECTED',
+            message: '导出状态快照无法被当前 renderer 完整重放，现有项目未被修改。',
+            issues: replayCheck.issues,
+          });
+        }
         const restoredRevisions: Record<string, number> = {};
         const checkpointTimestamp = Date.now();
         const database = getDb();
@@ -6087,6 +6529,9 @@ ${inner}
           for (const { row, session } of currentStates) {
             const figureSnapshot = expectedByIndex.get(row.figure_index);
             if (!figureSnapshot) throw new Error(`快照缺少 Figure: fig_${row.figure_index + 1}`);
+            const figureScript = 'script' in figureSnapshot
+              ? figureSnapshot.script
+              : snapshot.projectScript;
             const nextRevision = Math.max(session.revision || 1, row.revision || 1) + 1;
             const currentHistory = parseStoredHistory(row.history);
             const checkpoint = {
@@ -6105,7 +6550,7 @@ ${inner}
               SET script = ?, edit_log = ?, revision = ?, updated_at = datetime('now')
               WHERE id = ? AND user_id = ?
             `).run(
-              snapshot.projectScript,
+              figureScript,
               JSON.stringify(figureSnapshot.editLog),
               nextRevision,
               row.session_id,
@@ -6424,6 +6869,13 @@ ${inner}
 
       const cwd = projectFilesDir(projectId);
 
+      const renderedTargets: Array<{
+        session: any;
+        targetFigId: string;
+        exportEditLog: EditEntry[];
+        matchedFig: any;
+        targetWarnings: any[];
+      }> = [];
       for (const fig of targetFigs) {
         const session = loadSession(fig.session_id, userId);
         if (!session) continue;
@@ -6445,6 +6897,38 @@ ${inner}
 
         if (result.status === 'success') {
           const matchedFig = result.figures?.find((f: any) => f.figureId === targetFigId) || result;
+          const targetWarnings = Array.isArray(result.warnings)
+            ? result.warnings.filter((warning: any) => !warning?.figureId || warning.figureId === targetFigId)
+            : [];
+          const replayWarnings = targetWarnings.filter(isSnapshotReplayWarning);
+          if (replayWarnings.length > 0) {
+            return res.status(409).json({
+              status: 'conflict',
+              code: 'EXPORT_REPLAY_CONFLICT',
+              message: `${targetFigId} 存在未能完整重放的编辑，导出和编辑快照均未保存。`,
+              figureId: targetFigId,
+              warnings: targetWarnings,
+              replayWarnings,
+            });
+          }
+          renderedTargets.push({
+            session,
+            targetFigId,
+            exportEditLog,
+            matchedFig,
+            targetWarnings,
+          });
+        }
+      }
+
+      for (const renderedTarget of renderedTargets) {
+          const {
+            session,
+            targetFigId,
+            exportEditLog,
+            matchedFig,
+            targetWarnings,
+          } = renderedTarget;
           const assetName = figureId ? (name || targetFigId) : targetFigId;
           const exportAnchor = buildExportEditLogAnchor(exportEditLog);
           const effectiveFigureFormat = matchedFig.binary_b64 ? reqFormat : 'svg';
@@ -6539,11 +7023,11 @@ ${inner}
             svg: matchedFig.svg,
             binary_b64: matchedFig.binary_b64 || null,
             format: effectiveFigureFormat,
+            warnings: targetWarnings,
             asset,
             subplotAssets,
             subplot_format_notes: subplotFormatNotes,
           });
-        }
       }
 
       const responsePayload = {

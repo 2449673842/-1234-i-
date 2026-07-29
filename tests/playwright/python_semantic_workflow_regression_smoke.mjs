@@ -198,7 +198,7 @@ async function waitForWorkspaceReady(page, timeoutMs = 90000) {
   throw new Error(`workspace did not become ready: svg=${lastSvgCount}, body=${lastBody.slice(0, 800)}`);
 }
 
-async function waitForFigureState(page, expectedRevision, expectedLinewidth, expectedBand = null, timeoutMs = 60000) {
+async function waitForFigureState(page, expectedRevision, expectedLinewidth, expectedBand = null, expectedContour = null, timeoutMs = 60000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const state = await readWorkspaceFigureState(page);
@@ -215,7 +215,16 @@ async function waitForFigureState(page, expectedRevision, expectedLinewidth, exp
       && Number(entry?.value) === expectedBand.linewidth
       && entry?.mode === 'backend_patch'
     ));
-    if (revisionOk && linewidthOk && bandOk) return state;
+    const contourExpectations = expectedContour === null
+      ? []
+      : Array.isArray(expectedContour) ? expectedContour : [expectedContour];
+    const contourOk = contourExpectations.every((expected) => editLog.some((entry) => (
+      entry?.gid === expected.gid
+      && entry?.prop === expected.prop
+      && Number(entry?.value) === expected.value
+      && entry?.mode === 'backend_patch'
+    )));
+    if (revisionOk && linewidthOk && bandOk && contourOk) return state;
     await page.waitForTimeout(500);
   }
   const state = await readWorkspaceFigureState(page);
@@ -233,6 +242,10 @@ function lineGroupLocator(page) {
 
 function bandGroupLocator(page) {
   return page.locator('[data-component-group-label="置信区间带"]').first();
+}
+
+function contourGroupLocator(page) {
+  return page.locator('[data-component-group-label="等高线/填充等高线"]').first();
 }
 
 async function selectLineGroup(page) {
@@ -271,6 +284,26 @@ async function editBandLineWidth(page, nextValue) {
   await input.fill(String(nextValue));
   await input.press('Enter').catch(() => {});
   await input.evaluate((node) => node.blur());
+  await page.waitForTimeout(500);
+}
+
+async function editContourVmax(page, nextValue) {
+  const group = contourGroupLocator(page);
+  await group.waitFor({ state: 'visible', timeout: 30000 });
+  const input = group.locator('input[data-param-role="number"][data-param-prop="vmax"]').first();
+  await input.waitFor({ state: 'visible', timeout: 30000 });
+  await input.fill(String(nextValue));
+  await input.press('Enter').catch(() => {});
+  await input.evaluate((node) => node.blur());
+  await page.waitForTimeout(500);
+}
+
+async function editContourAlpha(page, nextValue) {
+  const group = contourGroupLocator(page);
+  const input = group.locator('input[data-param-role="range"][data-param-prop="alpha"]').first();
+  await input.waitFor({ state: 'visible', timeout: 30000 });
+  await input.fill(String(nextValue));
+  assert(Number(await input.inputValue()) === nextValue, `contour alpha control did not reach ${nextValue}`);
   await page.waitForTimeout(500);
 }
 
@@ -333,6 +366,10 @@ async function main() {
     object.kind === 'fill_between' && object.role === 'fill_between_series'
   ));
   assert(fillBetweenBand?.id, 'fixture manifest is missing the dedicated fill_between object');
+  const contourFill = fixture.rendered.figures[0]?.manifest?.objects?.find((object) => (
+    object.kind === 'contourf' && object.role === 'contourf_series'
+  ));
+  assert(contourFill?.id, 'fixture manifest is missing the dedicated contourf parent');
   const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 960 } });
   await installBrowserAuthentication(context, authToken);
@@ -359,33 +396,57 @@ async function main() {
     await waitForWorkspaceReady(page);
 
     await openComponentCenter(page);
-    await selectLineGroup(page);
     const patchRequestStart = apiRequests.length;
+    await editContourVmax(page, 1.25);
+    await editContourAlpha(page, 0.35);
+    await selectLineGroup(page);
     await editLineWidth(page, 1.9);
     await editBandLineWidth(page, 2.1);
     const bodyAfterDraft = await getBodyText(page);
     assert(bodyAfterDraft.includes('已暂存'), 'draft indicator did not appear after editing');
     assert(countPatchRequests(patchRequestStart) === 0, 'draft emitted a backend patch before apply');
 
-    const patchBody = await applyCurrentDraft(page, 3);
+    const patchBody = await applyCurrentDraft(page, 5);
     const bandPatch = patchBody.patches.find((patch) => patch.gid === fillBetweenBand.id && patch.prop === 'linewidth');
-    record('B0B-apply-batch', patchBody.patches.length === 3 && Number(bandPatch?.value) === 2.1 ? 'PASS' : 'FAIL', `patches=${JSON.stringify(patchBody.patches)}`);
+    const contourPatch = patchBody.patches.find((patch) => patch.gid === contourFill.id && patch.prop === 'vmax');
+    const contourAlphaPatch = patchBody.patches.find((patch) => patch.gid === contourFill.id && patch.prop === 'alpha');
+    record(
+      'B0B-apply-batch',
+      patchBody.patches.length === 5
+        && Number(bandPatch?.value) === 2.1
+        && Number(contourPatch?.value) === 1.25
+        && Number(contourAlphaPatch?.value) === 0.35 ? 'PASS' : 'FAIL',
+      `patches=${JSON.stringify(patchBody.patches)}`,
+    );
 
     const persistedAfterApply = await requestJson(`/api/projects/${fixture.projectId}`);
     const persistedFigure = persistedAfterApply.project?.figures?.find((figure) => figure.figureId === 'fig_1');
     assert(persistedFigure?.revision === initialRevision + 1, `revision did not increase after apply: ${persistedFigure?.revision}`);
     assert(Array.isArray(persistedFigure?.editLog) && persistedFigure.editLog.some((entry) => entry.prop === 'linewidth' && Number(entry.value) === 1.9), 'persisted editLog does not contain the applied linewidth edit');
     assert(persistedFigure.editLog.some((entry) => entry.gid === fillBetweenBand.id && entry.prop === 'linewidth' && Number(entry.value) === 2.1), 'persisted editLog does not contain the fill_between edit');
+    assert(persistedFigure.editLog.some((entry) => entry.gid === contourFill.id && entry.prop === 'vmax' && Number(entry.value) === 1.25), 'persisted editLog does not contain the contourf edit');
+    assert(persistedFigure.editLog.some((entry) => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.35), 'persisted editLog does not contain the contourf alpha edit');
 
     await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
     await waitForWorkspaceReady(page);
-    const reloadedState = await waitForFigureState(page, initialRevision + 1, 1.9, { gid: fillBetweenBand.id, linewidth: 2.1 });
+    const reloadedState = await waitForFigureState(
+      page,
+      initialRevision + 1,
+      1.9,
+      { gid: fillBetweenBand.id, linewidth: 2.1 },
+      [
+        { gid: contourFill.id, prop: 'vmax', value: 1.25 },
+        { gid: contourFill.id, prop: 'alpha', value: 0.35 },
+      ],
+    );
     assert(reloadedState.revision === initialRevision + 1, `reload did not preserve revision: ${reloadedState.revision}`);
 
     const undoRender = await clickUndo(page);
     const undoFigure = undoRender.figures?.find((figure) => figure.figureId === 'fig_1');
     assert(!(undoFigure?.editLog || []).some((entry) => entry.prop === 'linewidth' && Number(entry.value) === 1.9), 'undo kept the applied linewidth edit');
     assert(!(undoFigure?.editLog || []).some((entry) => entry.gid === fillBetweenBand.id && entry.prop === 'linewidth' && Number(entry.value) === 2.1), 'undo kept the fill_between edit');
+    assert(!(undoFigure?.editLog || []).some((entry) => entry.gid === contourFill.id && entry.prop === 'vmax'), 'undo kept the contourf edit');
+    assert(!(undoFigure?.editLog || []).some((entry) => entry.gid === contourFill.id && entry.prop === 'alpha'), 'undo kept the contourf alpha edit');
     await waitForWorkspaceReady(page);
     const undoState = await readWorkspaceFigureState(page);
     assert(!(undoState?.editLog || []).some((entry) => entry.prop === 'linewidth' && Number(entry.value) === 1.9), 'undo state still contains the applied linewidth edit');
@@ -394,10 +455,21 @@ async function main() {
     const redoFigure = redoRender.figures?.find((figure) => figure.figureId === 'fig_1');
     assert((redoFigure?.editLog || []).some((entry) => entry.prop === 'linewidth' && Number(entry.value) === 1.9), 'redo lost the applied linewidth edit');
     assert((redoFigure?.editLog || []).some((entry) => entry.gid === fillBetweenBand.id && entry.prop === 'linewidth' && Number(entry.value) === 2.1), 'redo lost the fill_between edit');
+    assert((redoFigure?.editLog || []).some((entry) => entry.gid === contourFill.id && entry.prop === 'vmax' && Number(entry.value) === 1.25), 'redo lost the contourf edit');
+    assert((redoFigure?.editLog || []).some((entry) => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.35), 'redo lost the contourf alpha edit');
     await waitForWorkspaceReady(page);
     const redoState = await readWorkspaceFigureState(page);
     assert((redoState?.editLog || []).some((entry) => entry.prop === 'linewidth' && Number(entry.value) === 1.9), 'redo state lost the applied linewidth edit');
     assert((redoState?.editLog || []).some((entry) => entry.gid === fillBetweenBand.id && entry.prop === 'linewidth' && Number(entry.value) === 2.1), 'redo state lost the fill_between edit');
+    assert((redoState?.editLog || []).some((entry) => entry.gid === contourFill.id && entry.prop === 'vmax' && Number(entry.value) === 1.25), 'redo state lost the contourf edit');
+    assert((redoState?.editLog || []).some((entry) => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.35), 'redo state lost the contourf alpha edit');
+
+    const persistedAfterRedo = await requestJson(`/api/projects/${fixture.projectId}`);
+    const persistedRedoFigure = persistedAfterRedo.project?.figures?.find((figure) => figure.figureId === 'fig_1');
+    assert(
+      (persistedRedoFigure?.editLog || []).some((entry) => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.35),
+      `authoritative session lost contourf alpha after redo: ${JSON.stringify(persistedRedoFigure)}`,
+    );
 
     const exportResult = await requestJson(`/api/projects/${fixture.projectId}/export`, {
       method: 'POST',
@@ -412,6 +484,12 @@ async function main() {
     assert(exportAsset?.assetId, `export asset missing: ${JSON.stringify(exportResult)}`);
     assert(exportAsset.hasEditingSnapshot === true, `export did not capture an editing snapshot: ${JSON.stringify(exportAsset)}`);
     assert(Number(exportAsset?.metadata?.revision || exportAsset?.revision || 0) === initialRevision + 1, `export snapshot revision mismatch: ${JSON.stringify(exportAsset)}`);
+    const exportedSvg = exportResult.figures?.[0]?.svg || '';
+    const exportedOpacityStyles = Array.from(exportedSvg.matchAll(/(?:fill-opacity|opacity):\s*([0-9.]+)/g), match => match[0]);
+    assert(
+      exportedSvg.includes('fill-opacity: 0.35'),
+      `exported SVG does not contain the applied contourf alpha state; opacity styles=${JSON.stringify(Array.from(new Set(exportedOpacityStyles)).slice(0, 20))}; warnings=${JSON.stringify(exportResult.figures?.[0]?.warnings || [])}`,
+    );
     record('B0B-export-snapshot', 'PASS', `asset=${exportAsset.assetId}, format=${exportAsset.format}, snapshot=${exportAsset.hasEditingSnapshot}`);
 
     await openComponentCenter(page);
@@ -431,7 +509,16 @@ async function main() {
     await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
     await waitForWorkspaceReady(page);
 
-    const restoredState = await waitForFigureState(page, null, 1.9, { gid: fillBetweenBand.id, linewidth: 2.1 });
+    const restoredState = await waitForFigureState(
+      page,
+      null,
+      1.9,
+      { gid: fillBetweenBand.id, linewidth: 2.1 },
+      [
+        { gid: contourFill.id, prop: 'vmax', value: 1.25 },
+        { gid: contourFill.id, prop: 'alpha', value: 0.35 },
+      ],
+    );
     assert((restoredState?.editLog || []).some((entry) => entry.prop === 'linewidth' && Number(entry.value) === 1.9), 'restore did not return to export-time linewidth state');
 
     const restoredProject = await requestJson(`/api/projects/${fixture.projectId}`);
@@ -439,6 +526,8 @@ async function main() {
     assert(Number(restoredFigure?.revision || 0) >= laterRevision, `restored revision regressed: ${restoredFigure?.revision} < ${laterRevision}`);
     assert(Array.isArray(restoredFigure?.editLog) && restoredFigure.editLog.some((entry) => entry.prop === 'linewidth' && Number(entry.value) === 1.9), 'restored editLog does not contain export-time state');
     assert(restoredFigure.editLog.some((entry) => entry.gid === fillBetweenBand.id && entry.prop === 'linewidth' && Number(entry.value) === 2.1), 'restored editLog lost the export-time fill_between state');
+    assert(restoredFigure.editLog.some((entry) => entry.gid === contourFill.id && entry.prop === 'vmax' && Number(entry.value) === 1.25), 'restored editLog lost the export-time contourf state');
+    assert(restoredFigure.editLog.some((entry) => entry.gid === contourFill.id && entry.prop === 'alpha' && Number(entry.value) === 0.35), 'restored editLog lost the export-time contourf alpha state');
     assert(Array.isArray(restoredFigure?.editLog) && restoredFigure.editLog.some((entry) => entry.gid === 'global' && entry.prop === 'figure.width_in' && Number(entry.value) === 5.6), 'restored editLog is missing figure.width_in');
     assert(Array.isArray(restoredFigure?.editLog) && restoredFigure.editLog.some((entry) => entry.gid === 'global' && entry.prop === 'figure.height_in' && Number(entry.value) === 3.6), 'restored editLog is missing figure.height_in');
     assert(Array.isArray(restoredFigure?.editLog) && restoredFigure.editLog.some((entry) => entry.gid === 'global' && entry.prop === 'figure.dpi' && Number(entry.value) === 100), 'restored editLog is missing figure.dpi');

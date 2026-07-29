@@ -186,7 +186,7 @@ export function PropertyControl({
       <label className="relative inline-flex items-center justify-self-end">
         <input
           {...sharedProps}
-          data-param-role="toggle"
+          data-param-role="boolean"
           type="checkbox"
           aria-label={displayLabelText}
           className="peer sr-only"

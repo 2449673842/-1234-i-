@@ -34,11 +34,38 @@ function unsupportedProps(object: ManifestObject): string[] {
   return Array.isArray(value) ? value.map(String) : [];
 }
 
+export function isContourObject(object: ManifestObject | null | undefined): boolean {
+  return object?.kind === 'contour' || object?.kind === 'contourf';
+}
+
+export function isContourStructuralProp(prop: string): boolean {
+  return ['levels', 'x', 'y', 'z'].includes(prop.toLowerCase());
+}
+
+export function isParentOwnedManifestObject(
+  object: ManifestObject | null | undefined,
+): boolean {
+  return object?.role === 'contour_child_collection'
+    || object?.currentProps?.parentOwned === true;
+}
+
 export function propertyCapabilityFor(
   object: ManifestObject | null | undefined,
   prop: string,
 ): ManifestPropertyCapability | undefined {
   return object?.propertyCapabilities?.find(capability => capability.prop === prop);
+}
+
+export function resolveCrossFigurePolicy(
+  objects: Array<ManifestObject | null | undefined>,
+  prop: string,
+): 'allow' | 'deny' {
+  if (objects.length === 0) return 'deny';
+  return objects.every((object) => {
+    const capability = propertyCapabilityFor(object, prop);
+    return capability?.replay !== 'unsupported'
+      && capability?.scopes.includes('cross_figure') === true;
+  }) ? 'allow' : 'deny';
 }
 
 function capabilityAllowsExactLocalPreview(capability: ManifestPropertyCapability): boolean {
@@ -66,6 +93,7 @@ export function resolvePatchMode(
   if (!manifest || !object || manifest.generatedBy === 'r_svg') return 'backend_patch';
   if (isTextContentPatchProp(prop, object)) return 'backend_patch';
   if (object.kind === 'grid' && prop === 'visible') return 'backend_patch';
+  if (isContourObject(object)) return 'backend_patch';
 
   const capability = propertyCapabilityFor(object, prop);
   if (capability) {

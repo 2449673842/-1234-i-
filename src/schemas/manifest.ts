@@ -51,6 +51,8 @@ export type ManifestObjectKind =
   | "legend"
   | "line"
   | "collection"
+  | "contour"
+  | "contourf"
   | "fill_between"
   | "patch"
   | "figure"
@@ -266,7 +268,7 @@ export interface SemanticGroup {
   groupId: string;
   label: string;
   paletteId: string;
-  kind: "bar" | "line" | "scatter";
+  kind: "bar" | "line" | "scatter" | "contour" | "contourf";
   aesthetic?: string;
   scaleId?: string;
   layerIds?: string[];

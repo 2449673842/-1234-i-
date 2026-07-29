@@ -12,7 +12,7 @@ import type {
   PatchEntry,
 } from '../schemas/manifest';
 import { compileEditingIntent, inferEditingTargetRole } from './editingIntentCompiler';
-import { propertyCapabilityFor, resolvePatchMode } from './propertyPatchMode';
+import { isContourObject, isContourStructuralProp, propertyCapabilityFor, resolvePatchMode } from './propertyPatchMode';
 
 export type ShadowTargetMatch = 'exact' | 'semantic' | 'fanout';
 
@@ -78,6 +78,7 @@ const TICK_PROP_MAP: Record<string, string> = {
 };
 
 function supportsProp(object: ManifestObject, prop: string): boolean {
+  if (isContourObject(object) && isContourStructuralProp(prop)) return false;
   const capability = propertyCapabilityFor(object, prop);
   if (capability) return capability.replay !== 'unsupported';
   const unsupported = object.currentProps?.unsupportedProps;
@@ -253,6 +254,14 @@ function resolveEditingTargets(
   const identityResult = removeAmbiguousIdentities(candidates);
   const skipped: ShadowTargetIssue[] = [];
   const supported = identityResult.candidates.filter((object) => {
+    if (isContourObject(object) && isContourStructuralProp(prop)) {
+      skipped.push({
+        objectId: object.id,
+        reason: 'unsupported_prop',
+        detail: `${object.id} does not support ${prop}.`,
+      });
+      return false;
+    }
     const capability = propertyCapabilityFor(object, prop);
     if (!requirePropertyCapabilities && supportsProp(object, prop)) return true;
     if (requirePropertyCapabilities && capability && capability.replay !== 'unsupported') {

@@ -1,9 +1,9 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-19 00:25:28 +08:00
-> 证据截止时间：2026-07-19 00:25:28 +08:00
-> 代码范围：`feature/standard-figure-model-v1`，`HEAD fac7ac7` 加当前工作区尚未提交的网格/图例修复、Python 身份与 patch 事务保护、导出事务保护和 `fill_between` 专用适配
+> 最后修改时间：2026-07-19 06:19:06 +08:00
+> 证据截止时间：2026-07-19 06:19:06 +08:00
+> 代码范围：`feature/standard-figure-model-v1`，`HEAD 0d09a95` 加当前工作区尚未提交的 Python 身份/事务保护、导出恢复、`fill_between`、`contour/contourf` 和拖拽保护
 > 部署状态：未推送、未部署；本文件不代表服务器当前版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
@@ -30,25 +30,27 @@
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
 | TypeScript | 通过 | `npm run lint` |
-| 前端单元测试 | 143 文件 / 912 测试通过 | `npm test` |
-| Python renderer/身份/复杂覆盖 | 64/64 通过 | introspection 47、identity 7、complex coverage 10 |
-| 组件中心真实浏览器 | 24/24 通过 | 包含网格、图例、容器和 `fill_between` 专用组 |
+| 前端单元测试 | 143 文件 / 923 测试通过 | `npm test` |
+| Python renderer/身份/复杂覆盖 | 两套升级验证环境均 105/105 通过 | Matplotlib 3.7.2 与 3.8.4 运行完整 discovery；生产仅固定一个镜像版本 |
+| 组件中心真实浏览器 | 31/31 通过 | 包含网格、图例、容器、`fill_between`、contour 父对象、子层重定向和拖拽模式多选保护 |
 | Python 完整用户链路 | 通过 | 选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和快照恢复 |
 | `fill_between` 专用语义 | 通过 | dedicated kind/role、旧 GID/stableKey、配色、组件、历史和导出恢复均通过 |
+| `contour/contourf` 专用语义 | 通过 | 父对象、只读子层、colorbar 关系、属性 scope、跨 Figure、旧项目和导出恢复均通过 |
 | R 共享协议回归 | 通过 | R renderer 31/31、R 浏览器 5/5、Python/R capability matrix 2/2 |
 | patch 事务保护 | 通过 | standalone 与项目 Figure 均由服务端按可信 manifest/renderer 决定 mode；拒绝批次不改变 revision、session、history、cache 或导出锚点 |
-| 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容和不安全多 Figure 拒绝均有专项回归 |
+| 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |
 | 项目 PUT 保存预检 | 通过 | editLog、past/future history、无 manifest 新编辑均先预检；伪报 local 和 mixed invalid batch 原子拒绝 |
 | 跨 Figure 目标保护 | 通过 | 无授权显式对象不 fanout；目标 mode 重算；同分语义候选跳过；组件语义组显式授权 fanout 保持 |
-| 跨 Figure 浏览器回归 | 9/9 通过 | 字体、内容限制、组件组 fanout、图例隔离、部分失败 Draft 保留 |
+| 跨 Figure 浏览器回归 | 11/11 通过 | 字体、内容限制、组件组 fanout、图例隔离、contour role 分离和部分失败 Draft 保留 |
+| 扩展拖拽 | 10/10 通过 | 真实 Ctrl 三选、累计确认、取消、只读命中、annotation 和 R native 保护 |
 | Python cache | 通过 | 首次 miss、同语义重复 hit、值变化 miss；只信任本进程已确认 key |
 | 生产构建 | 通过 | 保留既有 bundle 体积和 CJS `import.meta` 警告 |
 | 数据完整性 | 0 个错误 | 25 用户、121 项目、263 项目文件、101 导出资产；23 条历史测试账号警告未删除 |
 
 本轮还重新运行了编辑、R、跨 Figure、历史、导出、页面、组合、安全和隔离 smoke。所有请求均使用随机 `127.0.0.1` 端口和临时数据库；未访问 3000，未修改 Docker/WSL。
 
-第二轮独立代码审查发现的 standalone mode 权威缺口已修复。当前项目保存接口也已纳入同一服务端预检；新增的 PUT、history 侧门、无 manifest 和跨 Figure 回归均通过。WP8 的恢复/导出事务证据已补齐，`fill_between` 已完成复杂对象首个专用适配；后续仍需对其余复杂对象、特殊 axes 和性能门禁补齐证据。
+第二轮独立代码审查发现的 standalone mode 权威缺口已修复。当前项目保存接口也已纳入同一服务端预检；新增的 PUT、history 侧门、无 manifest 和跨 Figure 回归均通过。WP8 的恢复/导出事务证据已补齐，`fill_between` 与 `contour/contourf` 已完成专用适配；后续仍需对其余复杂对象、特殊 axes 和性能门禁补齐证据。
 
 第一轮隔离浏览器基线补充结果：
 
@@ -60,6 +62,20 @@
 | 扩展拖拽 | 10/10 PASS | Python 多目标、取消、不支持目标、annotation 和 R native 坐标保护通过 |
 
 `D4-r-native-protection` 已改为不依赖伪造项目 ID 的单图 R fixture；测试继续证明 native 坐标文本不会生成错误位置 patch，而不是跳过该能力边界。
+
+2026-07-19 06:19:06 的 contour/拖拽/导出补充证据：
+
+```text
+contour/contourf 使用专用父对象；levels/X/Y/Z 保持只读
+contour child collection 标记 parentOwned，现代批量面板不再产生子层 editLog
+cmap/vmin/vmax 只在属性声明的 scope 内应用，未声明 cross_figure 时保守留在当前对象
+明确命中的只读 SVG 图元不会吸附到附近文本；Ctrl/Shift 多选不会被后续单选回调覆盖
+旧 identity-bearing contour child editLog 可加载、保存、导出和快照恢复
+contour child 点击在普通和拖拽模式下都重定向到父对象，modifier 可保留两个父对象
+其他 Figure 的 stale edit 会阻断项目级代码 patch；全项目导出在全部目标通过前零资产写入
+```
+
+版本边界：开发、预发布和生产应使用同一套固定 renderer 镜像及精确依赖。上一生产/验证环境只在升级窗口内作为旧项目迁移门禁，不是长期支持矩阵；历史 manifest/editLog 兼容必须由数据协议测试证明，不能靠同时运行多套 renderer 规避。
 
 2026-07-18 21:03:51 的 WP3/WP4 补充证据：
 

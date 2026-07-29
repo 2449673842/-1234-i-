@@ -9,7 +9,7 @@
  * - Applying a single-panel style edit to a multi-panel target fans out to all target subplots.
  *
  * Prerequisite:
- *   The app is running at http://localhost:3000.
+ *   Run through scripts/testing/run_with_isolated_server.mjs.
  */
 
 import { chromium } from 'playwright';
@@ -24,7 +24,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
-const BASE_URL = process.env.SCIFIGURE_URL || 'http://localhost:3000';
+const BASE_URL = process.env.SCIFIGURE_URL || '';
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, '-');
 const OUTPUT_DIR = path.join(ROOT, 'output', 'playwright', `cross-figure-apply-${RUN_ID}`);
 
@@ -37,6 +37,19 @@ const diagnostics = {};
 let failNextPatchFigureId = null;
 let injectedPatchFailures = 0;
 let authToken = '';
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function assertIsolatedRunner() {
+  assert(process.env.SCIFIGURE_TEST_ISOLATED === '1', 'cross figure smoke requires the isolated server wrapper');
+  assert(BASE_URL, 'SCIFIGURE_URL is required from the isolated server wrapper');
+  const url = new URL(BASE_URL);
+  assert(url.hostname === '127.0.0.1', `test must target isolated 127.0.0.1 server, got ${BASE_URL}`);
+  assert(url.port !== '3000', 'test refuses localhost:3000/default port');
+  assert(process.env.SCIFIGURE_DATA_DIR && process.env.SCIFIGURE_DB_PATH, 'isolated data dir and DB path are required');
+}
 
 function record(id, status, note) {
   results.push({ id, status, note });
@@ -114,6 +127,28 @@ const script = [
   '    fig.tight_layout()',
 ].join('\n');
 
+const contourScript = [
+  'import numpy as np',
+  'import matplotlib.pyplot as plt',
+  'x = np.linspace(-3, 3, 48)',
+  'y = np.linspace(-3, 3, 44)',
+  'X, Y = np.meshgrid(x, y)',
+  'Z = np.sin(X) * np.cos(Y)',
+  'fig1, ax1 = plt.subplots(figsize=(4, 3))',
+  'ax1.contour(X, Y, Z, levels=5, cmap="viridis", linewidths=1.0)',
+  'ax1.contourf(X, Y, Z + 0.15, levels=5, cmap="magma", alpha=0.8)',
+  'ax1.set_title("Contour source")',
+  'fig2, ax2 = plt.subplots(figsize=(4, 3))',
+  'ax2.contour(X, Y, Z * 0.8, levels=5, cmap="viridis", linewidths=1.0)',
+  'ax2.contourf(X, Y, Z * 0.8 + 0.2, levels=5, cmap="magma", alpha=0.8)',
+  'ax2.set_title("Contour target both")',
+  'fig3, ax3 = plt.subplots(figsize=(4, 3))',
+  'ax3.contour(X, Y, Z * 1.2, levels=5, cmap="viridis", linewidths=1.0)',
+  'ax3.set_title("Contour target line only")',
+  'for fig in [fig1, fig2, fig3]:',
+  '    fig.tight_layout()',
+].join('\n');
+
 async function getBodyText(page) {
   return (await page.textContent('body').catch(() => '')) || '';
 }
@@ -130,8 +165,8 @@ async function waitForPreviewReady(page, timeoutMs = 90000) {
   return false;
 }
 
-async function prepareProject(page) {
-  const fixture = await page.evaluate(async ({ baseUrl, script }) => {
+async function prepareProject(page, projectScript = script, projectLabel = 'Cross figure apply smoke') {
+  const fixture = await page.evaluate(async ({ baseUrl, script, projectLabel }) => {
     const spec = {
       plot_type: 'custom',
       custom_script: script,
@@ -142,7 +177,7 @@ async function prepareProject(page) {
     const createRes = await fetch(`${baseUrl}/api/projects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: `Cross figure apply smoke ${Date.now()}`, spec }),
+      body: JSON.stringify({ name: `${projectLabel} ${Date.now()}`, spec }),
     });
     const created = await createRes.json();
     if (created.status !== 'success') throw new Error(created.message || 'create project failed');
@@ -188,12 +223,22 @@ async function prepareProject(page) {
       projectId: created.id,
       figureIds: rendered.figures.map((figure) => figure.figureId),
       figureCount: rendered.figures.length,
+      objectSummaryByFigure: Object.fromEntries(rendered.figures.map((figure) => [
+        figure.figureId,
+        (figure.manifest?.objects || []).map((object) => ({
+          id: object.id,
+          kind: object.kind,
+          role: object.role,
+          parentId: object.parentId,
+          children: object.children || [],
+        })),
+      ])),
       axisIdsByFigure: Object.fromEntries(rendered.figures.map((figure) => [
         figure.figureId,
         (figure.manifest?.objects || []).filter((object) => object.kind === 'axis_x').map((object) => object.id),
       ])),
     };
-  }, { baseUrl: BASE_URL, script });
+  }, { baseUrl: BASE_URL, script: projectScript, projectLabel });
   await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
   await waitForPreviewReady(page);
   return fixture;
@@ -223,6 +268,25 @@ async function setNumberControl(page, sectionText, labelText, value) {
       return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     };
     const rightSide = (node) => node.getBoundingClientRect().left > window.innerWidth * 0.70;
+    const fontGroupBySection = {
+      '标题': 'titles',
+      'X 轴标签': 'xlabels',
+      'Y 轴标签': 'ylabels',
+      'X 轴刻度文字': 'xticks',
+      'Y 轴刻度文字': 'yticks',
+      '图例文字': 'legend_text',
+    };
+    const fontGroup = fontGroupBySection[sectionText];
+    if (fontGroup) {
+      const projected = document.querySelector(
+        `[data-font-group="${fontGroup}"] input[data-property-control="${labelText}"]`,
+      );
+      if (projected && visible(projected) && !projected.disabled) return projected;
+      const rollback = document.querySelector(
+        `input[data-param-gid="font-center-${fontGroup}"][data-param-prop="${labelText}"]`,
+      );
+      if (rollback && visible(rollback) && !rollback.disabled) return rollback;
+    }
     const inputs = Array.from(document.querySelectorAll('input[data-param-role="number"]'))
       .filter((node) => visible(node) && rightSide(node));
     return inputs.find((node) => {
@@ -277,6 +341,29 @@ async function setNumberControlInCardByText(page, cardText, prop, value) {
   await element.fill(String(value));
   await element.press('Enter').catch(() => {});
   await element.evaluate((node) => node.blur());
+  await page.waitForTimeout(700);
+  return true;
+}
+
+async function setRangeInComponentGroup(page, groupId, prop, value) {
+  const locator = page.locator([
+    `[data-component-group-id="${groupId}"] input[data-property-control="${prop}"][data-param-role="number"]`,
+    `[data-component-group-id="${groupId}"] input[data-param-role="range"][data-param-prop="${prop}"]`,
+  ].join(', ')).first();
+  if (!(await locator.isVisible({ timeout: 5000 }).catch(() => false))) return false;
+  await locator.scrollIntoViewIfNeeded().catch(() => {});
+  if (await locator.getAttribute('data-param-role') === 'number') {
+    await locator.fill(String(value));
+    await locator.press('Enter').catch(() => {});
+    await locator.evaluate((node) => node.blur());
+  } else {
+    await locator.evaluate((node, nextValue) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(node, String(nextValue));
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+      node.dispatchEvent(new Event('change', { bubbles: true }));
+    }, value);
+  }
   await page.waitForTimeout(700);
   return true;
 }
@@ -388,6 +475,7 @@ async function selectActiveFigure(page, figureNumber) {
 }
 
 async function run() {
+  assertIsolatedRunner();
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   authToken = await authenticateCapabilitySmokeUser(BASE_URL, 'cross-figure apply');
   await cleanupSmokeProjects();
@@ -578,6 +666,83 @@ async function run() {
       'X3b-data-line-excludes-legend-marker',
       dataLineIsolationOk ? 'PASS' : 'FAIL',
       `changed=${changedDataLine}, draft=${dataLineDraftVisible}, figureIds=${JSON.stringify(dataLineFigureIds)}, dataLines=${actualDataLinePatches.length}, legendLines=${legendLinePatches.length}, patches=${JSON.stringify(dataLinePatches)}, fullRenderCalls=${dataLineFullRenderCalls.length}`,
+    );
+
+    if (projectId) {
+      await requestJson(`/api/projects/${projectId}`, { method: 'DELETE' }).catch(() => null);
+      projectId = null;
+    }
+    const contourFixture = await prepareProject(page, contourScript, 'Cross figure apply smoke contour');
+    projectId = contourFixture.projectId;
+    diagnostics.contourFixture = contourFixture;
+    const contourObjectSummary = contourFixture.objectSummaryByFigure || {};
+    const contourParentsByFigure = Object.fromEntries(Object.entries(contourObjectSummary).map(([figureId, objects]) => [
+      figureId,
+      objects.filter((object) => object.kind === 'contour' || object.kind === 'contourf'),
+    ]));
+    const contourChildIds = new Set(Object.values(contourObjectSummary)
+      .flatMap((objects) => objects.filter((object) => object.role === 'contour_child_collection').map((object) => object.id)));
+    const contourParentKindsByFigure = Object.fromEntries(Object.entries(contourParentsByFigure).map(([figureId, parents]) => [
+      figureId,
+      parents.map((parent) => parent.kind).sort(),
+    ]));
+    const contourFixtureOk = contourParentKindsByFigure.fig_1?.join(',') === 'contour,contourf'
+      && contourParentKindsByFigure.fig_2?.join(',') === 'contour,contourf'
+      && contourParentKindsByFigure.fig_3?.join(',') === 'contour'
+      && Object.values(contourParentsByFigure).flat().every((parent) => Array.isArray(parent.children) && parent.children.length > 0);
+    record(
+      'X5-contour-fixture-parent-model',
+      contourFixtureOk ? 'PASS' : 'FAIL',
+      `parents=${JSON.stringify(contourParentKindsByFigure)}, childCount=${contourChildIds.size}`,
+    );
+
+    await clickText(page, '组件中心');
+    const changedContourAlpha = await setRangeInComponentGroup(page, 'contours', 'alpha', 0.35);
+    const contourDraftVisible = (await getBodyText(page)).includes('已暂存');
+    const applyContourAll = changedContourAlpha
+      ? await applyAllAndReadPatches(page)
+      : { clicked: false, patchBodies: [], successful: false, start: apiRequests.length };
+    const contourPatchBodies = applyContourAll.patchBodies;
+    const contourPatchesByFigure = Object.fromEntries(contourPatchBodies.map((body) => [
+      body?.figureId,
+      patchList(body),
+    ]));
+    const contourKindForPatch = (figureId, patch) => {
+      const objects = contourObjectSummary[figureId] || [];
+      return objects.find((object) => object.id === patch.gid)?.kind || null;
+    };
+    const contourKindsByPatchedFigure = Object.fromEntries(Object.entries(contourPatchesByFigure).map(([figureId, patchesForFigure]) => [
+      figureId,
+      patchesForFigure.map((patch) => contourKindForPatch(figureId, patch)).sort(),
+    ]));
+    const contourAllPatches = Object.values(contourPatchesByFigure).flat();
+    const contourChildTargets = contourAllPatches.filter((patch) => contourChildIds.has(patch.gid) || String(patch.gid || '').startsWith('collection.'));
+    const contourUnexpectedKinds = Object.entries(contourPatchesByFigure).flatMap(([figureId, patchesForFigure]) => (
+      patchesForFigure
+        .map((patch) => contourKindForPatch(figureId, patch))
+        .filter((kind) => kind !== 'contour' && kind !== 'contourf')
+    ));
+    const contourReportBody = await getBodyText(page);
+    const contourSkippedVisible = contourReportBody.includes('最近语义应用结果')
+      && contourReportBody.includes('部分跳过')
+      && contourReportBody.includes('跳过 1');
+    const contourSplitRetargetOk = contourFixtureOk
+      && changedContourAlpha
+      && contourDraftVisible
+      && applyContourAll.clicked
+      && applyContourAll.successful
+      && contourPatchBodies.map((body) => body?.figureId).filter(Boolean).sort().join(',') === 'fig_1,fig_2,fig_3'
+      && contourKindsByPatchedFigure.fig_1?.join(',') === 'contour,contourf'
+      && contourKindsByPatchedFigure.fig_2?.join(',') === 'contour,contourf'
+      && contourKindsByPatchedFigure.fig_3?.join(',') === 'contour'
+      && contourAllPatches.every((patch) => patch.prop === 'alpha' && Number(patch.value) === 0.35)
+      && contourChildTargets.length === 0
+      && contourUnexpectedKinds.length === 0
+      && contourSkippedVisible;
+    record(
+      'X5-contour-role-split-parent-retarget',
+      contourSplitRetargetOk ? 'PASS' : 'FAIL',
+      `changed=${changedContourAlpha}, draft=${contourDraftVisible}, kinds=${JSON.stringify(contourKindsByPatchedFigure)}, childTargets=${JSON.stringify(contourChildTargets)}, skippedVisible=${contourSkippedVisible}, patches=${JSON.stringify(contourAllPatches)}`,
     );
 
     const activeFig1ForRetry = await selectActiveFigure(page, 1);

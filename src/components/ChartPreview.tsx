@@ -7,6 +7,7 @@ import type { EditingIntent, SemanticTargetRole } from '../schemas/editingIntent
 import { projectPropertyDescriptors } from '../utils/propertyDescriptors';
 import { compileEditingIntentWithControlledResolver } from '../utils/targetResolver';
 import { recordLegacyRetireObservation } from '../utils/legacyRetireObservationClient';
+import { isParentOwnedManifestObject } from '../utils/propertyPatchMode';
 
 const TEXT_GID_RE = /^(r\.text|text|title|xlabel|ylabel|legend_text|legend_title|fig_text)\./;
 const TICK_LABEL_GID_RE = /^(xtick|ytick)\./;
@@ -209,6 +210,14 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     const direct = querySvgElementById(svgEl, gid);
     if (direct) return direct;
 
+    const object = manifestObjectMap.get(gid);
+    if ((object?.kind === 'contour' || object?.kind === 'contourf') && Array.isArray(object.children)) {
+      for (const childId of object.children) {
+        const child = querySvgElementById(svgEl, childId);
+        if (child) return child;
+      }
+    }
+
     // subplot.* is a logical manifest object. Matplotlib writes the physical axes group as axes.*.
     const subplotMatch = gid.match(/^subplot\.(\d+)$/);
     if (subplotMatch) {
@@ -223,7 +232,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       if (first) return first;
     }
     return null;
-  }, [querySvgElementById]);
+  }, [manifestObjectMap, querySvgElementById]);
 
   const isDraggableTextObject = useCallback((gid: string) => {
     const obj = manifestObjectMap.get(gid);
@@ -305,22 +314,31 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
   }, [getSvgPoint]);
 
+  const resolveParentOwnedHitGid = useCallback((gid: string) => {
+    const object = manifestObjectMap.get(gid);
+    const parentId = object?.parentId || object?.identity?.relation?.parentId;
+    if (isParentOwnedManifestObject(object) && typeof parentId === 'string' && validGids.has(parentId)) {
+      return parentId;
+    }
+    return gid;
+  }, [manifestObjectMap, validGids]);
+
   const findElementGid = useCallback((target: HTMLElement | null) => {
     let current: HTMLElement | null = target;
     while (current) {
       if (current.id) {
-        if (validGids.has(current.id)) return current.id;
+        if (validGids.has(current.id)) return resolveParentOwnedHitGid(current.id);
         const gridMatch = current.id.match(/^grid\.(\d+)\.line\./);
         if (gridMatch && validGids.has(`grid.${gridMatch[1]}`)) {
           return `grid.${gridMatch[1]}`;
         }
       }
       const dataFigId = current.getAttribute('data-fig-id');
-      if (dataFigId && validGids.has(dataFigId)) return dataFigId;
+      if (dataFigId && validGids.has(dataFigId)) return resolveParentOwnedHitGid(dataFigId);
       current = current.parentElement;
     }
     return null;
-  }, [validGids]);
+  }, [resolveParentOwnedHitGid, validGids]);
 
   const resolveLegendDragTarget = useCallback((gid: string | null) => {
     if (!gid) return gid;
@@ -334,7 +352,10 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
   const findDraggableTextGidAtPoint = useCallback((target: HTMLElement | null, clientX: number, clientY: number) => {
     const targetGid = resolveLegendDragTarget(findElementGid(target));
-    if (targetGid && isDraggableTextObject(targetGid) && !pendingDragDeltasRef.current.has(targetGid)) return targetGid;
+    if (targetGid) {
+      if (!isDraggableTextObject(targetGid)) return targetGid;
+      if (!pendingDragDeltasRef.current.has(targetGid)) return targetGid;
+    }
 
     const svgEl = svgContainerRef.current?.querySelector('svg') as SVGSVGElement | null;
     if (!svgEl) return targetGid;
@@ -931,8 +952,8 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
           const next = currentSelection.includes(foundGid)
             ? currentSelection.filter(gid => gid !== foundGid)
             : [...currentSelection, foundGid];
+          selectedGidsRef.current = next;
           onSelectGids?.(next);
-          onSelectObject(foundGid);
           setDragHint(next.length > 1 ? `已选择 ${next.length} 个对象；松开 Ctrl/Shift 后拖动其中任意一个可整体移动。` : null);
           return;
         }
@@ -976,6 +997,20 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       } else if (foundGid) {
         event.preventDefault();
         event.stopPropagation();
+        suppressNextClickRef.current = true;
+        if (event.ctrlKey || event.metaKey || event.shiftKey) {
+          const currentSelection = selectedGidsRef.current;
+          const next = currentSelection.includes(foundGid)
+            ? currentSelection.filter(gid => gid !== foundGid)
+            : [...currentSelection, foundGid];
+          selectedGidsRef.current = next;
+          onSelectGids?.(next);
+          setDragHint(next.length > 1
+            ? `已选择 ${next.length} 个对象；当前对象不支持拖拽，但可继续组合选择。`
+            : null);
+          return;
+        }
+        selectedGidsRef.current = [foundGid];
         onSelectGids?.([foundGid]);
         onSelectObject(foundGid);
         setDragHint(TICK_LABEL_GID_RE.test(foundGid)

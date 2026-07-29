@@ -5,7 +5,7 @@ import type {
   EditingIntentSkippedTarget,
   SemanticTargetRole,
 } from '../schemas/editingIntent';
-import { resolvePatchMode } from './propertyPatchMode';
+import { isContourObject, isContourStructuralProp, resolvePatchMode } from './propertyPatchMode';
 
 const TICK_PROP_MAP: Record<string, string> = {
   fontsize: 'tick_labelsize',
@@ -38,6 +38,8 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.role === 'stem_series' || object.kind === 'stem_container') return 'data_stem';
   if (object.role === 'boxplot_group' || object.kind === 'boxplot_container') return 'data_boxplot';
   if (object.role === 'violin_group' || object.kind === 'violinplot_container') return 'data_violin';
+  if (object.role === 'contour_series' || object.kind === 'contour') return 'data_contour';
+  if (object.role === 'contourf_series' || object.kind === 'contourf') return 'data_contourf';
   if (object.kind === 'subplot') return 'subplot_axes_box';
   if (object.kind === 'spine') return 'axis_spine';
   if (object.kind === 'spine_group') return 'axis_frame';
@@ -47,6 +49,7 @@ function inferRole(object: ManifestObject): SemanticTargetRole {
   if (object.kind === 'grid') return 'grid';
   if (object.kind === 'line') return 'data_line';
   if (object.kind === 'fill_between' || object.role === 'fill_between_series') return 'data_band';
+  if (object.role === 'contour_child_collection') return 'component';
   if (object.kind === 'collection') return 'data_point';
   if (object.kind === 'patch' || object.kind.endsWith('_container')) return 'data_patch';
   if (object.kind === 'heatmap') return 'heatmap';
@@ -61,6 +64,7 @@ function objectSubplotId(object: ManifestObject): string | undefined {
 }
 
 function supportsProp(object: ManifestObject, prop: string): boolean {
+  if (isContourObject(object) && isContourStructuralProp(prop)) return false;
   if (unsupportedProps(object).includes(prop)) return false;
   const capability = object.propertyCapabilities?.find(item => item.prop === prop);
   if (capability) return capability.replay !== 'unsupported';
