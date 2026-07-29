@@ -284,6 +284,7 @@ export function resolvePatchMode(
   if (!manifest || !object || manifest.generatedBy === 'r_svg') return 'backend_patch';
   if (isTextContentPatchProp(prop, object)) return 'backend_patch';
   if (object.kind === 'grid' && prop === 'visible') return 'backend_patch';
+  if (object.kind === 'heatmap' && prop === 'alpha') return 'backend_patch';
   if (isContourObject(object)) return 'backend_patch';
   if (isPythonStructuralSeriesProp(object, prop)) return 'backend_patch';
 

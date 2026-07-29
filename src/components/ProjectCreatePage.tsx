@@ -171,6 +171,8 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
   const [submitting, setSubmitting] = useState(false);
   const [copyLabel, setCopyLabel] = useState('复制 AI 提示词');
   const [scriptUploadDragOver, setScriptUploadDragOver] = useState(false);
+  const [lastImportedScriptName, setLastImportedScriptName] = useState<string | null>(null);
+  const [introScriptDragOver, setIntroScriptDragOver] = useState(false);
   const [scriptDragOver, setScriptDragOver] = useState(false);
   const [dataDragOver, setDataDragOver] = useState(false);
 
@@ -342,24 +344,19 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
     e.target.value = '';
   };
 
-  const handleDataDrop = (e: DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDataDragOver(false);
-    addPendingFiles(e.dataTransfer.files);
-  };
+  const hasDraggedFiles = (dataTransfer: DataTransfer) => (
+    dataTransfer.files.length > 0
+    || Array.from(dataTransfer.items).some(item => item.kind === 'file')
+    || Array.from(dataTransfer.types).some(type => type.toLowerCase() === 'files')
+  );
 
-  const handleScriptFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const nextLanguage = inferScriptLanguage(file.name, scriptLanguage);
-    const reader = new FileReader();
-    reader.onload = ev => {
-      setScript((ev.target?.result as string) || '');
-      setScriptLanguage(nextLanguage);
-    };
-    reader.readAsText(file);
-    e.target.value = '';
+  const extractDroppedFiles = (dataTransfer: DataTransfer): File[] => {
+    const directFiles = Array.from(dataTransfer.files);
+    if (directFiles.length > 0) return directFiles;
+    return Array.from(dataTransfer.items)
+      .filter(item => item.kind === 'file')
+      .map(item => item.getAsFile())
+      .filter((file): file is File => file !== null);
   };
 
   const readScriptFile = (file: File) => {
@@ -369,13 +366,31 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
     reader.onload = ev => {
       setScript((ev.target?.result as string) || '');
       setScriptLanguage(nextLanguage);
+      setLastImportedScriptName(file.name);
     };
     reader.readAsText(file);
   };
 
-  const readDroppedScript = (files: FileList) => {
-    const file = Array.from(files).find(candidate => /\.(py|r)$/i.test(candidate.name));
-    if (file) readScriptFile(file);
+  const routeDroppedFiles = (files: FileList | File[] | null | undefined) => {
+    if (!files) return;
+    const candidates = Array.from(files);
+    const scriptFile = candidates.find(file => /\.(py|r)$/i.test(file.name));
+    if (scriptFile) readScriptFile(scriptFile);
+    addPendingFiles(candidates.filter(file => !/\.(py|r)$/i.test(file.name)));
+  };
+
+  const handleDataDrop = (e: DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDataDragOver(false);
+    routeDroppedFiles(extractDroppedFiles(e.dataTransfer));
+  };
+
+  const handleScriptFileUpload = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    readScriptFile(file);
+    e.target.value = '';
   };
 
   const handleCopyPrompt = async () => {
@@ -393,11 +408,13 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
     const nextLanguage = inferScriptLanguageFromText(aiResult, scriptLanguage);
     setScript(aiResult);
     setScriptLanguage(nextLanguage);
+    setLastImportedScriptName(null);
     setAiResult('');
   };
 
   const handleClear = () => {
     setScript(scriptLanguage === 'r' ? DEFAULT_R_TEMPLATE : DEFAULT_TEMPLATE);
+    setLastImportedScriptName(null);
   };
 
   const renderStepStatus = (stepNum: number) => {
@@ -581,7 +598,22 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
   );
 
   return (
-    <div className="flex-1 flex flex-col bg-slate-50 min-w-0 overflow-y-auto">
+    <div
+      className="flex-1 flex flex-col bg-slate-50 min-w-0 overflow-y-auto"
+      data-testid="project-create-page-drop-zone"
+      onDragOver={event => {
+        if (!hasDraggedFiles(event.dataTransfer)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+      }}
+      onDrop={event => {
+        const files = extractDroppedFiles(event.dataTransfer);
+        if (files.length === 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        routeDroppedFiles(files);
+      }}
+    >
       <div className="bg-white border-b border-slate-200 px-8 py-4 flex items-center justify-center shrink-0">
         <div className="flex items-center w-full max-w-5xl">
           {steps.map((step, index) => (
@@ -630,6 +662,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
               event.stopPropagation();
               scriptUploadDragDepthRef.current += 1;
               setScriptUploadDragOver(true);
+              setIntroScriptDragOver(true);
             }}
             onDragOver={event => {
               event.preventDefault();
@@ -640,20 +673,34 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
               event.preventDefault();
               event.stopPropagation();
               scriptUploadDragDepthRef.current = Math.max(0, scriptUploadDragDepthRef.current - 1);
-              if (scriptUploadDragDepthRef.current === 0) setScriptUploadDragOver(false);
+              if (scriptUploadDragDepthRef.current === 0) {
+                setScriptUploadDragOver(false);
+                setIntroScriptDragOver(false);
+              }
             }}
             onDrop={event => {
               event.preventDefault();
               event.stopPropagation();
               scriptUploadDragDepthRef.current = 0;
               setScriptUploadDragOver(false);
-              readDroppedScript(event.dataTransfer.files);
+              setIntroScriptDragOver(false);
+              routeDroppedFiles(extractDroppedFiles(event.dataTransfer));
             }}
           >
+            {introScriptDragOver && (
+              <div
+                className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-blue-500 bg-blue-50/90"
+                data-testid="project-create-script-drop-overlay"
+              >
+                <div className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg">
+                  松开以上传 .py / .R 文件
+                </div>
+              </div>
+            )}
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-bold text-slate-800">1. 先读取绘图脚本</h2>
-                <p className="mt-1 text-sm leading-6 text-slate-500">支持上传、拖入或直接在下方脚本区粘贴。这里只提取数据文件名，不执行脚本。</p>
+                <p className="mt-1 text-sm leading-6 text-slate-500">支持上传，或拖入脚本卡片、数据区和下方代码编辑区。这里只提取数据文件名，不执行脚本。</p>
               </div>
               <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-800">
                 <Upload className="h-4 w-4" /> 上传 .py / .R
@@ -681,6 +728,12 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                   <span className="font-medium text-slate-900">{scriptLanguage === 'r' ? 'R / ggplot2' : 'Python / Matplotlib'}</span>
                   <span className="text-xs text-slate-500">约 {scriptLineCount} 行</span>
                 </div>
+                {lastImportedScriptName && (
+                  <div className="mt-3 flex items-center gap-2 text-xs font-semibold text-emerald-700" data-testid="project-create-imported-script-name">
+                    <CheckCircle2 className="h-4 w-4 shrink-0" />
+                    <span className="min-w-0 truncate">已导入 {lastImportedScriptName}</span>
+                  </div>
+                )}
                 <p className="mt-3 text-xs leading-5 text-slate-500">完整脚本仍可在“检查脚本与 AI 提示”区域继续修改。</p>
               </div>
               <div className="rounded-lg border border-slate-200 bg-white p-4">
@@ -720,6 +773,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
             <p className="mb-4 text-sm text-slate-500">脚本需要的文件和额外分析表都可以一起上传；所有表格结构都会继续进入现有 AI 提示词。</p>
             <div className="grid lg:grid-cols-[1.05fr,0.95fr] gap-6">
               <div
+                data-testid="project-create-data-drop-zone"
                 className={`border-2 border-dashed rounded-lg p-10 flex flex-col items-center justify-center transition-colors cursor-pointer ${
                   dataDragOver ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-slate-50 hover:bg-slate-100'
                 }`}
@@ -744,10 +798,10 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                   <FileSpreadsheet className="w-8 h-8" />
                 </div>
                 <div className="font-medium text-slate-700 text-lg mb-1">
-                  {dataDragOver ? '释放文件以加入本次项目' : '拖拽或点击选择数据文件'}
+                  {dataDragOver ? '释放文件以加入本次项目' : '拖拽代码或数据文件到这里'}
                 </div>
                 <div className="text-sm text-slate-500 text-center leading-6">
-                  支持 CSV、TSV、TXT、XLSX。每个文件都会独立识别字段，主数据只决定 `_uploaded_data`。
+                  `.py / .R` 会载入脚本；CSV、TSV、TXT、XLSX 会加入数据列表。
                 </div>
               </div>
 
@@ -925,6 +979,7 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
             <div className="mt-5 grid lg:grid-cols-[1.2fr,0.8fr] gap-6">
               <div className="space-y-4">
                 <div
+                  data-testid="project-create-script-editor-drop-zone"
                   className={`relative border-2 border-dashed rounded-lg transition-colors ${
                     scriptDragOver ? 'border-blue-500 bg-blue-50' : 'border-slate-300 bg-white'
                   }`}
@@ -942,11 +997,14 @@ export function ProjectCreatePage({ onNavigate, onLoadProject }: {
                     e.preventDefault();
                     e.stopPropagation();
                     setScriptDragOver(false);
-                    readDroppedScript(e.dataTransfer.files);
+                    routeDroppedFiles(extractDroppedFiles(e.dataTransfer));
                   }}
                 >
                   {scriptDragOver && (
-                    <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
+                    <div
+                      className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none"
+                      data-testid="project-create-script-editor-drop-overlay"
+                    >
                       <div className="bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm font-semibold">
                         松开以上传 .py / .R 文件
                       </div>

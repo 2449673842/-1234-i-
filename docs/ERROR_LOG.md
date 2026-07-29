@@ -60,6 +60,127 @@
 
 ---
 
+## 2026-07-29 15:53:40 +08:00 R 雷达图组件已识别但无 Draft，Python 雷达图例正常拖动被身份核验误拒绝
+
+**状态与级别**
+
+- 状态：本地候选已关闭；Python/R renderer、隔离 API、真实浏览器、TypeScript 和生产构建均通过。未推送、未部署。
+- 级别：P1 编辑正确性与旧项目兼容。R 雷达系列线和填充虽然出现在组件中心，但改色后不出现“应用当前图”；Python 极坐标雷达在先改图例文字后拖动图例，会收到 HTTP 200 但业务 `status=conflict`，刷新后位置丢失。
+- 范围：严格识别的 Python Matplotlib 雷达与单 panel 手写 ggplot2 `coord_polar(theta="x")` 雷达；未访问 3000、线上服务或真实用户数据。
+
+**根因**
+
+- R 离散 scale group 同时携带 `legendId`。组件中心已把 `radarSemanticRole=series/fill` 对象列入专用雷达分组，但 EditingIntent 角色推断仍先按 `legendId` 把它们归为 `legend_marker`；resolver 找不到匹配对象，因此没有生成 patch、Draft 或应用按钮。
+- Python manifest 为 `legend.*` 记录 `legendMarkerIds`，但 renderer 重放使用的临时 GID index 只给 marker 记录 `legendTextId`，没有给 legend container 重建相同的 marker/text/title 关系。身份其他字段完全一致时仍因 `identity.relation.legendMarkerIds` 单字段缺失而 fail-closed。
+- 首版 R 雷达 fill 迁移只接受带 v2 fingerprint 的旧 `line` 身份。更早的历史 editLog 没有 `fingerprint/fingerprintVersion`，即使 stableKey、seriesKey 和 scale/group 关系全部一致，也会在 `line -> patch` 升级后因 stableKey 变化被拒绝。
+- 旧测试分别证明“雷达组件能显示”和“无 identity 的图例位置可重放”，没有覆盖 R scale-backed 对象从组件中心进入 resolver，也没有覆盖带完整 v2 identity 且前面已有雷达 editLog 的图例位置重放。
+
+**修复与兼容边界**
+
+- 雷达组件角色优先于通用图例子对象判断：`series -> data_line`，`fill -> data_patch`。单个系列选择生成一个显式对象 patch，不扩大到另一系列、填充、图例或其它子图。
+- renderer 的 replay GID index 为 legend container 重建与 manifest 相同的 `legendTitleId/legendTextIds/legendMarkerIds`，保留严格 v2 relation 校验；没有删除字段或放宽伪造身份。
+- R 雷达填充继续兼容旧 `kind=line / r:line:*` 到新 `kind=patch / r:patch:*` 的窄迁移。带 v2 fingerprint 的记录仍必须完整匹配旧结构；只有 `fingerprint` 与 `fingerprintVersion` 两个字段都不存在的真正旧记录，才改用 stableKey、semanticKey、seriesKey 以及 `aesthetic/groupKey/scaleKey` 完整关系核验。缺任一关键关系、携带伪造 radar 字段或声称 v2 却缺 fingerprint 均拒绝；mixed batch 原子拒绝且零持久化。
+- 当前只放行严格单 panel、非 facet、`coord_polar(theta="x")`、恰好一组 polygon 与一组 line/path 且维度/闭合几何和离散 color/fill scale 可唯一对应的手写 ggplot2 雷达。普通 polar 柱图、facet、`ggradar`、`fmsb`、任意 grid grob 和歧义映射保持 readonly/unsupported。
+
+**验证与防复发**
+
+- `npm run test:radar-chart-python`：16/16；新增完整 v2 identity 下“先改图例文字、再移动图例”回归。
+- `npm run test:r-radar-renderer`：7/7；覆盖维度标签、系列线/填充、图例关系、普通 polar 负例、v2/无版本旧 fill 兼容，以及缺关系、伪造 radar 字段和不完整 v2 拒绝。
+- `npm run test:radar-chart-api` 与 `npm run test:r-radar-api`：PASS；后者证明独立系列编辑、无版本字段原样持久化、刷新重放、旧 identity 兼容和非法 mixed batch 零持久化，并在隔离项目中完成导出 SVG/快照、导出后继续编辑、恢复导出状态和重新渲染。篡改旧 fill `scaleKey` 的快照返回 409，项目与 session 保持不变。
+- `npm run test:radar-chart-ui`：16/16。真实浏览器依次完成 Python 8 项、R 7 项和无 console/page error 检查；R Control 线与 Treatment 填充分次修改，请求各只含一个目标，图例文字、维度文字/拖动和刷新隔离全部通过。
+- `npm test -- RightSidebar.test.ts ChartPreview.test.ts`：4 files / 52 tests；`npm run lint`、`npm run build` 和定向 `git diff --check` 通过。build 仅保留既有大 chunk 与 CJS `import.meta` 警告。
+
+---
+
+## 2026-07-29 10:33:11 +08:00 R 五个编辑中心真实浏览器验收首轮测试点击误判
+
+**状态与级别**
+
+- 状态：已关闭。产品行为未发生故障；首轮失败来自属性/布局浏览器 smoke 对视觉隐藏 checkbox 的点击方式，修正测试后在隔离随机端口重跑通过。
+- 级别：P2 测试可靠性。若不修正，可能把“装饰层拦截测试点击”误报为网格开关或 Draft 失效。
+- 范围：R 字体中心、组件中心、配色中心、属性中心和布局中心；未访问本机 `3000`、`3100`、线上服务或真实用户项目。
+
+**根因**
+
+- R 属性/布局 smoke 通过真实页面寻找“开启网格” checkbox，但该原生控件按产品设计隐藏在 switch 装饰层下，普通点击命中装饰层而不是控件本身。
+- 这是测试 harness 的交互定位错误，不是网格功能、Draft、服务端 patch 或 renderer 的失败。
+
+**修复与防复发**
+
+- 测试继续定位同一个带可访问名称的真实 checkbox，并在确认当前状态后使用 `check/uncheck({ force: true })`，不点击随机装饰层，也不直接写 React 状态。
+- 新增/保留回归断言：网格开关必须出现 Draft，应用请求必须是 `backend_patch`，并且 `axis.x.0` 的 `tick_pad/tick_width/tick_color` 与网格 `visible=false` 同批正确写回。
+- 后续带视觉隐藏控件的浏览器用例必须操作关联原生控件；只有在控件不可访问时才允许使用稳定的产品选择器，不得通过注入最终状态代替用户路径。
+
+**验证**
+
+- `npm run test:r-semantic-smoke`：19/19 PASS，覆盖字体、组件、配色、Draft/apply、保存刷新、撤销/重做、拖拽、导出和快照恢复。
+- `npm run test:r-property-layout-centers`：7/7 PASS，覆盖属性中心轴刻度/网格和布局中心单图/facet 共享边界。
+- 两份报告均为隔离随机 localhost 服务，`consoleErrors=0`、`pageErrors=0`、`failedRequests=0`；本地候选仍未提交、推送或部署。
+
+---
+
+## 2026-07-26 23:06:21 +08:00 WP 候选通过后真实操作仍出现组件选择失效与跨子图配色串改
+
+**状态与级别**
+
+- 状态：本地 `3100` 定向问题已修复并通过合成与专用账号真实浏览器复测；完整图形清单验收仍在进行，未部署网页端。详细根因、修复和证据见本文件 `2026-07-27 15:51:25 +08:00` 条目。
+- 级别：P1 编辑正确性与升级可信度。用户在 `3100` 选择“全部子图”后点击“选中整组”没有可见响应；切换到单个子图并修改颜色时，又出现其它子图散点和相关颜色一起变化。
+- 对比基线：以文档记录的本地 `3000` 行为和共同基线 `a6857d5` 为参照，不以网页线上版本或计划文档中的完成描述代替真实行为。
+
+**为什么大量升级和测试仍没有发现**
+
+- Python WP 与 R-WP 的主要门禁集中在 renderer acknowledgement、identity、propertyCapabilities、失败零持久化、对象家族适配、历史/导出/恢复和安全隔离。这些升级解决了大量底层“改错对象后仍保存成功”的风险，但不自动证明所有右侧面板交互组合都正确。
+- 多个浏览器 smoke 使用固定 manifest/fixture，并通过 `sessionStorage` 注入编辑器初始状态。它们可以验证某个组件或 resolver 的预期输出，但没有完整覆盖用户这次的自然操作顺序：切换作用域 -> 全选整组 -> 再切单子图 -> 修改配色 -> 检查实际 patch payload 和其它子图视觉不变。
+- `componentSubplotScope`、`paletteSubplotScope`、`selectedObject/selectedGids` 是独立状态。现有测试分别覆盖“作用域跟随”和“整组选择”，但缺少两者组合后的状态清理、可见反馈和 patch 边界断言。
+- `3100` 当前承载当前工作区全部未提交雷达图、上传、布局和兼容改动。单工作包测试通过不能替代同一工作树集成后的真实用户验收。
+- 计划文档中的“完成”表示该工作包定义的门禁通过，不等于相对本地 `3000` 的所有交互行为都已经达到稳定发布标准。后续文档必须明确区分“协议候选完成”和“真实用户路径验收完成”。
+
+**本次修复要求**
+
+- 新增与用户操作一致的真实浏览器失败用例，禁止只注入最终选择状态；必须真实点击作用域、整组按钮、单个子图和颜色控件。
+- 捕获 `/api/figure/patch` 请求，断言单子图作用域只包含该子图对象，`crossFigure` 必须为 `deny`，不得附带其它子图的散点、图例或同色对象。
+- “选中整组”必须产生可见选择反馈；作用域切换后，旧作用域中的 `selectedGids` 必须清理或与新作用域取交集，不能让隐藏的旧选择继续控制修改范围。
+- 配色中心在单子图作用域下禁止生成 Python 全局代码常量 patch；只能生成当前子图的显式对象 patch。无法证明对象边界时必须阻止并提示，不能退回全图同色猜测。
+- 修复后必须与本地 `3000` 行为对照，验证选择、Draft、应用、刷新、撤销/重做和导出均不跨子图串改；在真实页面通过前不得关闭该记录。
+
+---
+
+## 2026-07-26 22:46:00 +08:00 Python Docker renderer 无法将图例等文字应用为 Times New Roman
+
+**状态与级别**
+
+- 状态：本地 `3100` staging 已切换为 Windows 本机 renderer，并使用系统真实 Times New Roman；Docker 字体兼容修复保留但当前 `3100` 不再使用 Docker。尚未推送、尚未部署网页端。
+- 级别：P1 视觉正确性与编辑可信度。字体补丁已保存，但重新渲染后标题、轴标签、注释和 Figure 级公共图例仍显示为 DejaVu Sans，容易让用户误判图例字体控件或暂存功能失效。
+
+**真实项目证据**
+
+- `3100` 隔离项目 `23e9b302-6b76-4812-9aca-0a77af9d724a` 的 `project_figures.edit_log` 已包含 `legend_text.figure.0.0/0.1.fontfamily = Times New Roman`，同时标题、轴标签和普通文字也保存了相同字体补丁。
+- 同一项目重新渲染后的 Manifest 仍把 `title.left.0`、`xlabel.0`、`text.0.0` 和 `legend_text.figure.0.0` 报告为 `DejaVu Sans`。这证明前端已正确生成和持久化补丁，失败发生在 Python renderer 字体解析阶段。
+
+**根因**
+
+- Docker 镜像安装的是可再分发的 `Liberation Serif`，并在 Fontconfig 中声明 `Times New Roman -> Liberation Serif`。该别名对 `fc-match` 和 R/systemfonts 生效，但 Matplotlib 使用自己的 `font_manager`，不会自动采用 Fontconfig 的 family alias。
+- renderer 过去直接调用 `Text.set_fontname("Times New Roman")`。容器中没有微软字体文件时，Matplotlib 静默回退到默认 `DejaVu Sans`；随后 `_read_text_props()` 又把回退后的字体写入 Manifest。
+- Figure 级公共图例的 GID、能力声明、补丁生成和 editLog 持久化均正常，不属于图例身份映射、按钮应用或旧项目迁移问题。
+
+**解决方案**
+
+- Python renderer 新增确定性的字体解析层：若 Matplotlib 可直接找到请求字体则原样使用；找不到 `Times New Roman` 或 `Times` 时，依次使用镜像固定安装的 `Liberation Serif`、`FreeSerif`、通用 `serif`。
+- Text artist 保存 `_scifigure_requested_fontfamily`。实际排版使用解析后的可用字体，Manifest 和右侧面板继续显示用户选择的 `Times New Roman`，避免刷新后控件回跳为替代字体名称。
+- 统一覆盖普通文字、标题、轴标签、刻度文字、图例容器、Figure/Axes 图例条目及图例重建后的样式恢复；不修改现有 GID、fingerprint、editLog 或项目数据库结构。
+- 用户明确要求本地预览必须使用真正的 Times New Roman，而不是仅在 Manifest 中保留请求名称。`3100` 因此改用 `SCIFIGURE_RENDER_MODE=local`，并显式设置 `PYTHON_BIN=C:\Users\SZC\.conda\envs\Machine-learning\python.exe`；Windows renderer 直接加载 `C:\Windows\Fonts\times.ttf`。Docker 的 Liberation Serif 只作为没有微软字体授权文件时的服务器兼容路径，不能描述为真实 Times New Roman。
+
+**验证与防复发**
+
+- 增加 Figure 级公共图例 `fontfamily` 重放断言，以及“Times New Roman 不可用时固定解析为 Liberation Serif”的单元测试；定向测试 2/2 通过。
+- 使用 `scifigure-renderer:staging-3100` 的真实固定环境验证：Python `3.12.13`、Matplotlib `3.11.1`；Manifest 返回 `Times New Roman`，SVG 实际使用 `Liberation Serif`，renderer warnings 为空。
+- 本地模式再次验证：Python `3.8.19`、Matplotlib `3.7.2` 的 `font_manager.findfont()` 返回 `C:\Windows\Fonts\times.ttf`；Figure 级公共图例重放成功，Manifest 为 `Times New Roman`，warnings 为空。
+- `3100` 当前已按本地 renderer 重启。修复只影响后续重新渲染；数据库中旧 SVG 不直接改写，项目加载或同步至引擎后会按原 editLog 重新生成。
+- staging 镜像沿用同一个 tag 时，旧 render cache 不会自动感知镜像内容变化；本次已仅清空 `3100` 隔离数据库中的 11 条 `render_cache`，项目、历史、暂存、导出资产和真实 `data/` 均未修改。正式发布必须通过 renderer/cache 版本参与 cache key 或发布流程显式失效缓存。
+- 后续字体镜像门禁不能只运行 `fc-match`；必须同时通过 Matplotlib `font_manager` 解析和真实 Text/legend replay，防止 Fontconfig 与 Matplotlib 字体行为再次分叉。
+
+---
+
 ## 2026-07-25 19:12:43 +08:00 R 多 guide 标题与条目编辑可能静默串改或触发身份漂移
 
 **状态与级别**
@@ -81,6 +202,62 @@
 - 独立复审继续发现并关闭两个安全旁路：metadata-bearing legacy alias 不得跳过全部身份核验；R relation 无共享字段或字段冲突时，legacy score fallback 不得重新映射。最终完整 R renderer 124/124、resolver/mapping 216/216，第三轮独立复审 0 HIGH/MEDIUM。
 
 ---
+
+## 2026-07-24 21:54:52 +08:00 R scale/guide/facet 身份不足会造成跨组串改和伪 facet 布局能力
+
+**状态与级别**
+
+- 状态：R-WP5 本地候选已修复并重新通过隔离门禁；尚未推送、尚未部署。
+- 级别：P1 编辑正确性。相同颜色、相同 label、多 layer 共享 guide 或 free facet 下，弱身份可能把不同 scale/group 合并；单 facet 物理 bounds 若错误开放会把共享 gtable 当成独立 axes 修改。
+
+**根因与修复**
+
+- 旧关系主要依赖 ordinal、颜色和显示文字，未完整保留 scale key、guide key、facet key、owner panel、key glyph 与连续 mappable 关系。
+- 离散 color/fill scale 现在保留 labels、limits、breaks、drop、NA 和 guide 语义；连续 color/fill 使用独立 scale ID，并显式关联 mappable、colorbar 与全部 owner panel。
+- legend/guide 关联 scale、group、layer、title、label 和 key glyph；跨 Figure 映射要求稳定 R relation 字段兼容，R v2 对象缺少权威 propertyCapabilities 时禁止退回 legacy compiler。
+- facet panel 首选 `facetKey`，`free_x/free_y/free`、strip 与 panel spacing 进入共享 facet layout；单 panel `left/bottom/width/height` 保持只读，旧 `subplot.N.aspect` 仅通过明确 alias 迁移到 `r.facet.layout.0`。
+
+**验证与防复发**
+
+- R-WP5 renderer 定向 14/14；隔离 API 3/3 验证拒绝零持久化、guide 导出快照恢复和连续 color/fill 隔离。
+- 真实浏览器 6/6，验证单 group 配色、legend 控件和 facet bounds 不出现；R 语义黄金样例 14/14、identity v2 compatibility、共享 resolver/mapping 214 项、lint、build 与 diff-check 通过。
+- 首轮浏览器运行遇到一次 Windows R 进程 `0xC0000005` 启动崩溃，隔离重跑通过；不得把单次解释器崩溃或单次重跑成功当成代码结论，后续运行时收敛继续单独跟踪。
+- 新增 scale/guide/facet 能力必须同时覆盖相同颜色不同 group、相同 label 不同 scale、共享 guide、共享 colorbar、facet 重排/free scale、隐藏恢复和导出快照；不能只检查接口状态码。
+
+---
+
+## 2026-07-24 19:22:38 +08:00 Python 雷达图文字、图例和填充缺少专用语义，普通闭合 polar 首版误判
+
+**状态与级别**
+
+- 状态：本地候选已修复；renderer、隔离 API、真实浏览器和 special-axes 定向回归通过；尚未推送、尚未部署。
+- 级别：P1 编辑正确性与旧功能兼容。雷达维度文字无法稳定拖动、图例内部文字可能与符号错位，且错误的雷达识别会向普通 polar 暴露不适用能力。
+
+**现象与根因**
+
+- special-axes 保护会移除 polar tick text 的通用 `position`，但雷达维度名没有替代的稳定位置协议。
+- `legend_text.*` 的位置由 legend 布局管理，单独移动会让文字与符号、边框分离；此前只能编辑文本，无法从文字命中直接拖动整个图例。
+- 闭合 line 与 fill 仍是通用 `line/patch`，组件中心没有雷达系列关系；普通 Text 也没有完整 bbox 属性。
+- 雷达识别首版只检查 polar、至少三个维度标签和任意闭合曲线，导致高分辨率普通周期 polar 曲线也可能被误标为 radar。
+
+**修复**
+
+- 雷达维度标签保留旧 `xtick.*` GID/stableKey，新增 `radar_label_offset={dx,dy}`；renderer 使用 `ScaledTranslation` 按屏幕点偏移，不改角度或数据值。
+- 雷达 `legend_text` 继续独立编辑文字；拖动命中归一到 `legend.* position`，整个图例容器一起移动。
+- line/fill 增加 `radarId/radarSeriesId/radarSemanticRole`，组件中心分成“雷达图数据线”和“雷达图填充区域”。
+- Text 开放 `bbox_visible/facecolor/edgecolor/alpha/linewidth/pad/boxstyle`，没有背景时可按需创建，关闭时保留可恢复样式。
+- 雷达识别改为角度和维度刻度一一对应：闭合点数必须为 `xticks + 1`，每个非闭合角度必须唯一匹配一个 tick；fill polygon 使用同一规则。普通密集闭合 polar 保持原特殊轴保护。
+
+**验证与防复发**
+
+- `npm run test:radar-chart-python` 15/15，包括普通 181 点闭合周期 polar 负例、混合普通/雷达图例唯一配对、同样式歧义 fail-closed、图例改名后关系稳定、line/fill 配对、维度偏移、图例位置和文字 bbox 重放。
+- `npm run test:radar-chart-api` 通过 patch、revision、editLog、manifest cache、SQLite 状态和 SVG 导出。
+- `npm run test:radar-chart-ui` 9/9：真实选择、拖动、改名、文字背景、组件分组和刷新保持，无 console/page error。
+- `test:special-axes-python` 8 通过/2 可选依赖跳过，`test:special-axes-api` 与 `test:special-axes-ui` 通过。
+- 后续扩展 radar 识别时必须同时保留“真实 radar 正例”和“闭合普通 polar 负例”，不得仅按投影、颜色、闭合外观或标签数量猜测。
+
+---
+
 ## 2026-07-23 01:14:18 +08:00 R Bar mapped override 身份漂移与 Errorbar 仅有通用整层样式
 
 **状态与级别**
@@ -3859,6 +4036,19 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - 本机 3000 监听进程为当前仓库 `tsx server.ts`；直接读取其 Vite 模块确认包含 `project-create-script-drop-zone` 和统一 `readDroppedScript` 实现。
 - 后续页面文案宣称可拖放时，浏览器验收必须以文案对应的可见区域作为 drop target，不能只验证同页另一个隐藏或远端入口。
 
+**页面级拖放补充（2026-07-22 02:58:35 +08:00）**
+
+- 复现：用户在新建项目页将 `.py/.R` 拖到标题、空白区或卡片边缘时，文件不会进入脚本编辑器；此前修复只覆盖顶部脚本卡片、数据卡片和下方编辑框。
+- 修复：新建项目根节点增加统一文件拖放入口。专用区域继续优先处理自身事件；页面其他位置的脚本文件载入脚本，表格文件沿用现有数据列表逻辑。
+- 验证：`npm run test:script-drag-upload`、`npm run lint`，并直接对当前 `http://127.0.0.1:3000` 运行真实浏览器拖放验证，均通过。后续不得只用专用 drop zone 断言页面级拖放能力。
+
+**真实使用反馈补充（2026-07-22 09:13:32 +08:00，09:16 调整视觉范围）**
+
+- 复现：当前 Vite 模块和实际文件 drop 已能更新脚本，但页面通用区域没有持续可见的接收反馈，也不显示刚导入的脚本文件名；用户容易判断为“拖放没有生效”。根入口还只检查 `DataTransfer.types.includes("Files")`，对浏览器或系统提供的 file item 形式缺少兼容兜底。
+- 修复：页面入口统一识别 `files`、file items 与 `Files` type；drop 时优先读取 `FileList`，再从 `DataTransferItem.getAsFile()` 兜底。视觉反馈只保留在顶部脚本卡片、数据区和代码编辑区各自范围内，不使用覆盖整个页面的遮罩。脚本读取成功后在第一步状态卡明确显示“已导入 <文件名>”。
+- 编辑工作区同步移除根容器的全屏拖放遮罩；拖到代码编辑器时只高亮编辑器区域，拖到预览或页面其他位置仍可容错导入，但不遮挡整个操作界面。
+- 验证：`npm run test:script-drag-upload`、`npm run lint`、定向 `git diff --check` 通过；再次对当前 `3000` 真实页面拖入 `line_fixture.py`，页面显示 `Python / Matplotlib`、`约 11 行` 和 `已导入 line_fixture.py`。
+
 ---
 
 ## 2026-07-22 09:24:42 +08:00 R identity v2 仍可能误映射 subset、无键文本和并行 guide，API 丢失 remap acknowledgement
@@ -3887,6 +4077,50 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `tests/test_r_renderer.py` 当前 51 项，覆盖 layer subset 漂移、单行文本内容漂移、重复文本拒绝、guide 标题隔离、合并 color/fill identity 和 fingerprint 样式稳定。
 - `test:r-identity-v2-compatibility` 证明旧 identity 编辑、刷新、factor reorder remap、第二次编辑、导出、篡改恢复拒绝和 snapshot 恢复；响应含 `resolvedGid`，持久 editLog 不含该字段。
 - 后续 identity 不能只比较 schema/列名；conditional replay 必须有明确额外门禁，不能仅靠标签宣称；renderer acknowledgement 与 durable editLog 必须分开建模。
+
+---
+
+## 2026-07-22 10:47:02 +08:00 Figure 白底不足导致色条、图例和图外文字被裁切
+
+**状态与级别**
+
+- 状态：已修复；renderer、前端坐标映射、导出和隔离浏览器验证通过；尚未推送或部署。
+- 级别：P1 预览/导出一致性与用户可见内容完整性。问题长期表现为 Figure 右侧或底部白底不足，色条刻度、色条标题、图例或图外注释被切掉，或落到灰色工作区背景。
+
+**根因**
+
+- Python renderer 原来始终按原始 `Figure` 尺寸序列化 SVG；`fig.get_tightbbox()` 之外的可见 artist 没有被纳入根 SVG 的 `viewBox`。
+- 前端预览容器使用 `overflow-hidden`，因此超出根 SVG 的内容无法显示；二进制导出另用 `bbox_inches="tight"`，其边界又与 SVG 预览不完全一致。
+- 扩展画布后如果仍直接把完整 SVG `viewBox` 当作 Figure 坐标系，隐藏 axes 文本和 Figure 坐标文本的拖动会发生比例偏移。
+
+**修复**
+
+- renderer 使用 `fig.get_tightbbox()` 只向发生越界的边缘扩展 SVG 画布，并保留 Figure 原始物理宽高；Figure 自身 facecolor/透明语义不被覆盖。
+- manifest 增加 `renderViewport`，记录扩展 canvas 和原始 Figure 在 SVG 中的位置；旧 manifest 没有该字段时前端回退到原始 SVG `viewBox`。
+- ChartPreview 的隐藏 axes fallback、axes/figure 坐标拖动统一按 `renderViewport.figure` 换算，不改变正常 axes/data 坐标语义。
+- PNG、PDF、TIFF、EPS 使用同一扩展边界和零额外 padding，避免预览完整而导出再次裁切。
+
+**验证与防复发**
+
+- Python 定向 renderer：越界色条刻度/标题扩展 SVG、白色背景覆盖扩展画布、PNG 像素尺寸与 manifest canvas 一致、DPI/TIFF 元数据均通过。
+- `ChartPreview.test.ts`：扩展画布坐标映射与旧 manifest fallback 8/8 通过。
+- `npm run test:drag-extended-smoke`：真实浏览器确认越界文字完整位于根 SVG 内，隐藏 axes 文本拖动仍生成有效 position patch；多选、取消、annotation 和 R native 保护均通过，console/page errors 为 0。
+- `npm run test:export-matrix-smoke`：SVG/PNG/PDF/TIFF、组合图和 colorbar fixture 全部通过。
+- 后续 renderer 任何改变画布、bbox、SVG viewBox 或导出边界的修改，必须同时验证 `renderViewport`、至少一个越界 artist、拖动坐标和二进制导出尺寸；不得只看接口成功。
+
+**独立复审补充（2026-07-22 11:33:33 +08:00）**
+
+- 初审提出的测试证据缺口已关闭：隐藏 axes 拖动按实际根 SVG `viewBox`、`renderViewport.figure`、subplot bounds 和 axis limits 计算期望值，实际 patch 与期望值误差小于 0.01。
+- 扩展边界单测现在分别核对 PNG/TIFF 像素尺寸、PDF `MediaBox` 和 EPS `HiResBoundingBox`；透明背景与自定义非白 Figure facecolor 均有回归。
+- 独立复审结论：`APPROVE`，无 HIGH/MEDIUM/LOW。
+
+**真实用户补充复现（2026-07-22 13:10:58 +08:00）**
+
+- 前述修复仍有一个遗漏：Matplotlib 会从 `Figure.get_tightbbox()` 主动排除 `in_layout=False` 的 artist。固定子图尺寸时，图外图例和注释经常正是通过该设置避免参与布局，因此它们仍会在右侧或底部被根 SVG 白底裁掉。
+- renderer 现在额外合并所有实际可见 artist 的渲染后 `tightbbox/window_extent`，不再以 `in_layout` 作为是否进入画布的条件；带 axes clip 的普通数据图元仍按实际裁剪区域计算。
+- 为防异常坐标或恶意脚本把导出画布无限撑大，扩边限制在原 Figure 每个方向四倍或至少 4 英寸的安全范围内；正常图例、色条和图外文字不受影响。
+- 新增右侧 `legend.set_in_layout(False)` 与底部 `fig.text(...).set_in_layout(False)` 同时越界回归。完整 `tests.test_introspection` 55/55、`ChartPreview.test.ts` 8/8、TypeScript lint 和定向 `git diff --check` 通过。当前仍未推送、未部署。
+- 真实浏览器补验（2026-07-22 13:22:31 +08:00）：隔离随机端口的 `npm run test:drag-extended-smoke` 在右侧/底部 `in_layout=False` fixture 下 D0、D1、D1b、D2、D3、D3b、D4、N1 全部通过；截图确认两个越界文字均位于白色根 SVG 内。另补充等待隐藏 axes 重渲染完成，避免测试在中间状态误报取消拖动失败。
 
 ---
 
@@ -4080,6 +4314,27 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 
 ---
 
+## 2026-07-24 17:04:30 +08:00 Excel 公式尾行保留空身份，桑基图转写脚本对 None 调用 lower
+
+**状态与级别**
+
+- 状态：根因已确认，Python 转写契约已加固并通过定向测试；现有项目脚本需按标识列过滤空白尾行后重新渲染。未改动用户上传数据，未部署。
+- 级别：P1 脚本转写健壮性。项目“师妹2”无法首次渲染，错误为 `'NoneType' object has no attribute 'lower'`。
+
+**根因**
+
+- 上传的 `.xls` 第 7 行中，`组分`、`Initial_NO3`、`Residual_NO3`、`NH4`、`N2O` 和 `N2` 均为空，但 `remove` 公式单元格计算为 `0`，因此该行不是整行空白，导入器正确保留了它。
+- AI 转写脚本直接使用 `df["组分"].tolist()` 生成节点，随后 `get_source_color(name)` 无空值检查地调用 `name.lower()`。
+- 这是转写脚本的数据边界处理缺失，不是 renderer、Figure identity 或旧项目迁移错误。通用导入器不能自行删除这类行，因为它无法猜测哪一列是用户的语义主键。
+
+**修复与防复发**
+
+- Python 转写契约现在要求：分组、节点、路径、标签或语义 GID 身份列在调用字符串方法前必须先检查 `None`/`NaN`/空字符串。
+- 对明确的 Excel 公式尾行，只按绘图必需身份列过滤，例如 `df.dropna(subset=["group"])`；禁止整表无条件 `dropna()`或伪造节点名，避免改变数据意义。
+- `src/utils/scriptTranslationContract.test.ts` 新增契约断言；`npm test -- --run src/utils/scriptTranslationContract.test.ts` 通过（5 files / 7 tests）。
+
+---
+
 ## 2026-07-26 13:45:59 +08:00 R 文本位置 manifest 可编辑但缺少 acknowledgement 值，拖动失败后前端提前清空草稿
 
 **状态与级别**
@@ -4152,7 +4407,7 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 
 **修复与防复发**
 
-- runtime inventory 使用 `find.package()` 和 `packageVersion()` 只读列出八个 R-WP8 扩展包，不加载命名空间；缺包诊断固定为结构化 `missing_package`，错误响应删除 executable、R home、library paths、环境目录、工作目录、临时目录和字体文件路径。
+- runtime inventory 使用 `find.package()` 和 `packageVersion()` 只读列出八个 R-WP8 扩展包，不加载命名空间；缺包诊断固定为结构化 `missing_package`，只返回包名和清理后的消息。
 - renderer 显式识别 `GeomTextRepel/GeomLabelRepel`、`GeomNode*/GeomEdge*` 与 `GeomSf` 的扩展边界，manifest/coverage report 输出 package 和 `shadow_unsupported`；对象保持空 editable，不复用普通 geom 写回。
 - 在任何 setter 前执行 Shadow resolution；`positionAdapterStatus=shadow_unsupported` 或扩展只读对象命中后，整批 accepted 清空，所有原始补丁进入 rejected/skipped，使用未编辑 baseline 生成 SVG/manifest。
 - 新增 `ggrepel`、`ggnewscale`、`coord_sf`、`ggraph` 四个合成 fixture、7 个 renderer 测试和隔离 API smoke。API 直接读取临时 SQLite，证明拒绝后 session、project Figure、revision、history 和 render cache 不变化；base R object patch 同样零持久化。
@@ -4205,3 +4460,249 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `SCIFIGURE_RENDERER_IMAGE=scifigure-renderer:rwp10-candidate npm run test:renderer-sandbox` 通过；测试只创建并清理本轮临时容器和临时目录。
 - 最终跨语言浏览器门禁首次并行运行时，多个 Vite 实例竞争 HMR 端口，cross-Figure 的 17 个功能断言全部通过但记录一次 404 console error。改为串行后同一用例 18/18、console/page error 均为 0；Python semantic、patch rejection 和 export matrix 同步通过。
 - 后续沙箱门禁必须区分“源码合同拒绝”“渲染行为失败”和“测试清理失败”，不得通过放宽 stale-image 校验或跳过清理来取得绿色结果。
+
+---
+
+## 2026-07-27 15:51:25 +08:00 多子图整组选中覆盖显式作用域，限定子图配色仍可改写全局常量
+
+**状态与级别**
+
+- 状态：已在隔离 `3100` QA 服务修复，并通过合成浏览器回归和专用账号真实 2x2 项目复测；未部署、未触碰 `3000` 或真实 `data/`。
+- 级别：P1 跨子图误修改风险。用户先选“全部子图”再在组件中心“选中整组”时，作用域会跳到该组所在子图；限定单个子图后，配色中心仍提供全局代码常量入口，可能改动其他子图。
+
+**根因**
+
+- 组件中心和配色中心的内部批量选择与画布/图层直接选择共用 `onSelectGids`，作用域跟随 effect 无法区分选择来源，因而把用户显式选择的 `all` 覆盖为所选对象的单一 `subplotId`。
+- 已选颜色对象存在时，第二个颜色控件硬编码调用 `handlePaletteColorChange(..., 'all')`。该路径同时生成 `code_patch` 和全图对象补丁；界面显示的数量却来自当前子图过滤结果。
+- 科研配色预设也未读取 `paletteSubplotScope`，限定子图时仍会对 Python 颜色常量执行全局代码补丁。
+- 散点 collection 的 `facecolor` 是嵌套 RGBA 数组；颜色输入先 `String(...)` 再解析，只能回退为 `#000000`。
+- 初次修复只覆盖了组件卡片主按钮和配色卡片，字体中心“选中整组”及组件长列表“查看/选中其余对象”仍直接调用 `onSelectGids`；独立审查发现后统一接入同一作用域保留入口。
+- 旧 `semantic_centers_smoke` 在限定子图后继续寻找全局常量控件，把跨作用域漏洞当成通过条件；且报告含 FAIL 时未设置非零退出码，导致命令表面成功。
+
+**修复与防复发**
+
+- RightSidebar 内部“选中整组”使用一次性选择签名保留三个中心各自的显式作用域；普通画布/图层单击、同子图单选和跨子图多选继续按真实对象归属自动跟随。
+- 组件主按钮、组件长列表溢出按钮、字体中心整组按钮和配色中心整组按钮全部使用同一入口，不再留局部旁路。
+- `paletteSubplotScope !== 'all'` 时不再展示或调用全局常量入口，只构造当前子图对象补丁；颜色预设使用同一 scoped resolution。全局代码同步仅在用户明确选择“全部子图”时开放。
+- 颜色输入解析支持嵌套 RGBA 行，不再把散点当前色错误显示为黑色。
+- `tests/playwright/subplot_scope_follow_smoke.mjs` 覆盖：显式 `all` 后整组选中仍为 `all`、下一次真实图层选择继续自动跟随、限定子图请求无 `code_patch` 且无跨子图 GID、限定子图预设同样局部、嵌套散点颜色正确显示。
+- 语义 smoke 在验证全局同步前必须显式切回 `all`，且报告含任一 FAIL 时设置 `process.exitCode=1`，防止红色报告被 CI 当成绿色。
+
+**验证**
+
+- `npm run test:subplot-scope-follow` 通过全部定向浏览器行为断言。
+- `npm run test:semantic-smoke` 通过（14 PASS / 0 FAIL / 0 BLOCKED），`H1-subset` 与 `H1-whole` 分别证明局部对象补丁和显式全局代码同步。
+- `npm test -- --run src/utils/paletteTargetResolver.test.ts src/utils/subplotSelectionScope.test.ts` 通过（8 files / 122 tests）；`npm run lint` 与定向 `git diff --check` 通过。
+- 专用账号 `qa3100-20260726@example.test` 的真实 `QA-3100-06-Python-2x2` 项目复测：点/散点整组选中后仍为“全部子图”；切换到子图 3 后只显示两个“仅修改当前子图命中对象”入口，全局常量入口为 0；测试遗留 `#AA00CC` 已恢复为夹具原始 `#D9534F`。
+
+---
+
+## 2026-07-27 17:30:29 +08:00 全局配色 Draft 可残留到后续单子图应用，作用域保留会冻结其他中心
+
+**状态与级别**
+
+- 状态：已在隔离 `3100` QA 代码修复，通过定向单元和真实 Chromium 专项；未部署、未触碰 `3000` 或真实 `data/`。
+- 级别：P1 跨子图 silent wrong edit。用户在“全部子图”先暂存颜色常量、尚未应用时切到单子图继续改色，界面虽只显示局部入口，但旧全局 `code_patch` 及其全图对象重放 Draft 仍可能随“应用当前图”一起提交。
+
+**根因**
+
+- Draft 批量更新只按 `gid:prop[:matchColor]` upsert，新局部对象补丁不会删除此前同一 palette 的全局代码补丁，也不会删除该代码补丁生成的其他子图对象重放项。
+- palette 对象补丁没有把 `subplotIds` 写入 EditingIntent，Draft 层无法区分显式全图同步和后续局部覆盖。
+- 右侧整组选中的一次性 scope 保留以全局 `return` 实现：触发中心的手动范围得到保留，但字体/配色等未触发中心也跳过自动跟随，可能继续停留在旧子图。
+- 多色 collection 的颜色预览直接读取嵌套 RGBA 第一行；目标实际由 `matchColor` 命中第二行时会显示错误颜色。
+- `semantic_centers_smoke` 忽略“切换到全部子图”的返回值，并允许任意对象颜色补丁代替应有的 `LINE_COLOR code_patch`，存在假阳性。
+
+**修复与防复发**
+
+- palette 对象补丁统一携带 EditingIntent：全图使用 `subplotIds='*'`，局部使用目标 `subplotIds`，选中子集使用 `selected_only`；科学配色预设复用同一入口。
+- Draft 合并前检测局部颜色意图；若与已暂存全局 palette 的 GID 相交，原子删除该 `code_patch` 和同值的全图颜色重放项，再写入局部 Draft。线宽及不相关 palette Draft 保留。
+- 一次性 scope 保留记录触发中心；仅触发中心保留用户手动范围，另外两个中心继续跟随新选中对象的真实子图。
+- 已选多色 collection 的预览优先使用 resolver 给出的 `matchColor`，没有匹配色时才回退对象属性。
+- 浏览器回归新增“全局 RED 暂存 -> 切换 subplot.1 -> 局部 RED 覆盖 -> 请求不得含 code_patch 或 subplot.0 GID”，并使用同一 collection 的红/蓝 RGBA 行验证各自 `matchColor`。
+- 全局语义 smoke 必须确认 scope 切换成功，并明确要求 `target_id=LINE_COLOR` 的 `code_patch`；报告含 FAIL 时返回非零退出码。
+
+**验证**
+
+- `npm test -- --run src/utils/draftTransaction.test.ts`：5 files / 45 tests 通过，新增全局 palette Draft 及重放项原子清理、全图和无关对象不清理测试。
+- `npm run test:subplot-scope-follow`：9 项真实 Chromium 行为全部通过，包括组件主/溢出、字体整组、局部预设、多行 RGBA、连续 `matchColor` 和显式全局同步。
+- `npm run test:semantic-smoke`：14 PASS / 0 FAIL / 0 BLOCKED；`H1-whole` 明确包含 `LINE_COLOR code_patch`。
+- `npm run lint` 和定向 `git diff --check` 通过。专项测试结束后 Playwright 清单无本轮测试会话，仅剩与本项目无关的 `relay-*` 会话。
+
+---
+
+## 2026-07-27 21:21:59 +08:00 Matplotlib 附加图例未建模，森林图两个图例只能移动一个
+
+**状态与级别**
+
+- 状态：已在隔离 `3100` QA 服务修复，并通过 renderer、前端定向测试和专用账号真实 Chromium 拖动/刷新验证；未部署网页端，未触碰 `3000` 或真实 `data/`。
+- 级别：P1 可编辑对象漏识别。森林图的主图例可移动，通过 `ax.add_artist()` 保留的红/蓝（或红/绿）分组图例只能选到内部文字或标记，无法作为独立容器移动。
+
+**根因**
+
+- Matplotlib `Axes.get_legend()` 只返回当前主图例。为了同时保留两个图例，脚本通常先创建一个 `Legend` 并调用 `ax.add_artist(extra_legend)`，再创建主图例；额外图例因此只存在于 `ax.artists`。
+- renderer 旧遍历链路只建模 `ax.get_legend()`，未给附加图例生成容器 GID、子对象关系和位置能力。前端拖动提升逻辑也只识别主图例 GID 形式。
+
+**修复与防复发**
+
+- renderer 统一枚举主图例和 `ax.artists` 中的额外 `Legend`，分别赋予 `legend.<axes>` 和 `legend.<axes>.extra.<index>`；标题、条目文字和标记均记录所属 `legendId`。
+- ChartPreview 将 `legend_text.*`、`legend_collection.*` 等子对象的拖动目标提升到精确容器；例如 `legend_text.0.extra.0.0` 提升为 `legend.0.extra.0`，不会误移动 `legend.0`。
+- 图例 marker collection 的结构 fingerprint 不再纳入位置 offset；旧 v2 项目仅在 `stableKey/seriesKey/legendId/legendTextId` 及已有关系一致时兼容重放，普通数据 collection 和跨图例关系仍拒绝。
+- `tests/test_introspection.py` 覆盖附加图例的容器、标题、文字、marker 关系与位置重放；`src/components/ChartPreview.test.ts` 覆盖主图例、Figure 图例和 `extra` 图例的拖动目标解析。
+
+**真实页面证据**
+
+- 隔离项目 `QA-3100-02-Forest-v2` 同时输出 `legend.0` 和 `legend.0.extra.0`。从附加图例 Positive 文字拖动后，整个附加图例位移 `(+36, -24) px`，主图例位置不变。
+- `/api/figure/patch` 返回 200，隔离项目 editLog 新增 `legend.0.extra.0.position`（`mode=backend_patch`）。刷新后 Positive 文字仍位于 `x=1080.87, y=715.98`，证明不是仅前端临时位移。
+
+---
+
+## 2026-07-27 23:52:23 +08:00 雷达维度标签偏移只写入状态，后端 SVG 重绘后位置回弹
+
+**状态与级别**
+
+- 状态：已在隔离 `3100` QA 服务修复，并通过实际 SVG 几何测试和旧项目真实 Chromium 强制重渲染/刷新验证；未部署、未触碰 `3000` 或真实 `data/`。
+- 级别：P1 silent wrong edit。`radar_label_offset` 已进入 editLog 和 manifest，前端拖动预览也会移动，但后端返回的 SVG 仍使用原坐标，刷新后标签回弹。
+
+**根因**
+
+- renderer 在应用补丁时直接给 polar tick `Text` 设置 `ScaledTranslation`。Matplotlib 的 `ThetaTick.update_position()` 会在后续 draw/savefig 重新计算 padding 和 transform，覆盖此前设置的偏移。
+- 原专项测试只断言 manifest 中的 `currentProps.radar_label_offset`，API/浏览器用例也只验证 patch 与持久化字段，没有比较确认渲染和刷新后的真实 SVG 坐标，因此出现“状态绿色、画面错误”的假通过。
+
+**修复与防复发**
+
+- 为命中的雷达维度标签安装对象级 draw 钩子：polar axis 完成本轮布局后，在 `Text.draw()` 最后一刻把保存的点偏移叠加到当前 transform，绘制结束立即恢复；重复 draw/savefig 不累计位移，也不干扰 Matplotlib 下一轮布局。
+- `tests/test_radar_chart_specialization.py` 解析 `xtick.0.0` 的实际 SVG `<text>` 坐标，明确要求 `dx=8, dy=-3.5` 产生 `x +8 pt, y +3.5 pt`，不再接受仅 manifest 更新。
+- `tests/playwright/radar_chart_editing_smoke.mjs` 新增拖动前、后端确认后和刷新后三段 DOM 几何断言：确认后必须按拖动方向移动，刷新后必须与确认后坐标一致。
+
+**验证**
+
+- 雷达 renderer 专项 15/15 通过，单次回放内部多次 draw 后 SVG 仍只偏移一次；浏览器脚本语法和定向 `git diff --check` 通过。
+- 旧隔离项目 `QA-3100-04-Radar` 保留既有 `dx=13.5, dy=10.5`。强制“同步至引擎”后 SVG 坐标为 `x=245.34, y=34.339672`，页面刷新后完全一致；revision 和 editLog 未被迁移或重写。
+- 同一真实项目继续验证图例文字拖动正确提升为 `legend.0.position`、3 个图例文字实际渲染为 Times New Roman 700，TR-B 独立配色/线宽和文字背景均在刷新后保持。
+- `2026-07-28` 发布门禁复跑发现测试自身把改文字前的 `Quality` 屏幕包围框与刷新后的 `Quality edited` 包围框比较，并受右侧面板切换造成的 SVG 响应式缩放影响，产生假回弹。回归现改为：立即应用后先等待 SVG 真实显示新文字，再比较刷新前后同一最终状态的 SVG 本地 `getBBox()` 几何；修正后 9/9 通过。后续位置持久化测试不得跨文字内容或跨页面缩放状态比较 `getBoundingClientRect()`。
+
+---
+
+## 2026-07-28 00:58:24 +08:00 热图透明度本地预览与 Matplotlib 重放结果不一致
+
+**状态与级别**
+
+- 状态：已在隔离 `3100` QA 服务修复，并通过定向单元、renderer 和真实 Chromium 刷新验证；未部署、未触碰 `3000` 或真实 `data/`。
+- 级别：P1 预览/刷新不一致。透明度修改后页面曾显示成功，但刷新或重新渲染会得到不同画面。
+
+**根因**
+
+- Matplotlib 的热图在当前 SVG 输出中以嵌入 PNG 呈现，透明度已经烘焙进像素。前端给外层 SVG image 设置 CSS opacity 不是 renderer 的等价重放。
+- 旧 manifest 可能把 `heatmap.alpha` 声明为 `local_patch + exact + stable`；服务端若照单接受，会把近似预览错误当成权威结果。
+- 前端最初根据提交请求的 mode 判断是否等待后端 SVG，没有使用响应 `applied` 中服务端最终确定的 mode，服务端纠正模式时仍可能保留陈旧预览。
+- 原回归只检查状态、manifest 和属性值，没有比较后端确认前后及刷新后的实际热图像素。
+
+**修复与防复发**
+
+- renderer、前端能力判定和服务端权威模式统一强制 `heatmap.alpha` 使用 `backend_patch`；旧 manifest 即使伪报 exact local 也会被服务端提升到后端验证。
+- 前端以响应 `applied` 为权威：仅其中实际为 `local_patch` 的项进入 SVG runtime，任一后端项均采用返回 SVG/manifest。
+- 服务端严格模式判定复用可单测函数；只有显式 `local_patch + exact + stable` 且不存在兼容性禁用条件的属性才能保持本地模式。
+- 响应协调回归改用确实可本地等价预览的 `line.color`，避免测试示例继续暗示热图透明度可以本地处理。
+
+**验证**
+
+- Vitest 全量 222 项、TypeScript lint、热图 renderer 专项和 `git diff --check` 均通过。
+- 隔离项目 `QA-3100-05-Heatmap` 的 alpha 从默认值修改为 `0.35`：请求和响应均为 `backend_patch`，响应包含 SVG/manifest；刷新后属性仍为 `0.35`，绘图区确认后与刷新后像素完全一致。
+- 证据保存在 `output/playwright/qa3100-05-heatmap-alpha-backend.png` 和 `output/playwright/qa3100-05-heatmap-alpha-backend-refresh.png`。
+
+---
+
+## 2026-07-28 10:26:08 +08:00 饼图图例在导出快照恢复后被错误判定为身份漂移
+
+**状态与级别**
+
+- 状态：已在隔离环境修复，并通过单元、完整 Python 语义工作流、跨 Figure 与 `3100` 真实 Chromium 流程；未部署、未触碰 `3000` 或真实 `data/`。
+- 级别：P1 旧状态兼容与编辑阻断。项目在导出快照恢复后，修改饼图切片及配套图例色块会返回 conflict，合法 editLog 无法继续应用。
+
+**根因**
+
+- 初次 introspection 会依据 `Axes.pie()` provenance 和唯一图例标签，为图例色块记录 `parentId`、`pieId`、`pieSliceId` 与 `sliceIndex`。
+- 后端 replay 的 `_build_gid_index()` 只重建普通图例文字关系和 errorbar 系列关系，没有重建上述饼图关系。
+- 身份核验正确地比较了 manifest 与当前 renderer 关系，但两条构建链路不一致，导致合法目标被误判为 `identity_mismatch`。问题不是旧数据需要迁移，也不是身份保护过严。
+
+**修复与防复发**
+
+- 抽出 `_build_pie_legend_relationships()`，由初次 manifest introspection 和 replay GID 索引共同调用，唯一标签、Figure 图例和重复标签的保守匹配规则保持一致。
+- 不放宽 fingerprint 或 relation 核验；无法唯一匹配的图例仍不会绑定到饼图切片，避免跨系列误改。
+- 新增单元回归，先证明 `legend_patch.*` 在重放前缺少关系会被拒绝，再验证共享关系构建后可应用并保持目标颜色。
+
+**验证**
+
+- `tests.test_introspection` 与 `tests.test_structural_identity_drift`：76/76 通过。
+- `npm run test:python-semantic-workflow` 通过，覆盖导出快照、恢复、饼图切片与图例批量应用、刷新、撤销/重做和失败 Draft 保留。
+- `npm run test:cross-figure-smoke`：18 PASS / 0 FAIL / 0 BLOCKED，覆盖跨 Figure 饼图切片仅修改对应图例色块、结构属性拒绝和失败 Figure 单独重试。
+- 同一流程直接对隔离 `http://127.0.0.1:3100` 运行通过：revision 6、快照 1 个、0 console error、0 page error。
+
+---
+
+## 2026-07-28 14:10:38 +08:00 向量场图例关系未在 replay 索引重建，合法整组改色被误判为身份漂移
+
+**状态与级别**
+
+- 状态：已在隔离随机端口修复并完成单元、renderer 能力矩阵和完整 Python 真实浏览器矩阵；未推送、未部署、未触碰 `3000` 或真实 `data/`。
+- 级别：P1 合法编辑阻断。Quiver 图中箭头与图例色块属于同一语义组，但应用整组颜色时服务端返回 conflict，revision、editLog 和页面状态保持不变。
+
+**根因**
+
+- 初次 introspection 会按唯一标签为 quiver/streamplot 图例 marker 写入 `parentId` 以及 `quiverId/streamplotId`；histogram 也会建立同类父子关系。
+- replay 的 `_build_gid_index()` 只重建普通图例文字、errorbar 和 pie 关系，未复用 histogram/vector-field 的关系构建。身份核验因此看到相同 stableKey/fingerprint，却发现当前对象缺少可信 relation，并正确拒绝整个批次。
+- 原完整浏览器矩阵另有两项测试缺陷：把平台已支持但会改变科学表达的 `cmap/vmin/vmax` 错列为禁止属性；每个 fixture 重复登录触发 429，导致后续项目未执行。这些都不是产品能力失败。
+- 独立复审继续发现：上述修复只保护了图例 marker 的 relation，复杂父对象自身的 `quiverId/streamplotId/lineCollectionId/legendMarkerIds` 未进入 replay 身份比较。伪造父对象 relation 仍可能通过 stableKey/fingerprint 校验。
+- 浏览器矩阵的控件查找在目标组件组失败后会回退到页面任意同类控件，应用断言也只要求存在任意安全样式 patch；因此可能把修改其他对象误报为目标编辑成功。
+- 最终复审还复现了旧无版本图例 marker 的兼容缺口：旧 identity 若已有 `legendId` 但缺少后来新增的 `parentId`，全字段 marker relation 比较会把合法历史编辑误判为身份漂移。
+
+**修复与防复发**
+
+- 提取唯一标签到图例 marker 的保守匹配函数，并让首次 manifest 与 replay 索引共同调用 histogram 和 vector-field 关系构建；axes 图例与标签全局唯一的 Figure 图例均可重建，重复或歧义标签继续 fail-closed。
+- 不放宽 fingerprint、stableKey、seriesKey 或 relation 核验。无法重建可信关系的旧请求仍保持冲突和零持久化。
+- 新增 quiver、streamplot 和 histogram 图例 marker 完整 v2 身份重放单测；测试框架整轮只认证一次，`cmap/vmin/vmax` 不再被误报为结构属性，失败日志只保留业务状态、revision、应用/拒绝项和 warning，不写入整份 SVG/manifest。
+- v2 manifest 的复杂父对象增加 `semanticParentRelationSignature`，逐字段保护上述结构关系；旧无版本 manifest 不比较新签名，继续只按既有 stableKey/seriesKey 兼容核验，不回填或伪造新关系。
+- `legendMarkerRelationSignature` 同样只对 `fingerprintVersion=2` 强制执行。无版本旧条目即使缺少新 relation 字段或携带旧布局 fingerprint，也只按既有 stableKey/seriesKey 兼容；v2 marker relation 篡改仍逐字段拒绝。
+- vector-field replay 关系构建同时恢复父对象的 `quiverId/streamplotId/lineCollectionId` 和图例 marker 关系。合法父对象编辑必须通过，伪造 relation 必须返回 `identity_mismatch`。
+- 浏览器控件 fallback 仅允许留在目标 `data-component-group-id` 内；应用请求必须包含目标 `gid+prop`，不同 GID 的附加 patch 只能是由目标 `legendMarkerIds` 与 marker `parentId+legendId` 双向证明的图例联动，任何无关对象 patch 直接判失败。
+
+**验证**
+
+- 向量场与 histogram 身份定向单元测试 2/2 通过。
+- pie/figure-pie/vector-field/histogram 图例身份定向 4/4 通过，包含无版本 marker 缺 `parentId` 的兼容正例与 v2 relation 篡改负例。
+- Quiver/streamplot 真实浏览器专项 14 PASS / 0 FAIL：图中箭头及图例 face/edge 同批改色，revision 1 -> 2，刷新、撤销/重做和 SVG 导出通过。
+- Contour、完整语义工作流和雷达定向矩阵 32 PASS / 0 FAIL / 2 N/A。
+- 11 项 Python 完整真实浏览器矩阵 136 PASS / 0 FAIL / 3 N/A；0 console error、0 page error。
+- Python/R capability matrix 3/3 通过；`npm run lint`、`git diff --check` 通过。
+- 最终只读数据审计保持 25 用户、128 项目、286 文件、112 导出资产、0 issue；本轮测试全部使用随机 localhost 端口和临时数据目录。
+- 独立 `gpt-5.5 high` 初审的 1 个 MEDIUM（无版本 marker relation 误拒绝）修复后复审关闭；最终结论 0 HIGH / 0 MEDIUM。
+
+---
+
+## 2026-07-28 22:04:45 +08:00 R 图例布局普通警告被导出门禁误判为编辑重放失败
+
+**状态与级别**
+
+- 状态：已在随机端口 `62574` 的隔离 R 浏览器项目修复，并通过实际 SVG 导出、历史资产写入和快照恢复验证；未部署、未触碰 `3000` 或真实 `data/`。
+- 级别：P1 合法导出阻断。预览、刷新、撤销和重做均正常，但导出返回 `409 EXPORT_REPLAY_CONFLICT`。
+
+**根因**
+
+- `isSnapshotReplayWarning()` 使用包含 `ignored/failed/missing` 等普通词的宽泛字符串正则。ggplot2 的 `Duplicated override.aes is ignored` 虽与任何编辑补丁无关，仍被纳入 `replayWarnings`。
+- R renderer 为同一 `guide_legend()` 同时注册 `color` 和 `colour`；ggplot2 规范化后它们是同一 aesthetic，因此在放大图例标记等布局编辑时产生重复警告。
+- Windows R 在输出合法 JSON 后偶发的 `3221225477` 退出会被服务端附加为运行时警告，但它不是本次 `409` 的直接触发条件。
+
+**修复与防复发**
+
+- 新增统一 replay-warning 分类器：只有结构化的 `missing_gid`、`identity_mismatch`、`ambiguous_identity`、`unsupported_prop`、`no_setter`、`unsupported_*` 和 `apply_error:*` 阻断导出。
+- 字符串兼容只保留明确的旧类型前缀，不再根据自然语言中的 `ignored`、`missing` 等单词推测补丁失败。
+- R 图例 guide 统一使用规范 `colour` aesthetic，从源头消除重复 `override.aes` 警告。
+- 导出门禁仍独立核验 manifest、结构化 renderer conflict 和 R renderer acknowledgement；不会因本次收紧字符串分类而放过真实的补丁未应用。
+
+**验证**
+
+- `rendererReplayWarning` 定向 Vitest 15/15 通过，覆盖普通 ggplot/字体/进程警告、结构化重放失败和旧类型前缀。
+- R 图例内部布局定向测试通过，警告中不再出现重复 aesthetic/override。
+- `npm run test:replay-warning-persistence` 通过；真实 `missing_gid` 仍阻断代码补丁和导出，且 session、Figure、history、asset 和 snapshot 零持久化。
+- 隔离项目 `R QA 04 Core Geoms` 的真实导出请求由修复前 `409` 变为 `200`，生成带编辑快照的 SVG 资产；恢复请求和随后的 renderer 重建均返回 `200`。
+- 导出 SVG 保留 `#006D5B/#6FCF97/#D55E00/#E69F00`、Times New Roman 和标题 bold；同组散点半径保持 `4.80–9.41` 的相对比例，未被归一为同一大小。

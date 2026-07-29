@@ -11,13 +11,23 @@ import { isParentOwnedManifestObject, supportsObjectProp } from '../utils/proper
 
 const TEXT_GID_RE = /^(r\.text|text|title|xlabel|ylabel|zlabel|legend_text|legend_title|fig_text)\./;
 const TICK_LABEL_GID_RE = /^(xtick|ytick|ztick)\./;
-const LEGEND_CHILD_GID_RE = /^legend_(?:text|title|line|patch|collection)\.(?:(figure)\.(\d+)|(\d+))(?:\.\d+)?$/;
+const LEGEND_CHILD_GID_RE = /^legend_(?:text|title|line|patch|collection)\.(?:(figure)\.(\d+)|(\d+)(?:\.extra\.(\d+))?)(?:\.\d+)?$/;
 let chartPreviewSanitizeCount = 0;
 let lastChartPreviewSvg: string | null = null;
 let lastChartPreviewSanitizedHtml = '';
 const POSITION_TARGET_RESOLVER_V2_ENABLED = (
   import.meta as ImportMeta & { env?: Record<string, string | undefined> }
 ).env?.VITE_SCIFIGURE_LAYOUT_CONTROLS_V2 !== '0';
+
+export function resolveLegendContainerGid(gid: string | null): string | null {
+  if (!gid) return gid;
+  const childMatch = gid.match(LEGEND_CHILD_GID_RE);
+  if (!childMatch) return gid;
+  if (childMatch[1] === 'figure') return `legend.figure.${childMatch[2]}`;
+  return childMatch[4] == null
+    ? `legend.${childMatch[3]}`
+    : `legend.${childMatch[3]}.extra.${childMatch[4]}`;
+}
 
 function sanitizeChartPreviewSvg(svg: string) {
   if (svg === lastChartPreviewSvg) {
@@ -35,7 +45,65 @@ function sanitizeChartPreviewSvg(svg: string) {
 }
 
 function isTextGid(gid: string): boolean {
-  return TEXT_GID_RE.test(gid);
+  return TEXT_GID_RE.test(gid) || TICK_LABEL_GID_RE.test(gid);
+}
+
+export function isRadarDimensionLabelObject(
+  gid: string,
+  object: ManifestObject | null | undefined,
+): object is ManifestObject {
+  return gid.startsWith('xtick.')
+    && (object?.kind === 'text' || object?.kind === 'xtick')
+    && object.currentProps?.radarSemanticRole === 'dimension_label'
+    && supportsObjectProp(object, 'radar_label_offset');
+}
+
+export function buildRadarLabelOffsetValue(
+  object: ManifestObject,
+  svgDx: number,
+  svgDy: number,
+): { dx: number; dy: number } {
+  const current = object.currentProps?.radar_label_offset;
+  const currentDx = current && typeof current === 'object'
+    ? Number((current as { dx?: unknown }).dx)
+    : 0;
+  const currentDy = current && typeof current === 'object'
+    ? Number((current as { dy?: unknown }).dy)
+    : 0;
+  return {
+    dx: Number(((Number.isFinite(currentDx) ? currentDx : 0) + svgDx).toFixed(3)),
+    dy: Number(((Number.isFinite(currentDy) ? currentDy : 0) - svgDy).toFixed(3)),
+  };
+}
+
+export function buildRadarDimensionLabelPositionPatch(
+  gid: string,
+  object: ManifestObject,
+  svgDx: number,
+  svgDy: number,
+): PatchEntry & { intent: EditingIntent } {
+  const value = buildRadarLabelOffsetValue(object, svgDx, svgDy);
+  const intent: EditingIntent = {
+    intent: 'layout.position.text',
+    scope: {
+      selectionMode: 'explicit_objects',
+      objectIds: [gid],
+      targetKinds: [object.kind],
+      targetRole: 'x_tick_label',
+      crossFigure: 'deny',
+    },
+    operation: { prop: 'radar_label_offset', value },
+    commit: { mode: 'immediate', applyAsOneHistoryStep: true },
+    fallback: { onUnsupported: 'skip_with_warning' },
+  };
+  return {
+    op: 'set',
+    mode: 'backend_patch',
+    gid,
+    prop: 'radar_label_offset',
+    value,
+    intent,
+  } as PatchEntry & { intent: EditingIntent };
 }
 
 function inferTextTargetRole(gid: string): SemanticTargetRole | undefined {
@@ -202,6 +270,24 @@ function parseSvgDimensions(svg: string | null | undefined) {
   return { width: 900, height: 700, viewBox: { x: 0, y: 0, width: 900, height: 700 } };
 }
 
+type SvgBox = { x: number; y: number; width: number; height: number };
+type RenderViewportLike = { figure?: Partial<SvgBox> } | null | undefined;
+
+export function resolveRenderFigureBox(
+  renderViewport: RenderViewportLike,
+  fallback: SvgBox,
+): SvgBox {
+  const figure = renderViewport?.figure;
+  const x = Number(figure?.x);
+  const y = Number(figure?.y);
+  const width = Number(figure?.width);
+  const height = Number(figure?.height);
+  if ([x, y, width, height].every(Number.isFinite) && width > 0 && height > 0) {
+    return { x, y, width, height };
+  }
+  return fallback;
+}
+
 export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObject, selectedGids = [], onSelectGids, renderedSVG, onPatch, onImmediatePatch, figSession, dragMode = false, onPendingPositionCountChange }: ChartPreviewProps) {
   const safeRenderedSvg = typeof renderedSVG === 'string' ? renderedSVG : '';
   const sanitizedRenderedSvg = useMemo(() => {
@@ -246,6 +332,10 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const [isSubmittingPendingDrag, setIsSubmittingPendingDrag] = useState(false);
   const [dragHint, setDragHint] = useState<string | null>(null);
   const svgSize = useMemo(() => parseSvgDimensions(safeRenderedSvg), [safeRenderedSvg]);
+  const renderFigureBox = useMemo(
+    () => resolveRenderFigureBox(figSession?.manifest?.renderViewport, svgSize.viewBox),
+    [figSession?.manifest?.renderViewport, svgSize.viewBox],
+  );
   const fitScale = useMemo(() => {
     if (!viewport.width || !viewport.height) return 1;
     const availableWidth = Math.max(viewport.width - 64, 200);
@@ -344,6 +434,9 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     const obj = manifestObjectMap.get(gid);
     const props = obj?.currentProps || {};
     if (!obj) return false;
+    if (isRadarDimensionLabelObject(gid, obj)) {
+      return true;
+    }
     if (TICK_LABEL_GID_RE.test(gid) || obj.role === 'x_tick_label' || obj.role === 'y_tick_label' || obj.role === 'z_tick_label') {
       return false;
     }
@@ -458,11 +551,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
   const resolveLegendDragTarget = useCallback((gid: string | null) => {
     if (!gid) return gid;
-    const childMatch = gid.match(LEGEND_CHILD_GID_RE);
-    if (!childMatch) return gid;
-    const legendGid = childMatch[1] === 'figure'
-      ? `legend.figure.${childMatch[2]}`
-      : `legend.${childMatch[3]}`;
+    const legendGid = resolveLegendContainerGid(gid);
     return validGids.has(legendGid) ? legendGid : gid;
   }, [validGids]);
 
@@ -519,8 +608,15 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
 
   const getAxesBoxForObject = useCallback((gid: string, svgEl: SVGSVGElement) => {
     const obj = manifestObjectMap.get(gid);
-    const subplotId = obj?.subplotId;
     const axesIndex = inferAxesIndexFromGid(gid);
+    const relationSubplotId = obj?.identity?.relation?.subplotId;
+    const subplotId = typeof obj?.subplotId === 'string'
+      ? obj.subplotId
+      : typeof relationSubplotId === 'string'
+        ? relationSubplotId
+        : axesIndex !== null && Number.isFinite(axesIndex)
+          ? `subplot.${axesIndex}`
+          : null;
     const candidateIds = [
       axesIndex !== null && Number.isFinite(axesIndex) ? `axes.patch.${axesIndex}` : null,
       axesIndex !== null && Number.isFinite(axesIndex) ? `patch_${axesIndex + 2}` : null,
@@ -533,8 +629,33 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       const box = getElementSvgBox(el, svgEl);
       if (box && box.w > 0 && box.h > 0) return box;
     }
+
+    // axis("off") removes the physical axes patch from Matplotlib SVG output.
+    // The manifest still carries normalized figure bounds, which are sufficient
+    // to convert a dragged data/axes-coordinate label back into source position.
+    const subplot = typeof subplotId === 'string' ? manifestObjectMap.get(subplotId) : null;
+    const subplotProps = subplot?.currentProps || {};
+    const left = Number(subplotProps.left);
+    const bottom = Number(subplotProps.bottom);
+    const width = Number(subplotProps.width);
+    const height = Number(subplotProps.height);
+    const figureBox = renderFigureBox;
+    if (
+      [left, bottom, width, height, figureBox.x, figureBox.y, figureBox.width, figureBox.height].every(Number.isFinite)
+      && width > 0
+      && height > 0
+      && figureBox.width > 0
+      && figureBox.height > 0
+    ) {
+      return {
+        x: figureBox.x + left * figureBox.width,
+        y: figureBox.y + (1 - bottom - height) * figureBox.height,
+        w: width * figureBox.width,
+        h: height * figureBox.height,
+      };
+    }
     return null;
-  }, [getElementSvgBox, getSelectableSvgElement, inferAxesIndexFromGid, manifestObjectMap]);
+  }, [getElementSvgBox, getSelectableSvgElement, inferAxesIndexFromGid, manifestObjectMap, renderFigureBox]);
 
   const getDataLimitsForObject = useCallback((gid: string) => {
     const axesIndex = inferAxesIndexFromGid(gid);
@@ -555,7 +676,11 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
   const buildPositionPatch = useCallback((gid: string, dx: number, dy: number): PatchEntry | null => {
     const obj = manifestObjectMap.get(gid);
     const props = obj?.currentProps || {};
-    if (!obj || (obj.kind !== 'text' && obj.kind !== 'legend') || typeof props.x !== 'number' || typeof props.y !== 'number') return null;
+    if (!obj) return null;
+    if (isRadarDimensionLabelObject(gid, obj)) {
+      return buildRadarDimensionLabelPositionPatch(gid, obj, dx, dy);
+    }
+    if ((obj.kind !== 'text' && obj.kind !== 'legend') || typeof props.x !== 'number' || typeof props.y !== 'number') return null;
     const positionProjection = projectPropertyDescriptors({
       center: 'layout',
       objects: [obj],
@@ -572,9 +697,8 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
     let nextY = props.y;
     if (coordSystem === 'axes') {
       const axesBox = getAxesBoxForObject(gid, svgEl);
-      const fallbackViewBox = svgEl.viewBox.baseVal;
-      const width = axesBox?.w || fallbackViewBox?.width || svgSize.viewBox.width;
-      const height = axesBox?.h || fallbackViewBox?.height || svgSize.viewBox.height;
+      const width = axesBox?.w || renderFigureBox.width;
+      const height = axesBox?.h || renderFigureBox.height;
       if (!width || !height) return null;
       nextX = props.x + dx / width;
       nextY = props.y - dy / height;
@@ -585,9 +709,8 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       nextX = props.x + (dx / axesBox.w) * (limits.x1 - limits.x0);
       nextY = props.y - (dy / axesBox.h) * (limits.y1 - limits.y0);
     } else if (coordSystem === 'figure') {
-      const viewBox = svgEl.viewBox.baseVal;
-      const width = viewBox?.width || svgSize.viewBox.width;
-      const height = viewBox?.height || svgSize.viewBox.height;
+      const width = renderFigureBox.width;
+      const height = renderFigureBox.height;
       nextX = props.x + dx / width;
       nextY = props.y - dy / height;
     } else {
@@ -662,7 +785,7 @@ export function ChartPreview({ spec, onSpecChange, onSelectObject, selectedObjec
       });
     }
     return patch ? ({ ...patch, intent } as PatchEntry & { intent: EditingIntent }) : null;
-  }, [figSession, getAxesBoxForObject, getDataLimitsForObject, manifestObjectMap, svgSize.viewBox.height, svgSize.viewBox.width]);
+  }, [figSession, getAxesBoxForObject, getDataLimitsForObject, manifestObjectMap, renderFigureBox.height, renderFigureBox.width]);
 
   const releaseDragCapture = useCallback((pointerId?: number) => {
     const target = dragCaptureTargetRef.current;

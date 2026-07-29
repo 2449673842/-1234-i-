@@ -70,7 +70,13 @@ export function Navbar({ currentView, onNavigate }: NavbarProps) {
                 <Download className="w-4 h-4" />
                 导出图形
               </button>
-              <button type="button" aria-label="更多导出选项" title="更多导出选项" className="scifig-top-primary border-l border-white/15 px-1.5 rounded-l-none">
+              <button
+                type="button"
+                aria-label="更多导出选项"
+                title="更多导出选项"
+                onClick={() => onNavigate('export_settings')}
+                className="scifig-top-primary border-l border-white/15 px-1.5 rounded-l-none"
+              >
                  <ChevronDown className="w-4 h-4" />
               </button>
             </div>

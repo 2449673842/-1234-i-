@@ -3,11 +3,191 @@ import type { Manifest, ManifestObject } from '../schemas/manifest';
 import {
   buildSupportedSidebarPatchEntry,
   buildSupportedObjectPatchEntries,
+  buildContinuousPaletteCenterGroups,
   buildDiagramComponentGroups,
+  buildFontCenterGroups,
+  buildRadarComponentGroups,
+  colormapOptionsFor,
+  componentColorTargets,
   isDedicatedDiagramComponentObject,
+  isRadarSemanticObject,
+  radarComponentTargetRole,
   supportsComponentBatchProp,
+  supportsIndependentSubplotLayout,
   supportsSubplotBoundProp,
 } from './RightSidebar';
+
+function continuousObject(
+  id: string,
+  kind: ManifestObject['kind'],
+  scaleId: string,
+  subplotIds: string[],
+  editable: string[] = ['cmap', 'vmin', 'vmax'],
+): ManifestObject {
+  return {
+    id,
+    kind,
+    label: id,
+    editable,
+    currentProps: { cmap: 'viridis', vmin: 0, vmax: 1 },
+    identity: {
+      relation: {
+        scaleId,
+        aesthetic: 'fill',
+        subplotIds,
+      },
+    },
+  } as ManifestObject;
+}
+
+describe('RightSidebar colormap controls', () => {
+  it('preserves the rendered colormap even when it is outside the curated list', () => {
+    expect(colormapOptionsFor('custom_lab_map')[0]).toBe('custom_lab_map');
+    expect(colormapOptionsFor('custom_lab_map')).toContain('viridis');
+  });
+
+  it('offers common scientific diverging colormaps without duplicating the current value', () => {
+    const options = colormapOptionsFor('RdBu_r');
+    expect(options).toContain('RdBu_r');
+    expect(options).toContain('Spectral_r');
+    expect(options.filter(value => value === 'RdBu_r')).toHaveLength(1);
+  });
+
+  it('deduplicates continuous heatmap and contour authorities by scale identity', () => {
+    const groups = buildContinuousPaletteCenterGroups([
+      continuousObject('r.heatmap.fill.0', 'heatmap', 'r.scale.fill.continuous.0', ['subplot.0']),
+      continuousObject('r.layer.0', 'contourf', 'r.scale.fill.continuous.0', ['subplot.0']),
+      continuousObject('r.layer.1', 'contour', 'r.scale.color.continuous.1', ['subplot.1']),
+      continuousObject('r.colorbar.fill.0', 'colorbar', 'r.scale.fill.continuous.0', ['subplot.0'], ['visible']),
+    ], 'all', 'r_svg');
+
+    expect(groups.map(group => group.scaleId)).toEqual([
+      'r.scale.fill.continuous.0',
+      'r.scale.color.continuous.1',
+    ]);
+    expect(groups[0].objects.map(object => object.id)).toEqual([
+      'r.heatmap.fill.0',
+      'r.layer.0',
+    ]);
+    expect(groups.flatMap(group => group.objects.map(object => object.kind))).not.toContain('colorbar');
+  });
+
+  it('respects subplot scope and withholds cross-subplot shared scales', () => {
+    const objects = [
+      continuousObject('heatmap.0', 'heatmap', 'scale.0', ['subplot.0']),
+      continuousObject('heatmap.1', 'heatmap', 'scale.1', ['subplot.1']),
+      continuousObject('heatmap.shared', 'heatmap', 'scale.shared', ['subplot.0', 'subplot.1']),
+    ];
+
+    expect(buildContinuousPaletteCenterGroups(objects, 'subplot.0').map(group => group.scaleId)).toEqual(['scale.0']);
+    expect(buildContinuousPaletteCenterGroups(objects, 'subplot.1').map(group => group.scaleId)).toEqual(['scale.1']);
+    expect(buildContinuousPaletteCenterGroups(objects, 'all').find(group => group.scaleId === 'scale.shared'))
+      .toMatchObject({ sharedAcrossSubplots: true, subplotIds: ['subplot.0', 'subplot.1'] });
+  });
+
+  it('does not expose a v2 R object whose renderer declares no continuous-scale capability', () => {
+    const unsupported = continuousObject('heatmap.readonly', 'heatmap', 'scale.readonly', ['subplot.0'], []);
+    unsupported.fingerprintVersion = 2;
+    unsupported.propertyCapabilities = [];
+
+    expect(buildContinuousPaletteCenterGroups([unsupported], 'all', 'r_svg')).toEqual([]);
+  });
+});
+
+describe('RightSidebar component color controls', () => {
+  it('does not render a layer fill control when R fill is owned by a discrete scale', () => {
+    const mappedRibbon = {
+      id: 'r.layer.2',
+      kind: 'patch',
+      label: 'ggplot ribbon layer 3',
+      editable: ['facecolor', 'edgecolor', 'linewidth', 'alpha'],
+      currentProps: {
+        adapterFamily: 'ribbon',
+        facecolor: '#92C5DE',
+        edgecolor: '#2166AC',
+        fillMapped: true,
+      },
+      propertyCapabilities: ['facecolor', 'edgecolor', 'linewidth', 'alpha'].map(prop => ({
+        prop,
+        patchMode: 'backend_patch' as const,
+        scopes: ['object' as const],
+        preview: 'none' as const,
+        replay: 'stable' as const,
+      })),
+    } as ManifestObject;
+
+    expect(componentColorTargets([mappedRibbon], 'facecolor', 'r_svg')).toEqual([]);
+    expect(componentColorTargets([mappedRibbon], 'edgecolor', 'r_svg')).toEqual([mappedRibbon]);
+  });
+});
+
+describe('RightSidebar radar semantic ownership', () => {
+  it('keeps every radar semantic role out of generic line and patch controls', () => {
+    expect(isRadarSemanticObject({ currentProps: { radarSemanticRole: 'series' } })).toBe(true);
+    expect(isRadarSemanticObject({ currentProps: { radarSemanticRole: 'fill_layer' } })).toBe(true);
+    expect(isRadarSemanticObject({ currentProps: { radarSemanticRole: 'dimension_label' } })).toBe(true);
+    expect(isRadarSemanticObject({ currentProps: {} })).toBe(false);
+  });
+
+  it('keeps R scale-backed radar series editable and isolated to the selected subplot', () => {
+    const radarObject = (
+      id: string,
+      kind: 'line' | 'patch',
+      role: 'series' | 'fill',
+      subplotId: string,
+    ): ManifestObject => ({
+      id,
+      kind,
+      label: id,
+      editable: [role === 'series' ? 'color' : 'facecolor'],
+      currentProps: {
+        radarSemanticRole: role,
+        radarId: `radar.${subplotId}`,
+        radarSeriesId: `radar.${subplotId}.series.Control`,
+        ...(role === 'series' ? { color: '#006D5B' } : { facecolor: '#6FCF97' }),
+      },
+      role: role === 'series' ? 'ggplot_scale_color' : 'ggplot_scale_fill',
+      identity: {
+        relation: {
+          subplotId,
+          subplotIds: [subplotId],
+          legendId: 'legend.0',
+          scaleId: role === 'series' ? 'r.scale.color.0' : 'r.scale.fill.0',
+          radarSemanticRole: role,
+        },
+      },
+      propertyCapabilities: [{
+        prop: role === 'series' ? 'color' : 'facecolor',
+        patchMode: 'backend_patch',
+        scopes: ['object'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    } as ManifestObject);
+
+    const panel0Line = radarObject('r.group.color.0.0', 'line', 'series', 'subplot.0');
+    const panel0Fill = radarObject('r.group.fill.0.0', 'patch', 'fill', 'subplot.0');
+    const panel1Line = radarObject('r.group.color.1.0', 'line', 'series', 'subplot.1');
+    const panel1Fill = radarObject('r.group.fill.1.0', 'patch', 'fill', 'subplot.1');
+
+    const panel0Groups = buildRadarComponentGroups(
+      [panel0Line, panel0Fill, panel1Line, panel1Fill],
+      'subplot.0',
+    );
+
+    expect(panel0Groups.map(group => ({
+      id: group.id,
+      objectIds: group.objects.map(object => object.id),
+    }))).toEqual([
+      { id: 'radarLines', objectIds: [panel0Line.id] },
+      { id: 'radarFills', objectIds: [panel0Fill.id] },
+    ]);
+    expect(panel0Groups.flatMap(group => group.objects)).not.toContain(panel1Line);
+    expect(panel0Groups.flatMap(group => group.objects)).not.toContain(panel1Fill);
+    expect(radarComponentTargetRole([panel0Line])).toBe('data_line');
+    expect(radarComponentTargetRole([panel0Fill])).toBe('data_patch');
+  });
+});
 
 function manifestObject(id: string, kind: ManifestObject['kind'], role?: string): ManifestObject {
   return {
@@ -26,6 +206,80 @@ function manifestObject(id: string, kind: ManifestObject['kind'], role?: string)
     },
   };
 }
+
+function fontObject(
+  id: string,
+  kind: ManifestObject['kind'],
+  role?: string,
+  subplotId?: string,
+): ManifestObject {
+  return {
+    id,
+    kind,
+    label: id,
+    editable: ['fontsize', 'fontfamily', 'fontweight', 'fontstyle', 'color'],
+    currentProps: { fontsize: 9, fontfamily: 'Arial', fontweight: 'normal', fontstyle: 'normal', color: '#000000' },
+    ...(role ? { role } : {}),
+    identity: {
+      relation: {
+        ...(subplotId ? { subplotId } : {}),
+      },
+    },
+  } as ManifestObject;
+}
+
+describe('RightSidebar font center legend classification', () => {
+  it('keeps legend containers out of text groups and separates legend titles from legend text', () => {
+    const groups = buildFontCenterGroups([
+      fontObject('legend.0', 'legend', 'legend'),
+      fontObject('legend.0.extra.0', 'legend', 'legend'),
+      fontObject('legend_title.0', 'text', 'legend_text'),
+      fontObject('legend_title.0.extra.0', 'text', 'legend_text'),
+      fontObject('legend_text.0.0', 'text', 'legend_text'),
+      fontObject('legend_text.0.1', 'text', 'legend_text'),
+      fontObject('legend_text.0.2', 'text', 'legend_text'),
+      fontObject('legend_text.0.extra.0.0', 'text', 'legend_text'),
+      fontObject('legend_text.0.extra.0.1', 'text', 'legend_text'),
+    ]);
+
+    const byId = new Map(groups.map(group => [group.id, group]));
+
+    expect(byId.get('legend_title')?.label).toBe('图例标题');
+    expect(byId.get('legend_title')?.objects.map(object => object.id)).toEqual([
+      'legend_title.0',
+      'legend_title.0.extra.0',
+    ]);
+    expect(byId.get('legend_text')?.label).toBe('图例文字');
+    expect(byId.get('legend_text')?.objects.map(object => object.id)).toEqual([
+      'legend_text.0.0',
+      'legend_text.0.1',
+      'legend_text.0.2',
+      'legend_text.0.extra.0.0',
+      'legend_text.0.extra.0.1',
+    ]);
+    expect(groups.flatMap(group => group.objects.map(object => object.id))).not.toContain('legend.0');
+    expect(groups.flatMap(group => group.objects.map(object => object.id))).not.toContain('legend.0.extra.0');
+  });
+
+  it('preserves subplot scope when selecting legend title and legend text groups', () => {
+    const groups = buildFontCenterGroups([
+      fontObject('legend_title.0', 'text', 'legend_text', 'subplot.0'),
+      fontObject('legend_text.0.0', 'text', 'legend_text', 'subplot.0'),
+      fontObject('legend_title.1', 'text', 'legend_text', 'subplot.1'),
+      fontObject('legend_text.1.0', 'text', 'legend_text', 'subplot.1'),
+      fontObject('legend.0', 'legend', 'legend', 'subplot.0'),
+      fontObject('legend.1', 'legend', 'legend', 'subplot.1'),
+    ], 'subplot.0');
+
+    expect(groups.map(group => ({
+      id: group.id,
+      objectIds: group.objects.map(object => object.id),
+    }))).toEqual([
+      { id: 'legend_title', objectIds: ['legend_title.0'] },
+      { id: 'legend_text', objectIds: ['legend_text.0.0'] },
+    ]);
+  });
+});
 
 describe('RightSidebar diagram component center groups', () => {
   it('creates distinct Chinese-labeled groups for diagram semantic roles', () => {
@@ -289,6 +543,45 @@ describe('RightSidebar component center capability gates', () => {
     expect(supportsComponentBatchProp(legacySubplot, 'bottom')).toBe(true);
     expect(supportsComponentBatchProp(legacySubplot, 'width')).toBe(true);
     expect(supportsComponentBatchProp(legacySubplot, 'height')).toBe(true);
+  });
+
+  it('only exposes whole-layout rearrangement when every subplot has authoritative physical bounds', () => {
+    const capableSubplot = (id: string) => ({
+      id,
+      kind: 'subplot',
+      label: id,
+      editable: ['left', 'bottom', 'width', 'height'],
+      currentProps: { left: 0.1, bottom: 0.1, width: 0.35, height: 0.35 },
+      propertyCapabilities: ['left', 'bottom', 'width', 'height'].map(prop => ({
+        prop,
+        patchMode: 'backend_patch' as const,
+        scopes: ['object' as const],
+        preview: 'none' as const,
+        replay: 'stable' as const,
+      })),
+    } as ManifestObject);
+    const facetSubplot = {
+      id: 'subplot.facet',
+      kind: 'subplot',
+      label: 'facet panel',
+      editable: [],
+      currentProps: {
+        unsupportedProps: ['left', 'bottom', 'width', 'height'],
+        unsupportedReason: 'ggplot facet panels share one gtable layout.',
+      },
+      propertyCapabilities: [],
+      role: 'ggplot_facet_panel',
+    } as ManifestObject;
+
+    expect(supportsIndependentSubplotLayout([
+      capableSubplot('subplot.0'),
+      capableSubplot('subplot.1'),
+    ])).toBe(true);
+    expect(supportsIndependentSubplotLayout([
+      capableSubplot('subplot.0'),
+      facetSubplot,
+    ])).toBe(false);
+    expect(supportsIndependentSubplotLayout([facetSubplot])).toBe(false);
   });
 
   it('does not expose modern legend layout props omitted from capabilities', () => {

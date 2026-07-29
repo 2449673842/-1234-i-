@@ -91,6 +91,16 @@ const rScript = [
   'p',
 ].join('\n');
 
+const mappedFillScript = [
+  'library(ggplot2)',
+  'df <- data.frame(category = c("A", "A", "B", "B"), value = c(2, 3, 4, 5), group = c("G1", "G2", "G1", "G2"))',
+  'p <- ggplot(df, aes(x = category, y = value, fill = group)) +',
+  '  geom_col(position = "dodge", linewidth = 0.4) +',
+  '  scale_fill_manual(values = c(G1 = "#80B1D3", G2 = "#FDB462")) +',
+  '  theme_classic()',
+  'p',
+].join('\n');
+
 function identityFields(object) {
   return {
     ...(object.stableKey !== undefined ? { stableKey: object.stableKey } : {}),
@@ -304,6 +314,31 @@ async function createStandaloneSession(token) {
   };
 }
 
+async function createMappedFillStandaloneSession(token) {
+  const rendered = await jsonRequest('/api/figure/render', token, {
+    method: 'POST',
+    body: JSON.stringify({
+      script: mappedFillScript,
+      language: 'r',
+      dataPayload: null,
+      editLog: [],
+      renderOptions: { dpi: 150 },
+    }),
+  });
+  assert(rendered.response.ok && rendered.data?.status === 'success', `mapped-fill R render failed: ${JSON.stringify(rendered.data)}`);
+  const object = rendered.data?.manifest?.objects?.find((candidate) => (
+    candidate?.currentProps?.fillMapped === true
+    && Array.isArray(candidate?.propertyCapabilities)
+    && candidate.propertyCapabilities.some((capability) => capability?.prop === 'facecolor')
+  ));
+  assert(object?.id, `mapped-fill R render did not expose a mapped layer target: ${JSON.stringify(rendered.data?.manifest)}`);
+  return {
+    sessionId: rendered.data.sessionId,
+    revision: Number(rendered.data.revision || 1),
+    object,
+  };
+}
+
 async function exportProjectFigure(token, projectId, format = 'svg') {
   const exported = await jsonRequest(`/api/projects/${projectId}/export`, token, {
     method: 'POST',
@@ -364,6 +399,49 @@ async function assertProjectRejectedWithoutPersistence(token, projectId, standal
     assert(!apiFigure.editLog?.some((entry) => isSamePatch(entry, patch)), `${label} leaked into project API editLog: ${JSON.stringify(apiFigure.editLog)}`);
     assert(!JSON.stringify(apiFigure.history || {}).includes(patch.gid), `${label} leaked gid into project API history: ${JSON.stringify(apiFigure.history)}`);
   }
+}
+
+async function assertStandaloneRejectedWithoutPersistence(token, sessionId, label, patchBody, rejectedPatches, expectedRevision) {
+  const before = readDatabaseState(null, sessionId, null);
+  const result = await submitPatch(token, patchBody);
+  assertRejectedResponse(label, result, rejectedPatches, expectedRevision);
+  assertSameState(label, before, readDatabaseState(null, sessionId, null));
+}
+
+function seedLegacyStandaloneEditLog(sessionId, editLog) {
+  const database = new Database(process.env.SCIFIGURE_DB_PATH);
+  try {
+    database.prepare('UPDATE sessions SET edit_log = ? WHERE id = ?').run(JSON.stringify(editLog), sessionId);
+  } finally {
+    database.close();
+  }
+}
+
+async function assertLegacyMappedFillReplay(token, mappedSession, legacyEdit) {
+  seedLegacyStandaloneEditLog(mappedSession.sessionId, [legacyEdit]);
+  const replayed = await jsonRequest('/api/figure/render', token, {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId: mappedSession.sessionId,
+      script: mappedFillScript,
+      language: 'r',
+      dataPayload: null,
+      editLog: [legacyEdit],
+      renderOptions: { dpi: 150 },
+    }),
+  });
+  assert(
+    replayed.response.ok && replayed.data?.status === 'success',
+    `known legacy mapped-fill edit did not replay: ${JSON.stringify(replayed.data)}`,
+  );
+  assert(
+    replayed.data?.applied?.some((entry) => isSamePatch(entry, legacyEdit)),
+    `known legacy mapped-fill edit was not acknowledged: ${JSON.stringify(replayed.data)}`,
+  );
+  assert(
+    String(replayed.data?.svg || '').toLowerCase().includes(String(legacyEdit.value).toLowerCase()),
+    'known legacy mapped-fill edit did not reach the rendered SVG',
+  );
 }
 
 async function assertDormantGroupProjectSaveRejected(token, projectId, standaloneSessionId, exportAssetId, patch) {
@@ -463,6 +541,7 @@ async function main() {
     const project = await createProject(token);
     projectId = project.projectId;
     const standalone = await createStandaloneSession(token);
+    const mappedFillStandalone = await createMappedFillStandaloneSession(token);
     const exportAsset = await exportProjectFigure(token, projectId, 'svg');
     const pngExportAsset = await exportProjectFigure(token, projectId, 'png');
     const exportAssetId = exportAsset.assetId;
@@ -546,6 +625,14 @@ async function main() {
       prop: 'color',
       value: '#2CA02C',
       ...identityFields(project.groupTarget),
+    };
+    const mappedFillOverridePatch = {
+      op: 'set',
+      mode: 'backend_patch',
+      gid: mappedFillStandalone.object.id,
+      prop: 'facecolor',
+      value: '#CC79A7',
+      ...identityFields(mappedFillStandalone.object),
     };
 
     standaloneRevision = await assertAuthoritativeSuccess(token, {
@@ -634,6 +721,22 @@ async function main() {
       [mixedBatchValidPatch, mixedBatchRejectedPatch],
       projectRevision,
     );
+    await assertStandaloneRejectedWithoutPersistence(
+      token,
+      mappedFillStandalone.sessionId,
+      'R mapped-fill layer override',
+      standalonePatchBody(
+        mappedFillStandalone.sessionId,
+        [mappedFillOverridePatch],
+        mappedFillStandalone.revision,
+      ),
+      [mappedFillOverridePatch],
+      mappedFillStandalone.revision,
+    );
+    await assertLegacyMappedFillReplay(token, mappedFillStandalone, {
+      ...mappedFillOverridePatch,
+      timestamp: Date.now() - 1000,
+    });
     await assertDormantGroupProjectSaveRejected(
       token,
       projectId,
@@ -659,6 +762,8 @@ async function main() {
         'R identity mismatch patch rejected without persistence',
         'R setter acknowledgement failure rejected without persistence',
         'R mixed valid/rejected batch rejected atomically without persistence',
+        'new R mapped-fill layer override rejected atomically without persistence',
+        'known legacy R mapped-fill layer override remains replayable',
         'R dormant scale-group project save rejected without persistence',
       ],
     }, null, 2));

@@ -833,18 +833,24 @@ async function run() {
     record('H1-subset', subsetOk ? 'PASS' : 'FAIL', `selected=${JSON.stringify(selectedPaletteObject)}, changed=${subsetChanged}, draft=${subsetDraft}, patches=${JSON.stringify(subsetPatches)}`);
 
     await clickText(page, '配色中心');
-    await setPaletteSubplotScope(page, 'all');
-    const paletteChanged = await setColorByScope(page, 'palette:LINE_COLOR', '#118833') ||
+    const allPaletteScopeSet = await setPaletteSubplotScope(page, 'all');
+    const paletteChanged =
+      await setColorByScope(page, 'palette:LINE_COLOR', '#118833') ||
       await setColorControl(page, 'LINE_COLOR', '统一修改代码全局常量', '#118833') ||
       await setColorControl(page, 'LINE_COLOR', '修改组颜色代码常量', '#118833');
     const paletteDraft = (await getBodyText(page)).includes('已暂存');
     const paletteApply = paletteChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const palettePatches = patchList(paletteApply.patchBody);
-    const paletteOk = paletteChanged && paletteDraft && paletteApply.successful && palettePatches.some((patch) => (
-      (patch.type === 'code_patch' && patch.new_value === '#118833') ||
-      (['color', 'facecolor', 'edgecolor'].includes(patch.prop) && patch.value === '#118833')
-    ));
-    record('H1-whole', paletteOk ? 'PASS' : 'FAIL', `changed=${paletteChanged}, draft=${paletteDraft}, patches=${JSON.stringify(palettePatches)}`);
+    const paletteOk = allPaletteScopeSet
+      && paletteChanged
+      && paletteDraft
+      && paletteApply.successful
+      && palettePatches.some((patch) => (
+        patch.type === 'code_patch'
+        && patch.target_id === 'LINE_COLOR'
+        && patch.new_value === '#118833'
+      ));
+    record('H1-whole', paletteOk ? 'PASS' : 'FAIL', `scope=${allPaletteScopeSet}, changed=${paletteChanged}, draft=${paletteDraft}, patches=${JSON.stringify(palettePatches)}`);
 
     await clickText(page, '配色中心');
     const weakPaletteId = 'dict_SERIES_COLORS__Weak';
@@ -1189,3 +1195,4 @@ try {
 const report = generateReport();
 console.log(`\nReport: ${report.file}`);
 console.log(`Conclusion: ${report.conclusion}, PASS=${report.passCount}, FAIL=${report.failCount}, BLOCKED=${report.blockedCount}`);
+if (report.failCount > 0) process.exitCode = 1;

@@ -957,6 +957,38 @@ async function run() {
       await page.waitForTimeout(200);
     }
     await clickText(page, '布局中心');
+    const preservedHorizontalGapSlider = page.locator('input[data-layout-role="preserve-horizontal-gap"]').first();
+    const preservedHorizontalGapVisible = await preservedHorizontalGapSlider.isVisible().catch(() => false);
+    let preservedHorizontalGapPatches = [];
+    let preservedHorizontalGapTarget = null;
+    if (preservedHorizontalGapVisible) {
+      const currentGap = Number(await preservedHorizontalGapSlider.inputValue());
+      const maxGap = Number(await preservedHorizontalGapSlider.getAttribute('max'));
+      await preservedHorizontalGapSlider.focus();
+      await preservedHorizontalGapSlider.press(maxGap - currentGap >= 0.005 ? 'ArrowRight' : 'ArrowLeft');
+      preservedHorizontalGapTarget = Number(await preservedHorizontalGapSlider.inputValue());
+      const start = apiRequests.length;
+      const applyPreservedHorizontalGap = page.locator('button[data-layout-action="apply-preserve-horizontal-gap"]').first();
+      if (await applyPreservedHorizontalGap.isEnabled().catch(() => false)) {
+        await applyPreservedHorizontalGap.click();
+        await waitForApiSettle(start);
+        await page.waitForTimeout(300);
+        const request = apiRequests.slice(start).find(item => item.url.includes('/api/figure/patch'));
+        const body = request?.postData ? JSON.parse(request.postData) : null;
+        preservedHorizontalGapPatches = body?.patches || [];
+      }
+    }
+    const preservedHorizontalSubplotPatches = preservedHorizontalGapPatches.filter(patch => String(patch.gid).startsWith('subplot.'));
+    const preservedHorizontalOnlyMovesLeft = preservedHorizontalGapVisible
+      && preservedHorizontalSubplotPatches.length > 0
+      && preservedHorizontalGapPatches.every(patch => patch.prop === 'left')
+      && preservedHorizontalGapPatches.every(patch => String(patch.gid).startsWith('subplot.') || String(patch.gid).startsWith('colorbar.'))
+      && !preservedHorizontalGapPatches.some(patch => patch.gid === 'global' || ['bottom', 'width', 'height'].includes(patch.prop));
+    record(
+      'C0j-horizontal-gap',
+      preservedHorizontalOnlyMovesLeft ? 'PASS' : 'FAIL',
+      `visible=${preservedHorizontalGapVisible}, target=${preservedHorizontalGapTarget}, patches=${JSON.stringify(preservedHorizontalGapPatches)}`,
+    );
     const preservedGapSlider = page.locator('input[data-layout-role="preserve-vertical-gap"]').first();
     const preservedGapVisible = await preservedGapSlider.isVisible().catch(() => false);
     let preservedGapPatches = [];

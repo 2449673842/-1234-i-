@@ -1447,21 +1447,10 @@ export function MainWorkspace({
     <div
       className="scifig-main-workspace flex-1 flex flex-col overflow-hidden min-w-0 relative"
       data-testid="workspace-script-drop-zone"
-      onDragEnter={event => {
-        if (!event.dataTransfer.types.includes('Files')) return;
-        event.preventDefault();
-        setScriptDragOver(true);
-      }}
       onDragOver={event => {
         if (!event.dataTransfer.types.includes('Files')) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = 'copy';
-        setScriptDragOver(true);
-      }}
-      onDragLeave={event => {
-        const nextTarget = event.relatedTarget;
-        if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
-        setScriptDragOver(false);
       }}
       onDrop={event => {
         const files = Array.from<File>(event.dataTransfer.files);
@@ -1473,13 +1462,6 @@ export function MainWorkspace({
         loadScriptFileIntoWorkspace(scriptFile || files[0]);
       }}
     >
-      {scriptDragOver && (
-        <div className="pointer-events-none absolute inset-0 z-[70] flex items-center justify-center border-2 border-dashed border-blue-500 bg-blue-500/15 backdrop-blur-[1px]">
-          <div className="border border-blue-200 bg-white px-5 py-3 text-sm font-semibold text-blue-700 shadow-xl">
-            松开以导入 .py / .R 脚本并切换到代码编辑
-          </div>
-        </div>
-      )}
       <div className="scifig-workspace-commandbar min-h-14 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2 sm:px-5 shrink-0">
         <div className="flex min-w-0 items-center text-sm text-slate-500 font-medium">
           <Home className="w-4 h-4 hover:text-slate-700 cursor-pointer" onClick={() => onNavigate('home')} />
@@ -1874,9 +1856,49 @@ export function MainWorkspace({
           {activeTab === 'code' && (
             spec.plot_type === 'custom' ? (
               <div
-                className="w-full h-full flex flex-col bg-[#1e1e1e] rounded shadow-xl overflow-hidden relative"
+                className={`w-full h-full flex flex-col bg-[#1e1e1e] rounded shadow-xl overflow-hidden relative transition-shadow ${
+                  scriptDragOver ? 'ring-2 ring-inset ring-blue-400' : ''
+                }`}
                 data-testid="workspace-code-editor"
+                onDragEnter={event => {
+                  if (!event.dataTransfer.types.includes('Files')) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setScriptDragOver(true);
+                }}
+                onDragOver={event => {
+                  if (!event.dataTransfer.types.includes('Files')) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  event.dataTransfer.dropEffect = 'copy';
+                  setScriptDragOver(true);
+                }}
+                onDragLeave={event => {
+                  const nextTarget = event.relatedTarget;
+                  if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+                  setScriptDragOver(false);
+                }}
+                onDrop={event => {
+                  const files = Array.from<File>(event.dataTransfer.files);
+                  if (files.length === 0) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setScriptDragOver(false);
+                  const scriptFile = files.find(file => /\.(py|r)$/i.test(file.name));
+                  loadScriptFileIntoWorkspace(scriptFile || files[0]);
+                }}
               >
+                {scriptDragOver && (
+                  <div
+                    className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded border-2 border-dashed border-blue-400 bg-slate-950/80"
+                    data-testid="workspace-code-drop-overlay"
+                  >
+                    <div className="flex items-center gap-2 rounded-md border border-blue-300/40 bg-slate-900 px-4 py-2 text-sm font-semibold text-blue-100 shadow-xl">
+                      <UploadCloud className="h-4 w-4" />
+                      松开以导入 .py / .R 脚本
+                    </div>
+                  </div>
+                )}
                 <div className="flex items-center justify-between gap-3 border-b border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200">
                   <div className="font-semibold">脚本语言</div>
                   <select

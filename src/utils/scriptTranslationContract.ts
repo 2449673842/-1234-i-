@@ -478,15 +478,19 @@ os / sys / subprocess / builtins / shutil / socket / urllib / requests / eval / 
 11. 如果脚本只需要一张图，就只创建一张图；不要无故拆成多图
 12. 共享坐标轴共享刻度约束 (sharex=True/sharey=True)：当使用 sharex=True 或 sharey=True 共享坐标轴时，切勿在非目标子图上通过 ax.set_xticklabels([]) 或 ax.set_yticklabels([]) 擦除刻度标签，否则这会波及并擦除整个共享列/行的所有标签。如果需要隐藏特定子图的刻度标签，应使用 ax.tick_params(axis="x", labelbottom=show_xlabel) 或 ax.tick_params(axis="y", labelleft=show_ylabel) 控制其可见性。
 13. 每个语义分组只能有一个权威颜色常量或颜色字典条目；不要再定义同色但未使用的别名。若散点通过 \`c=df["Color"]\` 逐点着色，\`Color\` 列必须直接由这些权威常量生成，确保修改一个组只重绘该组，不影响其它组。
-
-
-14. 网络图、路径图或 SEM 仅在存在稳定 node/edge 键时使用 \`_scifigure_semantic_gid\`；必须保持真实 node、edge、arrow、label 关系，不能按外观猜测或改变模型拓扑和科研数值。
+14. 用作分组、节点、路径、标签或语义 GID 身份的列必须先检查缺失值和空字符串。不得对可能为 \`None\`/\`NaN\` 的值直接调用 \`.lower()\`、\`.strip()\` 或其他字符串方法。对 Excel 尾部由公式残留值保留的空白记录，只能按绘图必需的身份列明确过滤（例如 \`df = df.dropna(subset=["group"]).copy()\`），不得对整表无条件 \`dropna()\` 或伪造分组名。若空身份行不能安全排除，必须抛出指明列名和行号的可读错误。
+15. 网络图、路径图或 SEM 仅在存在稳定 node/edge 键时使用 \`_scifigure_semantic_gid\`；必须保持真实 node、edge、arrow、label 关系，不能按外观猜测或改变模型拓扑和科研数值。
+16. Sankey、alluvial、网络图、路径图或 SEM 的节点/路径位置由数据计算时，必须在全部位置计算完成后，用所有节点、路径和标签的实际最小/最大边界加 padding 设置 \`xlim/ylim\`。如果计算结果可能超出 0–1，禁止固定写 \`ax.set_ylim(0, 1)\` 或 \`ax.set_xlim(0, 1)\`；扩大 Figure 或白底画布不能恢复已经被 axes clip 的内容。
+17. 雷达图必须使用真实 polar axes、闭合的角度/数值数组、\`ax.set_xticks(...)\` + \`ax.set_xticklabels(...)\` 表示维度名，并为每个处理组的轮廓线提供唯一 \`label\` 后调用 \`ax.legend()\`。同组 line/fill 应复用同一个权威颜色常量和同一组闭合数据；不要用额外 \`ax.text\` 伪造图例组名，否则平台无法稳定关联维度标签、数据线、填充区和图例文字。
 
 ### 十、自检清单（这些条件必须在代码层面成立）
 - 单文件数据可来自 \`_uploaded_data\`；多文件具名数据表必须来自 \`_uploaded_file_paths\`
 - 脚本可以直接运行
 - 没有文件 I/O / 网络 / savefig / show
 - 列名与数据一致
+- 分组/节点/标签身份列在使用字符串方法或生成 GID 前已检查空值
+- 计算型 Sankey/网络/路径/SEM 的坐标范围覆盖全部节点、路径和标签并保留 padding
+- 雷达图维度名来自 polar xtick，处理组名称来自真实 legend，line/fill 共享权威颜色和闭合数据
 - figure 由 matplotlib 正常创建
 - 同一输入可重复渲染
 

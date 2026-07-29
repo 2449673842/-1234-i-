@@ -263,6 +263,18 @@ class TestCapabilityMatrix(unittest.TestCase):
                 for figure in figures:
                     validate_python_coverage_report(self, entry["id"], figure.get("manifest", {}))
 
+    def test_python_catalog_covers_every_fixture(self):
+        catalog_files = {entry["file"] for entry in self.catalog.get("python", [])}
+        fixture_files = {
+            path.relative_to(FIXTURE_ROOT).as_posix()
+            for path in (FIXTURE_ROOT / "python").glob("*.py")
+        }
+        self.assertEqual(
+            catalog_files,
+            fixture_files,
+            "Every synthetic Python fixture must be registered in matrix.json",
+        )
+
     @unittest.skipUnless(rscript_bin() and Path(rscript_bin()).exists(), "Rscript is not available")
     def test_r_capability_matrix(self):
         for entry in self.catalog.get("r", []):

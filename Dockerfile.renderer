@@ -86,7 +86,7 @@ LABEL org.opencontainers.image.title="SciFigure renderer" \
       org.scifigure.renderer.font-files="/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman.ttf;/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc;/usr/share/fonts/truetype/freefont/FreeSans.ttf" \
       org.scifigure.renderer.font-aliases="Times=Times New Roman" \
       org.scifigure.renderer.python-lock-sha256="${SCIFIGURE_PYTHON_LOCK_SHA256}"
-ARG SCIFIGURE_R_RENDERER_SHA256=15d2a03fe6f1f7a34b461d85a36e9b7ba454580e49c3c2f4be6257c935ed1653
+ARG SCIFIGURE_R_RENDERER_SHA256=789c0c0fdf5ec5a6ba9684d839071637ff410496c72f570a82ac403fad74d559
 LABEL org.scifigure.renderer.r-source-sha256="${SCIFIGURE_R_RENDERER_SHA256}"
 COPY renderer ./renderer
 RUN test "$(sha256sum /opt/scifigure/renderer/r_renderer.R | cut -d ' ' -f1)" = "${SCIFIGURE_R_RENDERER_SHA256}"

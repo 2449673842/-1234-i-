@@ -297,4 +297,28 @@ describe('R Boxplot and Violin family editing contract', () => {
     expect(supportsComponentBatchProp(legacyViolin, 'color', 'r_svg')).toBe(false);
     expect(supportsComponentBatchProp(legacyViolin, 'edgecolor', 'r_svg')).toBe(true);
   });
+
+  it('does not expose mapped fill as a layer-level Violin or Boxplot override', () => {
+    const violin = rContainerObject(
+      'r.layer.violin.mapped',
+      'violinplot_container',
+      'violin_group',
+      'subplot.0',
+      { facecolor: '#c7e9c0', edgecolor: '#238b45', fillMapped: true },
+      ['facecolor', 'edgecolor', 'linewidth', 'alpha'],
+    );
+    const boxplot = rContainerObject(
+      'r.layer.boxplot.mapped',
+      'boxplot_container',
+      'boxplot_group',
+      'subplot.0',
+      { color: '#222222', box_color: '#9ecae1', fillMapped: true },
+      ['color', 'linewidth', 'alpha', 'box_color'],
+    );
+
+    expect(supportsComponentBatchProp(violin, 'facecolor', 'r_svg')).toBe(false);
+    expect(supportsComponentBatchProp(violin, 'edgecolor', 'r_svg')).toBe(true);
+    expect(supportsComponentBatchProp(boxplot, 'box_color', 'r_svg')).toBe(false);
+    expect(supportsComponentBatchProp(boxplot, 'color', 'r_svg')).toBe(true);
+  });
 });

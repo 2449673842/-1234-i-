@@ -69,6 +69,32 @@ ax.scatter([0, 1, 2], [1, 2, 3], c="#1f77b4", s=20)
 """
 
 
+LEGEND_COLLECTION_SCRIPT = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(figsize=(6, 4))
+positive = ax.scatter([0.2, 0.5], [1, 2], color="#2A9D8F", label="Positive")
+negative = ax.scatter([0.4, 0.7], [2, 1], color="#D1495B", label="Negative")
+direction = ax.legend(
+    handles=[positive, negative],
+    title="Effect direction",
+    loc="lower right",
+    fontsize=8,
+)
+ax.add_artist(direction)
+size_handles = [
+    ax.scatter([], [], s=size, color="#777777", label=f"n = {size}")
+    for size in (100, 200)
+]
+ax.legend(handles=size_handles, title="Sample size", loc="upper right", fontsize=8)
+"""
+
+
+LEGEND_COLLECTION_LAYOUT_VARIANT_SCRIPT = LEGEND_COLLECTION_SCRIPT.replace(
+    'loc="lower right",\n    fontsize=8,',
+    'loc="center left",\n    bbox_to_anchor=(0.08, 0.35),\n    fontsize=16,',
+)
+
+
 class TestStructuralIdentityDrift(unittest.TestCase):
     def _line_objects(self, result):
         self.assertEqual(result.get("status"), "success", result.get("message"))
@@ -101,6 +127,14 @@ class TestStructuralIdentityDrift(unittest.TestCase):
     def _collection_facecolor(self, obj):
         color = obj["currentProps"]["facecolor"][0]
         return mcolors.to_hex(color, keep_alpha=False).lower()
+
+    def _object_by_id(self, result, gid):
+        self.assertEqual(result.get("status"), "success", result.get("message"))
+        return next(
+            obj
+            for obj in result["figures"][0]["manifest"]["objects"]
+            if obj["id"] == gid
+        )
 
     def _baseline_second_collection_edit(self):
         baseline = replay_render(COLLECTION_BASE_SCRIPT)
@@ -292,6 +326,75 @@ class TestStructuralIdentityDrift(unittest.TestCase):
         self.assertEqual(patched_target["currentProps"]["size"], DRIFT_SIZE)
         self.assertEqual(patched_target["fingerprint"], target["fingerprint"])
         self.assertEqual(patched_target["identity"]["seriesKey"], target["identity"]["seriesKey"])
+
+    def test_legend_collection_layout_changes_do_not_change_structural_fingerprint(self):
+        baseline = replay_render(LEGEND_COLLECTION_SCRIPT)
+        relaid = replay_render(LEGEND_COLLECTION_LAYOUT_VARIANT_SCRIPT)
+        gid = "legend_collection.0.extra.0.0"
+        baseline_marker = self._object_by_id(baseline, gid)
+        relaid_marker = self._object_by_id(relaid, gid)
+
+        self.assertEqual(baseline_marker["stableKey"], relaid_marker["stableKey"])
+        self.assertEqual(
+            baseline_marker["identity"]["seriesKey"],
+            relaid_marker["identity"]["seriesKey"],
+        )
+        self.assertEqual(
+            baseline_marker["fingerprint"],
+            relaid_marker["fingerprint"],
+            "legend marker layout offsets must not participate in structural identity",
+        )
+
+    def test_legacy_legend_collection_fingerprint_replays_when_relations_match(self):
+        baseline = replay_render(LEGEND_COLLECTION_SCRIPT)
+        gid = "legend_collection.0.extra.0.0"
+        target = self._object_by_id(baseline, gid)
+        patched = replay_render(LEGEND_COLLECTION_SCRIPT, edit_log=[{
+            "gid": gid,
+            "prop": "facecolor",
+            "value": DRIFT_COLOR,
+            "mode": "backend_patch",
+            "identity": target["identity"],
+            "stableKey": target["stableKey"],
+            "fingerprint": "legacy-layout-dependent-v2-fingerprint",
+            "fingerprintVersion": 2,
+        }])
+        patched_target = self._object_by_id(patched, gid)
+
+        self.assertFalse(self._has_identity_mismatch_warning(patched, gid), patched)
+        self.assertEqual(self._collection_facecolor(patched_target), DRIFT_COLOR)
+
+    def test_legacy_legend_collection_fingerprint_rejects_changed_legend_relation(self):
+        baseline = replay_render(LEGEND_COLLECTION_SCRIPT)
+        gid = "legend_collection.0.extra.0.0"
+        target = self._object_by_id(baseline, gid)
+
+        for field, wrong_value in (
+            ("legendId", "legend.0"),
+            ("legendTextId", "legend_text.0.extra.0.1"),
+        ):
+            with self.subTest(field=field):
+                identity = {
+                    **target["identity"],
+                    "relation": {
+                        **target["identity"]["relation"],
+                        field: wrong_value,
+                    },
+                }
+                patched = replay_render(LEGEND_COLLECTION_SCRIPT, edit_log=[{
+                    "gid": gid,
+                    "prop": "facecolor",
+                    "value": DRIFT_COLOR,
+                    "mode": "backend_patch",
+                    "identity": identity,
+                    "stableKey": target["stableKey"],
+                    "fingerprint": "legacy-layout-dependent-v2-fingerprint",
+                    "fingerprintVersion": 2,
+                }])
+                patched_target = self._object_by_id(patched, gid)
+
+                self.assertTrue(self._has_identity_mismatch_warning(patched, gid), patched)
+                self.assertNotEqual(self._collection_facecolor(patched_target), DRIFT_COLOR)
 
     def test_single_legacy_weak_collection_fingerprint_remains_readable(self):
         baseline = replay_render("""

@@ -1031,7 +1031,13 @@ async function run() {
     const violinEdgeChanged = await setColorByScope(page, `component:violins:${violinTargetKey}:edgecolor`, '#54278f');
     const violinLineChanged = await setComponentNumberByGroup(page, 'violins', 'linewidth', 1.35);
     const bandFillChanged = await setColorByScope(page, `component:bands:${bandTargetKey}:color`, '#8c510a');
-    const bandLineChanged = await setComponentNumberByGroup(page, 'bands', 'linewidth', 1.15);
+    const bandLineChanged = await setComponentNumberByGroup(page, 'bands', 'linewidth', 1.15)
+      || await setNumberByParam(page, 'component-bands', 'linewidth', 1.15);
+    // Mapped ribbon/area fills belong to the palette center; the component
+    // center must not expose a misleading whole-layer fill override.
+    const bandMappedFillControlHidden = await page.locator(
+      `input[data-color-role="text"][data-color-scope="component:bands:${bandTargetKey}:color"], input[data-color-role="picker"][data-color-scope="component:bands:${bandTargetKey}:color"]`,
+    ).count() === 0;
     const errorbarDraft = (await getBodyText(page)).includes('已暂存');
     const componentBatchApply = barLineChanged
       && errorbarLineChanged
@@ -1046,7 +1052,7 @@ async function run() {
       && boxplotOutlierSizeChanged
       && violinEdgeChanged
       && violinLineChanged
-      && bandFillChanged
+      && bandMappedFillControlHidden
       && bandLineChanged
       ? await applyDraftAndReadPatch(page)
       : { patchBody: null, successful: false };
@@ -1104,7 +1110,7 @@ async function run() {
       const props = new Set(componentBatchPatches
         .filter((patch) => patch.gid === layer.id)
         .map((patch) => patch.prop));
-      return props.has('facecolor') && props.has('linewidth');
+      return props.has('linewidth') && !props.has('facecolor');
     });
     const familyLineColorCoverage = [...fixture.stepLayers, ...fixture.freqpolyLayers, ...fixture.segmentLayers, ...fixture.curveLayers].every((layer) => (
       componentBatchPatches.some((patch) => patch.gid === layer.id && patch.prop === 'color' && String(patch.value).toLowerCase() === '#08519c')
@@ -1128,7 +1134,7 @@ async function run() {
       && boxplotOutlierSizeChanged
       && violinEdgeChanged
       && violinLineChanged
-      && bandFillChanged
+      && bandMappedFillControlHidden
       && bandLineChanged
       && errorbarDraft
       && componentBatchApply.successful
@@ -1144,12 +1150,11 @@ async function run() {
       && histogramPatchCoverage
       && componentSvgBefore !== componentSvgAfter
       && componentSvgAfter.toLowerCase().includes('#de2d26')
-      && componentSvgAfter.toLowerCase().includes('#8c510a')
       && componentSvgAfter.toLowerCase().includes('#08519c')
       && componentSvgAfter.toLowerCase().includes('#fdd0a2')
       && componentBatchPatches.every((patch) => String(patch.gid).startsWith('r.layer.'))
       && componentBatchExpectedEdits.every((edit) => hasEdit(componentBatchState.editLog, edit));
-    record('R2d-r-layer-components', componentBatchOk ? 'PASS' : 'FAIL', `changed=${JSON.stringify({ barLineChanged, errorbarLineChanged, errorbarCapChanged, errorbarMarkerChanged, errorbarMarkerSizeChanged, legacyMedianControlHidden, familyLineColorChanged, familyPatchFillChanged, boxplotOutlierColorChanged, boxplotOutlierShapeChanged, boxplotOutlierSizeChanged, violinEdgeChanged, violinLineChanged, bandFillChanged, bandLineChanged })}, segmentCurveManifestColorOk=${segmentCurveManifestColorOk}, segmentCurveSvg=${JSON.stringify(segmentCurveSvgEvidence)}, fillGroupLineLeak=${fillGroupLineLeak}, draft=${errorbarDraft}, patches=${JSON.stringify(componentBatchPatches)}`);
+    record('R2d-r-layer-components', componentBatchOk ? 'PASS' : 'FAIL', `changed=${JSON.stringify({ barLineChanged, errorbarLineChanged, errorbarCapChanged, errorbarMarkerChanged, errorbarMarkerSizeChanged, legacyMedianControlHidden, familyLineColorChanged, familyPatchFillChanged, boxplotOutlierColorChanged, boxplotOutlierShapeChanged, boxplotOutlierSizeChanged, violinEdgeChanged, violinLineChanged, bandFillChanged, bandMappedFillControlHidden, bandLineChanged })}, segmentCurveManifestColorOk=${segmentCurveManifestColorOk}, segmentCurveSvg=${JSON.stringify(segmentCurveSvgEvidence)}, fillGroupLineLeak=${fillGroupLineLeak}, draft=${errorbarDraft}, patches=${JSON.stringify(componentBatchPatches)}`);
 
     const componentCoreEdits = [
       ...pointSizeExpectedEdits,

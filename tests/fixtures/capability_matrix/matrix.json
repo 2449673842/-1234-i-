@@ -116,6 +116,24 @@
         { "from": "text.0.0", "field": "nodeId", "equals": "latent_a" },
         { "from": "text.0.2", "field": "edgeId", "equals": "latent_a_to_observed_b" }
       ]
+    },
+    {
+      "id": "python_semantic_workflow_end_to_end",
+      "file": "python/semantic_workflow_end_to_end.py",
+      "expectedFigures": 1,
+      "minKindCounts": { "subplot": 2, "line": 2, "fill_between": 1, "contourf": 1 },
+      "requiredRoles": ["subplot_panel", "line_series", "fill_between_series", "contourf_series"]
+    },
+    {
+      "id": "python_radar_chart",
+      "file": "python/radar_chart.py",
+      "expectedFigures": 1,
+      "minKindCounts": { "polar_subplot": 1, "line": 2, "patch": 2, "legend": 1 },
+      "requiredIds": ["polar_subplot.0", "line.0.0", "legend.0", "legend_text.0.0"],
+      "requiredRoles": ["polar_subplot_panel", "line_series", "legend", "legend_text"],
+      "relations": [
+        { "from": "line.0.0", "field": "radarSeriesId", "equals": "radar.0.series.0" }
+      ]
     }
   ],
   "r": [

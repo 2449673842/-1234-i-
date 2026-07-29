@@ -1,9 +1,9 @@
 # SciFigure 能力与架构副文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-30 04:35:45 +08:00
-> 证据截止时间：2026-07-30 04:35:45 +08:00
-> 复核范围：隔离集成分支 `deploy/prod-integration-v3` 与生产 release `e35f4a4-jd22`；含 Python WP7 特殊 axes、全渲染事务边界、旧 editLog 兼容，以及 R-WP0-WP8 对象身份、事务边界、显式 diagram 语义、扩展包/base R Shadow 边界；候选尚未部署
+> 更新时间：2026-07-30 16:08:23 +08:00
+> 证据截止时间：2026-07-30 16:08:23 +08:00
+> 复核范围：隔离集成分支 `deploy/prod-integration-v3` 与生产 release `e35f4a4-jd22`；含 Python WP7/WP10、雷达图专用语义、全渲染事务边界、旧 editLog 兼容，以及 R-WP0-WP10 对象身份、事务边界、显式 diagram 语义、扩展包/base R Shadow 边界和五个编辑中心真实浏览器验收；当前批次候选尚未部署
 > 适用范围：产品能力、前后端协议、Python/R 渲染、编辑与导出链路
 
 ## 1. 总体设计
@@ -318,6 +318,8 @@ annotation
 颜色修改按对象身份和语义系列绑定。单一分组修改只作用于该分组；跨 Figure 批量应用需要显式语义作用域和映射报告。
 
 ### 编辑中心一致性升级（受控迁移中）
+
+组件、字体和配色中心的子图作用范围跟随统一选择状态：单选对象或同一子图内多选时自动切换到对应子图；跨子图多选、共享对象、全图对象和 `Figure` 选择回到“全部子图”。用户仍可临时手动切换范围；右侧中心内部的“选中整组”保留该显式范围，下一次画布或图层直接选择才重新按真实对象归属同步。配色范围不是 `all` 时，普通颜色修改和科研配色预设都只能产生当前子图对象补丁，不得生成全局代码常量补丁。
 
 当前五个中心已经具备各自的主要能力。网页统一版已接入“统一属性描述器 + renderer 属性能力 + 中心职责投影”，用于共同处理属性状态、目标解析、Draft 和 patch mode；专项方案 `docs/platform-capability/UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md` 继续作为迁移和回归约束。
 
@@ -698,7 +700,7 @@ diagram group    -> diagram_group
 
 | 家族 | 当前分类与编辑策略 | 当前证据边界 |
 |---|---|---|
-| polar | `polar_subplot`；数据线、文字、图例和安全轴文字样式可编辑，布局/投影只读 | renderer、API 持久化、浏览器选择/Draft、导出快照通过 |
+| polar / radar | 普通 polar 保持受保护；可信 radar 额外开放维度文字、稳定偏移、图例容器移动、数据线/填充样式和文字背景，布局/投影/数据值只读 | radar renderer 15/15、隔离 API 持久化/刷新/导出、真实浏览器 9/9；普通闭合 polar、混合图例和同样式歧义负例通过 |
 | 3D | `three_d_subplot`；Z 轴标签和刻度字体可编辑，相机、投影和 box aspect 只读 | 固定 Python renderer 与浏览器控件通过 |
 | inset | `inset_subplot`；保留 parent relation，内容样式按能力开放，bounds/归属只读 | renderer 关系测试通过 |
 | secondary x/y | `secondary_xaxis/secondary_yaxis`；归属父 subplot，安全轴文字样式可编辑 | renderer 与 UI scope 测试通过 |
@@ -706,6 +708,10 @@ diagram group    -> diagram_group
 | brokenaxes | `brokenaxes_group` 只读降级协议 | 无依赖 synthetic 分类通过；真实 brokenaxes 包未安装、未验证 |
 | GeoAxes/Cartopy | `geo_subplot` 只读降级协议 | 分类代码存在；Cartopy 未安装、真实包测试跳过 |
 | 未知自定义投影 | `unsupported_axes`，记录原因并禁止布局/投影编辑 | 畸形投影安全降级通过 |
+
+雷达图不是按“看起来像圆形图”猜测。renderer 只在闭合 line/polygon 的角度数量等于 polar 维度刻度数加闭合点，且各角度与 `xticks` 在单位圆上一一对应时建立 `radarId/radarSeriesId/radarSemanticRole`。高分辨率闭合周期曲线仍是普通 polar，不获得雷达标签拖动或雷达图例位置能力。
+
+可信雷达图的维度名继续使用原 `xtick.*` GID，并新增 `radar_label_offset={dx,dy}` 屏幕点偏移；文字内容、字体和颜色继续使用既有属性。拖动 `legend_text.*` 会归一到 `legend.* position`，保证文字、符号和边框作为一个容器移动；图例文字内容仍可单独修改。只有图例 handle 在全部 axes lines 中唯一命中真实雷达线时才写入 `radarSeriesId`，普通/雷达线样式冲突时保持普通图例文字并拒绝猜测。闭合轮廓线和填充区分别进入“雷达图数据线”和“雷达图填充区域”组件组，同组 line/fill 通过相同 `radarSeriesId` 关联，但颜色、线宽和透明度仍可分别调整。普通 Text 的背景开放 `bbox_visible/facecolor/edgecolor/alpha/linewidth/pad/boxstyle`，不会改变雷达维度、半径数据或系列数值。
 
 特殊轴 editLog 的持久化不是由客户端 mode 或 renderer 是否返回 `success` 单独决定。standalone 与项目全渲染都会在任何写入前执行：
 
@@ -731,7 +737,7 @@ SVG owner 绑定通常限制在真实 panel clip 内。SEM 常用 `coord_cartesi
 
 ### 13.6 R 扩展包和 base R Shadow 边界（2026-07-26 19:26:25 +08:00）
 
-固定 renderer 镜像只声明经过版本固定和镜像校验的 R 包。`ggrepel`、`ggnewscale`、`sf`、`ggraph`、`igraph`、`tidygraph`、`semPlot` 与 `DiagrammeR` 当前不在镜像契约中，因此 runtime inventory 仅以 `find.package()`/`packageVersion()` 报告状态，不加载这些包，也不因开发机偶然安装而开放写回能力。缺包执行返回 `missing_package`、包名和用户可读信息；错误响应只保留公开版本/包状态，不返回 executable、R home、library paths、环境目录、工作目录、临时目录或字体文件路径。
+固定 renderer 镜像只声明经过版本固定和镜像校验的 R 包。`ggrepel`、`ggnewscale`、`sf`、`ggraph`、`igraph`、`tidygraph`、`semPlot` 与 `DiagrammeR` 当前不在镜像契约中，因此 runtime inventory 仅以 `find.package()`/`packageVersion()` 报告状态，不加载这些包，也不因开发机偶然安装而开放写回能力。缺包执行返回 `missing_package`、包名和用户可读信息，不返回主机绝对路径。
 
 可渲染的 `GeomTextRepel/GeomLabelRepel`、`GeomNode*/GeomEdge*` 对象在 manifest 中携带 `extensionPackage` 与 `extensionSupport=shadow_unsupported`，但 `editable/propertyCapabilities` 为空；预览和导出保留，不能通过普通 text/point/line adapter 绕过。`ggnewscale` 重命名 aesthetic 只进入 unsupported coverage，不会与活跃 color/fill scale 合并。`CoordSf` 的普通已证明样式继续沿用现有 ggplot adapter，但位置字段无可靠投影逆变换时保持 readonly；任一 shadow 拒绝会在 setter 前清空整批 accepted，防止合法颜色先写入。base R/grid 输出保持 `objects=[]`、`backendPatch=false` 的 preview/export-only 合同。
 
@@ -804,6 +810,7 @@ npm run test:cross-figure-smoke
 npm run test:drag-extended-smoke
 npm run test:export-matrix-smoke
 npm run test:r-semantic-smoke
+npm run test:r-property-layout-centers
 npm run test:subplot-scope-follow
 npm run test:export-snapshot-db
 npm run test:export-snapshot-restore
@@ -819,6 +826,10 @@ npm run test:export-snapshot-restore-ui
 2026-07-19 向量场工作包原分支证据：TypeScript、Vitest 1035 项、Python complex artist 22/22、向量场 API 持久化、真实浏览器工作流、真实控件跨 Figure、结构参数拒绝零持久化和 Matplotlib 3.8.4 兼容门禁通过；该证据将在当前生产集成候选完成后重新运行适用门禁，不能替代最终 release gate。
 
 2026-07-30 当前集成候选新增证据：向量场协议单测 180 项、complex artist 22/22、API、单 Figure 与跨 Figure 浏览器通过；网络/路径/SEM 协议单测 185 项、complex artist 26/26、API、单 Figure 与跨 Figure 浏览器通过。两类对象均覆盖 Draft、保存刷新、撤销重做、导出、快照恢复与关系缺失/冲突 fail-closed；完整 release gate 和生产 Docker 验收尚未完成。
+
+2026-07-29 最新 R 编辑中心浏览器证据：`test:r-semantic-smoke` 19/19、`test:r-property-layout-centers` 7/7。字体、组件、配色、属性和布局五个中心均通过真实页面选择、控件修改、Draft、backend patch、保存刷新和运行时错误检查；公共链路还覆盖撤销/重做、文本拖拽、SVG 导出和导出快照恢复。属性测试首轮的隐藏 checkbox 点击失败属于 harness 定位问题，改用同一真实 checkbox 的强制操作后通过，不改变产品代码。两份报告均为 0 console/page error、0 failed request；证据只代表本地隔离候选。
+
+2026-07-19 最新阶段证据：TypeScript 通过；Vitest 145/145 文件、1078/1078 测试；complex artist 26/26、结构身份 7/7、R renderer 31/31、R 浏览器 5/5。显式图示语义的 API 持久化、真实浏览器选择/Draft/重绘/保存刷新/撤销重做/位置修改/SVG 导出/快照恢复和真实控件跨 Figure 均通过；拓扑漂移、关系缺失和篡改快照拒绝后零持久化。组合代码项目、patch 拒绝、快照恢复、R 风险预检、生产构建和 `git diff --check` 通过；数据审计为 25 用户、121 项目、263 项目文件、101 导出资产、0 错误。保留既有大 chunk 与 CJS `import.meta` 非阻断警告。实现已提交为 `b20b103`，未推送、未部署；首次独立审查 HIGH 已修复，最终复审 APPROVE、0 HIGH/MEDIUM。
 
 ## 17. 详细参考文档
 

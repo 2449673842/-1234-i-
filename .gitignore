@@ -23,6 +23,7 @@ local-backups/
 .omx/
 tmp/
 .playwright-mcp/
+.playwright-cli/
 Rplots.pdf
 tmp_*
 test.txt

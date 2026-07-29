@@ -35,6 +35,7 @@ import { EDITING_FEATURE_FLAGS } from './utils/editingFeatureFlags';
 import {
   draftAppliesToFigure,
   draftsEligibleForDirectPersistence,
+  evictSupersededGlobalPaletteDrafts,
   isSameDraftPatch,
   mergeDraftSettlement,
   settleDraftTransaction,
@@ -45,6 +46,7 @@ import { reportClientError } from './utils/clientErrorReporter';
 import { figureDpiFromPatches, synchronizeFigureDpiSpec } from './utils/exportPreviewState';
 import { enrichDraftPatchWithIdentity, enrichPatchEntriesWithIdentity } from './utils/patchIdentity';
 import { isTextContentPatchProp, resolvePatchModeById } from './utils/propertyPatchMode';
+import { resolveAuthoritativePatchOutcome } from './utils/patchResponseReconciliation';
 import { fnv1a, stableStringify } from './utils/stableJson';
 import { removeMatchingPersistedDrafts } from './utils/projectSaveConcurrency';
 import type { FigureSession, EditEntry, PatchEntry, HistorySnapshot, ProjectHistoryState } from './schemas/manifest';
@@ -605,12 +607,19 @@ export default function App() {
   };
 
   const handleUpdateDraftsBatch = (figId: string, patches: DraftPatch[]) => {
+    const manifest = projectFigures[figId]?.manifest
+      || (!projectId && figId === 'fig_1' ? hookSession?.manifest : null);
+    const enrichedPatches = patches.map(patch => (
+      enrichDraftPatchWithIdentity(normalizeDraftForFigure(figId, patch), manifest)
+    ));
     setProjectDrafts(prev => {
-      const figBucket = { ...(prev[figId] || {}) };
-      patches.forEach(p => {
-        const normalizedPatch = normalizeDraftForFigure(figId, p);
-        const key = draftPatchStorageKey(normalizedPatch);
-        const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = normalizedPatch;
+      const figBucket = evictSupersededGlobalPaletteDrafts(
+        prev[figId] || {},
+        enrichedPatches,
+      );
+      enrichedPatches.forEach(p => {
+        const key = draftPatchStorageKey(p);
+        const { pendingFigureIds: _pendingFigureIds, ...freshPatch } = p;
         figBucket[key] = freshPatch;
       });
       return { ...prev, [figId]: figBucket };
@@ -966,22 +975,6 @@ export default function App() {
 
     if (projectId) {
       const prevEditLog = projectFigures[targetFigureId]?.editLog || [];
-      const localPatchTimestamp = Date.now();
-      const localPatchEntries = requestPatches
-        .filter((patchItem: any) => patchItem.mode === 'local_patch' && patchItem.gid && patchItem.prop)
-        .map((patchItem: any) => ({
-          gid: patchItem.gid,
-          prop: patchItem.prop,
-          value: patchItem.value,
-          mode: patchItem.mode as any,
-          timestamp: localPatchTimestamp,
-          ...(patchItem.matchColor ? { matchColor: patchItem.matchColor } : {}),
-          stableKey: patchItem.stableKey,
-          fingerprint: patchItem.fingerprint,
-          fingerprintVersion: patchItem.fingerprintVersion,
-          identity: patchItem.identity,
-        }));
-
       const reqId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
       latestRequestIdByFigure.current[targetFigureId] = reqId;
 
@@ -1027,14 +1020,24 @@ export default function App() {
         }
 
         if (data.status === 'success') {
-          const authoritativeAppliedPatches = Array.isArray(data.applied)
-            ? data.applied
-            : requestPatches;
+          const authoritativeOutcome = resolveAuthoritativePatchOutcome(requestPatches, data.applied);
           const responseHasAuthoritativeRender = typeof data.svg === 'string' && Boolean(data.manifest);
-          const appliedNeedsBackendRender = responseHasAuthoritativeRender
-            || authoritativeAppliedPatches.some(
-              (patchItem: any) => patchItem?.type === 'code_patch' || patchItem?.mode !== 'local_patch',
-            );
+          const appliedNeedsBackendRender = responseHasAuthoritativeRender || authoritativeOutcome.needsBackendRender;
+          const appliedPatchTimestamp = Date.now();
+          const authoritativeLocalPatchEntries = authoritativeOutcome.appliedPatches
+            .filter((patchItem: any) => patchItem.mode === 'local_patch' && patchItem.gid && patchItem.prop)
+            .map((patchItem: any) => ({
+              gid: patchItem.gid,
+              prop: patchItem.prop,
+              value: patchItem.value,
+              mode: patchItem.mode as any,
+              timestamp: appliedPatchTimestamp,
+              ...(patchItem.matchColor ? { matchColor: patchItem.matchColor } : {}),
+              stableKey: patchItem.stableKey,
+              fingerprint: patchItem.fingerprint,
+              fingerprintVersion: patchItem.fingerprintVersion,
+              identity: patchItem.identity,
+            }));
           const appliedDpi = figureDpiFromPatches(patches);
           if (appliedDpi !== null) {
             setSpec(current => synchronizeFigureDpiSpec(current, appliedDpi));
@@ -1049,28 +1052,19 @@ export default function App() {
               if (data.revision !== undefined && data.revision < active.revision) {
                 return prev;
               }
-              const runtimePatches = authoritativeAppliedPatches
-                .filter((patchItem: any) => (
-                  patchItem?.mode === 'local_patch'
-                  && typeof patchItem?.gid === 'string'
-                  && typeof patchItem?.prop === 'string'
-                ))
-                .map((patchItem: any) => ({
-                  gid: patchItem.gid,
-                  prop: patchItem.prop,
-                  value: patchItem.value,
-                }));
-              const nextSvg = !appliedNeedsBackendRender && runtimePatches.length > 0
+              const runtimePatches = authoritativeOutcome.runtimeLocalPatches;
+              const canApplyRuntimeLocal = !appliedNeedsBackendRender && runtimePatches.length > 0;
+              const nextSvg = data.svg || (canApplyRuntimeLocal
                 ? applyRuntimePatchesToSvg(active.svg || '', runtimePatches)
-                : data.svg || active.svg;
-              const nextManifest = !appliedNeedsBackendRender && runtimePatches.length > 0
+                : active.svg);
+              const nextManifest = data.manifest || (canApplyRuntimeLocal
                 ? applyRuntimePatchesToManifest(active.manifest || null, runtimePatches) || active.manifest
-                : data.manifest || active.manifest;
+                : active.manifest);
               next[targetFigureId] = {
                 ...active,
                 svg: nextSvg,
                 manifest: nextManifest,
-                editLog: data.editLog || [...(active.editLog || []), ...localPatchEntries],
+                editLog: data.editLog || [...(active.editLog || []), ...authoritativeLocalPatchEntries],
                 revision: data.revision || active.revision,
                 codeSlice: data.codeSlice ?? active.codeSlice ?? null,
                 renderStatus: 'success',

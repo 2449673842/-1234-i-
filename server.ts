@@ -13,6 +13,7 @@ import crypto from 'crypto';
 import { buildFigureRenderCacheKey } from './src/utils/renderCacheKey';
 import { fnv1a } from './src/utils/stableJson';
 import { diagramRelationSignature, requiresDiagramRelationIdentity } from './src/utils/diagramIdentity';
+import { reconcileDiagramEditLogToManifest } from './src/utils/diagramEditLogReconciliation';
 import {
   hasSpecialAxesMetadata,
   requiresSpecialAxesRelationIdentity,
@@ -35,6 +36,7 @@ import { applyRuntimePatchesToManifest } from './src/utils/svgEditor';
 import { sanitizeLegacyRetireObservationBatch } from './src/utils/legacyRetireObservation';
 import { KeyedMutationGate } from './src/utils/keyedMutationGate';
 import { compressEditLogEntries } from './src/utils/editLogCompression';
+import { isRendererReplayConflictWarning } from './src/utils/rendererReplayWarning';
 import {
   EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
   PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION,
@@ -3794,12 +3796,14 @@ ${inner}
         return { ...patch, mode: 'backend_patch' };
       }
       const object = objectById.get(String(patch?.gid || ''));
-      const mode = resolveAuthoritativeProjectPatchMode(
+      const authoritativeMode = resolveAuthoritativeProjectPatchMode(
         manifest,
         object,
         String(patch?.prop || ''),
       );
-      return patch?.mode === mode ? patch : { ...patch, mode };
+      return patch?.mode === authoritativeMode
+        ? patch
+        : { ...patch, mode: authoritativeMode };
     });
   }
 
@@ -3812,6 +3816,17 @@ ${inner}
     'layerKey',
     'scaleKey',
     'guideKey',
+    'radarId',
+    'radarSemanticRole',
+    'radarSeriesId',
+    'radarDimensionIndex',
+  ];
+
+  const R_RADAR_RELATION_FIELDS = [
+    'radarId',
+    'radarSemanticRole',
+    'radarSeriesId',
+    'radarDimensionIndex',
   ];
 
   function normalizeRStructuralFingerprint(value: unknown): unknown {
@@ -3850,6 +3865,48 @@ ${inner}
       === stableStringifyForExport(current);
   }
 
+  function isCompatibleLegacyRRadarFillIdentityEvidence(object: any, evidence: any): boolean {
+    const objectId = String(object?.id || '');
+    const currentStableKey = String(object?.stableKey || '');
+    const legacyStableKey = currentStableKey.replace(/^r:patch:/, 'r:line:');
+    if (
+      object?.kind !== 'patch'
+      || object?.currentProps?.radarSemanticRole !== 'fill'
+      || !/^r\.group\.fill\.\d+\.\d+$/.test(objectId)
+      || legacyStableKey === currentStableKey
+      || evidence?.stableKey !== legacyStableKey
+      || evidence?.semanticKey !== object?.identity?.semanticKey
+      || evidence?.seriesKey !== object?.identity?.seriesKey
+    ) return false;
+
+    const suppliedRelation = evidence?.relation;
+    if (!suppliedRelation || typeof suppliedRelation !== 'object' || Array.isArray(suppliedRelation)) return false;
+    if (R_RADAR_RELATION_FIELDS.some(field => suppliedRelation[field] !== undefined)) return false;
+    if (!['aesthetic', 'groupKey', 'scaleKey'].every(field => suppliedRelation[field] !== undefined)) return false;
+    for (const [field, value] of Object.entries(suppliedRelation)) {
+      if (stableStringifyForExport(object?.identity?.relation?.[field]) !== stableStringifyForExport(value)) {
+        return false;
+      }
+    }
+
+    if (evidence?.identityProtocol === 'legacy_unversioned') return true;
+
+    const legacy = parseRStructuralFingerprint(evidence?.fingerprint);
+    const current = parseRStructuralFingerprint(object?.fingerprint);
+    if (!legacy || !current || legacy.kind !== 'line' || legacy.stableKey !== legacyStableKey) return false;
+    const expectedRelation = current.relation && typeof current.relation === 'object' && !Array.isArray(current.relation)
+      ? { ...(current.relation as Record<string, unknown>) }
+      : {};
+    for (const field of R_RADAR_RELATION_FIELDS) delete expectedRelation[field];
+    const expected = {
+      ...current,
+      kind: 'line',
+      stableKey: legacyStableKey,
+      relation: expectedRelation,
+    };
+    return stableStringifyForExport(legacy) === stableStringifyForExport(expected);
+  }
+
   function rPatchIdentityEvidence(patch: any) {
     const relation = patch?.identity?.relation;
     const stableRelation = relation && typeof relation === 'object'
@@ -3859,7 +3916,7 @@ ${inner}
             .map(field => [field, relation[field]]),
         )
       : {};
-    return {
+    const evidence: Record<string, unknown> = {
       ...(patch?.stableKey !== undefined ? { stableKey: patch.stableKey } : {}),
       ...(patch?.fingerprintVersion === 2 && patch?.fingerprint !== undefined
         ? { fingerprint: patch.fingerprint }
@@ -3872,14 +3929,28 @@ ${inner}
         : {}),
       ...(Object.keys(stableRelation).length > 0 ? { relation: stableRelation } : {}),
     };
+    const hasFingerprintField = patch != null
+      && Object.prototype.hasOwnProperty.call(patch, 'fingerprint');
+    const hasFingerprintVersionField = patch != null
+      && Object.prototype.hasOwnProperty.call(patch, 'fingerprintVersion');
+    if (
+      Object.keys(evidence).length > 0
+      && !hasFingerprintField
+      && !hasFingerprintVersionField
+    ) {
+      evidence.identityProtocol = 'legacy_unversioned';
+    }
+    return evidence;
   }
 
   function matchesRIdentityEvidence(object: any, evidence: any) {
-    if (evidence.stableKey !== undefined && evidence.stableKey !== object?.stableKey) return false;
+    const legacyRadarFill = isCompatibleLegacyRRadarFillIdentityEvidence(object, evidence);
+    if (evidence.stableKey !== undefined && evidence.stableKey !== object?.stableKey && !legacyRadarFill) return false;
     if (
       evidence.fingerprint !== undefined
       && normalizeRStructuralFingerprint(evidence.fingerprint) !== normalizeRStructuralFingerprint(object?.fingerprint)
       && !isCompatibleLegacyRTextRoleIdentityEvidence(object, evidence)
+      && !legacyRadarFill
     ) return false;
     if (evidence.semanticKey !== undefined && evidence.semanticKey !== object?.identity?.semanticKey) return false;
     if (evidence.seriesKey !== undefined && evidence.seriesKey !== object?.identity?.seriesKey) return false;
@@ -3952,6 +4023,34 @@ ${inner}
       status: candidates.length === 0 ? 'identity_not_found' : 'identity_ambiguous',
       candidateGids: candidates.map((candidate: any) => String(candidate?.id || '')),
     };
+  }
+
+  function isRScaleControlledLayerProp(object: any, prop: string): boolean {
+    if (!object || typeof object !== 'object') return false;
+    const currentProps = object.currentProps && typeof object.currentProps === 'object'
+      ? object.currentProps
+      : {};
+    if (currentProps.fillMapped !== true) return false;
+
+    const adapterFamily = String(currentProps.adapterFamily || '').toLowerCase();
+    const isLayerObject = String(object.id || '').startsWith('r.layer.');
+    if (prop === 'facecolor') {
+      return isLayerObject || ['bar', 'histogram', 'ribbon', 'area', 'violin', 'point', 'errorbar', 'tile', 'rect', 'contourf'].includes(adapterFamily);
+    }
+    return prop === 'box_color'
+      && (adapterFamily === 'boxplot' || object.kind === 'boxplot_container');
+  }
+
+  function isCompatibleKnownRScaleControlledLayerEdit(
+    manifestValue: unknown,
+    patch: any,
+    knownEditLog: any[],
+  ): boolean {
+    if (!knownEditLog.some(existing => sameProjectEditValue(existing, patch))) return false;
+    const manifest = parseManifestValue(manifestValue);
+    if (!manifest || manifest.generatedBy !== 'r_svg') return false;
+    const resolution = resolveRManifestObject(manifest, patch);
+    return isRScaleControlledLayerProp(resolution.object, String(patch?.prop || ''));
   }
 
   function precheckManifestPatches(
@@ -4028,12 +4127,26 @@ ${inner}
         );
         continue;
       }
+
+      if (
+        manifest.generatedBy === 'r_svg'
+        && isRScaleControlledLayerProp(object, prop)
+      ) {
+        reject(
+          'no_setter',
+          `${gid}.${prop} is controlled by the R scale mapping; change the corresponding group color in the palette center instead of overriding the whole layer.`,
+        );
+        continue;
+      }
+
       const capability = Array.isArray(object.propertyCapabilities)
         ? object.propertyCapabilities.find((item: any) => item?.prop === prop)
         : undefined;
       const editable = Array.isArray(object.editable) ? object.editable : [];
       const hasAuthoritativeCapabilities = Array.isArray(object.propertyCapabilities);
       const modernRObject = manifest.generatedBy === 'r_svg' && object.fingerprintVersion === 2;
+      const legacyRadarFill = manifest.generatedBy === 'r_svg'
+        && isCompatibleLegacyRRadarFillIdentityEvidence(object, rPatchIdentityEvidence(patch));
       const replay = typeof capability?.replay === 'string' ? capability.replay : undefined;
       const scopes = Array.isArray(capability?.scopes) ? capability.scopes.map(String) : [];
       const supported = capability
@@ -4046,8 +4159,13 @@ ${inner}
         });
         continue;
       }
-      if (patch.stableKey !== undefined && patch.stableKey !== object.stableKey) {
-        reject('identity_mismatch', `${gid} stableKey does not match.`, { field: 'stableKey' });
+
+      if (patch.stableKey !== undefined && patch.stableKey !== object.stableKey && !legacyRadarFill) {
+        reject('identity_mismatch', `${gid} stableKey does not match the manifest object.`, {
+          field: 'stableKey',
+          expected: object.stableKey ?? null,
+          actual: patch.stableKey,
+        });
       }
       if (
         patch.fingerprintVersion === 2
@@ -4057,12 +4175,24 @@ ${inner}
           ? normalizeRStructuralFingerprint(patch.fingerprint) !== normalizeRStructuralFingerprint(object.fingerprint)
           : patch.fingerprint !== object.fingerprint)
         && !isCompatibleLegacyRTextRoleIdentityEvidence(object, rPatchIdentityEvidence(patch))
+        && !legacyRadarFill
         && !isCompatibleContourChildSnapshotFingerprint(patch, object, prop)
+        && !isCompatibleLegacyLegendCollectionFingerprint(patch, object)
       ) {
         reject('identity_mismatch', `${gid} fingerprint does not match.`, { field: 'fingerprint' });
       }
       if (patch.identity?.seriesKey !== undefined && patch.identity.seriesKey !== object.identity?.seriesKey) {
         reject('identity_mismatch', `${gid} identity.seriesKey does not match.`, { field: 'identity.seriesKey' });
+      }
+      if (
+        requiresLegendCollectionRelationIdentity(patch, object)
+        && !hasTrustedLegendCollectionRelation(patch, object)
+      ) {
+        reject('identity_mismatch', `${gid} legend collection relationship does not match the manifest object.`, {
+          field: 'identity.relation',
+          expected: object.identity?.relation ?? null,
+          actual: patch.identity?.relation ?? null,
+        });
       }
       if (
         manifest.generatedBy === 'r_svg'
@@ -4337,6 +4467,10 @@ ${inner}
       figRow,
       reconciledPatches.map(result => result.patch),
     );
+    const replaySafePatches = normalizeLegacyLegendCollectionFingerprintsForManifest(
+      figRow?.manifest,
+      normalizedPatches,
+    );
     const identityWarnings: any[] = [];
     reconciledPatches.forEach((result, patchIndex) => {
       if (result.status === 'identity_mismatch') {
@@ -4365,7 +4499,7 @@ ${inner}
     });
     const manifest = parseManifestValue(figRow?.manifest);
     if (manifest) {
-      const precheck = precheckProjectFigurePatches(figRow, normalizedPatches);
+      const precheck = precheckProjectFigurePatches(figRow, replaySafePatches);
       const filteredWarnings = precheck.warnings.filter((warning: any) => {
         const patchIndex = typeof warning?.patchIndex === 'number' ? warning.patchIndex : -1;
         return patchIndex < 0 || reconciledPatches[patchIndex]?.status !== 'known';
@@ -4377,7 +4511,7 @@ ${inner}
           .filter((index: unknown): index is number => typeof index === 'number'),
       );
       return {
-        patches: normalizedPatches,
+        patches: replaySafePatches,
         ok: warnings.length === 0,
         warnings,
         rejected: incomingPatches.filter((_: any, index: number) => rejectedIndexes.has(index)),
@@ -4391,7 +4525,7 @@ ${inner}
     const rejected: any[] = identityWarnings
       .map(warning => incomingPatches[warning.patchIndex])
       .filter(Boolean);
-    normalizedPatches.forEach((patch: any, index: number) => {
+    replaySafePatches.forEach((patch: any, index: number) => {
       if (reconciledPatches[index]?.status === 'known') return;
       if (reconciledPatches[index]?.status === 'identity_mismatch' || reconciledPatches[index]?.status === 'ambiguous') return;
       warnings.push({
@@ -4403,7 +4537,12 @@ ${inner}
       });
       rejected.push(incomingPatches[index]);
     });
-    return { patches: normalizedPatches, ok: warnings.length === 0, warnings, rejected };
+    return {
+      patches: replaySafePatches,
+      ok: warnings.length === 0,
+      warnings,
+      rejected,
+    };
   }
 
   function preflightProjectFigureHistory(
@@ -4451,7 +4590,7 @@ ${inner}
   function isConflictWarningForPatch(warning: any, patch: any): boolean {
     if (!warning || !patch || typeof warning !== 'object' || typeof patch !== 'object') return false;
     if (warning.gid !== patch.gid || warning.prop !== patch.prop) return false;
-    return isSnapshotReplayWarning(warning);
+    return isRendererReplayConflictWarning(warning);
   }
 
   function precheckRenderedProjectFigureEditLog(
@@ -4477,12 +4616,15 @@ ${inner}
         && isCompatibleKnownLegacyAxisFontEdit(manifest, patch, knownEditLog);
       const compatibleLegacyLineVisibilityEdit = warning?.type === 'unsupported_prop'
         && isCompatibleKnownLegacyLineVisibilityEdit(manifest, patch, knownEditLog);
+      const compatibleKnownRScaleControlledLayerEdit = warning?.type === 'no_setter'
+        && isCompatibleKnownRScaleControlledLayerEdit(manifest, patch, knownEditLog);
       if (
         !compatibleLegacySpecialAxesEdit
         && !compatibleLegacyContourChildEdit
         && !compatibleDisappearingEdit
         && !compatibleLegacyAxisFontEdit
         && !compatibleLegacyLineVisibilityEdit
+        && !compatibleKnownRScaleControlledLayerEdit
       ) {
         warnings.push(figureId ? { ...warning, figureId } : warning);
       }
@@ -5115,6 +5257,128 @@ ${inner}
       && entrySeriesKey === objectSeriesKey;
   }
 
+  const LEGEND_COLLECTION_REQUIRED_RELATION_FIELDS = [
+    'legendId',
+    'legendTextId',
+  ];
+
+  const LEGEND_COLLECTION_TRUSTED_RELATION_FIELDS = [
+    ...LEGEND_COLLECTION_REQUIRED_RELATION_FIELDS,
+    'subplotId',
+    'subplotIds',
+    'legendTitleId',
+    'legendTextIds',
+    'legendMarkerIds',
+    'pieId',
+    'pieSliceId',
+    'pieLabelId',
+    'pieValueLabelId',
+    'sliceIndex',
+    'quiverId',
+    'streamplotId',
+    'lineCollectionId',
+    'histogramId',
+    'radarId',
+    'radarSemanticRole',
+    'radarSeriesId',
+    'radarDimensionIndex',
+    'diagramId',
+    'diagramType',
+    'diagramObjectId',
+    'nodeId',
+    'edgeId',
+    'sourceNodeId',
+    'targetNodeId',
+  ];
+
+  function legendCollectionRelationValue(source: any, field: string): unknown {
+    const relation = source?.identity?.relation;
+    if (relation && typeof relation === 'object' && !Array.isArray(relation)) {
+      if (relation[field] !== undefined) return relation[field];
+    }
+    if (field === 'parentId' && source?.parentId !== undefined) return source.parentId;
+    return undefined;
+  }
+
+  function isLegendCollectionObject(entry: any, object: any): boolean {
+    return String(entry?.gid || '').startsWith('legend_collection.')
+      && String(object?.id || '').startsWith('legend_collection.')
+      && object?.kind === 'collection';
+  }
+
+  function hasTrustedLegendCollectionRelation(entry: any, object: any): boolean {
+    if (!isLegendCollectionObject(entry, object)) return false;
+    for (const field of LEGEND_COLLECTION_REQUIRED_RELATION_FIELDS) {
+      const entryValue = legendCollectionRelationValue(entry, field);
+      const objectValue = legendCollectionRelationValue(object, field);
+      if (
+        typeof entryValue !== 'string'
+        || entryValue.length === 0
+        || typeof objectValue !== 'string'
+        || objectValue.length === 0
+        || entryValue !== objectValue
+      ) {
+        return false;
+      }
+    }
+    for (const field of LEGEND_COLLECTION_TRUSTED_RELATION_FIELDS) {
+      const entryValue = legendCollectionRelationValue(entry, field);
+      const objectValue = legendCollectionRelationValue(object, field);
+      if (
+        (entryValue !== undefined || objectValue !== undefined)
+        && stableStringifyForExport(entryValue) !== stableStringifyForExport(objectValue)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function isCompatibleLegacyLegendCollectionFingerprint(entry: any, object: any): boolean {
+    const entrySeriesKey = entry?.identity?.seriesKey;
+    const objectSeriesKey = object?.identity?.seriesKey;
+    return isLegendCollectionObject(entry, object)
+      && entry?.fingerprintVersion === 2
+      && object?.fingerprintVersion === 2
+      && typeof entry?.fingerprint === 'string'
+      && typeof object?.fingerprint === 'string'
+      && entry.fingerprint !== object.fingerprint
+      && typeof entry?.stableKey === 'string'
+      && entry.stableKey === object?.stableKey
+      && typeof entrySeriesKey === 'string'
+      && entrySeriesKey === objectSeriesKey
+      && hasTrustedLegendCollectionRelation(entry, object);
+  }
+
+  function requiresLegendCollectionRelationIdentity(entry: any, object: any): boolean {
+    return isLegendCollectionObject(entry, object)
+      && entry?.fingerprintVersion === 2
+      && object?.fingerprintVersion === 2;
+  }
+
+  function normalizeLegacyLegendCollectionFingerprintsForManifest(
+    manifestValue: unknown,
+    editLog: any[],
+  ): EditEntry[] {
+    const manifest = parseManifestValue(manifestValue);
+    if (!manifest || !Array.isArray(manifest.objects) || !Array.isArray(editLog)) {
+      return Array.isArray(editLog) ? editLog as EditEntry[] : [];
+    }
+    let changed = false;
+    const normalized = editLog.map((entry: any) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return entry;
+      const object = manifest.objects.find((candidate: any) => String(candidate?.id || '') === String(entry?.gid || ''));
+      if (!object || !isCompatibleLegacyLegendCollectionFingerprint(entry, object)) return entry;
+      changed = true;
+      return {
+        ...entry,
+        fingerprint: object.fingerprint,
+        fingerprintVersion: 2,
+      };
+    });
+    return changed ? normalized as EditEntry[] : editLog as EditEntry[];
+  }
+
   function isCompatibleLegacySpecialAxesSnapshotIdentity(
     snapshotSchemaVersion: number,
     entry: any,
@@ -5248,6 +5512,8 @@ ${inner}
       const editable = Array.isArray(object.editable) ? object.editable : [];
       const hasAuthoritativeCapabilities = Array.isArray(object.propertyCapabilities);
       const modernRObject = manifest.generatedBy === 'r_svg' && object.fingerprintVersion === 2;
+      const legacyRadarFill = manifest.generatedBy === 'r_svg'
+        && isCompatibleLegacyRRadarFillIdentityEvidence(object, rPatchIdentityEvidence(entry));
       const capabilityScopes = Array.isArray(capability?.scopes) ? capability.scopes.map(String) : [];
       const legacyContourChildReplay = isLegacyContourChildSnapshotEdit(object, prop)
         && (
@@ -5277,7 +5543,12 @@ ${inner}
         return;
       }
 
-      if (entry.stableKey !== undefined && object.stableKey !== undefined && entry.stableKey !== object.stableKey) {
+      if (
+        entry.stableKey !== undefined
+        && object.stableKey !== undefined
+        && entry.stableKey !== object.stableKey
+        && !legacyRadarFill
+      ) {
         issues.push({
           type: 'identity_mismatch',
           figureId,
@@ -5296,7 +5567,9 @@ ${inner}
           ? normalizeRStructuralFingerprint(entry.fingerprint) !== normalizeRStructuralFingerprint(object.fingerprint)
           : entry.fingerprint !== object.fingerprint)
         && !isCompatibleLegacyRTextRoleIdentityEvidence(object, rPatchIdentityEvidence(entry))
+        && !legacyRadarFill
         && !isCompatibleContourChildSnapshotFingerprint(entry, object, prop)
+        && !isCompatibleLegacyLegendCollectionFingerprint(entry, object)
       ) {
         issues.push({
           type: 'identity_mismatch',
@@ -5316,6 +5589,19 @@ ${inner}
           gid,
           prop,
           message: `${figureId} 快照目标 ${gid} 的 seriesKey 已变化。`,
+        });
+        return;
+      }
+      if (
+        requiresLegendCollectionRelationIdentity(entry, object)
+        && !hasTrustedLegendCollectionRelation(entry, object)
+      ) {
+        issues.push({
+          type: 'identity_mismatch',
+          figureId,
+          gid,
+          prop,
+          message: `${figureId} 快照目标 ${gid} 的图例关系身份已变化或缺失。`,
         });
         return;
       }
@@ -5372,21 +5658,6 @@ ${inner}
     return issues;
   }
 
-  function isSnapshotReplayWarning(warning: any): boolean {
-    if (warning && typeof warning === 'object') {
-      const type = String(warning.type || '').toLowerCase();
-      return type === 'missing_gid'
-        || type === 'identity_mismatch'
-        || type === 'ambiguous_identity'
-        || type === 'unsupported_prop'
-        || type === 'no_setter'
-        || type.startsWith('unsupported_')
-        || type.startsWith('apply_error:');
-    }
-    if (typeof warning !== 'string') return false;
-    return /(unsupported|ignored|could not|cannot|failed|missing|not found|identity|ambiguous|不支持|忽略|无法|失败|缺失|不存在|身份|歧义)/i.test(warning);
-  }
-
   async function dryRunExportEditingSnapshot(args: {
     snapshot: ExportEditingSnapshot;
     projectId: string;
@@ -5440,7 +5711,7 @@ ${inner}
       let result: any;
       try {
         if (language === 'python') {
-          const editLogs: Record<string, EditEntry[]> = {};
+          let editLogs: Record<string, EditEntry[]> = {};
           group.forEach(figure => {
             editLogs[figure.figureId] = compressEditLog(figure.editLog || []);
           });
@@ -5452,6 +5723,35 @@ ${inner}
             editLogs,
             renderOptions: { dpi: 150 },
           }, { req: args.req, label: 'export-snapshot-dry-run' });
+          if (result?.status === 'success') {
+            const renderedFigures = Array.isArray(result.figures) ? result.figures : [];
+            const normalizedEditLogs: Record<string, EditEntry[]> = { ...editLogs };
+            let legendFingerprintChanged = false;
+            group.forEach(figure => {
+              const rendered = renderedFigures.find((candidate: any) => candidate?.figureId === figure.figureId)
+                || (group.length === 1 ? renderedFigures[0] : null);
+              const currentEditLog = editLogs[figure.figureId] || [];
+              const normalized = normalizeLegacyLegendCollectionFingerprintsForManifest(
+                rendered?.manifest,
+                currentEditLog,
+              );
+              if (!sameProjectEditLogSemantics(normalized, currentEditLog)) {
+                normalizedEditLogs[figure.figureId] = normalized;
+                legendFingerprintChanged = true;
+              }
+            });
+            if (legendFingerprintChanged) {
+              editLogs = normalizedEditLogs;
+              result = await spawnPythonWithPayload('introspector.py', {
+                script,
+                dataPayload,
+                cwd,
+                uploaded_file_paths: uploadedFilePaths,
+                editLogs,
+                renderOptions: { dpi: 150 },
+              }, { req: args.req, label: 'export-snapshot-dry-run-reconciled' });
+            }
+          }
         } else {
           // The R renderer currently returns one ggplot Figure per invocation.
           result = await spawnRWithPayload({
@@ -5508,7 +5808,7 @@ ${inner}
 
         const figureWarnings = (Array.isArray(result.warnings) ? result.warnings : [])
           .filter((warning: any) => !warning?.figureId || warning.figureId === figure.figureId)
-          .filter(isSnapshotReplayWarning);
+          .filter(isRendererReplayConflictWarning);
         figureWarnings.forEach((warning: any) => {
           issues.push({
             type: typeof warning === 'object' ? String(warning.type || 'renderer_warning') : 'renderer_warning',
@@ -6175,6 +6475,13 @@ ${inner}
       const codePatches = (patches || []).filter((p: any) => p.type === 'code_patch');
       let regularPatches = (patches || []).filter((p: any) => p.type !== 'code_patch');
       regularPatches = normalizeProjectFigurePatchModes(projectContext?.figRow, regularPatches);
+      if (projectContext?.figRow?.manifest) {
+        regularPatches = normalizeLegacyLegendCollectionFingerprintsForManifest(
+          projectContext.figRow.manifest,
+          regularPatches,
+        );
+      }
+
       if (projectContext?.figRow && regularPatches.length > 0) {
         const precheck = precheckProjectFigurePatches(projectContext.figRow, regularPatches);
         if (!precheck.ok) {
@@ -6424,6 +6731,20 @@ ${inner}
         ...(p.fingerprintVersion !== undefined ? { fingerprintVersion: p.fingerprintVersion } : {}),
         ...(p.identity !== undefined ? { identity: p.identity } : {}),
       }));
+
+      if (projectContext) {
+        const storedManifest = parseManifestValue(projectContext.figRow?.manifest);
+        if (storedManifest?.generatedBy !== 'r_svg') {
+          const reconciled = reconcileDiagramEditLogToManifest(
+            session.editLog,
+            storedManifest,
+          );
+          session.editLog = normalizeLegacyLegendCollectionFingerprintsForManifest(
+            storedManifest,
+            reconciled.editLog as EditEntry[],
+          );
+        }
+      }
 
       const backendPatches = newEdits.filter(e => e.mode === 'backend_patch');
       const localPatches = newEdits.filter(e => e.mode === 'local_patch');
@@ -6915,63 +7236,158 @@ ${inner}
         dataPayload = projectContext.dataPayload;
       }
 
-      // 2. Re-render via introspector with new script + old editLog
-      const result = await spawnPythonWithPayload('introspector.py', {
-        script,
-        dataPayload,
-        editLog: compressEditLog(editLog),
-        renderOptions: { dpi: 150 },
-        cwd,
-        uploaded_file_paths,
-        editLogs: projectContext ? { [projectContext.figureId]: compressEditLog(editLog) } : undefined
-      }, { req, label: 'code-patch' });
+      const renderCodePatch = async (entries: EditEntry[], label: string) => (
+        spawnPythonWithPayload('introspector.py', {
+          script,
+          dataPayload,
+          editLog: compressEditLog(entries),
+          renderOptions: { dpi: 150 },
+          cwd,
+          uploaded_file_paths,
+          editLogs: projectContext
+            ? { [projectContext.figureId]: compressEditLog(entries) }
+            : undefined,
+        }, { req, label })
+      );
+      const selectTargetFigure = (rendered: any) => {
+        if (!projectContext) {
+          return rendered.figures?.[0] || rendered;
+        }
+        const matched = rendered.figures?.find((figure: any) => (
+          figure.figureId === projectContext.figureId
+        ));
+        if (!matched) return null;
+        rendered.svg = matched.svg;
+        rendered.manifest = matched.manifest;
+        rendered.codeSlice = matched.codeSlice;
+        rendered.fingerprint = matched.fingerprint;
+        return matched;
+      };
 
+      // 2. Render once to obtain the new manifest, then refresh only trusted
+      // explicit diagram identities and replay the canonicalized edit log.
+      let nextEditLog = [...editLog];
+      let result = await renderCodePatch(nextEditLog, 'code-patch');
       if (result.status !== 'success') {
-        return res.json(result); // Returns python error directly
+        return res.json(result);
+      }
+      let targetFigure = selectTargetFigure(result);
+      if (!targetFigure) {
+        return res.json({
+          status: 'drift_warning',
+          message: '目标 Figure 在重渲染后不存在',
+          figureId: projectContext?.figureId,
+          availableFigures: (result.figures || []).map((figure: any) => figure.figureId),
+        });
       }
 
-      if (projectContext) {
-        const targetFigId = projectContext.figureId;
-        const matchedFig = result.figures?.find((f: any) => f.figureId === targetFigId);
-        if (matchedFig) {
-          result.svg = matchedFig.svg;
-          result.manifest = matchedFig.manifest;
-          result.codeSlice = matchedFig.codeSlice;
-        } else {
+      const diagramReconciliation = reconcileDiagramEditLogToManifest(
+        nextEditLog,
+        targetFigure.manifest || result.manifest,
+      );
+      const legendNormalizedCodePatchEditLog = normalizeLegacyLegendCollectionFingerprintsForManifest(
+        targetFigure.manifest || result.manifest,
+        diagramReconciliation.editLog as EditEntry[],
+      );
+      const replayIdentityChanged = diagramReconciliation.remapped.length > 0
+        || !sameProjectEditLogSemantics(legendNormalizedCodePatchEditLog, nextEditLog);
+      nextEditLog = legendNormalizedCodePatchEditLog;
+      if (replayIdentityChanged) {
+        result = await renderCodePatch(nextEditLog, 'code-patch-reconciled');
+        if (result.status !== 'success') return res.json(result);
+        targetFigure = selectTargetFigure(result);
+        if (!targetFigure) {
           return res.json({
             status: 'drift_warning',
-            message: '目标 Figure 在重渲染后不存在',
-            figureId: targetFigId,
-            availableFigures: (result.figures || []).map((f: any) => f.figureId)
+            message: '目标 Figure 在身份迁移重放后不存在',
+            figureId: projectContext?.figureId,
+            availableFigures: (result.figures || []).map((figure: any) => figure.figureId),
           });
         }
       }
 
-      // 3. Detect drift
-      const returnedGids = new Set((result.manifest?.objects || []).map((o: any) => o.id));
-      const requestedGids = new Set(editLog.map(e => e.gid));
-      const orphanedGids = [...requestedGids].filter(gid => (
-        !returnedGids.has(gid) && !isDurableVirtualEditGid(gid)
-      ));
+      // 3. Identity, capability, renderer acknowledgement, and missing-target
+      // checks all run before any script/session/project state is persisted.
+      let rendererEditLog = compressEditLog(nextEditLog);
+      const validateReplay = () => {
+        const manifest = targetFigure?.manifest || result.manifest;
+        const precheck = precheckRenderedProjectFigureEditLog(
+          manifest,
+          rendererEditLog,
+          editLog,
+          projectContext?.figureId || 'fig_1',
+        );
+        const rendererConflicts = collectRendererConflictWarnings(
+          result.warnings,
+          rendererEditLog,
+          projectContext?.figureId || 'fig_1',
+        );
+        const returnedGids = new Set((manifest?.objects || []).map((object: any) => object.id));
+        const orphanedGids = [...new Set(rendererEditLog.map(entry => entry.gid))].filter(gid => (
+          !returnedGids.has(gid) && !isDurableVirtualEditGid(gid)
+        ));
+        const rejected = rendererEditLog.filter((entry: any) => (
+          precheck.rejected.includes(entry)
+          || orphanedGids.includes(entry.gid)
+          || rendererConflicts.some((warning: any) => isConflictWarningForPatch(warning, entry))
+        ));
+        return {
+          ok: precheck.ok && rendererConflicts.length === 0 && orphanedGids.length === 0,
+          warnings: [...precheck.warnings, ...rendererConflicts],
+          orphanedGids,
+          rejected,
+        };
+      };
 
-      if (orphanedGids.length > 0 && !force) {
+      let replayValidation = validateReplay();
+      if (!replayValidation.ok && !force) {
         return res.json({
           status: 'drift_warning',
-          message: '检测到代码修改导致部分原有样式目标丢失',
-          orphanedGids
+          code: 'CODE_PATCH_EDIT_REPLAY_REJECTED',
+          message: '代码修改后部分原有编辑无法安全映射，本次脚本与 Figure 状态均未写入。',
+          orphanedGids: replayValidation.orphanedGids,
+          rejected: replayValidation.rejected,
+          warnings: replayValidation.warnings,
         });
       }
 
-      if (rejectOversizedRenderedSvg(res, result)) return;
+      if (!replayValidation.ok && force) {
+        const rejectedTargets = replayValidation.rejected.map(entry => ({
+          gid: entry.gid,
+          prop: entry.prop,
+        }));
+        nextEditLog = nextEditLog.filter(entry => !rejectedTargets.some(target => (
+          target.gid === entry.gid && target.prop === entry.prop
+        )));
+        rendererEditLog = compressEditLog(nextEditLog);
+        result = await renderCodePatch(nextEditLog, 'code-patch-forced');
+        if (result.status !== 'success') return res.json(result);
+        targetFigure = selectTargetFigure(result);
+        if (!targetFigure) {
+          return res.json({
+            status: 'drift_warning',
+            message: '目标 Figure 在强制丢弃冲突编辑后不存在',
+            figureId: projectContext?.figureId,
+          });
+        }
+        replayValidation = validateReplay();
+        if (!replayValidation.ok) {
+          return res.json({
+            status: 'drift_warning',
+            code: 'CODE_PATCH_EDIT_REPLAY_REJECTED',
+            message: '冲突编辑已隔离，但其余编辑仍未通过 renderer 重放确认，本次未写入。',
+            orphanedGids: replayValidation.orphanedGids,
+            rejected: replayValidation.rejected,
+            warnings: replayValidation.warnings,
+          });
+        }
+      }
+
       // 4. Update session
+      if (rejectOversizedRenderedSvg(res, result)) return;
       if (session) {
         session.script = script;
-        if (orphanedGids.length > 0) {
-          // Clean up orphaned edits
-          session.editLog = session.editLog.filter(e => (
-            returnedGids.has(e.gid) || isDurableVirtualEditGid(e.gid)
-          ));
-        }
+        session.editLog = nextEditLog;
         session.revision++;
         session.updatedAt = Date.now();
         persistSession(session);
@@ -7841,8 +8257,22 @@ ${inner}
           oldSessionMap[key] = sess;
         }
       }
-      const effectiveEditLogs = { ...oldEditLogMap, ...(editLogs || {}) };
-      const compressedEditLogs: Record<string, EditEntry[]> = {};
+      let effectiveEditLogs = { ...oldEditLogMap, ...(editLogs || {}) };
+      if (language === 'python') {
+        const manifestByFigureId = new Map(
+          oldFigRows.map(row => [`fig_${row.figure_index + 1}`, row.manifest]),
+        );
+        effectiveEditLogs = Object.fromEntries(
+          Object.entries(effectiveEditLogs).map(([figureId, figureEditLog]) => [
+            figureId,
+            normalizeLegacyLegendCollectionFingerprintsForManifest(
+              manifestByFigureId.get(figureId),
+              Array.isArray(figureEditLog) ? figureEditLog : [],
+            ),
+          ]),
+        );
+      }
+      let compressedEditLogs: Record<string, EditEntry[]> = {};
       for (const key of Object.keys(effectiveEditLogs)) {
         compressedEditLogs[key] = compressEditLog(effectiveEditLogs[key]);
       }
@@ -7887,6 +8317,47 @@ ${inner}
           editLogs: compressedEditLogs,
           renderOptions: { dpi: 150 }
         }, { req, label: 'project-render' });
+      }
+
+      if (language === 'python' && result.status === 'success') {
+        let diagramIdentityChanged = false;
+        const reconciledEditLogs: Record<string, EditEntry[]> = { ...effectiveEditLogs };
+        for (const figure of result.figures || []) {
+          const figureId = String(figure.figureId || '');
+          const currentEditLog = effectiveEditLogs[figureId] || [];
+          if (currentEditLog.length === 0) continue;
+          const reconciliation = reconcileDiagramEditLogToManifest(
+            currentEditLog,
+            figure.manifest,
+          );
+          const legendNormalized = normalizeLegacyLegendCollectionFingerprintsForManifest(
+            figure.manifest,
+            reconciliation.editLog as EditEntry[],
+          );
+          if (
+            reconciliation.remapped.length === 0
+            && sameProjectEditLogSemantics(legendNormalized, currentEditLog)
+          ) {
+            continue;
+          }
+          reconciledEditLogs[figureId] = legendNormalized;
+          diagramIdentityChanged = true;
+        }
+        if (diagramIdentityChanged) {
+          effectiveEditLogs = reconciledEditLogs;
+          compressedEditLogs = {};
+          for (const key of Object.keys(effectiveEditLogs)) {
+            compressedEditLogs[key] = compressEditLog(effectiveEditLogs[key]);
+          }
+          result = await spawnPythonWithPayload('introspector.py', {
+            script,
+            dataPayload: projectDataPayload,
+            cwd: cwd.replace(/\\/g, '/'),
+            uploaded_file_paths,
+            editLogs: compressedEditLogs,
+            renderOptions: { dpi: 150 },
+          }, { req, label: 'project-render-reconciled' });
+        }
       }
 
       if (result.status === 'success') {
@@ -8914,10 +9385,13 @@ ${inner}
           }
           validatedPythonExportScripts.add(session.script);
         }
-        const exportEditLog = compressEditLog(mergePreviewGlobalsIntoEditLog(
-          session.editLog,
+        const exportEditLog = normalizeLegacyLegendCollectionFingerprintsForManifest(
           fig.manifest,
-        ));
+          compressEditLog(mergePreviewGlobalsIntoEditLog(
+            session.editLog,
+            fig.manifest,
+          )),
+        );
 
         const targetFigId = `fig_${fig.figure_index + 1}`;
         const exportRenderStartedAt = performance.now();
@@ -8960,7 +9434,7 @@ ${inner}
           const targetWarnings = Array.isArray(result.warnings)
             ? result.warnings.filter((warning: any) => !warning?.figureId || warning.figureId === targetFigId)
             : [];
-          const replayWarnings = targetWarnings.filter(isSnapshotReplayWarning);
+          const replayWarnings = targetWarnings.filter(isRendererReplayConflictWarning);
           const manifestPrecheck = precheckRenderedProjectFigureEditLog(
             matchedFig.manifest,
             exportEditLog,

@@ -3,6 +3,8 @@ import sys
 import json
 import re
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 # Ensure the renderer directory is in the Python search path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -10,11 +12,460 @@ sys.path.insert(0, os.path.join(project_root, "renderer"))
 
 import matplotlib.colors as mcolors
 
-from introspector import apply_edit_log, replay_render
+import introspector
+from introspector import _pie_result_parts, apply_edit_log, replay_render
 from semantic_scanner import scan_source
 from binding_engine import build_bindings
 
 class TestArtistIntrospection(unittest.TestCase):
+    def test_pie_result_parts_supports_legacy_and_container_shapes(self):
+        legacy = (["w0", "w1"], ["l0", "l1"], ["v0", "v1"])
+        container = SimpleNamespace(
+            wedges=["w0", "w1"],
+            texts=[["l0", "l1"], ["v0", "v1"]],
+        )
+
+        self.assertEqual(_pie_result_parts(legacy), legacy)
+        self.assertEqual(_pie_result_parts(container), legacy)
+
+    def test_pie_introspection_records_slices_on_frozen_matplotlib(self):
+        result = replay_render("""
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(3, 3))
+ax.pie([1, 2], labels=["A", "B"], autopct="%1.0f")
+""")
+
+        self.assertEqual(result.get("status"), "success", result)
+        objects = result["figures"][0]["manifest"]["objects"]
+        pie_slices = [obj for obj in objects if obj.get("role") == "pie_slice"]
+        self.assertEqual(len(pie_slices), 2)
+
+    def test_pie_legend_marker_identity_survives_replay_index_rebuild(self):
+        script = """
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(3, 3))
+wedges, _ = ax.pie([1, 2, 3], labels=["A", "B", "C"])
+ax.legend(wedges, ["A", "B", "C"])
+"""
+
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success", initial)
+        objects = {
+            obj["id"]: obj
+            for obj in initial["figures"][0]["manifest"]["objects"]
+        }
+        marker = next(
+            obj for obj in objects.values()
+            if obj["id"].startswith("legend_patch.")
+            and obj["identity"]["relation"].get("pieSliceId")
+        )
+        relation = marker["identity"]["relation"]
+        self.assertEqual(relation["parentId"], relation["pieSliceId"])
+        self.assertIsNotNone(relation.get("pieId"))
+
+        patched = replay_render(script, edit_log=[{
+            "gid": marker["id"],
+            "prop": "facecolor",
+            "value": "#6F4E7C",
+            "mode": "local_patch",
+            "stableKey": marker["stableKey"],
+            "fingerprint": marker["fingerprint"],
+            "fingerprintVersion": marker["fingerprintVersion"],
+            "identity": marker["identity"],
+        }])
+
+        self.assertEqual(patched.get("status"), "success", patched)
+        self.assertEqual(patched.get("warnings", []), [])
+        patched_marker = next(
+            obj for obj in patched["figures"][0]["manifest"]["objects"]
+            if obj["id"] == marker["id"]
+        )
+        self.assertEqual(
+            mcolors.to_hex(patched_marker["currentProps"]["facecolor"], keep_alpha=False).lower(),
+            "#6f4e7c",
+        )
+
+        stale_identity = json.loads(json.dumps(marker["identity"]))
+        stale_identity["relation"]["pieSliceId"] = "patch.0.999"
+        rejected = replay_render(script, edit_log=[{
+            "gid": marker["id"],
+            "prop": "facecolor",
+            "value": "#FF00FF",
+            "mode": "local_patch",
+            "stableKey": marker["stableKey"],
+            "fingerprint": marker["fingerprint"],
+            "fingerprintVersion": marker["fingerprintVersion"],
+            "identity": stale_identity,
+        }])
+        mismatch = next(
+            warning for warning in rejected.get("warnings", [])
+            if warning.get("type") == "identity_mismatch"
+        )
+        self.assertIn("identity.relation.pieSliceId", mismatch["mismatches"])
+        rejected_marker = next(
+            obj for obj in rejected["figures"][0]["manifest"]["objects"]
+            if obj["id"] == marker["id"]
+        )
+        self.assertNotEqual(
+            mcolors.to_hex(rejected_marker["currentProps"]["facecolor"], keep_alpha=False).lower(),
+            "#ff00ff",
+        )
+
+        legacy_identity = json.loads(json.dumps(marker["identity"]))
+        legacy_identity["relation"].pop("parentId", None)
+        legacy = replay_render(script, edit_log=[{
+            "gid": marker["id"],
+            "prop": "facecolor",
+            "value": "#336699",
+            "mode": "local_patch",
+            "stableKey": marker["stableKey"],
+            "fingerprint": "legacy-layout-dependent-fingerprint",
+            "identity": legacy_identity,
+        }])
+        self.assertEqual(legacy.get("status"), "success", legacy)
+        self.assertFalse(
+            any(
+                warning.get("type") == "identity_mismatch"
+                for warning in legacy.get("warnings", [])
+            ),
+            legacy,
+        )
+        legacy_marker = next(
+            obj for obj in legacy["figures"][0]["manifest"]["objects"]
+            if obj["id"] == marker["id"]
+        )
+        self.assertEqual(
+            mcolors.to_hex(legacy_marker["currentProps"]["facecolor"], keep_alpha=False).lower(),
+            "#336699",
+        )
+
+    def test_figure_pie_legend_marker_identity_survives_replay_index_rebuild(self):
+        script = """
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(3, 3))
+wedges, _ = ax.pie([1, 2], labels=["Alpha", "Beta"])
+fig.legend(wedges, ["Alpha", "Beta"], loc="upper right")
+"""
+
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success", initial)
+        marker = next(
+            obj for obj in initial["figures"][0]["manifest"]["objects"]
+            if obj["id"].startswith("legend_patch.figure.")
+            and obj["identity"]["relation"].get("pieSliceId")
+        )
+        patched = replay_render(script, edit_log=[{
+            "gid": marker["id"],
+            "prop": "facecolor",
+            "value": "#336699",
+            "mode": "local_patch",
+            "stableKey": marker["stableKey"],
+            "fingerprint": marker["fingerprint"],
+            "fingerprintVersion": marker["fingerprintVersion"],
+            "identity": marker["identity"],
+        }])
+
+        self.assertEqual(patched.get("status"), "success", patched)
+        self.assertEqual(patched.get("warnings", []), [])
+        patched_marker = next(
+            obj for obj in patched["figures"][0]["manifest"]["objects"]
+            if obj["id"] == marker["id"]
+        )
+        self.assertEqual(
+            mcolors.to_hex(patched_marker["currentProps"]["facecolor"], keep_alpha=False).lower(),
+            "#336699",
+        )
+
+    def test_vector_field_legend_marker_identity_survives_replay_index_rebuild(self):
+        script = """
+import numpy as np
+import matplotlib.pyplot as plt
+
+grid = np.linspace(-2.0, 2.0, 7)
+x, y = np.meshgrid(grid, grid)
+u = -y
+v = x
+
+fig, (quiver_ax, stream_ax) = plt.subplots(1, 2, figsize=(7.2, 3.4))
+quiver = quiver_ax.quiver(x, y, u, v, color="#4477aa", label="Rotation vectors")
+quiver_ax.legend(handles=[quiver])
+stream = stream_ax.streamplot(x, y, u, v, color="#228833")
+stream.lines.set_label("Flow paths")
+stream_ax.legend(handles=[stream.lines])
+"""
+
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success", initial)
+        objects = {
+            obj["id"]: obj
+            for obj in initial["figures"][0]["manifest"]["objects"]
+        }
+        fields = [
+            obj for obj in objects.values()
+            if obj.get("role") in {"quiver_field", "streamplot_field"}
+        ]
+        self.assertEqual(len(fields), 2)
+
+        edits = []
+        for field in fields:
+            marker_id = field["identity"]["relation"]["legendMarkerIds"][0]
+            marker = objects[marker_id]
+            relation = marker["identity"]["relation"]
+            self.assertEqual(relation["parentId"], field["id"])
+            relation_id = "quiverId" if field["role"] == "quiver_field" else "streamplotId"
+            self.assertEqual(relation[relation_id], field["identity"]["relation"][relation_id])
+            prop = "facecolor" if "facecolor" in marker["editable"] else "color"
+            edits.append({
+                "gid": marker_id,
+                "prop": prop,
+                "value": "#6F4E7C",
+                "mode": "local_patch",
+                "stableKey": marker["stableKey"],
+                "fingerprint": marker["fingerprint"],
+                "fingerprintVersion": marker["fingerprintVersion"],
+                "identity": marker["identity"],
+            })
+
+        patched = replay_render(script, edit_log=edits)
+        self.assertEqual(patched.get("status"), "success", patched)
+        identity_warnings = [
+            warning for warning in patched.get("warnings", [])
+            if warning.get("type") == "identity_mismatch"
+        ]
+        self.assertEqual(identity_warnings, [], patched)
+
+        patched_objects = {
+            obj["id"]: obj
+            for obj in patched["figures"][0]["manifest"]["objects"]
+        }
+        for edit in edits:
+            self.assertEqual(
+                mcolors.to_hex(
+                    patched_objects[edit["gid"]]["currentProps"][edit["prop"]],
+                    keep_alpha=False,
+                ).lower(),
+                "#6f4e7c",
+            )
+
+        for field in fields:
+            relation_id = "quiverId" if field["role"] == "quiver_field" else "streamplotId"
+            accepted = replay_render(script, edit_log=[{
+                "gid": field["id"],
+                "prop": "color",
+                "value": "#336699",
+                "mode": "backend_patch",
+                "stableKey": field["stableKey"],
+                "fingerprint": field["fingerprint"],
+                "fingerprintVersion": field["fingerprintVersion"],
+                "identity": field["identity"],
+            }])
+            accepted_mismatches = [
+                warning for warning in accepted.get("warnings", [])
+                if warning.get("type") == "identity_mismatch"
+            ]
+            self.assertEqual(accepted_mismatches, [], accepted)
+
+            stale_identity = json.loads(json.dumps(field["identity"]))
+            stale_identity["relation"][relation_id] = f"{relation_id}.stale"
+            rejected = replay_render(script, edit_log=[{
+                "gid": field["id"],
+                "prop": "color",
+                "value": "#FF00FF",
+                "mode": "backend_patch",
+                "stableKey": field["stableKey"],
+                "fingerprint": field["fingerprint"],
+                "fingerprintVersion": field["fingerprintVersion"],
+                "identity": stale_identity,
+            }])
+            mismatch = next(
+                warning for warning in rejected.get("warnings", [])
+                if warning.get("type") == "identity_mismatch"
+            )
+            self.assertIn(f"identity.relation.{relation_id}", mismatch["mismatches"])
+            rejected_field = next(
+                obj for obj in rejected["figures"][0]["manifest"]["objects"]
+                if obj["id"] == field["id"]
+            )
+            self.assertNotEqual(
+                mcolors.to_hex(rejected_field["currentProps"]["color"], keep_alpha=False).lower(),
+                "#ff00ff",
+            )
+
+    def test_histogram_legend_marker_identity_survives_replay_index_rebuild(self):
+        script = """
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots()
+ax.hist([0.2, 0.4, 0.8, 1.1, 1.4], bins=3, color="#4477aa", label="Observed")
+ax.legend()
+"""
+
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success", initial)
+        objects = {
+            obj["id"]: obj
+            for obj in initial["figures"][0]["manifest"]["objects"]
+        }
+        histogram = next(
+            obj for obj in objects.values()
+            if obj.get("role") == "histogram_series"
+        )
+        marker_id = histogram["identity"]["relation"]["legendMarkerIds"][0]
+        marker = objects[marker_id]
+        self.assertEqual(marker["identity"]["relation"]["parentId"], histogram["id"])
+
+        patched = replay_render(script, edit_log=[{
+            "gid": marker_id,
+            "prop": "facecolor",
+            "value": "#6F4E7C",
+            "mode": "local_patch",
+            "stableKey": marker["stableKey"],
+            "fingerprint": marker["fingerprint"],
+            "fingerprintVersion": marker["fingerprintVersion"],
+            "identity": marker["identity"],
+        }])
+
+        self.assertEqual(patched.get("status"), "success", patched)
+        identity_warnings = [
+            warning for warning in patched.get("warnings", [])
+            if warning.get("type") == "identity_mismatch"
+        ]
+        self.assertEqual(identity_warnings, [], patched)
+        patched_marker = next(
+            obj for obj in patched["figures"][0]["manifest"]["objects"]
+            if obj["id"] == marker_id
+        )
+        self.assertEqual(
+            mcolors.to_hex(
+                patched_marker["currentProps"]["facecolor"],
+                keep_alpha=False,
+            ).lower(),
+            "#6f4e7c",
+        )
+
+        stale_identity = json.loads(json.dumps(histogram["identity"]))
+        stale_identity["relation"]["legendMarkerIds"] = ["legend_patch.0.999"]
+        rejected = replay_render(script, edit_log=[{
+            "gid": histogram["id"],
+            "prop": "facecolor",
+            "value": "#FF00FF",
+            "mode": "backend_patch",
+            "stableKey": histogram["stableKey"],
+            "fingerprint": histogram["fingerprint"],
+            "fingerprintVersion": histogram["fingerprintVersion"],
+            "identity": stale_identity,
+        }])
+        mismatch = next(
+            warning for warning in rejected.get("warnings", [])
+            if warning.get("type") == "identity_mismatch"
+        )
+        self.assertIn("identity.relation.legendMarkerIds", mismatch["mismatches"])
+        rejected_histogram = next(
+            obj for obj in rejected["figures"][0]["manifest"]["objects"]
+            if obj["id"] == histogram["id"]
+        )
+        self.assertNotEqual(
+            mcolors.to_hex(
+                rejected_histogram["currentProps"]["facecolor"],
+                keep_alpha=False,
+            ).lower(),
+            "#ff00ff",
+        )
+
+    def test_svg_canvas_expands_for_out_of_bounds_colorbar_labels(self):
+        result = replay_render("""
+import matplotlib.pyplot as plt
+
+fig = plt.figure(figsize=(4, 3), dpi=100)
+ax = fig.add_axes([0.08, 0.15, 0.78, 0.75])
+ax.plot([0, 1], [0, 1])
+cax = fig.add_axes([0.985, 0.05, 0.012, 0.90])
+cax.set_ylim(-0.75, 0.75)
+cax.set_yticks([-0.75, -0.50, -0.25, 0, 0.25, 0.50, 0.75])
+cax.tick_params(labelsize=18)
+cax.yaxis.tick_right()
+cax.yaxis.set_label_position("right")
+cax.set_ylabel("Mean z-score of relative abundance", fontsize=16)
+""")
+
+        figure = result["figures"][0]
+        svg = figure["svg"]
+        viewbox_match = re.search(r'viewBox="([^"]+)"', svg)
+        self.assertIsNotNone(viewbox_match, svg[:300])
+        viewbox = [float(value) for value in viewbox_match.group(1).split()]
+        self.assertEqual(len(viewbox), 4)
+        self.assertGreater(viewbox[2], 4 * 72)
+
+        viewport = figure["manifest"].get("renderViewport")
+        self.assertIsNotNone(viewport)
+        self.assertTrue(viewport["expanded"])
+        self.assertAlmostEqual(viewport["figure"]["width"], 4 * 72, places=3)
+        self.assertAlmostEqual(viewport["figure"]["height"], 3 * 72, places=3)
+        self.assertGreater(
+            viewport["canvas"]["width"],
+            viewport["figure"]["x"] + viewport["figure"]["width"],
+        )
+        background = re.search(
+            r'<g id="patch_1">\s*<path d="M 0 ([\d.]+)\s+L ([\d.]+) ([\d.]+)[\s\S]*?fill: #ffffff',
+            svg,
+        )
+        self.assertIsNotNone(background)
+        self.assertAlmostEqual(float(background.group(1)), viewbox[3], places=5)
+        self.assertAlmostEqual(float(background.group(2)), viewbox[2], places=5)
+        self.assertAlmostEqual(float(background.group(3)), viewbox[3], places=5)
+
+    def test_svg_canvas_includes_visible_artists_excluded_from_layout(self):
+        result = replay_render("""
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(4, 3), dpi=100)
+ax.plot([0, 1], [0, 1], label="Long legend outside the Figure")
+legend = ax.legend(loc="center left", bbox_to_anchor=(1.15, 0.5))
+legend.set_in_layout(False)
+note = fig.text(0.5, -0.18, "Bottom note outside the Figure", ha="center", va="top")
+note.set_in_layout(False)
+""")
+
+        figure = result["figures"][0]
+        viewport = figure["manifest"]["renderViewport"]
+        self.assertTrue(viewport["expanded"])
+        self.assertGreater(
+            viewport["canvas"]["width"],
+            viewport["figure"]["x"] + viewport["figure"]["width"],
+        )
+        self.assertGreater(
+            viewport["canvas"]["height"],
+            viewport["figure"]["y"] + viewport["figure"]["height"],
+        )
+        self.assertIn("Long legend outside the Figure", figure["svg"])
+        self.assertIn("Bottom note outside the Figure", figure["svg"])
+
+    def test_explicit_diagram_reports_axes_clipping_from_fixed_limits(self):
+        result = replay_render('''
+import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+
+fig, ax = plt.subplots(figsize=(4, 3), dpi=100)
+node = Rectangle((0.25, -0.18), 0.2, 0.08, facecolor="#4477aa")
+node.set_gid(_scifigure_semantic_gid(
+    "sankey.bounds", "node", "terminal.low", diagram_type="network"
+))
+ax.add_patch(node)
+ax.set_xlim(0, 1)
+ax.set_ylim(0, 1)
+ax.axis("off")
+''')
+
+        self.assertEqual(result.get("status"), "success", result)
+        warnings = result["figures"][0].get("layoutWarnings", [])
+        clipped = [warning for warning in warnings if warning.get("type") == "axes_content_clip"]
+        self.assertEqual(len(clipped), 1, warnings)
+        self.assertIn("terminal.low", clipped[0].get("objects", []))
+        self.assertIn("xlim/ylim", clipped[0].get("suggestion", ""))
+
     def test_spine_group_supports_axes_without_left_spine(self):
         result = replay_render("""
 import matplotlib.pyplot as plt
@@ -483,6 +934,116 @@ ax.errorbar(x, y, yerr=yerr, fmt='o-', capsize=4, label="growth")
         )
         self.assertAlmostEqual(patched_container["currentProps"]["capsize"], 7.0)
 
+    def test_subplot_errorbar_legend_proxy_follows_semantic_series_relation(self):
+        script = """
+import matplotlib.pyplot as plt
+
+COLORS = {
+    "Treatment A": "#D55E00",
+    "Treatment B": "#009E73",
+}
+
+fig, axes = plt.subplots(2, 2)
+for ax_idx, ax in enumerate(axes.flat):
+    x = [1, 2, 3]
+    ax.errorbar(
+        x,
+        [ax_idx + 1.0, ax_idx + 1.4, ax_idx + 1.2],
+        yerr=[0.12, 0.16, 0.13],
+        fmt="o",
+        capsize=3,
+        color=COLORS["Treatment A"],
+        label="Treatment A",
+    )
+    ax.errorbar(
+        x,
+        [ax_idx + 1.2, ax_idx + 1.7, ax_idx + 1.5],
+        yerr=[0.11, 0.15, 0.14],
+        fmt="o",
+        capsize=3,
+        color=COLORS["Treatment B"],
+        label="Treatment B",
+    )
+    ax.legend(title="Group")
+"""
+
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success", initial)
+        objects = {
+            obj["id"]: obj
+            for obj in initial["figures"][0]["manifest"]["objects"]
+        }
+        treatment_b = next(
+            obj for obj in objects.values()
+            if obj["id"].startswith("container.errorbar.3.")
+            and obj.get("label") == "Treatment B"
+        )
+        treatment_b_text = next(
+            obj for obj in objects.values()
+            if obj["id"].startswith("legend_text.3.")
+            and obj["currentProps"].get("text") == "Treatment B"
+        )
+        relation = treatment_b["identity"]["relation"]
+        marker_ids = relation.get("legendMarkerIds")
+
+        self.assertEqual(relation["subplotId"], "subplot.3")
+        self.assertEqual(len(marker_ids), 1)
+        marker = objects[marker_ids[0]]
+        self.assertEqual(marker["kind"], "collection")
+        self.assertEqual(marker["role"], "legend_marker")
+        marker_relation = marker["identity"]["relation"]
+        self.assertEqual(marker_relation["subplotId"], "subplot.3")
+        self.assertEqual(marker_relation["legendId"], "legend.3")
+        self.assertEqual(marker_relation["legendTextId"], treatment_b_text["id"])
+        self.assertEqual(marker_relation["parentId"], treatment_b["id"])
+        treatment_b_color_group = next(
+            group for group in initial["figures"][0]["manifest"]["colorGroups"]
+            if group["color"] == "#009e73"
+        )
+        self.assertIn(treatment_b["id"], treatment_b_color_group["gids"])
+        self.assertIn(marker["id"], treatment_b_color_group["gids"])
+        self.assertEqual(
+            mcolors.to_hex(marker["currentProps"]["edgecolor"][0], keep_alpha=False).lower(),
+            "#009e73",
+        )
+
+        patched = replay_render(script, edit_log=[
+            {
+                "gid": treatment_b["id"],
+                "prop": "color",
+                "value": "#6F4E7C",
+                "mode": "backend_patch",
+                "stableKey": treatment_b["stableKey"],
+                "fingerprint": treatment_b["fingerprint"],
+                "fingerprintVersion": treatment_b["fingerprintVersion"],
+                "identity": treatment_b["identity"],
+            },
+            {
+                "gid": marker["id"],
+                "prop": "edgecolor",
+                "value": "#6F4E7C",
+                "mode": "local_patch",
+                "stableKey": marker["stableKey"],
+                "fingerprint": marker["fingerprint"],
+                "fingerprintVersion": marker["fingerprintVersion"],
+                "identity": marker["identity"],
+            },
+        ])
+        self.assertEqual(patched.get("status"), "success", patched)
+        self.assertEqual(patched.get("warnings", []), [])
+        patched_objects = {
+            obj["id"]: obj
+            for obj in patched["figures"][0]["manifest"]["objects"]
+        }
+        patched_series = patched_objects[treatment_b["id"]]
+        patched_marker = patched_objects[marker["id"]]
+
+        self.assertEqual(patched_series["currentProps"]["color"].lower(), "#6f4e7c")
+        self.assertEqual(
+            mcolors.to_hex(patched_marker["currentProps"]["edgecolor"][0], keep_alpha=False).lower(),
+            "#6f4e7c",
+        )
+
     def test_coverage_report_details(self):
         script = """
 import matplotlib.pyplot as plt
@@ -607,6 +1168,12 @@ ax.imshow(data, cmap="viridis", vmin=0.1, vmax=0.9, interpolation="nearest")
         self.assertEqual(hm["currentProps"]["interpolation"], "nearest")
         self.assertEqual(hm["currentProps"]["shape"], [8, 12])
         self.assertEqual(len(hm["currentProps"]["extent"]), 4)
+        alpha_capability = next(
+            capability for capability in hm["propertyCapabilities"]
+            if capability["prop"] == "alpha"
+        )
+        self.assertEqual(alpha_capability["patchMode"], "backend_patch")
+        self.assertEqual(alpha_capability["preview"], "none")
 
     def test_heatmap_pcolormesh_introspection(self):
         script = """
@@ -1233,6 +1800,104 @@ ax.set_title("DPI export")
         self.assertAlmostEqual(float(tiff_dpi[0]), 600, delta=1)
         self.assertAlmostEqual(float(tiff_dpi[1]), 600, delta=1)
 
+    def test_raster_export_matches_expanded_svg_canvas(self):
+        import base64
+        import io
+        from PIL import Image
+
+        script = '''
+import matplotlib.pyplot as plt
+
+fig = plt.figure(figsize=(4, 3), dpi=100)
+ax = fig.add_axes([0.08, 0.15, 0.78, 0.75])
+ax.plot([0, 1], [0, 1])
+cax = fig.add_axes([0.985, 0.05, 0.012, 0.90])
+cax.set_ylim(-0.75, 0.75)
+cax.set_yticks([-0.75, -0.50, -0.25, 0, 0.25, 0.50, 0.75])
+cax.tick_params(labelsize=18)
+cax.yaxis.tick_right()
+cax.yaxis.set_label_position("right")
+cax.set_ylabel("Mean z-score of relative abundance", fontsize=16)
+'''
+        results = {
+            fmt: replay_render(script, dpi=100, export_format=fmt)
+            for fmt in ("png", "tiff", "pdf", "eps")
+        }
+
+        figure = results["png"]["figures"][0]
+        viewport = figure["manifest"]["renderViewport"]
+        expected_width_points = viewport["canvas"]["width"]
+        expected_height_points = viewport["canvas"]["height"]
+        expected_width_pixels = expected_width_points / 72.0 * 100
+        expected_height_pixels = expected_height_points / 72.0 * 100
+
+        for fmt in ("png", "tiff"):
+            exported = results[fmt]["figures"][0]
+            image = Image.open(io.BytesIO(base64.b64decode(exported["binary_b64"]))).convert("RGBA")
+            self.assertAlmostEqual(image.width, expected_width_pixels, delta=1.5, msg=fmt)
+            self.assertAlmostEqual(image.height, expected_height_pixels, delta=1.5, msg=fmt)
+            self.assertEqual(image.getpixel((image.width - 1, image.height - 1)), (255, 255, 255, 255))
+
+        pdf_data = base64.b64decode(results["pdf"]["figures"][0]["binary_b64"])
+        pdf_box = re.search(
+            rb"/MediaBox\s*\[\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)\s*\]",
+            pdf_data,
+        )
+        self.assertIsNotNone(pdf_box)
+        self.assertAlmostEqual(float(pdf_box.group(1)), expected_width_points, delta=0.2)
+        self.assertAlmostEqual(float(pdf_box.group(2)), expected_height_points, delta=0.2)
+
+        eps_data = base64.b64decode(results["eps"]["figures"][0]["binary_b64"])
+        eps_box = re.search(
+            rb"%%HiResBoundingBox:\s*([-\d.]+)\s+([-\d.]+)\s+([\d.]+)\s+([\d.]+)",
+            eps_data,
+        )
+        self.assertIsNotNone(eps_box)
+        eps_width = float(eps_box.group(3)) - float(eps_box.group(1))
+        eps_height = float(eps_box.group(4)) - float(eps_box.group(2))
+        self.assertAlmostEqual(eps_width, expected_width_points, delta=0.2)
+        self.assertAlmostEqual(eps_height, expected_height_points, delta=0.2)
+
+    def test_expanded_canvas_preserves_transparent_figure_background(self):
+        import base64
+        import io
+        from PIL import Image
+
+        result = replay_render('''
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(3, 2), dpi=100)
+ax.plot([0, 1], [0, 1])
+fig.patch.set_alpha(0)
+fig.text(1.02, 0.5, "transparent overflow", ha="left", va="center")
+''', dpi=100, export_format="png")
+
+        self.assertEqual(result.get("status"), "success", result)
+        figure = result["figures"][0]
+        self.assertTrue(figure["manifest"]["renderViewport"]["expanded"])
+        image = Image.open(io.BytesIO(base64.b64decode(figure["binary_b64"]))).convert("RGBA")
+        self.assertEqual(image.getpixel((image.width - 1, image.height - 1))[3], 0)
+
+    def test_expanded_canvas_preserves_non_white_figure_background(self):
+        import base64
+        import io
+        from PIL import Image
+
+        result = replay_render('''
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(3, 2), dpi=100)
+ax.plot([0, 1], [0, 1])
+fig.patch.set_facecolor("#234567")
+fig.text(1.02, 0.5, "colored overflow", ha="left", va="center")
+''', dpi=100, export_format="png")
+
+        self.assertEqual(result.get("status"), "success", result)
+        figure = result["figures"][0]
+        self.assertTrue(figure["manifest"]["renderViewport"]["expanded"])
+        image = Image.open(io.BytesIO(base64.b64decode(figure["binary_b64"]))).convert("RGBA")
+        self.assertEqual(image.getpixel((image.width - 1, image.height - 1)), (35, 69, 103, 255))
+
     def test_axis_tick_label_offset_moves_text_without_changing_axis_limits(self):
         script = """
 import matplotlib.pyplot as plt
@@ -1518,6 +2183,80 @@ ax.legend()
         self.assertEqual(legend.get_title().get_fontsize(), 16)
         self.assertEqual(texts[0].get_fontweight(), "bold")
 
+    def test_multiple_axes_legends_are_introspected_and_patchable_independently(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(figsize=(6, 4))
+positive = ax.scatter([0.2, 0.5], [1, 2], color="#2A9D8F", label="Positive")
+negative = ax.scatter([0.4, 0.7], [2, 1], color="#D1495B", label="Negative")
+direction = ax.legend(
+    handles=[positive, negative],
+    title="Effect direction",
+    loc="lower right",
+)
+ax.add_artist(direction)
+size_handles = [
+    ax.scatter([], [], s=size, color="#777777", label=f"n = {size}")
+    for size in (100, 200)
+]
+ax.legend(handles=size_handles, title="Sample size", loc="upper right")
+"""
+        initial = replay_render(script)
+        self.assertEqual(initial.get("status"), "success")
+        objects = {
+            obj["id"]: obj
+            for obj in initial["figures"][0]["manifest"]["objects"]
+        }
+
+        self.assertEqual(objects["legend.0"]["kind"], "legend")
+        self.assertEqual(
+            objects["legend_title.0"]["currentProps"]["text"],
+            "Sample size",
+        )
+        self.assertEqual(objects["legend.0.extra.0"]["kind"], "legend")
+        self.assertEqual(
+            objects["legend_title.0.extra.0"]["currentProps"]["text"],
+            "Effect direction",
+        )
+        self.assertEqual(
+            objects["legend_text.0.extra.0.0"]["identity"]["relation"]["legendId"],
+            "legend.0.extra.0",
+        )
+        self.assertEqual(
+            objects["legend_collection.0.extra.0.0"]["identity"]["relation"]["legendId"],
+            "legend.0.extra.0",
+        )
+
+        patched = replay_render(script, edit_log=[
+            {
+                "gid": "legend.0",
+                "prop": "position",
+                "value": {"x": 0.78, "y": 0.78, "coord_system": "figure"},
+                "mode": "backend_patch",
+            },
+            {
+                "gid": "legend.0.extra.0",
+                "prop": "position",
+                "value": {"x": 0.22, "y": 0.24, "coord_system": "figure"},
+                "mode": "backend_patch",
+            },
+        ])
+        self.assertEqual(patched.get("status"), "success")
+        patched_objects = {
+            obj["id"]: obj
+            for obj in patched["figures"][0]["manifest"]["objects"]
+        }
+        self.assertAlmostEqual(
+            patched_objects["legend.0"]["currentProps"]["x"],
+            0.78,
+            places=2,
+        )
+        self.assertAlmostEqual(
+            patched_objects["legend.0.extra.0"]["currentProps"]["x"],
+            0.22,
+            places=2,
+        )
+
     def test_figure_level_shared_legend_is_introspected_and_patchable(self):
         script = """
 import matplotlib.pyplot as plt
@@ -1574,6 +2313,12 @@ fig.tight_layout(rect=(0, 0.12, 1, 1))
                 "value": 13,
                 "mode": "backend_patch",
             },
+            {
+                "gid": "legend_text.figure.0.0",
+                "prop": "fontfamily",
+                "value": "Times New Roman",
+                "mode": "backend_patch",
+            },
         ])
         self.assertEqual(patched.get("status"), "success")
         patched_objects = patched["figures"][0]["manifest"]["objects"]
@@ -1583,6 +2328,63 @@ fig.tight_layout(rect=(0, 0.12, 1, 1))
         self.assertAlmostEqual(patched_legend["currentProps"]["x"], 0.52, places=2)
         self.assertAlmostEqual(patched_legend["currentProps"]["y"], 0.08, places=2)
         self.assertEqual(patched_text["currentProps"]["fontsize"], 13)
+        self.assertEqual(patched_text["currentProps"]["fontfamily"], "Times New Roman")
+
+    def test_errorbar_child_color_replay_updates_matching_legend_collection(self):
+        script = """
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots()
+ax.errorbar([0, 1, 2], [1, 2, 3], yerr=[0.2, 0.3, 0.2], fmt="o", color="#009E73", label="Treatment B")
+ax.legend()
+"""
+        baseline = replay_render(script)
+        self.assertEqual(baseline.get("status"), "success")
+        baseline_objects = {
+            obj["id"]: obj
+            for obj in baseline["figures"][0]["manifest"]["objects"]
+        }
+        target = next(
+            obj for obj in baseline_objects.values()
+            if obj["id"].startswith("line.0.")
+            and obj["identity"]["relation"].get("parentId") == "container.errorbar.0.0"
+        )
+        edit = {
+            "gid": target["id"],
+            "prop": "color",
+            "value": "#6F4E7C",
+            "mode": "backend_patch",
+            "identity": target["identity"],
+            "stableKey": target["stableKey"],
+            "fingerprint": target["fingerprint"],
+            "fingerprintVersion": target["fingerprintVersion"],
+        }
+
+        patched = replay_render(script, edit_log=[edit])
+        self.assertEqual(patched.get("status"), "success")
+        patched_objects = {
+            obj["id"]: obj
+            for obj in patched["figures"][0]["manifest"]["objects"]
+        }
+        legend_marker = next(
+            obj for obj in patched_objects.values()
+            if obj["id"].startswith("legend_collection.0.")
+            and obj["label"] == "Treatment B"
+        )
+        edgecolor = legend_marker["currentProps"]["edgecolor"][0]
+        self.assertEqual(mcolors.to_hex(edgecolor, keep_alpha=False).lower(), "#6f4e7c")
+
+    def test_times_new_roman_uses_pinned_matplotlib_fallback_when_unavailable(self):
+        introspector._FONT_FAMILY_RESOLUTION_CACHE.clear()
+        with patch.object(
+            introspector,
+            "_font_family_available",
+            side_effect=lambda family: family == "Liberation Serif",
+        ):
+            self.assertEqual(
+                introspector._resolve_font_family("Times New Roman"),
+                "Liberation Serif",
+            )
+        introspector._FONT_FAMILY_RESOLUTION_CACHE.clear()
 
     def test_twin_and_shared_axes_have_explicit_symmetric_relationships(self):
         twin_result = replay_render("""

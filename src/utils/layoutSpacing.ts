@@ -22,11 +22,34 @@ export type VerticalGapPlan = {
   shifts: VerticalGapShift[];
 };
 
+export type HorizontalGapShift = {
+  id: string;
+  columnIndex: number;
+  currentLeft: number;
+  nextLeft: number;
+  deltaLeft: number;
+};
+
+export type HorizontalGapPlan = {
+  columnIds: string[][];
+  currentGap: number;
+  targetGap: number;
+  maxGap: number;
+  shifts: HorizontalGapShift[];
+};
+
 type LayoutRow = {
   boxes: LayoutBox[];
   bottom: number;
   top: number;
   height: number;
+};
+
+type LayoutColumn = {
+  boxes: LayoutBox[];
+  left: number;
+  right: number;
+  width: number;
 };
 
 function rowFromBoxes(boxes: LayoutBox[]): LayoutRow {
@@ -68,6 +91,50 @@ function groupIntoRows(boxes: LayoutBox[]): LayoutRow[] {
   return rows
     .map(row => ({ ...row, boxes: [...row.boxes].sort((left, right) => left.left - right.left) }))
     .sort((left, right) => right.top - left.top);
+}
+
+function columnFromBoxes(boxes: LayoutBox[]): LayoutColumn {
+  const left = Math.min(...boxes.map(box => box.left));
+  const right = Math.max(...boxes.map(box => box.left + box.width));
+  return { boxes, left, right, width: right - left };
+}
+
+function groupIntoColumns(boxes: LayoutBox[]): LayoutColumn[] {
+  const ordered = boxes
+    .filter(box => [box.left, box.bottom, box.width, box.height].every(Number.isFinite))
+    .filter(box => box.width > 0 && box.height > 0)
+    .sort((left, right) => (
+      (left.left + left.width / 2) - (right.left + right.width / 2)
+      || right.bottom - left.bottom
+    ));
+  const columns: LayoutColumn[] = [];
+
+  ordered.forEach(box => {
+    const boxRight = box.left + box.width;
+    let bestIndex = -1;
+    let bestOverlap = 0;
+    columns.forEach((column, index) => {
+      const overlap = Math.max(0, Math.min(boxRight, column.right) - Math.max(box.left, column.left));
+      const required = Math.min(box.width, column.width) * 0.45;
+      if (overlap >= required && overlap > bestOverlap) {
+        bestIndex = index;
+        bestOverlap = overlap;
+      }
+    });
+
+    if (bestIndex < 0) {
+      columns.push(columnFromBoxes([box]));
+      return;
+    }
+    columns[bestIndex] = columnFromBoxes([...columns[bestIndex].boxes, box]);
+  });
+
+  return columns
+    .map(column => ({
+      ...column,
+      boxes: [...column.boxes].sort((left, right) => right.bottom - left.bottom),
+    }))
+    .sort((left, right) => left.left - right.left);
 }
 
 function median(values: number[]) {
@@ -126,6 +193,60 @@ export function planVerticalGapPreservingSizes(boxes: LayoutBox[], requestedGap:
 
   return {
     rowIds: rows.map(row => row.boxes.map(box => box.id)),
+    currentGap,
+    targetGap,
+    maxGap,
+    shifts,
+  };
+}
+
+export function planHorizontalGapPreservingSizes(boxes: LayoutBox[], requestedGap: number): HorizontalGapPlan {
+  const columns = groupIntoColumns(boxes);
+  if (columns.length < 2) {
+    return {
+      columnIds: columns.map(column => column.boxes.map(box => box.id)),
+      currentGap: 0,
+      targetGap: 0,
+      maxGap: 0,
+      shifts: columns.flatMap((column, columnIndex) => column.boxes.map(box => ({
+        id: box.id,
+        columnIndex,
+        currentLeft: box.left,
+        nextLeft: box.left,
+        deltaLeft: 0,
+      }))),
+    };
+  }
+
+  const currentGaps = columns.slice(1).map((column, index) => (
+    column.left - columns[index].right
+  ));
+  const currentGap = Math.max(0, median(currentGaps));
+  const remainingColumnsWidth = columns.slice(1).reduce((total, column) => total + column.width, 0);
+  const maxGap = Math.max(0, (1 - columns[0].right - remainingColumnsWidth) / (columns.length - 1));
+  const safeRequestedGap = Number.isFinite(requestedGap) ? requestedGap : currentGap;
+  const targetGap = Math.min(maxGap, Math.max(0, safeRequestedGap));
+  const shifts: HorizontalGapShift[] = [];
+  let previousTargetRight = columns[0].right;
+
+  columns.forEach((column, columnIndex) => {
+    const deltaLeft = columnIndex === 0
+      ? 0
+      : previousTargetRight + targetGap - column.left;
+    column.boxes.forEach(box => {
+      shifts.push({
+        id: box.id,
+        columnIndex,
+        currentLeft: box.left,
+        nextLeft: box.left + deltaLeft,
+        deltaLeft,
+      });
+    });
+    previousTargetRight = column.right + deltaLeft;
+  });
+
+  return {
+    columnIds: columns.map(column => column.boxes.map(box => box.id)),
     currentGap,
     targetGap,
     maxGap,

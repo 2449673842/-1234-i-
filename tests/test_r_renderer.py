@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from typing import Any, Dict, List
 
 
@@ -2505,6 +2506,7 @@ p
         self.assertIn("text", legend_text["editable"])
         self.assertIn("Updated group", result["svg"])
         self.assertIn("Alpha group", result["svg"])
+        ET.fromstring(result["svg"])
 
     def test_legend_internal_layout_manifest_and_patch_round_trip(self):
         script = """
@@ -2551,6 +2553,9 @@ p
         self.assertEqual(legend["currentProps"]["borderpad"], 0.9)
         self.assertEqual(legend["currentProps"]["loc"], "bottom")
         self.assertIn("#f0f0f0", result["svg"].lower())
+        warning_text = "\n".join(str(item) for item in result.get("warnings", []))
+        self.assertNotIn("Duplicated aesthetics after name standardisation", warning_text)
+        self.assertNotIn("Duplicated `override.aes` is ignored", warning_text)
 
     def test_boxplot_and_violin_layers_are_semantic_containers(self):
         script = """
@@ -3526,6 +3531,36 @@ p
         self.assertEqual(patched_layer["currentProps"]["alpha"], 0.45)
         self.assertIn("#D62728".lower(), patched["svg"].lower())
 
+    def test_r_line_style_shorthands_are_normalized_before_render(self):
+        script = """
+library(ggplot2)
+step_df <- data.frame(x=1:4, y=c(1, 3, 2, 5))
+freq_df <- data.frame(x=c(1.1, 1.2, 1.8, 2.2, 2.4, 3.1, 3.3, 3.7))
+p <- ggplot() +
+  geom_step(data=step_df, aes(x, y), linewidth=0.8) +
+  geom_freqpoly(data=freq_df, aes(x), bins=4, boundary=1, linewidth=0.7) +
+  theme_minimal()
+p
+"""
+        baseline = _run_r_renderer(script)
+        step = _object(baseline, "r.layer.0")
+        freqpoly = _object(baseline, "r.layer.1")
+        grid = _object(baseline, "grid.0")
+
+        result = _run_r_renderer(script, [
+            _backend_patch(step, "linestyle", ":"),
+            _backend_patch(freqpoly, "linestyle", "-."),
+            _backend_patch(grid, "linestyle", "--"),
+        ])
+
+        self.assertFalse(result["conflict"])
+        self.assertEqual(_object(result, "r.layer.0")["currentProps"]["linestyle"], ":")
+        self.assertEqual(_object(result, "r.layer.1")["currentProps"]["linestyle"], "-.")
+        self.assertEqual(_object(result, "grid.0")["currentProps"]["linestyle"], "--")
+        self.assertEqual(len(result["applied"]), 3)
+        self.assertIn("stroke-dasharray", result["svg"])
+        ET.fromstring(result["svg"])
+
     def test_histogram_adapter_reports_stat_bin_structure_groups_and_legacy_layer_replay(self):
         script = """
 library(ggplot2)
@@ -3748,6 +3783,27 @@ p
         self.assertIn("width", subplots[0]["currentProps"]["unsupportedProps"])
         self.assertIn("#2CA02C".lower(), result["svg"].lower())
         self.assertEqual(_object(result, "facet.strip.0")["currentProps"]["fontsize"], 16)
+
+    def test_single_subplot_aspect_patch_is_applied(self):
+        script = """
+library(ggplot2)
+df <- data.frame(
+  category=rep(c("A", "B", "C"), each=2),
+  group=rep(c("Control", "Treatment"), 3),
+  value=c(2.4, 3.1, 3.0, 4.2, 3.7, 4.8)
+)
+p <- ggplot(df, aes(category, value, fill=group)) +
+  geom_col(position=position_dodge(width=0.72), width=0.64) +
+  theme_classic()
+p
+"""
+        result = _run_r_renderer(script, [
+            {"gid": "subplot.0", "prop": "aspect", "value": "equal", "mode": "backend_patch"},
+        ])
+
+        self.assertFalse(result["conflict"])
+        self.assertEqual(result["applied"][0]["gid"], "subplot.0")
+        self.assertEqual(_object(result, "subplot.0")["currentProps"]["aspect"], 1)
 
     def test_legacy_facet_panel_aspect_patch_migrates_to_layout(self):
         script = """

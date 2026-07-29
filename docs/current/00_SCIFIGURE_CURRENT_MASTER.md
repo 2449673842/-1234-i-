@@ -236,6 +236,7 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 | Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选 WP6 六个复杂对象家族已有专用语义，其中网络图/路径图/SEM 依赖显式关系声明，不承诺按外观自动识别任意第三方图示；完成全部门禁和部署前不视为线上能力 |
 | R 渲染与语义编辑 | R-WP0-WP10 本地候选已合入，当前批次待复验 | ggplot2 主链路、服务端 patch 权威、失败零持久化、identity v2、运行时 parity、复杂对象、scale/guide/facet、文本/复杂坐标、显式 diagram、扩展 Shadow 边界和完整用户链路已收敛。默认 V2 resolver、旧 R identity/editLog、候选镜像沙箱、安全、用户隔离、性能、缓存、构建和数据审计通过；当前批次总门禁完成前不标记为生产能力，生产人工视觉回归与旧路径退役未开始 |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
+| 编辑器脚本拖放 | 本地候选 | `.py/.R` 可拖入新建项目脚本卡片、数据区、代码编辑区或完整编辑工作区；页面级接收继续可用，但视觉反馈限定在各分区内；成功后显示导入文件名，不支持的文件不会覆盖当前脚本 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |
 | 字体/颜色/线条编辑 | 已实现 | 支持单对象、语义分组、整图和跨 Figure 作用域 |
 | 编辑中心子图跟随 | 已实现并部署 | 选择图元后组件、字体、布局和配色目标自动跟随其所属子图；跨子图多选安全回退到全部子图 |
@@ -552,6 +553,8 @@ npm run test:help-center-smoke
 
 同一候选把编辑器 `.py/.R` 拖放范围从代码面板扩展到整个工作区，预览页拖入脚本后自动切到代码页；不支持的文件仅记录提示，不覆盖当前脚本。当前定向证据为展厅单元 5/5、展厅隔离浏览器、MCP 安全 4/4、MCP 隔离真实 UI、脚本拖放隔离浏览器和 TypeScript 全部通过。该候选尚未提交、推送或部署，展厅“立即体验”仍进入现有项目创建流程，不代表免注册可编辑 Demo 已完成。
 
+`2026-07-22 10:47:02 +08:00` 修复 Python Figure 越界 artist 的长期裁切问题。renderer 只扩展发生越界的 SVG 边缘并记录 `renderViewport`，原 Figure 物理尺寸和透明背景语义保持不变；旧 manifest 无该字段时继续按原 viewBox 工作。ChartPreview 的隐藏 axes/Figure 坐标拖动同步按原 Figure 区域换算，PNG/PDF/TIFF/EPS 与预览使用同一边界。越界色条单测、真实浏览器越界文字、拖拽回放和完整导出矩阵均通过；尚未推送或部署。
+
 `2026-07-24 00:53:29 +08:00` 完成 R-WP4 GeomSegment/Curve 本地候选。renderer 以专用 adapter 表达端点、曲率和 arrow 只读结构，并在真实 panel 内对 geom 实际可绘制行按图层绘制顺序绑定完整 body/arrow 序列；Step、Freqpoly、Segment 和 Curve 批量改为同色或可见行混合 NA 行时不再丢失 Segment/Curve 的 SVG GID。完整 R renderer 111/111、真实浏览器 14/14、家族 patch authority、identity v2 compatibility、lint、build 和 diff-check 通过。当前未推送、未部署，R-WP5 尚未开始。
 
 `2026-07-25 20:33:34 +08:00` 完成 R-WP5 独立审查收敛。除 scale/guide/facet、多 guide 标题与 SVG 样式隔离外，旧 continuous absolute-index alias 现在只容忍已知变化字段，伪造 stableKey/semantic/series/aesthetic 证据拒绝；R 跨 Figure relation 必须共享至少一个稳定字段，legacy score fallback 不能绕过冲突。完整 R renderer 124/124、隔离 API 3/3、真实浏览器 6/6、R 语义黄金样例 14/14、identity v2 compatibility、TypeScript 216 项和 lint 通过；最终独立复审 0 HIGH/MEDIUM。当前未推送、未部署，下一工作包为 R-WP6。
@@ -560,8 +563,10 @@ npm run test:help-center-smoke
 
 `2026-07-26 18:19:46 +08:00` 完成 R-WP7 本地候选。R renderer 通过 `scifigure-sem-v1` 显式 marker 建立七类 diagram role 和完整 node/edge relation；GID 的四个身份字段全部使用 Base64URL，ASCII `a_` 与非 ASCII `b_` 命名空间分离，字段边界无歧义，重复完整 identity 在 manifest 构建期拒绝，同 marker 多行保留为一个有序 path。未标记 lookalike 保持通用对象，系数、p 值、拟合指标和拓扑只读。修复文本重建丢失 metadata、非法 mixed batch 部分应用，以及 `clip="off"` 下图例/同样式图元干扰 owner 的问题；只有可证明 panel 范围才允许按图层顺序绑定。renderer 10/10、R capability matrix、旧动态批次/fingerprint 4/4、隔离 API 和 Chromium 正确几何选择通过；当前未推送、未部署，下一工作包为 R-WP8。
 
-`2026-07-26 19:26:25 +08:00` 完成 R-WP8 本地候选。固定 renderer 镜像未安装的 `ggrepel/ggnewscale/sf/ggraph/igraph/tidygraph/semPlot/DiagrammeR` 统一进入显式 Shadow/readonly 边界；runtime inventory 只读报告安装状态，缺包诊断结构化且错误响应不泄露运行时路径。repel 与原生 ggraph geom 保留可用预览但不暴露写回控件，renamed aesthetic 不并入现有 scale，CoordSf 不可逆位置与合法样式混合时整批拒绝，base R 维持 preview/export only。隔离 API 证明拒绝后 session、Figure、revision、history 和 render cache 均不变化。R-WP8 7/7、capability matrix、旧身份、R-WP7 API/UI、完整 R semantic Chromium、安全预检、镜像契约和 lint 通过；当前未推送、未部署，下一工作包为 R-WP9。
+`2026-07-26 19:26:25 +08:00` 完成 R-WP8 本地候选。固定 renderer 镜像未安装的 `ggrepel/ggnewscale/sf/ggraph/igraph/tidygraph/semPlot/DiagrammeR` 统一进入显式 Shadow/readonly 边界；runtime inventory 只读报告安装状态，缺包诊断结构化且不泄露路径。repel 与原生 ggraph geom 保留可用预览但不暴露写回控件，renamed aesthetic 不并入现有 scale，CoordSf 不可逆位置与合法样式混合时整批拒绝，base R 维持 preview/export only。隔离 API 证明拒绝后 session、Figure、revision、history 和 render cache 均不变化。R-WP8 7/7、capability matrix、旧身份、R-WP7 API/UI、完整 R semantic Chromium、安全预检、镜像契约和 lint 通过；当前未推送、未部署，下一工作包为 R-WP9。
 
 `2026-07-26 20:22:44 +08:00` 完成 R-WP9 本地候选。新增双 CSV 精确路径 workflow，覆盖项目创建、真实上传、patch revision、刷新、SVG/PNG/PDF/TIFF、导出后编辑和快照恢复。R renderer 输出脚本、语义预检、编辑解析/应用、ggplot 绘制及设备开关分段计时；缓存 key 使用 renderer authority schema v2；导出响应提供 render/convert/persist 计时。UTF-8 SVG 超限在 session、preview、cache、资产和快照前返回结构化 413，直接渲染、patch 和导出均由数据库/文件前后快照证明零持久化。timeout smoke 证明本轮 Rscript job、临时目录和受管容器无残留。相关 workflow、性能持久化、timeout、render performance、cache、lint、build、diff-check 和 data audit 通过；当前未推送、未部署，下一工作包为 R-WP10。
 
 `2026-07-26 21:12:19 +08:00` 完成 R-WP10 本地候选门禁。默认 V2 resolver 248 项、旧 R identity/editLog 兼容、安全预检、R-WP9 三条用户链路、renderer sandbox、用户隔离、性能、缓存、lint、build、diff-check 和 data audit 通过。沙箱使用独立 `scifigure-renderer:rwp10-candidate` 镜像，未替换或停止现有容器；仅修正测试的 5 秒冷启动阈值和 Windows 临时 SQLite 清理竞态。共享路由继续通过 Python cross-Figure 18/18、patch rejection、semantic workflow 和 export matrix；浏览器门禁串行时 console/page error 为 0。当前仍未推送、未部署，生产不可变构建、小范围账号和人工视觉回归未完成，旧兼容路径继续保留。
+
+`2026-07-29 10:33:11 +08:00` 完成 R 五个编辑中心的真实浏览器补充验收。隔离 `r-semantic-smoke` 以 19/19 覆盖字体中心、组件中心和配色中心，并验证 Draft、立即应用、保存刷新、撤销/重做、文本拖拽、导出和导出快照恢复；隔离 `r-property-layout-centers` 以 7/7 覆盖属性中心的轴刻度/网格和布局中心的单图 aspect、facet 共享边界及只读物理 bounds。两份报告均为 0 console/page error、0 failed request。首轮属性测试的 checkbox 点击失败已确认是隐藏原生控件的 harness 定位问题，使用同一真实控件的 `force` 操作后通过；产品代码未因此改变。当前仍未提交、推送或部署，网页端和本机 3000/3100 不因本轮验收发生变化。

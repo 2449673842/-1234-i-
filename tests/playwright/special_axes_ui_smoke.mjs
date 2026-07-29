@@ -417,6 +417,8 @@ async function run() {
     const layoutObjectId = await page.locator('[data-layout-controls-version="2"]').getAttribute('data-layout-object-id');
     assert(layoutObjectId === 'subplot.0', `layout center did not retain the ordinary subplot object: ${layoutObjectId}`);
     assert(!layoutText.includes('多子图版面重排'), 'layout center counted special panels as ordinary layout subplots');
+    assert(layoutText.includes('真实绘图区 / 坐标轴框'), 'single ordinary subplot did not expose layout controls');
+    assert(layoutText.includes('Main Panel'), 'single-subplot layout controls did not identify the ordinary subplot');
     assert(!layoutText.includes('Polar Panel'), 'layout center exposed polar panel bounds controls');
     assert(!layoutText.includes('polar_subplot.0'), 'layout center exposed polar subplot id in bounds controls');
 

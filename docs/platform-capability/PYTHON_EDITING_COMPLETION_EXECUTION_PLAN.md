@@ -1,7 +1,7 @@
 # Python 图元编辑与分组识别收敛执行计划
 
 > 状态：WP3-WP10 已完成当前计划范围的本地候选收敛，固定候选 `4bb0db7` 之后的旧项目完整重渲染和文本 Draft/立即应用兼容收尾也已通过定向门禁；旧 compiler、palette legacy resolution 和 cross-Figure score mapper 仍作为显式兼容适配器保留一个稳定发布周期。当前候选尚未推送或部署
-> 最后修改时间：2026-07-21 15:21:24 +08:00
+> 最后修改时间：2026-07-24 19:22:38 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
 > 当前部署状态：未推送、未部署；本计划不改变线上版本
@@ -401,12 +401,13 @@ broken axes / parasite axes
 - polar、3D、inset、secondary x/y、parasite host/child、GeoAxes、brokenaxes 占位和未知投影均有独立 family/kind/role，不再统一冒充普通 subplot。
 - identity relation 增加 `axesFamily/projection/parentSubplotId/ownerSubplotId`；跨 Figure、保存和快照恢复按完整关系 fail-closed。
 - polar 的安全数据样式、文字和图例保持可编辑；3D Z 轴标签/刻度字体与 secondary axis 安全轴文字能力已接入。
+- radar 在 polar 内使用额外证据开放：闭合系列角度必须与维度 `xticks` 一一对应。维度文字保留原 `xtick.*` 身份并增加稳定的屏幕点偏移；line/fill 通过 `radarSeriesId` 配对并进入独立组件组；`legend_text` 可改名，拖动时统一移动 `legend.*` 容器；文字 bbox 可编辑。普通闭合周期 polar 负例保持非 radar。
 - parasite host/child 整族只读；brokenaxes、GeoAxes/Cartopy 和未知投影不开放布局、相机、投影或跨轴几何。
 - 导出快照 schema v3 强制完整 relation；v1/v2 只在 stableKey 与 v2 fingerprint 同时一致时兼容历史缺失 relation。
 - standalone 和项目 full render 在写入前同时检查返回 manifest 与 renderer warnings；项目脚本和 Figure/session 同事务提交，冲突请求零持久化。
 - standalone 重渲染复用原 session；数据库已存在的旧 editLog 仅在 stableKey 一致，且已有 fingerprint/seriesKey 也分别一致时受控兼容；gid-only 历史日志继续阻断，新请求不能借 legacy 规则绕过。
 
-当前门禁：`test:special-axes-python` 10 项中 8 通过、Cartopy/brokenaxes 2 项因依赖缺失跳过；`test:special-axes-api`、`test:special-axes-ui`、patch 拒绝、旧 contour、项目 history、R semantic、lint/build/diff-check 通过。真实 Cartopy 和 brokenaxes 支持必须在未来明确安装固定版本并补齐 renderer/API/UI/导出证据后单独启用。
+当前门禁：`test:special-axes-python` 10 项中 8 通过、Cartopy/brokenaxes 2 项因依赖缺失跳过；`test:radar-chart-python` 15/15、`test:radar-chart-api` 的 patch/刷新/数据库/SVG 导出和 `test:radar-chart-ui` 9/9 通过；`test:special-axes-api`、`test:special-axes-ui`、patch 拒绝、旧 contour、项目 history、R semantic、lint/build/diff-check 通过。真实 Cartopy 和 brokenaxes 支持必须在未来明确安装固定版本并补齐 renderer/API/UI/导出证据后单独启用。
 
 ### WP8：恢复和导出事务安全
 

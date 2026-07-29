@@ -129,6 +129,8 @@ export interface ManifestObjectRelation {
   annotationId?: string;
   arrowId?: string;
   textId?: string;
+  textSource?: "annotation" | "data" | "stat";
+  statClass?: string;
   twinSubplotIds?: string[];
   sharedXSubplotIds?: string[];
   sharedYSubplotIds?: string[];
@@ -136,6 +138,10 @@ export interface ManifestObjectRelation {
   projection?: string;
   parentSubplotId?: string;
   ownerSubplotId?: string;
+  radarId?: string;
+  radarSemanticRole?: string;
+  radarSeriesId?: string;
+  radarDimensionIndex?: number;
   pieId?: string;
   pieSliceId?: string;
   pieLabelId?: string;
@@ -354,6 +360,20 @@ export interface SemanticGroup {
   subplotIds?: string[];
 }
 
+export interface RenderViewportBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface RenderViewport {
+  version: 1;
+  expanded: boolean;
+  canvas: RenderViewportBox;
+  figure: RenderViewportBox;
+}
+
 export interface Manifest {
   generatedBy: "introspection" | "r_svg";
   globals: Record<string, ManifestField>;
@@ -371,6 +391,8 @@ export interface Manifest {
   unsupportedNotes?: string[];
   /** Renderer diagnostics persisted with an existing manifest payload. */
   renderDiagnostics?: RenderDiagnostics;
+  /** Original Figure bounds inside an SVG canvas expanded for overflowing artists. */
+  renderViewport?: RenderViewport;
 }
 
 /* ---- Edit Log ---- */

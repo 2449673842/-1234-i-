@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Manifest, ManifestObject } from '../schemas/manifest';
 import {
   isParentOwnedManifestObject,
+  resolveAuthoritativeProjectPatchMode,
   resolveCrossFigurePolicy,
   isTextContentPatchProp,
   resolvePatchMode,
@@ -204,6 +205,48 @@ describe('resolvePatchMode', () => {
     expect(resolvePatchMode(manifest(unsupported), unsupported, 'color')).toBe('backend_patch');
     expect(resolvePatchMode(manifest(grid), grid, 'visible')).toBe('backend_patch');
     expect(resolvePatchModeById(manifest(omitted), 'missing.0', 'color')).toBe('backend_patch');
+  });
+
+  it('keeps heatmap alpha on the renderer for old manifests that claimed exact local preview', () => {
+    const heatmap = legacyObject({
+      id: 'heatmap.image.0.0',
+      kind: 'heatmap',
+      editable: ['alpha'],
+      currentProps: { alpha: 0.65 },
+      propertyCapabilities: [{
+        prop: 'alpha',
+        patchMode: 'local_patch',
+        scopes: ['object', 'group'],
+        preview: 'exact',
+        replay: 'stable',
+      }],
+    });
+
+    expect(resolvePatchMode(manifest(heatmap), heatmap, 'alpha')).toBe('backend_patch');
+    expect(resolveAuthoritativeProjectPatchMode(manifest(heatmap), heatmap, 'alpha')).toBe('backend_patch');
+  });
+
+  it('lets server authority preserve genuinely exact local capabilities', () => {
+    const target = legacyObject({
+      propertyCapabilities: [{
+        prop: 'color',
+        patchMode: 'local_patch',
+        scopes: ['object'],
+        preview: 'exact',
+        replay: 'stable',
+      }],
+    });
+
+    expect(resolveAuthoritativeProjectPatchMode(manifest(target), target, 'color')).toBe('local_patch');
+    expect(resolveAuthoritativeProjectPatchMode(manifest(target), target, 'linewidth')).toBe('backend_patch');
+  });
+
+  it('resolves by gid and defaults missing objects to backend validation', () => {
+    const target = object('local_patch');
+    const currentManifest = manifest(target);
+    expect(resolvePatchModeById(currentManifest, target.id, 'color')).toBe('local_patch');
+    expect(resolvePatchModeById(currentManifest, 'missing.0', 'color')).toBe('backend_patch');
+    expect(resolvePatchModeById(null, target.id, 'color')).toBe('backend_patch');
   });
 });
 

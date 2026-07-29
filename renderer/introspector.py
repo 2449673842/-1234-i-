@@ -30,6 +30,7 @@ import matplotlib
 import matplotlib.colors as mcolors
 matplotlib.use("Agg")
 import numpy as np
+from matplotlib.transforms import Bbox
 
 
 _figure_registry = []
@@ -248,8 +249,8 @@ def _collect_layout_warnings(fig: Any) -> list[dict[str, Any]]:
                 warnings.append({
                     "type": "layout_clip",
                     "element": name,
-                    "message": "文字或图例超出画布边界，导出时可能被裁切。",
-                    "suggestion": "调整边距、字号、旋转角度或图例位置后重新渲染。",
+                    "message": "文字或图例超出原始 Figure 边界，渲染器已自动扩展白底画布。",
+                    "suggestion": "如需保持原始物理画布尺寸，请调整边距、字号、旋转角度或图例位置。",
                 })
 
         major_candidates = [
@@ -266,6 +267,36 @@ def _collect_layout_warnings(fig: Any) -> list[dict[str, Any]]:
                         "message": "标题、图例或轴标签的显示区域发生重叠。",
                         "suggestion": "调整布局间距、位置或字号后重新渲染。",
                     })
+
+        for axes_index, ax in enumerate(getattr(fig, "axes", []) or []):
+            clipped_diagram_objects: list[str] = []
+            for artist in ax.get_children():
+                try:
+                    if not artist.get_visible() or not artist.get_clip_on():
+                        continue
+                except (AttributeError, TypeError):
+                    continue
+                provenance = _register_explicit_diagram_artist(artist)
+                if not provenance or provenance.get("family") != "diagram":
+                    continue
+                bbox = _window_bbox(artist, renderer)
+                if not _bbox_outside(bbox, ax.bbox):
+                    continue
+                object_id = str(provenance.get("diagramObjectId") or "diagram_object")
+                if object_id not in clipped_diagram_objects:
+                    clipped_diagram_objects.append(object_id)
+            if clipped_diagram_objects:
+                warnings.append({
+                    "type": "axes_content_clip",
+                    "element": f"axes.{axes_index}",
+                    "objects": clipped_diagram_objects[:12],
+                    "count": len(clipped_diagram_objects),
+                    "message": "网络图、路径图或 SEM 图元超出当前坐标范围，内容会被坐标轴裁掉。",
+                    "suggestion": (
+                        "请根据全部节点和路径的实际边界计算 xlim/ylim 并保留 padding；"
+                        "扩大 Figure 白底画布不能恢复已被 axes clip 的内容。"
+                    ),
+                })
         return warnings
     except Exception:
         return []
@@ -387,6 +418,40 @@ _SPECIAL_AXES_RELATION_FIELDS = (
     "projection",
     "parentSubplotId",
     "ownerSubplotId",
+)
+_LEGEND_MARKER_RELATION_FIELDS = (
+    "subplotId",
+    "legendId",
+    "legendTextId",
+    "parentId",
+    "pieId",
+    "pieSliceId",
+    "quiverId",
+    "streamplotId",
+    "radarId",
+    "radarSeriesId",
+)
+_SEMANTIC_PARENT_RELATION_FIELDS = (
+    "subplotId",
+    "parentId",
+    "legendMarkerIds",
+    "pieId",
+    "pieSliceId",
+    "pieLabelId",
+    "pieValueLabelId",
+    "sliceIndex",
+    "quiverId",
+    "streamplotId",
+    "lineCollectionId",
+    "radarId",
+    "radarSemanticRole",
+    "radarSeriesId",
+    "radarDimensionIndex",
+)
+_SEMANTIC_PARENT_RELATION_TRIGGERS = tuple(
+    field
+    for field in _SEMANTIC_PARENT_RELATION_FIELDS
+    if field not in {"subplotId", "parentId"}
 )
 _DIAGRAM_PROTECTED_TEXT_ROLES = {
     "diagram_node_label",
@@ -591,6 +656,32 @@ def _special_axes_relation_signature(identity: Any) -> Optional[dict]:
     }
 
 
+def _legend_marker_relation_signature(identity: Any) -> Optional[dict]:
+    if not isinstance(identity, dict):
+        return None
+    relation = identity.get("relation")
+    if not isinstance(relation, dict) or "legendId" not in relation:
+        return None
+    return {
+        field: _plain_value(relation.get(field)) if field in relation else None
+        for field in _LEGEND_MARKER_RELATION_FIELDS
+    }
+
+
+def _semantic_parent_relation_signature(identity: Any) -> Optional[dict]:
+    if not isinstance(identity, dict):
+        return None
+    relation = identity.get("relation")
+    if not isinstance(relation, dict) or "legendId" in relation:
+        return None
+    if not any(field in relation for field in _SEMANTIC_PARENT_RELATION_TRIGGERS):
+        return None
+    return {
+        field: _plain_value(relation.get(field)) if field in relation else None
+        for field in _SEMANTIC_PARENT_RELATION_FIELDS
+    }
+
+
 def _is_diagram_structural_prop(artist: Any, prop: str) -> bool:
     provenance = _register_explicit_diagram_artist(artist)
     role = provenance.get("semanticRole") if provenance else None
@@ -755,11 +846,33 @@ def patched_step(self, *args, **kwargs):
     return artists
 
 
+def _pie_result_parts(result: Any) -> tuple[list[Any], list[Any], list[Any]]:
+    """Normalize legacy tuple and Matplotlib 3.11+ ``PieContainer`` results."""
+    container_wedges = getattr(result, "wedges", None)
+    if container_wedges is not None:
+        wedges = list(container_wedges)
+        text_groups = list(getattr(result, "texts", None) or [])
+        if text_groups and isinstance(text_groups[0], (list, tuple)):
+            label_texts = list(text_groups[0])
+            value_texts = list(text_groups[1]) if len(text_groups) > 1 else []
+        else:
+            label_texts = text_groups
+            value_texts = []
+        return wedges, label_texts, value_texts
+
+    try:
+        parts = list(result or [])
+    except TypeError:
+        parts = []
+    wedges = list(parts[0]) if len(parts) > 0 else []
+    label_texts = list(parts[1]) if len(parts) > 1 else []
+    value_texts = list(parts[2]) if len(parts) > 2 else []
+    return wedges, label_texts, value_texts
+
+
 def patched_pie(self, *args, **kwargs):
     result = original_pie(self, *args, **kwargs)
-    wedges = list(result[0]) if result else []
-    label_texts = list(result[1]) if len(result) > 1 else []
-    value_texts = list(result[2]) if len(result) > 2 else []
+    wedges, label_texts, value_texts = _pie_result_parts(result)
     values_arg = args[0] if args else kwargs.get("x", [])
     values = _plain_value(values_arg)
     if not isinstance(values, list):
@@ -1320,6 +1433,26 @@ def _ordered_spines(ax):
     ordered_names.extend(name for name in spines if name not in ordered_names)
     return [(name, spines[name]) for name in ordered_names]
 
+
+def _iter_axes_legends(ax):
+    """Yield the primary Axes legend first, then legends retained via add_artist()."""
+    primary = ax.get_legend()
+    if primary is not None:
+        yield None, primary
+
+    try:
+        from matplotlib.legend import Legend
+    except Exception:
+        return
+
+    extra_index = 0
+    for artist in list(getattr(ax, "artists", []) or []):
+        if not isinstance(artist, Legend) or artist is primary:
+            continue
+        yield extra_index, artist
+        extra_index += 1
+
+
 def iter_artists(fig):
     """Yield (gid, kind, artist) for all recognised artists.
 
@@ -1410,16 +1543,20 @@ def iter_artists(fig):
         for i, label in enumerate(getattr(ax, "get_zticklabels", lambda: [])()):
             yield f"ztick.{ax_idx}.{i}", "text", label
 
-        legend = ax.get_legend()
-        if legend is not None:
-            yield f"legend.{ax_idx}", "legend", legend
+        for extra_legend_idx, legend in _iter_axes_legends(ax):
+            legend_suffix = (
+                f"{ax_idx}"
+                if extra_legend_idx is None
+                else f"{ax_idx}.extra.{extra_legend_idx}"
+            )
+            yield f"legend.{legend_suffix}", "legend", legend
             title = legend.get_title()
             if title is not None:
-                yield f"legend_title.{ax_idx}", "text", title
+                yield f"legend_title.{legend_suffix}", "text", title
             
             texts = legend.get_texts()
             for i, text in enumerate(texts):
-                yield f"legend_text.{ax_idx}.{i}", "text", text
+                yield f"legend_text.{legend_suffix}.{i}", "text", text
             handles = _get_legend_handles(legend)
             handle_labels = {
                 id(handle): texts[i].get_text()
@@ -1430,19 +1567,19 @@ def iter_artists(fig):
                 label = handle_labels.get(id(line))
                 if label is not None:
                     line.set_label(label)
-                yield f"legend_line.{ax_idx}.{i}", "line", line
+                yield f"legend_line.{legend_suffix}.{i}", "line", line
             for i, patch in enumerate(legend.get_patches()):
                 label = handle_labels.get(id(patch))
                 if label is not None:
                     patch.set_label(label)
-                yield f"legend_patch.{ax_idx}.{i}", "patch", patch
+                yield f"legend_patch.{legend_suffix}.{i}", "patch", patch
             for i, handle in enumerate(handles):
-                if not hasattr(handle, "get_sizes"):
+                if not _is_legend_collection_handle(handle):
                     continue
                 label = handle_labels.get(id(handle))
                 if label is not None:
                     handle.set_label(label)
-                yield f"legend_collection.{ax_idx}.{i}", "collection", handle
+                yield f"legend_collection.{legend_suffix}.{i}", "collection", handle
 
         annotation_arrow_patches = set()
         for i, text in enumerate(ax.texts):
@@ -1557,7 +1694,7 @@ def iter_artists(fig):
                 patch.set_label(label)
             yield f"legend_patch.figure.{fig_legend_idx}.{i}", "patch", patch
         for i, handle in enumerate(handles):
-            if not hasattr(handle, "get_sizes"):
+            if not _is_legend_collection_handle(handle):
                 continue
             label = handle_labels.get(id(handle))
             if label is not None:
@@ -1568,6 +1705,11 @@ def iter_artists(fig):
 _GENERIC_FONT_FAMILIES = {"serif", "sans-serif", "monospace", "cursive", "fantasy"}
 _TIMES_COMPAT_REQUESTS = {"times new roman", "times"}
 _TIMES_RUNTIME_CANDIDATES = ("Times New Roman", "Times", "Liberation Serif", "FreeSerif", "serif")
+_FONT_FAMILY_FALLBACKS = {
+    "times new roman": _TIMES_RUNTIME_CANDIDATES,
+    "times": _TIMES_RUNTIME_CANDIDATES,
+}
+_FONT_FAMILY_RESOLUTION_CACHE: dict[str, str] = {}
 
 
 def _font_name_for_family(family: str) -> Optional[str]:
@@ -1580,16 +1722,30 @@ def _font_name_for_family(family: str) -> Optional[str]:
         return None
 
 
+def _font_family_available(family: str) -> bool:
+    return _font_name_for_family(family) is not None
+
+
 def _resolve_runtime_fontfamily(requested: Any) -> str:
     family = str(requested or "").strip()
     if not family:
         return family
-    if family.lower() not in _TIMES_COMPAT_REQUESTS:
-        return family
-    for candidate in _TIMES_RUNTIME_CANDIDATES:
-        if _font_name_for_family(candidate):
-            return candidate
-    return "serif"
+    cache_key = family.casefold()
+    cached = _FONT_FAMILY_RESOLUTION_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    resolved = family
+    if not _font_family_available(family):
+        for candidate in _FONT_FAMILY_FALLBACKS.get(cache_key, ()):
+            if _font_family_available(candidate):
+                resolved = candidate
+                break
+    _FONT_FAMILY_RESOLUTION_CACHE[cache_key] = resolved
+    return resolved
+
+
+def _resolve_font_family(value: Any) -> str:
+    return _resolve_runtime_fontfamily(value)
 
 
 def _actual_fontfamily(artist) -> str:
@@ -1650,10 +1806,30 @@ def _normalise_runtime_fonts(raw_elements: list[tuple[str, str, Any]]):
         _normalise_text_runtime_font(artist)
 
 
+def _text_fontfamily(text: Any) -> str:
+    return _requested_fontfamily(text)
+
+
 def _snapshot_text_style(text):
+    bbox_patch = text.get_bbox_patch()
+    bbox_style = None
+    if bbox_patch is not None:
+        try:
+            boxstyle = bbox_patch.get_boxstyle()
+            bbox_style = {
+                "visible": bool(bbox_patch.get_visible()),
+                "facecolor": bbox_patch.get_facecolor(),
+                "edgecolor": bbox_patch.get_edgecolor(),
+                "alpha": bbox_patch.get_alpha(),
+                "linewidth": bbox_patch.get_linewidth(),
+                "boxstyle": type(boxstyle).__name__.lower(),
+                "pad": float(getattr(boxstyle, "pad", 0.3)),
+            }
+        except Exception:
+            bbox_style = None
     return {
         "fontsize": text.get_fontsize(),
-        "fontname": text.get_fontname(),
+        "fontname": _requested_fontfamily(text),
         "requested_fontfamily": getattr(text, "_scifigure_requested_fontfamily", None),
         "color": text.get_color(),
         "rotation": text.get_rotation(),
@@ -1662,6 +1838,7 @@ def _snapshot_text_style(text):
         "visible": text.get_visible(),
         "fontweight": text.get_fontweight(),
         "fontstyle": text.get_fontstyle(),
+        "bbox": bbox_style,
     }
 
 
@@ -1671,7 +1848,7 @@ def _restore_text_style(text, style: dict):
         if style.get("requested_fontfamily"):
             _set_text_fontfamily(text, style["requested_fontfamily"])
         else:
-            text.set_fontname(style["fontname"])
+            _set_text_fontfamily(text, style["fontname"])
         text.set_color(style["color"])
         text.set_rotation(style["rotation"])
         text.set_horizontalalignment(style["ha"])
@@ -1679,6 +1856,16 @@ def _restore_text_style(text, style: dict):
         text.set_visible(style["visible"])
         text.set_fontweight(style.get("fontweight", "normal"))
         text.set_fontstyle(style.get("fontstyle", "normal"))
+        bbox_style = style.get("bbox")
+        if isinstance(bbox_style, dict):
+            text.set_bbox({
+                "boxstyle": f"{bbox_style.get('boxstyle', 'round')},pad={float(bbox_style.get('pad', 0.3))}",
+                "facecolor": bbox_style.get("facecolor", "white"),
+                "edgecolor": bbox_style.get("edgecolor", "black"),
+                "linewidth": float(bbox_style.get("linewidth", 0.8)),
+                **({"alpha": float(bbox_style["alpha"])} if bbox_style.get("alpha") is not None else {}),
+            })
+            text.get_bbox_patch().set_visible(bool(bbox_style.get("visible", True)))
     except Exception:
         pass
 
@@ -1906,6 +2093,36 @@ def _read_text_props(artist) -> dict:
         "va": artist.get_verticalalignment(),
         "rotation": float(artist.get_rotation()),
     }
+    bbox_patch = artist.get_bbox_patch()
+    bbox_boxstyle = "round"
+    bbox_pad = 0.3
+    if bbox_patch is not None:
+        try:
+            boxstyle = bbox_patch.get_boxstyle()
+            bbox_boxstyle = type(boxstyle).__name__.lower()
+            bbox_pad = float(getattr(boxstyle, "pad", bbox_pad))
+        except Exception:
+            pass
+    bbox_alpha = 1.0
+    if bbox_patch is not None:
+        try:
+            explicit_alpha = bbox_patch.get_alpha()
+            bbox_alpha = float(
+                explicit_alpha
+                if explicit_alpha is not None
+                else bbox_patch.get_facecolor()[3]
+            )
+        except Exception:
+            pass
+    props.update({
+        "bbox_visible": bool(bbox_patch is not None and bbox_patch.get_visible()),
+        "bbox_facecolor": to_hex_safe(bbox_patch.get_facecolor()) if bbox_patch is not None else "#ffffff",
+        "bbox_edgecolor": to_hex_safe(bbox_patch.get_edgecolor()) if bbox_patch is not None else "#000000",
+        "bbox_alpha": bbox_alpha,
+        "bbox_linewidth": float(bbox_patch.get_linewidth()) if bbox_patch is not None else 0.8,
+        "bbox_pad": bbox_pad,
+        "bbox_boxstyle": bbox_boxstyle,
+    })
     try:
         from matplotlib.text import Annotation
         if isinstance(artist, Annotation):
@@ -2973,11 +3190,256 @@ def _safe_artist_label(artist, fallback: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Radar semantics and editable fields
+# ---------------------------------------------------------------------------
+
+def _radar_closed_xy(x_values: Any, y_values: Any) -> bool:
+    try:
+        x = np.asarray(x_values, dtype=float).reshape(-1)
+        y = np.asarray(y_values, dtype=float).reshape(-1)
+    except Exception:
+        return False
+    if x.size < 4 or y.size != x.size:
+        return False
+    theta_closed = bool(np.isclose(np.mod(x[-1] - x[0], 2 * np.pi), 0.0, atol=1e-6))
+    radius_closed = bool(np.isclose(y[-1], y[0], rtol=1e-6, atol=1e-8))
+    return theta_closed and radius_closed
+
+
+def _radar_xy_matches_dimensions(axes: Any, x_values: Any, y_values: Any) -> bool:
+    if not _radar_closed_xy(x_values, y_values):
+        return False
+    try:
+        x = np.asarray(x_values, dtype=float).reshape(-1)
+        ticks = np.asarray(axes.get_xticks(), dtype=float).reshape(-1)
+    except Exception:
+        return False
+    if ticks.size < 3 or x.size != ticks.size + 1:
+        return False
+    labels = list(getattr(axes, "get_xticklabels", lambda: [])())
+    if sum(bool(str(getattr(label, "get_text", lambda: "")()).strip()) for label in labels) < 3:
+        return False
+
+    # Compare angles on the unit circle so an equivalent 0/2pi wrap or a
+    # cyclic starting dimension remains valid, while dense polar traces do not.
+    deltas = np.angle(np.exp(1j * (x[:-1, None] - ticks[None, :])))
+    matches = np.abs(deltas) <= 1e-6
+    return bool(np.all(matches.sum(axis=0) == 1) and np.all(matches.sum(axis=1) == 1))
+
+
+def _radar_axes(axes: Any) -> bool:
+    if axes is None or _axes_projection_name(axes) != "polar":
+        return False
+    dimension_labels = [
+        label
+        for label in getattr(axes, "get_xticklabels", lambda: [])()
+        if str(getattr(label, "get_text", lambda: "")()).strip()
+    ]
+    if len(dimension_labels) < 3:
+        return False
+    for line in getattr(axes, "lines", []) or []:
+        try:
+            if _radar_xy_matches_dimensions(axes, line.get_xdata(orig=False), line.get_ydata(orig=False)):
+                return True
+        except Exception:
+            continue
+    try:
+        from matplotlib.patches import Polygon
+        for patch in getattr(axes, "patches", []) or []:
+            if not isinstance(patch, Polygon):
+                continue
+            vertices = np.asarray(patch.get_xy(), dtype=float)
+            if (
+                vertices.ndim == 2
+                and vertices.shape[1] >= 2
+                and _radar_xy_matches_dimensions(axes, vertices[:, 0], vertices[:, 1])
+            ):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _radar_series_index_for_line(axes: Any, artist: Any) -> Optional[int]:
+    radar_lines = []
+    for line in getattr(axes, "lines", []) or []:
+        try:
+            if _radar_xy_matches_dimensions(axes, line.get_xdata(orig=False), line.get_ydata(orig=False)):
+                radar_lines.append(line)
+        except Exception:
+            continue
+    try:
+        return radar_lines.index(artist)
+    except ValueError:
+        return None
+
+
+def _radar_line_style_signature(artist: Any) -> Optional[tuple]:
+    try:
+        color = tuple(round(float(channel), 8) for channel in mcolors.to_rgba(artist.get_color()))
+        return (
+            color,
+            str(artist.get_linestyle()),
+            str(artist.get_marker()),
+            round(float(artist.get_linewidth()), 8),
+        )
+    except Exception:
+        return None
+
+
+def _radar_series_index_for_legend_entry(axes: Any, legend: Any, entry_index: int) -> Optional[int]:
+    handles = _get_legend_handles(legend)
+    if entry_index < 0 or entry_index >= len(handles):
+        return None
+    handle_signature = _radar_line_style_signature(handles[entry_index])
+    if handle_signature is None:
+        return None
+
+    matching_lines = [
+        line
+        for line in getattr(axes, "lines", []) or []
+        if _radar_line_style_signature(line) == handle_signature
+    ]
+    if len(matching_lines) != 1:
+        return None
+    return _radar_series_index_for_line(axes, matching_lines[0])
+
+
+def _radar_matching_series_for_polygon(axes: Any, artist: Any) -> Optional[int]:
+    try:
+        vertices = np.asarray(artist.get_xy(), dtype=float)
+    except Exception:
+        return None
+    if vertices.ndim != 2 or vertices.shape[1] < 2:
+        return None
+    radar_lines = []
+    for line in getattr(axes, "lines", []) or []:
+        try:
+            x = np.asarray(line.get_xdata(orig=False), dtype=float).reshape(-1)
+            y = np.asarray(line.get_ydata(orig=False), dtype=float).reshape(-1)
+        except Exception:
+            continue
+        if _radar_xy_matches_dimensions(axes, x, y):
+            radar_lines.append((line, x, y))
+    for index, (_, x, y) in enumerate(radar_lines):
+        if len(x) != len(vertices):
+            continue
+        if np.allclose(x, vertices[:, 0], rtol=1e-6, atol=1e-8) and np.allclose(y, vertices[:, 1], rtol=1e-6, atol=1e-8):
+            return index
+    return None
+
+
+def _radar_metadata_for_artist(artist: Any) -> Optional[dict]:
+    context = _axes_context_for_artist(artist) or {}
+    axes = context.get("axes")
+    if not _radar_axes(axes):
+        return None
+    axes_index = int(context.get("axesIndex", 0))
+    metadata: dict[str, Any] = {"radarId": f"radar.{axes_index}"}
+
+    x_tick_labels = list(getattr(axes, "get_xticklabels", lambda: [])())
+    if artist in x_tick_labels:
+        metadata.update({
+            "radarSemanticRole": "dimension_label",
+            "radarDimensionIndex": x_tick_labels.index(artist),
+        })
+        return metadata
+
+    line_index = _radar_series_index_for_line(axes, artist)
+    if line_index is not None:
+        metadata.update({
+            "radarSemanticRole": "series",
+            "radarSeriesId": f"radar.{axes_index}.series.{line_index}",
+        })
+        return metadata
+
+    try:
+        from matplotlib.patches import Polygon
+        if isinstance(artist, Polygon):
+            vertices = np.asarray(artist.get_xy(), dtype=float)
+            if (
+                vertices.ndim != 2
+                or vertices.shape[1] < 2
+                or not _radar_xy_matches_dimensions(axes, vertices[:, 0], vertices[:, 1])
+            ):
+                return metadata
+            series_index = _radar_matching_series_for_polygon(axes, artist)
+            if series_index is None:
+                radar_polygons = [
+                    patch
+                    for patch in getattr(axes, "patches", []) or []
+                    if isinstance(patch, Polygon)
+                    and _radar_xy_matches_dimensions(
+                        axes,
+                        np.asarray(patch.get_xy(), dtype=float)[:, 0],
+                        np.asarray(patch.get_xy(), dtype=float)[:, 1],
+                    )
+                ]
+                series_index = radar_polygons.index(artist) if artist in radar_polygons else 0
+            metadata.update({
+                "radarSemanticRole": "fill",
+                "radarSeriesId": f"radar.{axes_index}.series.{series_index}",
+            })
+            return metadata
+    except Exception:
+        pass
+
+    for _, legend in _iter_axes_legends(axes):
+        if artist is legend:
+            metadata["radarSemanticRole"] = "legend"
+            return metadata
+        legend_texts = list(legend.get_texts())
+        if artist in legend_texts:
+            legend_index = legend_texts.index(artist)
+            series_index = _radar_series_index_for_legend_entry(axes, legend, legend_index)
+            if series_index is None:
+                return metadata
+            metadata.update({
+                "radarSemanticRole": "legend_text",
+                "radarSeriesId": f"radar.{axes_index}.series.{series_index}",
+            })
+            return metadata
+        if artist is legend.get_title():
+            metadata["radarSemanticRole"] = "legend_title"
+            return metadata
+    return metadata
+
+
+def _apply_radar_metadata_to_object(obj: dict, artist: Any) -> None:
+    metadata = _radar_metadata_for_artist(artist)
+    if not metadata:
+        return
+    obj.update(metadata)
+    obj["currentProps"] = {**obj.get("currentProps", {}), **metadata}
+    if metadata.get("radarSemanticRole") == "fill":
+        series_id = metadata.get("radarSeriesId")
+        axes = (_axes_context_for_artist(artist) or {}).get("axes")
+        try:
+            series_index = int(str(series_id).rsplit(".", 1)[-1])
+            radar_lines = [
+                line
+                for line in getattr(axes, "lines", []) or []
+                if _radar_series_index_for_line(axes, line) is not None
+            ]
+            series_label = radar_lines[series_index].get_label()
+            if series_label and not str(series_label).startswith("_"):
+                obj["label"] = f"{series_label} fill"
+                obj["currentProps"]["radarSeriesLabel"] = str(series_label)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Editable fields per kind
 # ---------------------------------------------------------------------------
 
 _EDITABLE = {
-    "text": ["text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color", "ha", "va", "rotation", "position", "zorder"],
+    "text": [
+        "text", "fontsize", "fontfamily", "fontweight", "fontstyle", "color",
+        "ha", "va", "rotation", "position", "zorder", "bbox_visible",
+        "bbox_facecolor", "bbox_edgecolor", "bbox_alpha", "bbox_linewidth",
+        "bbox_pad", "bbox_boxstyle",
+    ],
     "subplot": ["left", "bottom", "width", "height", "aspect", "zorder"],
     "spine": ["visible", "color", "linewidth", "zorder"],
     "spine_group": ["visible", "color", "linewidth", "zorder"],
@@ -3062,8 +3524,24 @@ def _special_axes_edit_contract(kind: str, artist: Any, current_props: dict, edi
         return current_props, []
     if kind in {"axis_x", "axis_y", "axis_z"}:
         return current_props, [prop for prop in editable if prop in _SPECIAL_AXES_SAFE_AXIS_PROPS]
-    if kind in {"text", "legend"}:
+    if kind == "legend":
+        if family == "polar" and _radar_axes(context.get("axes")):
+            return current_props, editable
         return current_props, [prop for prop in editable if prop != "position"]
+    if kind == "text":
+        protected = [prop for prop in editable if prop != "position"]
+        radar_metadata = _radar_metadata_for_artist(artist)
+        if radar_metadata and radar_metadata.get("radarSemanticRole") == "dimension_label":
+            current_props = {
+                **current_props,
+                **radar_metadata,
+                "radar_label_offset": {
+                    "dx": float(getattr(artist, "_scifigure_radar_label_dx", 0.0) or 0.0),
+                    "dy": float(getattr(artist, "_scifigure_radar_label_dy", 0.0) or 0.0),
+                },
+            }
+            protected.append("radar_label_offset")
+        return current_props, list(dict.fromkeys(protected))
     return current_props, editable
 
 
@@ -3463,6 +3941,12 @@ def _legend_container_gid(gid: str) -> Optional[str]:
     )
     if figure_match:
         return f"legend.figure.{figure_match.group(1)}"
+    extra_axes_match = re.match(
+        r"^legend_(?:title|text|line|patch|collection)\.(\d+)\.extra\.(\d+)",
+        gid,
+    )
+    if extra_axes_match:
+        return f"legend.{extra_axes_match.group(1)}.extra.{extra_axes_match.group(2)}"
     axes_match = re.match(
         r"^legend_(?:title|text|line|patch|collection)\.(\d+)", gid
     )
@@ -3553,6 +4037,11 @@ def _build_object_identity(obj: dict) -> dict:
     for relation_name in ("axesFamily", "projection", "parentSubplotId", "ownerSubplotId"):
         if obj.get(relation_name) is not None:
             relation[relation_name] = obj[relation_name]
+    for relation_name in ("radarId", "radarSemanticRole", "radarSeriesId"):
+        if obj.get(relation_name) is not None:
+            relation[relation_name] = obj[relation_name]
+    if obj.get("radarDimensionIndex") is not None:
+        relation["radarDimensionIndex"] = int(obj["radarDimensionIndex"])
     for relation_name in ("pieId", "pieSliceId", "pieLabelId", "pieValueLabelId"):
         if obj.get(relation_name) is not None:
             relation[relation_name] = obj[relation_name]
@@ -3599,9 +4088,13 @@ def _build_object_identity(obj: dict) -> dict:
 
 
 def _property_derived_effects(prop: str) -> list[str]:
-    if prop in {"text", "fontsize", "fontfamily", "fontweight", "fontstyle", "rotation"}:
+    if prop in {
+        "text", "fontsize", "fontfamily", "fontweight", "fontstyle", "rotation",
+        "bbox_visible", "bbox_facecolor", "bbox_edgecolor", "bbox_alpha",
+        "bbox_linewidth", "bbox_pad", "bbox_boxstyle",
+    }:
         return ["text_bounds"]
-    if prop == "position":
+    if prop in {"position", "radar_label_offset"}:
         return ["object_bounds"]
     if prop == "anchor_position":
         return ["annotation_arrow_geometry"]
@@ -3626,17 +4119,18 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
             or obj.get("kind") in {"quiver"}
             or str(obj.get("role", "")).startswith("diagram_")
             or (obj.get("kind") == "grid" and prop == "visible")
+            or (obj.get("kind") == "heatmap" and prop == "alpha")
         )
         scopes = ["object"]
-        if obj.get("role") and prop not in {"position", "anchor_position"}:
+        if obj.get("role") and prop not in {"position", "anchor_position", "radar_label_offset"}:
             scopes.append("group")
         if obj.get("kind") in {"axis_x", "axis_y"} and prop in _AXIS_TICK_TYPOGRAPHY_GROUP_PROPS:
             scopes.append("group")
         if relation.get("subplotId"):
             scopes.append("subplot")
-        if prop not in {"position", "left", "bottom", "width", "height"}:
+        if prop not in {"position", "radar_label_offset", "left", "bottom", "width", "height"}:
             scopes.append("figure")
-        if prop not in _CROSS_FIGURE_UNSAFE_PROPS:
+        if prop != "radar_label_offset" and prop not in _CROSS_FIGURE_UNSAFE_PROPS:
             scopes.append("cross_figure")
 
         preview = "exact" if prop in _LOCAL_PREVIEW_PROPS and not requires_backend_patch else "none"
@@ -3652,12 +4146,14 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
             "preview": preview,
             "replay": replay,
         }
-        if prop in {"position", "anchor_position"}:
+        if prop in {"position", "anchor_position", "radar_label_offset"}:
             capability["preview"] = "approximate"
-            capability["replay"] = "conditional"
+            capability["replay"] = "stable" if prop == "radar_label_offset" else "conditional"
             capability["coordinateSpace"] = (
                 obj.get("currentProps", {}).get("anchor_coord_system", "none")
                 if prop == "anchor_position"
+                else "display"
+                if prop == "radar_label_offset"
                 else identity.get("coordinateSpace", "none")
             )
         elif prop in {"left", "bottom", "width", "height"}:
@@ -3728,6 +4224,145 @@ def _parent_child_gids(kind: str, artist: Any, raw_elements, artist_to_gid) -> l
 # ---------------------------------------------------------------------------
 # Introspection entry point
 # ---------------------------------------------------------------------------
+
+_SVG_POINTS_PER_INCH = 72.0
+_SVG_CANVAS_PADDING_INCHES = 0.08
+_SVG_CANVAS_MAX_EXPANSION_FACTOR = 4.0
+
+
+def _artist_bbox_in_inches(artist: Any, fig: Any, renderer: Any) -> Optional[Bbox]:
+    """Return a visible artist's rendered bounds without honoring ``in_layout``."""
+    try:
+        if hasattr(artist, "get_visible") and not artist.get_visible():
+            return None
+
+        bbox = None
+        get_tightbbox = getattr(artist, "get_tightbbox", None)
+        if callable(get_tightbbox):
+            bbox = get_tightbbox(renderer)
+        if bbox is None:
+            get_window_extent = getattr(artist, "get_window_extent", None)
+            if callable(get_window_extent):
+                bbox = get_window_extent(renderer)
+        if bbox is None:
+            return None
+
+        extents = np.asarray(bbox.extents, dtype=float)
+        if extents.shape != (4,) or not np.isfinite(extents).all():
+            return None
+        if abs(extents[2] - extents[0]) < 1e-12 and abs(extents[3] - extents[1]) < 1e-12:
+            return None
+        return Bbox.from_extents(*extents).transformed(fig.dpi_scale_trans.inverted())
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _collect_rendered_artist_bounds(fig: Any, renderer: Any) -> Optional[Bbox]:
+    """Collect visible rendered bounds, including artists excluded from layout."""
+    try:
+        candidates: list[Bbox] = []
+        for artist in fig.findobj():
+            if artist is fig:
+                continue
+            bbox = _artist_bbox_in_inches(artist, fig, renderer)
+            if bbox is not None:
+                candidates.append(bbox)
+        if not candidates:
+            return None
+        left = min(bbox.x0 for bbox in candidates)
+        bottom = min(bbox.y0 for bbox in candidates)
+        right = max(bbox.x1 for bbox in candidates)
+        top = max(bbox.y1 for bbox in candidates)
+        return Bbox.from_extents(left, bottom, right, top)
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _expanded_svg_canvas(fig) -> tuple[Optional[Bbox], dict[str, Any]]:
+    """Expand overflowing edges while preserving the original Figure canvas."""
+    width_in = float(fig.get_figwidth())
+    height_in = float(fig.get_figheight())
+    left_in = 0.0
+    bottom_in = 0.0
+    right_in = width_in
+    top_in = height_in
+
+    try:
+        canvas = fig.canvas
+        canvas.draw()
+        renderer = getattr(canvas, "renderer", None) or canvas.get_renderer()
+        tight_bbox = fig.get_tightbbox(renderer)
+        if tight_bbox is not None:
+            tight_extents = np.asarray(tight_bbox.extents, dtype=float)
+            if tight_extents.shape == (4,) and np.isfinite(tight_extents).all():
+                tight_left, tight_bottom, tight_right, tight_top = tight_extents.tolist()
+                left_in = min(left_in, tight_left)
+                bottom_in = min(bottom_in, tight_bottom)
+                right_in = max(right_in, tight_right)
+                top_in = max(top_in, tight_top)
+
+        # ``Figure.get_tightbbox`` intentionally omits artists with
+        # ``in_layout=False``. Those artists are still emitted by SVG and are
+        # commonly used for legends/annotations positioned outside a subplot.
+        rendered_bbox = _collect_rendered_artist_bounds(fig, renderer)
+        if rendered_bbox is not None:
+            left_in = min(left_in, rendered_bbox.x0)
+            bottom_in = min(bottom_in, rendered_bbox.y0)
+            right_in = max(right_in, rendered_bbox.x1)
+            top_in = max(top_in, rendered_bbox.y1)
+
+        max_horizontal_extension = max(width_in * _SVG_CANVAS_MAX_EXPANSION_FACTOR, 4.0)
+        max_vertical_extension = max(height_in * _SVG_CANVAS_MAX_EXPANSION_FACTOR, 4.0)
+        left_in = max(
+            left_in - (_SVG_CANVAS_PADDING_INCHES if left_in < 0 else 0),
+            -max_horizontal_extension,
+        )
+        bottom_in = max(
+            bottom_in - (_SVG_CANVAS_PADDING_INCHES if bottom_in < 0 else 0),
+            -max_vertical_extension,
+        )
+        right_in = min(
+            right_in + (_SVG_CANVAS_PADDING_INCHES if right_in > width_in else 0),
+            width_in + max_horizontal_extension,
+        )
+        top_in = min(
+            top_in + (_SVG_CANVAS_PADDING_INCHES if top_in > height_in else 0),
+            height_in + max_vertical_extension,
+        )
+    except Exception:
+        left_in = 0.0
+        bottom_in = 0.0
+        right_in = width_in
+        top_in = height_in
+
+    expanded = any(abs(value) > 1e-9 for value in (
+        left_in,
+        bottom_in,
+        right_in - width_in,
+        top_in - height_in,
+    ))
+    save_bbox = Bbox.from_extents(left_in, bottom_in, right_in, top_in) if expanded else None
+
+    def points(value: float) -> float:
+        return round(float(value) * _SVG_POINTS_PER_INCH, 6)
+
+    viewport = {
+        "version": 1,
+        "expanded": expanded,
+        "canvas": {
+            "x": 0.0,
+            "y": 0.0,
+            "width": points(right_in - left_in),
+            "height": points(top_in - bottom_in),
+        },
+        "figure": {
+            "x": points(-left_in),
+            "y": points(top_in - height_in),
+            "width": points(width_in),
+            "height": points(height_in),
+        },
+    }
+    return save_bbox, viewport
 
 def introspect_figure(fig, semantic_manifest=None) -> dict:
     """Accept a fully rendered Figure, return {svg, manifest}."""
@@ -3876,154 +4511,25 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             if text_gid and marker_gid:
                 legend_relationships.setdefault(text_gid, {})["legendMarkerIds"] = [marker_gid]
                 legend_relationships.setdefault(marker_gid, {})["legendTextId"] = text_gid
+    for gid, relationships in _build_label_matched_series_legend_relationships(
+        raw_elements,
+        artist_to_gid,
+        {"errorbar_container"},
+    ).items():
+        legend_relationships.setdefault(gid, {}).update(relationships)
 
-    pie_relationships = {}
-    pie_slices = []
-    for slice_gid, slice_kind, slice_artist in raw_elements:
-        provenance = _intercepted_complex_artists.get(slice_artist, {})
-        if slice_kind != "patch" or provenance.get("semanticRole") != "pie_slice":
-            continue
-        label_gid = artist_to_gid.get(provenance.get("labelArtist"))
-        value_label_gid = artist_to_gid.get(provenance.get("valueLabelArtist"))
-        relation = {
-            "pieId": provenance.get("pieId"),
-            "sliceIndex": provenance.get("sliceIndex"),
-            "pieLabelId": label_gid,
-            "pieValueLabelId": value_label_gid,
-        }
-        pie_relationships[slice_gid] = {key: value for key, value in relation.items() if value is not None}
-        for text_gid in (label_gid, value_label_gid):
-            if text_gid:
-                pie_relationships[text_gid] = {
-                    "pieId": provenance.get("pieId"),
-                    "sliceIndex": provenance.get("sliceIndex"),
-                    "pieSliceId": slice_gid,
-                }
-        normalized_label = " ".join(str(provenance.get("legendLabel") or "").strip().lower().split())
-        pie_slices.append((slice_gid, provenance.get("axes"), normalized_label))
+    pie_relationships = _build_pie_legend_relationships(raw_elements, artist_to_gid)
 
-    pie_label_counts = {}
-    global_pie_label_counts = {}
-    for _, axes, normalized_label in pie_slices:
-        if normalized_label:
-            key = (axes, normalized_label)
-            pie_label_counts[key] = pie_label_counts.get(key, 0) + 1
-            global_pie_label_counts[normalized_label] = global_pie_label_counts.get(normalized_label, 0) + 1
-    for slice_gid, axes, normalized_label in pie_slices:
-        if not normalized_label or pie_label_counts.get((axes, normalized_label)) != 1:
-            continue
-        marker_gids = []
-        for _, legend_kind, legend in raw_elements:
-            if legend_kind != "legend":
-                continue
-            legend_axes = getattr(legend, "axes", None)
-            if legend_axes is not axes and legend_axes is not None:
-                continue
-            if legend_axes is None and global_pie_label_counts.get(normalized_label) != 1:
-                continue
-            handles = _get_legend_handles(legend)
-            for index, text in enumerate(legend.get_texts()):
-                if index >= len(handles):
-                    continue
-                legend_label = " ".join(str(text.get_text()).strip().lower().split())
-                marker_gid = artist_to_gid.get(handles[index])
-                if legend_label == normalized_label and marker_gid:
-                    marker_gids.append(marker_gid)
-        marker_gids = list(dict.fromkeys(marker_gids))
-        if len(marker_gids) != 1:
-            continue
-        marker_gid = marker_gids[0]
-        pie_relationships.setdefault(slice_gid, {})["legendMarkerIds"] = [marker_gid]
-        pie_relationships.setdefault(marker_gid, {}).update({
-            "pieId": pie_relationships.get(slice_gid, {}).get("pieId"),
-            "sliceIndex": pie_relationships.get(slice_gid, {}).get("sliceIndex"),
-            "pieSliceId": slice_gid,
-        })
-        legend_relationships.setdefault(marker_gid, {})["parentId"] = slice_gid
-
-    histogram_entries = []
-    for histogram_gid, histogram_kind, histogram_artist in raw_elements:
-        provenance = _intercepted_complex_artists.get(histogram_artist, {})
-        label = provenance.get("legendLabel")
-        if histogram_kind not in {"bar_container", "patch"} or provenance.get("family") != "hist" or not label:
-            continue
-        normalized_label = " ".join(str(label).strip().lower().split())
-        if normalized_label:
-            histogram_entries.append((histogram_gid, provenance.get("axes"), normalized_label))
-
-    histogram_label_counts = {}
-    for _, axes, normalized_label in histogram_entries:
-        key = (axes, normalized_label)
-        histogram_label_counts[key] = histogram_label_counts.get(key, 0) + 1
-
-    for histogram_gid, axes, normalized_label in histogram_entries:
-        if histogram_label_counts.get((axes, normalized_label)) != 1:
-            continue
-        matching_marker_gids = []
-        for _, legend_kind, legend in raw_elements:
-            if legend_kind != "legend" or getattr(legend, "axes", None) is not axes:
-                continue
-            handles = _get_legend_handles(legend)
-            for index, text in enumerate(legend.get_texts()):
-                if index >= len(handles):
-                    continue
-                text_label = " ".join(str(text.get_text()).strip().lower().split())
-                marker_gid = artist_to_gid.get(handles[index])
-                if text_label == normalized_label and marker_gid:
-                    matching_marker_gids.append(marker_gid)
-        matching_marker_gids = list(dict.fromkeys(matching_marker_gids))
-        if len(matching_marker_gids) != 1:
-            continue
-        marker_gid = matching_marker_gids[0]
-        legend_relationships.setdefault(histogram_gid, {})["legendMarkerIds"] = [marker_gid]
-        legend_relationships.setdefault(marker_gid, {})["parentId"] = histogram_gid
-
-    vector_field_entries = []
-    for field_gid, field_kind, field_artist in raw_elements:
-        if field_kind not in {"quiver", "streamplot"}:
-            continue
-        provenance = _intercepted_complex_artists.get(field_artist, {})
-        label = _safe_artist_label(field_artist, "")
-        normalized_label = " ".join(str(label).strip().lower().split())
-        if not normalized_label or normalized_label.startswith("_"):
-            continue
-        relation_name = "quiverId" if field_kind == "quiver" else "streamplotId"
-        vector_field_entries.append((
-            field_gid,
-            provenance.get("axes"),
-            normalized_label,
-            relation_name,
-            provenance.get(relation_name),
-        ))
-
-    vector_label_counts = {}
-    for _, axes, normalized_label, _, _ in vector_field_entries:
-        key = (axes, normalized_label)
-        vector_label_counts[key] = vector_label_counts.get(key, 0) + 1
-
-    for field_gid, axes, normalized_label, relation_name, relation_value in vector_field_entries:
-        if vector_label_counts.get((axes, normalized_label)) != 1:
-            continue
-        matching_marker_gids = []
-        for _, legend_kind, legend in raw_elements:
-            if legend_kind != "legend" or getattr(legend, "axes", None) is not axes:
-                continue
-            handles = _get_legend_handles(legend)
-            for index, text in enumerate(legend.get_texts()):
-                if index >= len(handles):
-                    continue
-                text_label = " ".join(str(text.get_text()).strip().lower().split())
-                marker_gid = artist_to_gid.get(handles[index])
-                if text_label == normalized_label and marker_gid:
-                    matching_marker_gids.append(marker_gid)
-        matching_marker_gids = list(dict.fromkeys(matching_marker_gids))
-        if len(matching_marker_gids) != 1:
-            continue
-        marker_gid = matching_marker_gids[0]
-        legend_relationships.setdefault(field_gid, {})["legendMarkerIds"] = [marker_gid]
-        legend_relationships.setdefault(marker_gid, {})["parentId"] = field_gid
-        if relation_value:
-            legend_relationships.setdefault(marker_gid, {})[relation_name] = relation_value
+    for gid, relationships in _build_histogram_legend_relationships(
+        raw_elements,
+        artist_to_gid,
+    ).items():
+        legend_relationships.setdefault(gid, {}).update(relationships)
+    for gid, relationships in _build_vector_field_legend_relationships(
+        raw_elements,
+        artist_to_gid,
+    ).items():
+        legend_relationships.setdefault(gid, {}).update(relationships)
 
     complex_artist_context = _build_complex_artist_context(raw_elements, annotation_links)
 
@@ -4170,6 +4676,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
         if role:
             obj["role"] = role
         _apply_diagram_metadata_to_object(obj, artist_obj)
+        _apply_radar_metadata_to_object(obj, artist_obj)
 
         complex_provenance = _intercepted_complex_artists.get(artist_obj, {})
         if complex_provenance.get("family") == "quiver" and complex_provenance.get("quiverId"):
@@ -4374,11 +4881,14 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
     matplotlib.rcParams["svg.hashsalt"] = "scifigure-v1"
     matplotlib.rcParams["svg.fonttype"] = "none"
     buf = io.BytesIO()
+    svg_canvas_bbox, render_viewport = _expanded_svg_canvas(fig)
     svg_serialize_started = time.perf_counter()
     fig.savefig(
         buf,
         format="svg",
         metadata={"Date": None},
+        bbox_inches=svg_canvas_bbox,
+        pad_inches=0,
     )
     svg = buf.getvalue().decode("utf-8")
     svg_serialize_ms = max(0, round((time.perf_counter() - svg_serialize_started) * 1000))
@@ -4532,6 +5042,7 @@ def introspect_figure(fig, semantic_manifest=None) -> dict:
             },
         },
         "objects": objects,
+        "renderViewport": render_viewport,
         "colorGroups": list(color_groups.values()),
         "palettes": palettes_list,
         "groups": groups_list,
@@ -4614,6 +5125,266 @@ def _get_legend_handles(legend) -> list:
         if handle not in result:
             result.append(handle)
     return result
+
+
+def _is_legend_collection_handle(handle: Any) -> bool:
+    try:
+        import matplotlib.collections as mcoll
+        return isinstance(handle, mcoll.Collection)
+    except Exception:
+        return hasattr(handle, "get_sizes")
+
+
+def _normalized_legend_label(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _series_axes_for_legend_match(artist: Any) -> Any:
+    axes = getattr(artist, "axes", None)
+    if axes is not None:
+        return axes
+    try:
+        for child in artist.get_children():
+            child_axes = getattr(child, "axes", None)
+            if child_axes is not None:
+                return child_axes
+    except Exception:
+        pass
+    return None
+
+
+def _build_label_matched_series_legend_relationships(
+    raw_elements,
+    artist_to_gid,
+    series_kinds: set[str],
+) -> dict:
+    series_entries = []
+    for series_gid, series_kind, series_artist in raw_elements:
+        if series_kind not in series_kinds:
+            continue
+        normalized_label = _normalized_legend_label(_safe_artist_label(series_artist, ""))
+        if not normalized_label or normalized_label.startswith("_"):
+            continue
+        series_entries.append((series_gid, _series_axes_for_legend_match(series_artist), normalized_label))
+
+    label_counts = {}
+    for _, axes, normalized_label in series_entries:
+        key = (axes, normalized_label)
+        label_counts[key] = label_counts.get(key, 0) + 1
+
+    relationships = {}
+    for series_gid, axes, normalized_label in series_entries:
+        if label_counts.get((axes, normalized_label)) != 1:
+            continue
+        matching_marker_gids = []
+        for _, legend_kind, legend in raw_elements:
+            if legend_kind != "legend" or getattr(legend, "axes", None) is not axes:
+                continue
+            handles = _get_legend_handles(legend)
+            for index, text in enumerate(legend.get_texts()):
+                if index >= len(handles):
+                    continue
+                text_label = _normalized_legend_label(text.get_text())
+                marker_gid = artist_to_gid.get(handles[index])
+                if text_label == normalized_label and marker_gid:
+                    matching_marker_gids.append(marker_gid)
+        matching_marker_gids = list(dict.fromkeys(matching_marker_gids))
+        if len(matching_marker_gids) != 1:
+            continue
+        marker_gid = matching_marker_gids[0]
+        relationships.setdefault(series_gid, {})["legendMarkerIds"] = [marker_gid]
+        relationships.setdefault(marker_gid, {})["parentId"] = series_gid
+    return relationships
+
+
+def _matching_legend_marker_gids(
+    raw_elements,
+    artist_to_gid,
+    axes: Any,
+    normalized_label: str,
+    global_label_count: int,
+) -> list[str]:
+    marker_gids = []
+    for _, legend_kind, legend in raw_elements:
+        if legend_kind != "legend":
+            continue
+        legend_axes = getattr(legend, "axes", None)
+        if legend_axes is not axes and legend_axes is not None:
+            continue
+        if legend_axes is None and global_label_count != 1:
+            continue
+        handles = _get_legend_handles(legend)
+        for index, text in enumerate(legend.get_texts()):
+            if index >= len(handles):
+                continue
+            marker_gid = artist_to_gid.get(handles[index])
+            if _normalized_legend_label(text.get_text()) == normalized_label and marker_gid:
+                marker_gids.append(marker_gid)
+    return list(dict.fromkeys(marker_gids))
+
+
+def _build_histogram_legend_relationships(raw_elements, artist_to_gid) -> dict:
+    entries = []
+    for histogram_gid, histogram_kind, histogram_artist in raw_elements:
+        provenance = _intercepted_complex_artists.get(histogram_artist, {})
+        normalized_label = _normalized_legend_label(provenance.get("legendLabel"))
+        if (
+            histogram_kind not in {"bar_container", "patch"}
+            or provenance.get("family") != "hist"
+            or not normalized_label
+        ):
+            continue
+        entries.append((histogram_gid, provenance.get("axes"), normalized_label))
+
+    local_counts = {}
+    global_counts = {}
+    for _, axes, normalized_label in entries:
+        local_key = (axes, normalized_label)
+        local_counts[local_key] = local_counts.get(local_key, 0) + 1
+        global_counts[normalized_label] = global_counts.get(normalized_label, 0) + 1
+
+    relationships = {}
+    for histogram_gid, axes, normalized_label in entries:
+        if local_counts.get((axes, normalized_label)) != 1:
+            continue
+        marker_gids = _matching_legend_marker_gids(
+            raw_elements,
+            artist_to_gid,
+            axes,
+            normalized_label,
+            global_counts.get(normalized_label, 0),
+        )
+        if len(marker_gids) != 1:
+            continue
+        marker_gid = marker_gids[0]
+        relationships.setdefault(histogram_gid, {})["legendMarkerIds"] = [marker_gid]
+        relationships.setdefault(marker_gid, {})["parentId"] = histogram_gid
+    return relationships
+
+
+def _build_vector_field_legend_relationships(raw_elements, artist_to_gid) -> dict:
+    entries = []
+    for field_gid, field_kind, field_artist in raw_elements:
+        if field_kind not in {"quiver", "streamplot"}:
+            continue
+        provenance = _intercepted_complex_artists.get(field_artist, {})
+        normalized_label = _normalized_legend_label(_safe_artist_label(field_artist, ""))
+        if not normalized_label or normalized_label.startswith("_"):
+            continue
+        relation_name = "quiverId" if field_kind == "quiver" else "streamplotId"
+        entries.append((
+            field_gid,
+            provenance.get("axes") or _series_axes_for_legend_match(field_artist),
+            normalized_label,
+            relation_name,
+            provenance.get(relation_name),
+            artist_to_gid.get(provenance.get("lineArtist")),
+        ))
+
+    local_counts = {}
+    global_counts = {}
+    for _, axes, normalized_label, _, _, _ in entries:
+        local_key = (axes, normalized_label)
+        local_counts[local_key] = local_counts.get(local_key, 0) + 1
+        global_counts[normalized_label] = global_counts.get(normalized_label, 0) + 1
+
+    relationships = {}
+    for field_gid, axes, normalized_label, relation_name, relation_value, line_collection_id in entries:
+        if local_counts.get((axes, normalized_label)) != 1:
+            continue
+        marker_gids = _matching_legend_marker_gids(
+            raw_elements,
+            artist_to_gid,
+            axes,
+            normalized_label,
+            global_counts.get(normalized_label, 0),
+        )
+        if len(marker_gids) != 1:
+            continue
+        marker_gid = marker_gids[0]
+        field_relationships = relationships.setdefault(field_gid, {})
+        field_relationships["legendMarkerIds"] = [marker_gid]
+        if relation_value:
+            field_relationships[relation_name] = relation_value
+        if line_collection_id:
+            field_relationships["lineCollectionId"] = line_collection_id
+        marker_relationships = relationships.setdefault(marker_gid, {})
+        marker_relationships["parentId"] = field_gid
+        if relation_value:
+            marker_relationships[relation_name] = relation_value
+    return relationships
+
+
+def _build_pie_legend_relationships(raw_elements, artist_to_gid) -> dict:
+    relationships = {}
+    pie_slices = []
+    for slice_gid, slice_kind, slice_artist in raw_elements:
+        provenance = _intercepted_complex_artists.get(slice_artist, {})
+        if slice_kind != "patch" or provenance.get("semanticRole") != "pie_slice":
+            continue
+        label_gid = artist_to_gid.get(provenance.get("labelArtist"))
+        value_label_gid = artist_to_gid.get(provenance.get("valueLabelArtist"))
+        relation = {
+            "pieId": provenance.get("pieId"),
+            "sliceIndex": provenance.get("sliceIndex"),
+            "pieLabelId": label_gid,
+            "pieValueLabelId": value_label_gid,
+        }
+        relationships[slice_gid] = {
+            key: value for key, value in relation.items() if value is not None
+        }
+        for text_gid in (label_gid, value_label_gid):
+            if text_gid:
+                relationships[text_gid] = {
+                    "pieId": provenance.get("pieId"),
+                    "sliceIndex": provenance.get("sliceIndex"),
+                    "pieSliceId": slice_gid,
+                }
+        pie_slices.append((
+            slice_gid,
+            provenance.get("axes"),
+            _normalized_legend_label(provenance.get("legendLabel")),
+        ))
+
+    label_counts = {}
+    global_label_counts = {}
+    for _, axes, normalized_label in pie_slices:
+        if normalized_label:
+            key = (axes, normalized_label)
+            label_counts[key] = label_counts.get(key, 0) + 1
+            global_label_counts[normalized_label] = global_label_counts.get(normalized_label, 0) + 1
+
+    for slice_gid, axes, normalized_label in pie_slices:
+        if not normalized_label or label_counts.get((axes, normalized_label)) != 1:
+            continue
+        marker_gids = []
+        for _, legend_kind, legend in raw_elements:
+            if legend_kind != "legend":
+                continue
+            legend_axes = getattr(legend, "axes", None)
+            if legend_axes is not axes and legend_axes is not None:
+                continue
+            if legend_axes is None and global_label_counts.get(normalized_label) != 1:
+                continue
+            handles = _get_legend_handles(legend)
+            for index, text in enumerate(legend.get_texts()):
+                if index >= len(handles):
+                    continue
+                marker_gid = artist_to_gid.get(handles[index])
+                if _normalized_legend_label(text.get_text()) == normalized_label and marker_gid:
+                    marker_gids.append(marker_gid)
+        marker_gids = list(dict.fromkeys(marker_gids))
+        if len(marker_gids) != 1:
+            continue
+        marker_gid = marker_gids[0]
+        relationships.setdefault(slice_gid, {})["legendMarkerIds"] = [marker_gid]
+        relationships.setdefault(marker_gid, {}).update({
+            "parentId": slice_gid,
+            "pieId": relationships.get(slice_gid, {}).get("pieId"),
+            "sliceIndex": relationships.get(slice_gid, {}).get("sliceIndex"),
+            "pieSliceId": slice_gid,
+        })
+    return relationships
 
 
 def _legend_markerfirst(legend) -> bool:
@@ -4751,6 +5522,133 @@ def _apply_legend_marker_scale(legend, value: Any) -> None:
 
 def _apply_legend_marker_yoffset(legend, value: Any) -> None:
     setattr(legend, "_scifigure_marker_yoffset", float(value))
+
+
+_TEXT_BBOX_PROPS = {
+    "bbox_visible",
+    "bbox_facecolor",
+    "bbox_edgecolor",
+    "bbox_alpha",
+    "bbox_linewidth",
+    "bbox_pad",
+    "bbox_boxstyle",
+}
+
+
+def _ensure_text_bbox_patch(artist: Any):
+    patch = getattr(artist, "get_bbox_patch", lambda: None)()
+    if patch is not None:
+        return patch
+    artist.set_bbox({
+        "boxstyle": "round,pad=0.3",
+        "facecolor": "white",
+        "edgecolor": "black",
+        "linewidth": 0.8,
+        "alpha": 1.0,
+    })
+    return artist.get_bbox_patch()
+
+
+def _text_bbox_boxstyle_name(patch: Any) -> str:
+    try:
+        return type(patch.get_boxstyle()).__name__.lower()
+    except Exception:
+        return "round"
+
+
+def _text_bbox_pad(patch: Any) -> float:
+    try:
+        return float(getattr(patch.get_boxstyle(), "pad", 0.3))
+    except Exception:
+        return 0.3
+
+
+def _apply_text_bbox_patch(artist: Any, prop: str, value: Any):
+    if not hasattr(artist, "set_bbox"):
+        return "unsupported_text_bbox"
+    if prop == "bbox_visible" and not bool(value):
+        patch = getattr(artist, "get_bbox_patch", lambda: None)()
+        if patch is not None:
+            patch.set_visible(False)
+        return None
+    patch = _ensure_text_bbox_patch(artist)
+    if patch is None:
+        return "unsupported_text_bbox"
+    patch.set_visible(True)
+    try:
+        if prop == "bbox_visible":
+            patch.set_visible(bool(value))
+        elif prop == "bbox_facecolor":
+            patch.set_facecolor(value)
+        elif prop == "bbox_edgecolor":
+            patch.set_edgecolor(value)
+        elif prop == "bbox_alpha":
+            patch.set_alpha(float(value))
+        elif prop == "bbox_linewidth":
+            patch.set_linewidth(max(0.0, float(value)))
+        elif prop == "bbox_pad":
+            patch.set_boxstyle(_text_bbox_boxstyle_name(patch), pad=max(0.0, float(value)))
+        elif prop == "bbox_boxstyle":
+            boxstyle = str(value).strip().lower()
+            if boxstyle not in {"round", "square", "round4", "sawtooth"}:
+                return "unsupported_bbox_boxstyle"
+            patch.set_boxstyle(boxstyle, pad=_text_bbox_pad(patch))
+        else:
+            return "unsupported_prop"
+    except (TypeError, ValueError):
+        return "invalid_text_bbox_value"
+    return None
+
+
+def _apply_radar_label_offset(artist: Any, value: Any):
+    metadata = _radar_metadata_for_artist(artist)
+    if not metadata or metadata.get("radarSemanticRole") != "dimension_label":
+        return "unsupported_radar_label_offset"
+    if not isinstance(value, dict):
+        return "invalid_radar_label_offset"
+    try:
+        dx = float(value.get("dx", getattr(artist, "_scifigure_radar_label_dx", 0.0) or 0.0))
+        dy = float(value.get("dy", getattr(artist, "_scifigure_radar_label_dy", 0.0) or 0.0))
+    except (TypeError, ValueError):
+        return "invalid_radar_label_offset"
+    if not np.isfinite(dx) or not np.isfinite(dy) or max(abs(dx), abs(dy)) > 500:
+        return "invalid_radar_label_offset"
+    fig = getattr(artist, "figure", None)
+    if fig is None:
+        return "unsupported_radar_label_offset"
+
+    if not getattr(artist, "_scifigure_radar_offset_draw_installed", False):
+        original_draw = artist.draw
+
+        def draw_with_radar_offset(renderer):
+            current_dx = float(getattr(artist, "_scifigure_radar_label_dx", 0.0) or 0.0)
+            current_dy = float(getattr(artist, "_scifigure_radar_label_dy", 0.0) or 0.0)
+            if current_dx == 0.0 and current_dy == 0.0:
+                return original_draw(renderer)
+
+            current_transform = artist.get_transform()
+            current_figure = getattr(artist, "figure", None)
+            if current_figure is None:
+                return original_draw(renderer)
+
+            from matplotlib.transforms import ScaledTranslation
+            offset = ScaledTranslation(
+                current_dx / 72.0,
+                current_dy / 72.0,
+                current_figure.dpi_scale_trans,
+            )
+            artist.set_transform(current_transform + offset)
+            try:
+                return original_draw(renderer)
+            finally:
+                artist.set_transform(current_transform)
+
+        artist.draw = draw_with_radar_offset
+        setattr(artist, "_scifigure_radar_offset_draw_installed", True)
+
+    setattr(artist, "_scifigure_radar_label_dx", dx)
+    setattr(artist, "_scifigure_radar_label_dy", dy)
+    return None
 
 # Map manifest prop names → matplotlib setter method names
 _PROP_TO_SETTER = {
@@ -4989,6 +5887,12 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
     if gid.startswith(("xtick.", "ytick.")) and prop == "text":
         _set_tick_label_text_override(artist, gid, value)
         return
+
+    if prop == "radar_label_offset":
+        return _apply_radar_label_offset(artist, value)
+
+    if prop in _TEXT_BBOX_PROPS:
+        return _apply_text_bbox_patch(artist, prop, value)
 
     if gid.startswith("heatmap."):
         if prop == "cmap":
@@ -5560,6 +6464,12 @@ def _apply_single(artist, prop: str, value: Any, gid: str = ""):
 
 def _axes_index_from_gid(gid: str) -> int:
     ax_idx = 0
+    axes_legend_match = re.match(
+        r"^(?:legend|legend_(?:title|text|line|patch|collection))\.(\d+)(?:\.|$)",
+        gid,
+    )
+    if axes_legend_match:
+        return int(axes_legend_match.group(1))
     match = re.search(r'\.(\d+)(?:\.\d+)?$', gid)
     if match:
         try:
@@ -5591,6 +6501,44 @@ def _build_gid_index(fig) -> dict:
             artist_to_gid[artist] = gid
     subplot_meta = _build_subplot_layout_meta(raw_elements)
     child_to_parent = {}
+    relation_metadata = {}
+
+    for legend_gid, kind, legend in raw_elements:
+        if kind != "legend":
+            continue
+        title_gid = artist_to_gid.get(legend.get_title())
+        text_gids = [artist_to_gid.get(text) for text in legend.get_texts()]
+        marker_gids = [artist_to_gid.get(handle) for handle in _get_legend_handles(legend)]
+        relation_metadata.setdefault(legend_gid, {}).update({
+            "legendTitleId": title_gid,
+            "legendTextIds": [child_gid for child_gid in text_gids if child_gid],
+            "legendMarkerIds": [child_gid for child_gid in marker_gids if child_gid],
+        })
+        for entry_index, marker_gid in enumerate(marker_gids):
+            text_gid = text_gids[entry_index] if entry_index < len(text_gids) else None
+            if marker_gid and text_gid:
+                relation_metadata.setdefault(marker_gid, {})["legendTextId"] = text_gid
+    for gid, relationships in _build_label_matched_series_legend_relationships(
+        raw_elements,
+        artist_to_gid,
+        {"errorbar_container"},
+    ).items():
+        relation_metadata.setdefault(gid, {}).update(relationships)
+    for gid, relationships in _build_pie_legend_relationships(
+        raw_elements,
+        artist_to_gid,
+    ).items():
+        relation_metadata.setdefault(gid, {}).update(relationships)
+    for gid, relationships in _build_histogram_legend_relationships(
+        raw_elements,
+        artist_to_gid,
+    ).items():
+        relation_metadata.setdefault(gid, {}).update(relationships)
+    for gid, relationships in _build_vector_field_legend_relationships(
+        raw_elements,
+        artist_to_gid,
+    ).items():
+        relation_metadata.setdefault(gid, {}).update(relationships)
 
     for gid, kind, artist in raw_elements:
         if kind not in _PARENT_OBJECT_KINDS:
@@ -5608,6 +6556,7 @@ def _build_gid_index(fig) -> dict:
             "artist": artist,
             "parent": child_to_parent.get(gid),
             "subplotMeta": subplot_meta.get(gid, {}),
+            "relationMetadata": relation_metadata.get(gid, {}),
         }
         for gid, kind, artist in raw_elements
     }
@@ -5619,6 +6568,49 @@ def _build_gid_map(fig) -> dict:
         gid: item["artist"]
         for gid, item in _build_gid_index(fig).items()
     }
+
+
+def _errorbar_legend_marker_gids_for_target(gid: str, gid_index: dict) -> list[str]:
+    gid_info = gid_index.get(gid, {})
+    parent_gid = gid if gid.startswith("container.errorbar.") else None
+    if parent_gid is None:
+        parent_info = gid_info.get("parent")
+        if parent_info and parent_info[1] == "errorbar_container":
+            parent_gid = parent_info[0]
+    if not parent_gid:
+        return []
+    relation_metadata = gid_index.get(parent_gid, {}).get("relationMetadata", {})
+    marker_gids = relation_metadata.get("legendMarkerIds", [])
+    if not isinstance(marker_gids, list):
+        return []
+    return [marker_gid for marker_gid in marker_gids if isinstance(marker_gid, str)]
+
+
+def _mirror_errorbar_color_to_legend_markers(
+    gid: str,
+    prop: str,
+    value: Any,
+    gid_index: dict,
+    gid_map: dict,
+) -> list[dict]:
+    if prop != "color":
+        return []
+    warnings = []
+    for marker_gid in _errorbar_legend_marker_gids_for_target(gid, gid_index):
+        marker = gid_map.get(marker_gid)
+        if marker is None:
+            continue
+        result = _apply_single(marker, "color", value, marker_gid)
+        if result is not None:
+            warnings.append({
+                "type": result,
+                "mode": "backend_patch",
+                "gid": marker_gid,
+                "prop": "color",
+                "value": value,
+                "artist": type(marker).__name__,
+            })
+    return warnings
 
 
 def _entry_identity_metadata(entry: dict) -> dict:
@@ -5637,6 +6629,13 @@ def _entry_identity_metadata(entry: dict) -> dict:
     special_axes_relation = _special_axes_relation_signature(identity)
     if special_axes_relation is not None:
         expected["specialAxesRelationSignature"] = special_axes_relation
+    if entry.get("fingerprintVersion") == 2:
+        legend_marker_relation = _legend_marker_relation_signature(identity)
+        if legend_marker_relation is not None:
+            expected["legendMarkerRelationSignature"] = legend_marker_relation
+        semantic_parent_relation = _semantic_parent_relation_signature(identity)
+        if semantic_parent_relation is not None:
+            expected["semanticParentRelationSignature"] = semantic_parent_relation
 
     return {
         key: value
@@ -5645,7 +6644,14 @@ def _entry_identity_metadata(entry: dict) -> dict:
     }
 
 
-def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=None, subplot_meta: Optional[dict] = None) -> dict:
+def _current_identity_signature(
+    gid: str,
+    kind: str,
+    artist: Any,
+    parent_info=None,
+    subplot_meta: Optional[dict] = None,
+    relation_metadata: Optional[dict] = None,
+) -> dict:
     current_props = _read_props(artist, kind)
     label = _safe_artist_label(artist, gid)
     provenance = _intercepted_complex_artists.get(artist, {})
@@ -5676,11 +6682,15 @@ def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=No
     if parent_info:
         parent_id, parent_kind = parent_info
         obj["parentId"] = parent_id
+    for relation_name, relation_value in (relation_metadata or {}).items():
+        if relation_value is not None:
+            obj[relation_name] = relation_value
     role = _determine_role(gid, parent_kind, kind, artist)
     if role:
         obj["role"] = role
     _apply_diagram_metadata_to_object(obj, artist)
     _apply_axes_relation_metadata(obj, artist)
+    _apply_radar_metadata_to_object(obj, artist)
 
     stable_key, fingerprint = _generate_stable_key_and_fingerprint(
         obj,
@@ -5704,6 +6714,12 @@ def _current_identity_signature(gid: str, kind: str, artist: Any, parent_info=No
     special_axes_relation = _special_axes_relation_signature(identity)
     if special_axes_relation is not None:
         signature["specialAxesRelationSignature"] = special_axes_relation
+    legend_marker_relation = _legend_marker_relation_signature(identity)
+    if legend_marker_relation is not None:
+        signature["legendMarkerRelationSignature"] = legend_marker_relation
+    semantic_parent_relation = _semantic_parent_relation_signature(identity)
+    if semantic_parent_relation is not None:
+        signature["semanticParentRelationSignature"] = semantic_parent_relation
     return signature
 
 
@@ -5743,6 +6759,38 @@ def _identity_mismatch_warning(gid: str, prop: str, mode: str, value: Any, expec
         ]
         mismatches = [
             *[key for key in mismatches if key != "specialAxesRelationSignature"],
+            *(relation_mismatches or ["identity.relation"]),
+        ]
+    if "legendMarkerRelationSignature" in mismatches:
+        expected_relation = expected.get("legendMarkerRelationSignature")
+        actual_relation = actual.get("legendMarkerRelationSignature")
+        relation_mismatches = [
+            f"identity.relation.{field}"
+            for field in _LEGEND_MARKER_RELATION_FIELDS
+            if (
+                expected_relation.get(field) if isinstance(expected_relation, dict) else None
+            ) != (
+                actual_relation.get(field) if isinstance(actual_relation, dict) else None
+            )
+        ]
+        mismatches = [
+            *[key for key in mismatches if key != "legendMarkerRelationSignature"],
+            *(relation_mismatches or ["identity.relation"]),
+        ]
+    if "semanticParentRelationSignature" in mismatches:
+        expected_relation = expected.get("semanticParentRelationSignature")
+        actual_relation = actual.get("semanticParentRelationSignature")
+        relation_mismatches = [
+            f"identity.relation.{field}"
+            for field in _SEMANTIC_PARENT_RELATION_FIELDS
+            if (
+                expected_relation.get(field) if isinstance(expected_relation, dict) else None
+            ) != (
+                actual_relation.get(field) if isinstance(actual_relation, dict) else None
+            )
+        ]
+        mismatches = [
+            *[key for key in mismatches if key != "semanticParentRelationSignature"],
             *(relation_mismatches or ["identity.relation"]),
         ]
     return {
@@ -5789,6 +6837,27 @@ def _is_compatible_legacy_weak_collection_fingerprint(
         and expected.get("stableKey") == actual.get("stableKey")
         and expected.get("fingerprint") == actual.get("legacyWeakFingerprint")
         and int(actual.get("collectionSiblingCount") or 0) <= 1
+    )
+
+
+def _is_compatible_legacy_legend_collection_fingerprint(
+    gid: str,
+    expected: dict,
+    actual: dict,
+    mismatches: list[str],
+) -> bool:
+    """Accept layout-dependent v2 legend fingerprints only with full identity proof."""
+    return (
+        gid.startswith("legend_collection.")
+        and set(mismatches) == {"fingerprint"}
+        and all(
+            key in expected
+            for key in ("stableKey", "seriesKey", "legendMarkerRelationSignature")
+        )
+        and expected.get("stableKey") == actual.get("stableKey")
+        and expected.get("seriesKey") == actual.get("seriesKey")
+        and expected.get("legendMarkerRelationSignature")
+        == actual.get("legendMarkerRelationSignature")
     )
 
 
@@ -5894,6 +6963,7 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
                 artist,
                 parent_info=gid_info.get("parent"),
                 subplot_meta=gid_info.get("subplotMeta"),
+                relation_metadata=gid_info.get("relationMetadata"),
             )
             if actual_is_diagram and "diagramRelationSignature" not in expected_identity:
                 expected_identity["diagramRelationSignature"] = None
@@ -5908,6 +6978,11 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
                 actual_identity,
                 identity_mismatches,
             ) and not _is_compatible_legacy_weak_collection_fingerprint(
+                expected_identity,
+                actual_identity,
+                identity_mismatches,
+            ) and not _is_compatible_legacy_legend_collection_fingerprint(
+                gid,
                 expected_identity,
                 actual_identity,
                 identity_mismatches,
@@ -5953,6 +7028,8 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
             gid.startswith("subplot.") and prop in {"left", "bottom", "width", "height", "aspect"}
         ) or (
             gid.startswith("legend.") and prop == "position"
+        ) or (
+            prop == "radar_label_offset"
         ):
             has_manual_positioning = True
 
@@ -5970,6 +7047,14 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
                 "value": value,
                 "artist": type(artist).__name__,
             })
+        else:
+            warnings.extend(_mirror_errorbar_color_to_legend_markers(
+                gid,
+                prop,
+                value,
+                gid_index,
+                gid_map,
+            ))
 
         if prop in {
             "fontsize",
@@ -6398,15 +7483,28 @@ def replay_render(
             binary_export_started = time.perf_counter()
             buf = io.BytesIO()
             fmt = export_format.lower()
+            binary_canvas_bbox, _ = _expanded_svg_canvas(fig)
             if fmt == 'tiff':
                 from PIL import Image
                 png_buf = io.BytesIO()
-                fig.savefig(png_buf, format='png', dpi=dpi, bbox_inches='tight')
+                fig.savefig(
+                    png_buf,
+                    format='png',
+                    dpi=dpi,
+                    bbox_inches=binary_canvas_bbox,
+                    pad_inches=0,
+                )
                 png_buf.seek(0)
                 img = Image.open(png_buf)
                 img.save(buf, format='TIFF', compression='tiff_lzw', dpi=(dpi, dpi))
             else:
-                fig.savefig(buf, format=fmt, dpi=dpi, bbox_inches='tight')
+                fig.savefig(
+                    buf,
+                    format=fmt,
+                    dpi=dpi,
+                    bbox_inches=binary_canvas_bbox,
+                    pad_inches=0,
+                )
             binary_b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
             timing_breakdown["binaryExportMs"] += elapsed_ms(binary_export_started)
 

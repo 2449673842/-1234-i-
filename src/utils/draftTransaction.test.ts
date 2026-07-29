@@ -4,6 +4,7 @@ import {
   draftAppliesToFigure,
   draftsEligibleForDirectPersistence,
   draftsRequiringEngineApply,
+  evictSupersededGlobalPaletteDrafts,
   isSameDraftPatch,
   mergeDraftSettlement,
   settleDraftTransaction,
@@ -148,5 +149,139 @@ describe('draft transaction settlement', () => {
 
     expect(draftsEligibleForDirectPersistence([codeDraft])).toEqual([]);
     expect(draftsRequiringEngineApply([codeDraft])).toEqual([codeDraft]);
+  });
+
+  it('evicts a superseded global palette draft and all of its replay patches', () => {
+    const globalValue = '#cc5500';
+    const globalCodeDraft: DraftPatch = {
+      gid: 'code_patch',
+      prop: 'RED',
+      value: globalValue,
+      new_value: globalValue,
+      mode: 'backend_patch',
+      type: 'code_patch',
+      target_id: 'RED',
+      gids: ['line.0', 'line.1', 'collection.1'],
+    };
+    const current = {
+      'code_patch:RED': globalCodeDraft,
+      'line.0:color': { ...colorDraft, gid: 'line.0', value: globalValue },
+      'line.1:color': { ...colorDraft, gid: 'line.1', value: globalValue },
+      'collection.1:facecolor': {
+        ...colorDraft,
+        gid: 'collection.1',
+        prop: 'facecolor',
+        value: globalValue,
+      },
+      'line.0:linewidth': widthDraft,
+    };
+    const incoming: DraftPatch[] = [{
+      ...colorDraft,
+      gid: 'line.1',
+      value: '#aa00cc',
+      intent: {
+        intent: 'style.component',
+        scope: {
+          selectionMode: 'role_in_subplot',
+          subplotIds: ['subplot.1'],
+          objectIds: ['line.1'],
+          crossFigure: 'deny',
+        },
+        operation: { prop: 'color', value: '#aa00cc' },
+      },
+    }];
+
+    expect(evictSupersededGlobalPaletteDrafts(current, incoming)).toEqual({
+      'line.0:linewidth': widthDraft,
+    });
+  });
+
+  it('keeps global palette drafts for all-subplot updates and unrelated scoped objects', () => {
+    const globalCodeDraft: DraftPatch = {
+      gid: 'code_patch',
+      prop: 'BLUE',
+      value: '#2255aa',
+      new_value: '#2255aa',
+      mode: 'backend_patch',
+      type: 'code_patch',
+      target_id: 'BLUE',
+      gids: ['line.0'],
+    };
+    const current = { 'code_patch:BLUE': globalCodeDraft };
+    const allSubplots: DraftPatch = {
+      ...colorDraft,
+      gid: 'line.0',
+      intent: {
+        intent: 'style.component',
+        scope: { selectionMode: 'explicit_objects', subplotIds: '*', objectIds: ['line.0'] },
+        operation: { prop: 'color', value: colorDraft.value },
+      },
+    };
+    const unrelatedScoped: DraftPatch = {
+      ...colorDraft,
+      gid: 'line.9',
+      intent: {
+        intent: 'style.component',
+        scope: { selectionMode: 'role_in_subplot', subplotIds: ['subplot.9'], objectIds: ['line.9'] },
+        operation: { prop: 'color', value: colorDraft.value },
+      },
+    };
+
+    expect(evictSupersededGlobalPaletteDrafts(current, [allSubplots])).toEqual(current);
+    expect(evictSupersededGlobalPaletteDrafts(current, [unrelatedScoped])).toEqual(current);
+  });
+
+  it('keeps unrelated color properties and color subsets on the same object', () => {
+    const globalCodeDraft: DraftPatch = {
+      gid: 'code_patch',
+      prop: 'BLUE',
+      value: '#2255aa',
+      new_value: '#2255aa',
+      mode: 'backend_patch',
+      type: 'code_patch',
+      target_id: 'BLUE',
+      gids: ['collection.1'],
+    };
+    const globalFacecolorDraft: DraftPatch = {
+      ...colorDraft,
+      gid: 'collection.1',
+      prop: 'facecolor',
+      value: '#2255aa',
+      matchColor: '#0f3cf0',
+    };
+    const current = {
+      'code_patch:BLUE': globalCodeDraft,
+      'collection.1:facecolor:match:#0f3cf0': globalFacecolorDraft,
+    };
+    const scopedIntent = {
+      intent: 'style.component' as const,
+      scope: {
+        selectionMode: 'role_in_subplot' as const,
+        subplotIds: ['subplot.1'],
+        objectIds: ['collection.1'],
+        crossFigure: 'deny' as const,
+      },
+      operation: { prop: 'facecolor', value: '#aa00cc' },
+    };
+
+    const scopedEdgecolor: DraftPatch = {
+      ...globalFacecolorDraft,
+      prop: 'edgecolor',
+      value: '#aa00cc',
+      matchColor: undefined,
+      intent: {
+        ...scopedIntent,
+        operation: { prop: 'edgecolor', value: '#aa00cc' },
+      },
+    };
+    const scopedRedSubset: DraftPatch = {
+      ...globalFacecolorDraft,
+      value: '#aa00cc',
+      matchColor: '#d62728',
+      intent: scopedIntent,
+    };
+
+    expect(evictSupersededGlobalPaletteDrafts(current, [scopedEdgecolor])).toEqual(current);
+    expect(evictSupersededGlobalPaletteDrafts(current, [scopedRedSubset])).toEqual(current);
   });
 });

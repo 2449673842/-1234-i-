@@ -25,13 +25,14 @@
 
 ## 2. 当前证据快照
 
-2026-07-23 当前候选已经获得的最新证据：
+2026-07-28 当前候选已经获得的最新证据：
 
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
 | TypeScript | 通过 | `npm run lint` |
-| 前端单元测试 | 150 文件、1144/1144 | 包含 schema v1-v4、特殊 axes relation、图示 resolver、能力、映射、组件分组、identity 捕获、诊断归一化和 fail-closed 回归 |
-| WP3 定向单元 | 最高一轮 13 文件、210/210 | RightSidebar、ChartPreview、配色、property scope、session 对账和 snapshot v4 |
+| 完整单元、Python 身份与生产构建 | 通过 | Vitest 214 文件 / 1740 项；Python introspection + 结构漂移 77/77；`npm run build` 与 `git diff --check` 通过 |
+| 前端单元测试 | 通过 | 包含 schema v1-v5、特殊 axes relation、图示 resolver、能力、映射、组件分组、identity 捕获、诊断归一化和 fail-closed 回归；本轮 Draft/matchColor/快照直接相关 19 文件、189/189 |
+| WP3 定向单元 | 通过 | RightSidebar、ChartPreview、配色、property scope、session 对账和 snapshot v5 |
 | WP5 能力报告 | 通过 | `npm run test:capability-report-smoke`：真实 UI 覆盖部分可编辑、无可识别对象和已识别但只读三种状态，并展示 renderer `unsupportedNotes`；不把 fixture 覆盖扩大解释为任意脚本支持 |
 | WP9 发布门禁 | 11/11 通过 | `npm run test:wp9-release-gate`：固定/动态 seed、`random`/NumPy 模块别名、`default_rng(None)`、死分支 seed、非阻断诊断、布局风险与大 scatter 分段预算 |
 | WP10 默认启用 | 167/167 通过 | 普通编辑、字体、组件、配色和跨 Figure 使用统一构建时开关；V2 默认开启，App Draft 入口使用受控 resolver，身份冲突 fail-closed，Shadow 证据按 release candidate 隔离 |
@@ -39,22 +40,27 @@
 | 旧 contour 与快照 v4 | 通过 | 现代 child/未签名 v4 拒绝且零写入；真实旧 editLog 可保存、导出和恢复 |
 | 导出恢复事务 | 通过 | snapshot DB、恢复、并发、v1 兼容和完整 SVG/PNG/PDF/TIFF 导出矩阵 |
 | 本轮直接浏览器回归 | 组件 41/41；轴样式 8/8 | global 画布比例、组件布局、网格、图例、刻度和边框未回退 |
+| R 五个编辑中心真实浏览器验收 | 26/26 PASS | `test:r-semantic-smoke` 19/19 覆盖字体、组件、配色及公共 Draft/应用/保存刷新/撤销重做/拖拽/导出/快照链路；`test:r-property-layout-centers` 7/7 覆盖属性中心轴刻度与网格、布局中心单图 aspect 和 facet 共享布局边界；两次运行均为 0 console/page error 和 0 failed request |
 | Python 完整语义链路 | 通过 | 组件中心 set 全部由 backend renderer 验证；饼图切片与图例联动、Draft 失败保留、导出快照恢复通过，并检查响应业务 `status` |
 | 文本自动 Draft 与立即应用 | 通过 | B0E/B0F/B0G 覆盖输入即暂存、backend renderer 写回、改回原值删除 no-op Draft、旧请求完成时保留更新文本、批量应用、刷新、导出和快照恢复 |
-| 旧项目完整重渲染兼容 | 通过 | durable Figure editLog 在 session 缺失时仍可重放；空文本、旧轴字体属性受控兼容；伪造、弱化或关系漂移身份均冲突且 persistence state 完全不变 |
+| 旧项目完整重渲染兼容 | 通过 | durable Figure editLog 在 session 缺失时仍可重放；空文本、旧轴字体和旧 `line.visible=false` 受控兼容；无版本旧图例 marker 缺少后来新增的 relation 字段时只按 stableKey/seriesKey 兼容，v2 relation 篡改仍拒绝；隐藏线已覆盖打开、继续编辑、导出、后续编辑、v4/v5 快照恢复和刷新；伪造、弱化或关系漂移身份均冲突且 persistence state 完全不变 |
 | 保存/拖拽/缓存/跨 Figure | 通过 | project save preflight、drag extended、render cache、cross Figure 18/18；均使用隔离随机端口和临时数据目录 |
 | 无 left spine introspection | 50/50 | polar axes 回归通过；线上旧镜像仍需部署当前 renderer 才能消除 `KeyError: 'left'` |
-| 独立发布审查 | APPROVE，0 HIGH/MEDIUM | 修复后复审继续发现并关闭非同 GID remap、跨 release Shadow 污染和 App 跨 Figure Draft 编译旁路；最终只读复审无剩余高中风险 |
+| 越界 artist 白底与导出边界 | 通过 | renderer 扩展 SVG canvas 并记录 `renderViewport`；旧 manifest 回退兼容；隐藏 axes/Figure 坐标拖动、PNG/PDF/TIFF 和真实浏览器越界文字均通过 |
+| 独立发布审查 | APPROVE，0 HIGH/MEDIUM | 修复后复审继续发现并关闭非同 GID remap、跨 release Shadow 污染、App 跨 Figure Draft 编译旁路，以及无版本图例 marker 缺新 relation 字段时的误拒绝；最终只读复审无剩余高中风险 |
 | Python renderer/身份/复杂覆盖 | complex artist 26/26、结构身份漂移 7/7 | 本地既有 renderer 基线；本工作包未修改 Python 或 Matplotlib 版本，也未新增兼容版本声明 |
 | 组件中心真实浏览器 | 41/41；向量场专用分组直接回归通过 | 网格、图例、容器、五个 WP6 家族、父层重定向、保存刷新和拖拽模式多选保护 |
 | Python 完整用户链路 | 通过 | 选择、Draft、整批应用、刷新、撤销/重做、导出、后续编辑和快照恢复 |
+| Python 真实浏览器能力矩阵 | 136 PASS / 0 FAIL / 3 N/A | 11 个已登记 Python fixture 全部完成真实 SVG、五个编辑中心、结构属性边界、Draft、应用、数据库/刷新持久化、撤销/重做和 SVG 导出检查；控件 fallback 不得跨组件组，请求必须包含目标 `gid+prop`，附加对象只允许由双向 identity relation 证明的图例联动。3 个 N/A 分别是无脚本 palette 的双热图/contour 配色中心及无独立 bounds 能力的雷达布局中心，不作为虚假支持。该结论只覆盖当前登记清单，不扩大为任意 Matplotlib/第三方图形均已支持 |
 | `fill_between` 专用语义 | 通过 | dedicated kind/role、旧 GID/stableKey、配色、组件、历史和导出恢复均通过 |
 | `contour/contourf` 专用语义 | 通过 | 父对象、只读子层、colorbar 关系、属性 scope、跨 Figure、旧项目和导出恢复均通过 |
 | `hist/stairs/step` 专用语义 | 通过 | 专用 role、hist 父子关系、普通对象负例、结构只读、配色、组件、历史和导出恢复均通过 |
 | `pie/wedge` 专用语义 | 通过 | 扇区/标签/百分比/图例/Wedge 独立 role，`pieId + sliceIndex` 身份隔离，结构只读、跨 Figure、导出和恢复均通过 |
-| `quiver/streamplot` 专用语义 | 通过 | 专用父对象/role、旧 GID 兼容、内部 child 只读、可信关系映射、图例联动、结构只读、跨 Figure、导出和恢复均通过 |
+| `quiver/streamplot` 专用语义 | 通过 | 专用父对象/role、旧 GID 兼容、内部 child 只读、可信关系映射、图例联动、结构只读、跨 Figure、导出和恢复均通过；v2 父对象 relation signature 保护 `quiverId/streamplotId/lineCollectionId/legendMarkerIds`，旧无版本 manifest 不比较该新签名 |
 | 网络图/路径图/SEM 显式语义 | 通过 | 七类专用 role、完整关系签名、科学结构只读、组件/配色隔离、Draft/backend replay、跨 Figure、导出和恢复均通过 |
 | Python 特殊 axes | 通过当前固定运行时门禁 | polar、3D、inset、secondary、parasite 和自定义投影分类；Python 10 项中 8 通过，Cartopy/brokenaxes 因未安装跳过且不得宣称支持 |
+| Python 雷达图专用适配 | 本地候选通过 | renderer 16/16；维度 `xtick` 文字/字体/颜色和 `radar_label_offset` 拖动、`legend_text` 改名与拖动归一到整个 legend、文字 bbox、line/fill 专用组件组通过；新增完整 v2 identity 下先改图例文字再移动图例的 relation 回归；隔离 API 覆盖 patch/刷新缓存/数据库/SVG 导出，组合雷达真实浏览器中的 Python 8 项通过；高分辨率闭合普通 polar、混合图例和同样式歧义负例不会误获或错配雷达能力 |
+| R/ggplot2 雷达图专用适配 | 本地候选通过 | 严格单 panel 手写 `coord_polar(theta="x")` 雷达输出 `radarId/radarSeriesId/radarSemanticRole/radarDimensionIndex`；系列线、填充、图例文字、维度文字和 `radar_label_offset` 可独立 backend replay。R renderer 7/7、隔离 API、真实浏览器 R 7 项及共享 0 console/page error 检查通过；Control 线和 Treatment 填充分次编辑时各请求仅含一个目标，刷新后未选系列保持原色。旧 fill line-to-patch identity 对 v2 记录要求同 series/scale/group/fingerprint，对 fingerprint 字段均缺失的更早记录要求 stableKey/semanticKey/seriesKey 与 `aesthetic/groupKey/scaleKey` 完整一致；部分版本字段、关系缺失或伪造 radar 字段均 fail-closed。无版本旧 fill 已通过 SVG 导出、导出快照恢复和篡改快照 409/零写入黑盒验证。普通 polar、facet、`ggradar`、`fmsb` 和任意 grob 不在当前稳定支持范围 |
 | R-WP0/WP1 基线与 patch 权威 | 已由 R-WP2 继承 | 静态旧 identity/editLog fixture、服务端 mode 权威、renderer acknowledgement 和失败批次零持久化继续作为不可回退合同；历史 expected failure 不再代表当前状态 |
 | R-WP2 identity v2 与旧项目兼容 | 通过本地候选门禁 | R renderer 51/51；layer 数据内容摘要区分同列不同 subset，guide 标题/类型不合并，唯一派生键文本稳定、重复无键文本 unsupported；API 返回 remap `resolvedGid` 且不污染持久 editLog；旧项目编辑、刷新、导出和快照恢复通过。本轮复核要求请求 GID 先存在于当前 manifest，并且只在同规范化 GID 家族内唯一 remap；合法 group/layer/tick 序号变化继续允许，missing GID 和现存跨家族 GID 即使复制有效 identity 也冲突且零持久化；`test:r-identity-v2-compatibility` 通过 |
 | R-WP3 运行时与生产一致性 | 通过本地候选门禁 | R renderer 54/54、diagnostics 6/6；生产候选 R 4.5.0/ggplot2 3.5.1 与关键依赖、字体、locale、设备固定；37 个语义对象在本地/直接 Docker/Web Docker 一致；同名文件隔离、源码 SHA 和 stale image fail closed 通过 |
@@ -71,6 +77,7 @@
 | R-WP5 scale/guide/facet/layout | 本地候选 | 离散 scale 保留 label/limits/breaks/drop/NA/guide 语义，连续 color/fill scale 与 mappable/colorbar 分开关联；字符型 `colourbar/colorbar`、隐藏恢复、多 guide 独立标题及标题 SVG 样式已收敛，显式 scale 的图例条目改名不再因重建 scale 导致身份漂移。旧 continuous absolute-index alias 仅兼容已知旧字段，伪造稳定身份拒绝；R 跨 Figure relation 要求共享稳定字段且 legacy score fallback 不得绕过冲突。facet 独立物理 bounds 明确只读。完整 R renderer 124/124、隔离 API 3/3、浏览器 6/6、R 语义黄金样例 14/14、identity v2 compatibility、TypeScript 216 项、lint 通过，最终独立复审 0 HIGH/MEDIUM。一次 Windows R `0xC0000005` 启动崩溃仅作运行时偶发记录，隔离重跑完整通过，不作为放宽门禁的理由 |
 | R-WP6 文本/annotation/复杂坐标 | 本地候选 | `ggplot_text_data/annotation/stat` 身份分离，stat 只读；文本、字体、对齐、旋转、lineheight、plotmath/多行和 mapped-label fill 保持通过。Cartesian/flip/log/panel 内 polar 位置可逆，CoordSf、第三方 coord 和不可逆位置 shadow/readonly。R `currentProps.position` 与 renderer acknowledgement 对齐；后端拒绝时前端保留待确认拖动和视觉位置、零持久化、禁止重复提交，成功后才清空并形成一次历史。R renderer 125 场景、capability matrix 2/2、R semantic 19/19、drag 扩展失败/重试、组件容器 42/42、identity v2、历史/导出/快照恢复、1720 项单测、lint/build/diff-check 通过；未推送、未部署 |
 | R-WP7 网络图/路径图/SEM | 本地候选 | 显式 `scifigure-sem-v1` marker 输出七类 `diagram_*` role 和完整 node/edge relation；未标记 lookalike 不升级。GID 的四个身份字段均使用 Base64URL，ASCII `a_` 与非 ASCII `b_` 命名空间分离，字段边界无歧义，重复完整 identity 在 manifest 构建期拒绝；同 marker 多行保留为单个有序 path。科学文本、系数、p 值、拟合指标和拓扑只读，非法 mixed batch renderer/API 原子拒绝且 project/session/history/cache/export anchor/snapshot 零持久化。`clip="off"` 时仅在可证明 panel 范围内按图层顺序绑定，范围不可信则精确唯一或 fail-closed。renderer 10/10、R capability matrix、旧动态批次/fingerprint 4/4、隔离 API 和 Chromium live SVG 正确几何选择均通过；未推送、未部署 |
+| R-WP8 扩展包与 base R Shadow 边界 | 本地候选 | 未固定的 ggrepel/ggnewscale/sf/ggraph/igraph/tidygraph/semPlot/DiagrammeR 不虚报可编辑；CoordSf 不可逆位置和 mixed batch setter 前原子拒绝，base R 保持 preview/export only。缺包诊断不泄露路径；R-WP8 7/7、隔离 API、能力矩阵、旧身份、安全和浏览器门禁通过 |
 | R-WP9 用户链路、性能与可观测性 | 本地候选 | `test:r-wp9-workflow` 覆盖双 CSV multipart、精确 `uploaded_file_paths`、一次 revision、刷新、四格式导出、导出后编辑和快照恢复。renderer 输出七个新增真实计时段，cache authority schema v2 纳入 source/image/runtime/package contract；导出返回 render/convert/persist/total。`test:r-wp9-performance-persistence` 证明超大直接渲染、patch、导出均返回 413 且 session/revision/history/preview/cache/asset/snapshot/file 零变化；`test:r-wp9-timeout-cleanup` 证明请求创建的 Rscript job、临时目录和容器无残留 |
 | R-WP10 默认启用与本地发布门禁 | 本地候选 | 默认 V2 resolver 17 文件/248 项、旧 R identity v2 compatibility、安全预检、R-WP9 三条链路、候选 Docker 镜像 sandbox、用户隔离、性能、缓存、lint、build、diff-check 和 data audit 通过；共享路由下 Python cross-Figure 18/18、patch rejection、semantic workflow 和 export matrix 通过；独立审查 APPROVE/CLEAR、0 HIGH/MEDIUM。旧 adapter 与无版本 identity 读取继续保留；未推送、未部署，生产不可变构建、小范围账号和人工视觉回归仍是发布阻断项 |
 | patch/全渲染事务保护 | 通过 | standalone patch、standalone full render 与项目 full render 均由服务端按返回 manifest/renderer 决定；拒绝批次不改变 revision、session、项目脚本、Figure、history、cache 或导出锚点 |
@@ -82,10 +89,13 @@
 | 扩展拖拽 | 10/10 通过 | 真实 Ctrl 三选、累计确认、取消、只读命中、annotation 和 R native 保护 |
 | Python cache | 通过 | 首次 miss、同语义重复 hit、值变化 miss；只信任本进程已确认 key |
 | 生产构建 | 通过 | 保留既有 bundle 体积和 CJS `import.meta` 警告 |
-| 数据完整性 | 集成前审计 0 个错误，最终门禁待复核 | R-WP3 自动化使用临时 DB/data；部署前必须重新运行只读 `npm run data:audit` 并以新计数更新本行 |
-| 展厅/MCP/脚本拖放候选 | 定向门禁通过 | 展厅单元 5/5、展厅隔离浏览器、MCP origin/产物安全 4/4、MCP 真实 UI、全工作区 `.py/.R` 拖放和 TypeScript 通过；预览只使用固定模拟数据，未访问 3000、Docker 或真实项目 |
+| 数据完整性 | 0 个错误 | 25 用户、128 项目、286 项目文件、112 导出资产；23 条历史测试账号警告未删除；本轮隔离测试未写真实 data |
+| 展厅/MCP/脚本拖放候选 | 定向门禁通过 | 展厅单元 5/5、展厅隔离浏览器、MCP origin/产物安全 4/4、MCP 真实 UI、新建项目脚本区/数据区和全工作区 `.py/.R` 拖放、TypeScript 均通过；预览只使用固定模拟数据 |
+| 编辑器顶部工具栏可达性 | 组件浏览器 41/41 | 横向内容超过宽度时不得使用产生左侧负溢出的 `justify-end`；固定标签不得覆盖“拖拽微调”等主操作，窄宽度必须向右滚动且保持真实鼠标可点击 |
 
-本轮还重新运行了编辑、R、跨 Figure、历史、导出、页面、组合、安全和隔离 smoke。所有请求均使用随机 `127.0.0.1` 端口和临时数据库；未访问 3000，未修改 Docker/WSL。
+本轮共享编辑、R、跨 Figure、历史、导出、组合、安全和隔离 smoke 均使用随机 `127.0.0.1` 端口和临时数据库；另对隔离 `3100` 执行 Python 真实 Chromium 用户链路。renderer sandbox 使用独立 `scifigure-renderer:rwp10-candidate` 镜像，只创建并清理本轮临时容器；未停止已有容器、未覆盖 `latest`、未修改 WSL，也未访问 `3000` 或线上服务。
+
+当前结论仅为本地候选验证通过，不等同于生产发布验证。Cartopy 和 brokenaxes 因固定运行时未安装仍为 skipped/不承诺支持；生产不可变构建、线上小账号和生产容器视觉验收尚未执行，部署前必须另行完成。
 
 先前独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包、旧项目 GET/PUT 恢复源不一致，以及 standalone/project full render 在 renderer 拒绝 editLog 后仍可能写入的问题均已修复。当前保存与全渲染入口同时执行可信 manifest 预检、renderer warning 检查和必要的 revision/hash CAS；项目脚本与 Figure/session 在同一事务提交。新增 full render mixed batch、旧 contour、项目 history、R 共享路由、组件容器、扩展拖拽、缓存、导出文件事务、用户隔离和 renderer 沙箱回归均通过。WP5、WP9 和 WP10 已达到当前计划范围的本地候选条件，最终独立复审为 APPROVE、0 HIGH/MEDIUM；但这不构成任意第三方 Matplotlib artist、全部真实科研脚本或性能 SLO 的支持承诺。旧 compiler、palette legacy resolution 和 cross-Figure score mapper 在一个稳定发布周期内继续作为显式适配器保留；必须先形成固定候选提交，才能作为不可变部署输入。
 
@@ -252,7 +262,7 @@ Vitest 145 文件、1078/1078；complex artist 26/26、结构身份 7/7、R rend
 | 拖拽关闭时，画布单击可精确选择对象并打开属性 | `test:behavior-smoke` |
 | 左侧图层树与画布选择同步，搜索使用完整对象集 | `test:large-figure-ui-smoke` |
 | Ctrl/Cmd 可取消多选中的单个对象，框选不能丢失目标 | 组件/拖拽 smoke |
-| 子图选择后所有编辑中心自动跟随该子图；跨子图选择回退全部子图 | `test:subplot-scope-follow` |
+| 画布/图层选择后所有编辑中心自动跟随所属子图；跨子图选择回退全部子图；右侧中心内部整组选中不得覆盖用户显式范围 | `test:subplot-scope-follow` |
 | figure-level legend、共享 colorbar 和 twin axes 不得错误归入普通子图 | capability/component tests |
 | 重叠或歧义对象不得自动选择“最像”的一个 | target resolver tests |
 
@@ -284,6 +294,7 @@ Vitest 145 文件、1078/1078；complex artist 26/26、结构身份 7/7、R rend
 - 数据列或向量颜色不得把整个 collection 错染为一种颜色。
 - palette 常量写回与精确对象 fallback 保持同一批次。
 - 作用范围、已绑定/未绑定状态和重渲染后的再次选择能力保持一致。
+- 单子图范围下的颜色输入和科研配色预设只能生成该子图对象补丁，不得出现全局 `code_patch` 或其他子图 GID；只有显式“全部子图”允许同步代码常量。
 
 #### 字体中心
 

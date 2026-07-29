@@ -31,6 +31,59 @@ function normalizeMatchColor(value: string | undefined): string | undefined {
   return normalized || undefined;
 }
 
+function isColorStyleProp(prop: string): boolean {
+  const normalized = prop.trim().toLowerCase();
+  return normalized === 'fill' || normalized.includes('color');
+}
+
+function isScopedColorDraft(draft: DraftPatch): boolean {
+  if (draft.type === 'code_patch' || draft.gid === 'code_patch' || !isColorStyleProp(draft.prop)) return false;
+  const scope = draft.intent?.scope;
+  if (!scope) return false;
+  if (scope.selectionMode === 'selected_only') return true;
+  return Array.isArray(scope.subplotIds) && scope.subplotIds.length > 0;
+}
+
+function targetsSameColorProperty(first: DraftPatch, second: DraftPatch): boolean {
+  if (first.gid !== second.gid) return false;
+  if (first.prop.trim().toLowerCase() !== second.prop.trim().toLowerCase()) return false;
+  const firstMatchColor = normalizeMatchColor(first.matchColor);
+  const secondMatchColor = normalizeMatchColor(second.matchColor);
+  return !firstMatchColor || !secondMatchColor || firstMatchColor === secondMatchColor;
+}
+
+export function evictSupersededGlobalPaletteDrafts(
+  currentBucket: Record<string, DraftPatch>,
+  incomingDrafts: DraftPatch[],
+): Record<string, DraftPatch> {
+  const scopedColorDrafts = incomingDrafts.filter(isScopedColorDraft);
+  const nextBucket = { ...currentBucket };
+  if (scopedColorDrafts.length === 0) return nextBucket;
+
+  Object.entries(currentBucket).forEach(([codeKey, codeDraft]) => {
+    if (codeDraft.type !== 'code_patch') return;
+    const replayGids = new Set(codeDraft.gids || []);
+    const replayValue = codeDraft.new_value !== undefined ? codeDraft.new_value : codeDraft.value;
+    const replayDrafts = Object.entries(currentBucket).filter(([, draft]) => (
+      draft.type !== 'code_patch'
+      && replayGids.has(draft.gid)
+      && isColorStyleProp(draft.prop)
+      && stableDraftValue(draft.value) === stableDraftValue(replayValue)
+    ));
+    const superseded = scopedColorDrafts.some(incoming => (
+      replayDrafts.some(([, replay]) => targetsSameColorProperty(incoming, replay))
+    ));
+    if (!superseded) return;
+
+    delete nextBucket[codeKey];
+    replayDrafts.forEach(([draftKey]) => {
+      delete nextBucket[draftKey];
+    });
+  });
+
+  return nextBucket;
+}
+
 export function isSameDraftPatch(current: DraftPatch | undefined, snapshot: DraftPatch): boolean {
   if (!current) return false;
   return current.gid === snapshot.gid

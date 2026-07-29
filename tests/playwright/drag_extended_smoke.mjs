@@ -329,6 +329,15 @@ async function preparePythonProject(page) {
     'ax.text(0.66, 0.42, "DRAG_B", transform=ax.transAxes, ha="center", va="center", fontsize=14)',
     'ax.text(0.50, 0.25, "DRAG_C", transform=ax.transAxes, ha="center", va="center", fontsize=14)',
     'ax.annotate("DRAG_ANN", xy=(1.0, 3.0), xytext=(1.55, 3.25), arrowprops=dict(arrowstyle="->"), fontsize=12)',
+    'label_ax = fig.add_axes([0.02, 0.18, 0.14, 0.68])',
+    'label_ax.set_xlim(0, 1)',
+    'label_ax.set_ylim(10, 0)',
+    'label_ax.axis("off")',
+    'label_ax.text(0.34, 5.0, "HIDDEN_AX_LABEL", ha="center", va="center", fontsize=11)',
+    'overflow_right = fig.text(1.02, 0.50, "CANVAS_OVERFLOW", ha="left", va="center", fontsize=11)',
+    'overflow_right.set_in_layout(False)',
+    'overflow_bottom = fig.text(0.50, -0.12, "BOTTOM_OVERFLOW", ha="center", va="top", fontsize=11)',
+    'overflow_bottom.set_in_layout(False)',
     'plt.tight_layout()',
   ].join('\n');
 
@@ -395,15 +404,33 @@ async function preparePythonProject(page) {
     const title = objects.find(object => object?.id === 'title.0');
     const xlabel = objects.find(object => object?.id === 'xlabel.0');
     const ylabel = objects.find(object => object?.id === 'ylabel.0');
+    const hiddenAxesText = objects.find(object => object?.currentProps?.text === 'HIDDEN_AX_LABEL');
+    const hiddenAxesIndex = Number(hiddenAxesText?.source?.axesIndex ?? 1);
+    const hiddenAxesSubplotId = hiddenAxesText?.subplotId
+      || hiddenAxesText?.identity?.relation?.subplotId
+      || `subplot.${hiddenAxesIndex}`;
+    const hiddenAxesSubplot = objects.find(object => object?.id === hiddenAxesSubplotId);
+    const hiddenXAxis = objects.find(object => object?.id === `axis.x.${hiddenAxesIndex}`);
+    const hiddenYAxis = objects.find(object => object?.id === `axis.y.${hiddenAxesIndex}`);
     return {
       projectId: created.id,
       objectCount: objects.length,
+      renderViewport: rendered.figures[0]?.manifest?.renderViewport || null,
       annotationId: annotation?.id || null,
       annotationArrowId: annotation?.identity?.relation?.arrowId || null,
       annotationRole: annotation?.role || null,
       titlePosition: title?.currentProps || null,
       xlabelPosition: xlabel?.currentProps || null,
       ylabelPosition: ylabel?.currentProps || null,
+      hiddenAxesSource: hiddenAxesText ? {
+        gid: hiddenAxesText.id,
+        x: hiddenAxesText.currentProps?.x,
+        y: hiddenAxesText.currentProps?.y,
+        coordSystem: hiddenAxesText.currentProps?.coord_system,
+        subplot: hiddenAxesSubplot?.currentProps || null,
+        xLimits: hiddenXAxis?.currentProps?.limits || null,
+        yLimits: hiddenYAxis?.currentProps?.limits || null,
+      } : null,
     };
   }, { baseUrl: BASE_URL, script });
 
@@ -611,12 +638,56 @@ async function run() {
     const boxA = await findBoxByText(page, 'DRAG_A');
     const boxB = await findBoxByText(page, 'DRAG_B');
     const boxC = await findBoxByText(page, 'DRAG_C');
+    const hiddenAxesLabelBox = await findBoxByText(page, 'HIDDEN_AX_LABEL');
+    const overflowLabelBox = await findBoxByText(page, 'CANVAS_OVERFLOW');
+    const bottomOverflowLabelBox = await findBoxByText(page, 'BOTTOM_OVERFLOW');
+    const expandedCanvasGeometry = await page.evaluate(() => {
+      const svg = document.querySelector('[data-scifigure-canvas-svg="true"] > svg');
+      if (!svg) return null;
+      const rect = svg.getBoundingClientRect();
+      const viewBox = svg.viewBox.baseVal;
+      return {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        viewBox: { x: viewBox.x, y: viewBox.y, width: viewBox.width, height: viewBox.height },
+      };
+    });
     const lineBox = await findUnsupportedLineBox(page);
     diagnostics.boxA = boxA;
     diagnostics.boxB = boxB;
     diagnostics.boxC = boxC;
+    diagnostics.hiddenAxesLabelBox = hiddenAxesLabelBox;
+    diagnostics.overflowLabelBox = overflowLabelBox;
+    diagnostics.bottomOverflowLabelBox = bottomOverflowLabelBox;
+    diagnostics.expandedCanvasGeometry = expandedCanvasGeometry;
     diagnostics.lineBox = lineBox;
     diagnostics.annotation = fixture;
+
+    record(
+      'D0-expanded-canvas',
+      fixture.renderViewport?.expanded === true
+        && fixture.renderViewport?.canvas?.width > fixture.renderViewport?.figure?.width
+        && fixture.renderViewport?.canvas?.height > fixture.renderViewport?.figure?.height
+        && overflowLabelBox
+        && bottomOverflowLabelBox
+        && expandedCanvasGeometry
+        && overflowLabelBox.x - overflowLabelBox.width / 2 >= expandedCanvasGeometry.left - 1
+        && overflowLabelBox.x + overflowLabelBox.width / 2 <= expandedCanvasGeometry.right + 1
+        && overflowLabelBox.y - overflowLabelBox.height / 2 >= expandedCanvasGeometry.top - 1
+        && overflowLabelBox.y + overflowLabelBox.height / 2 <= expandedCanvasGeometry.bottom + 1
+        && bottomOverflowLabelBox.x - bottomOverflowLabelBox.width / 2 >= expandedCanvasGeometry.left - 1
+        && bottomOverflowLabelBox.x + bottomOverflowLabelBox.width / 2 <= expandedCanvasGeometry.right + 1
+        && bottomOverflowLabelBox.y - bottomOverflowLabelBox.height / 2 >= expandedCanvasGeometry.top - 1
+        && bottomOverflowLabelBox.y + bottomOverflowLabelBox.height / 2 <= expandedCanvasGeometry.bottom + 1
+        ? 'PASS'
+        : 'FAIL',
+      `renderViewport=${JSON.stringify(fixture.renderViewport)}, right=${JSON.stringify(overflowLabelBox)}, bottom=${JSON.stringify(bottomOverflowLabelBox)}, canvas=${JSON.stringify(expandedCanvasGeometry)}`,
+    );
+    await page.screenshot({ path: path.join(OUTPUT_DIR, 'expanded-canvas.png'), fullPage: true });
 
     record(
       'D0-annotation-relation',
@@ -831,7 +902,7 @@ async function run() {
       const ylabelBox = await findBoxByText(page, 'Y Axis');
       const axisDragModeOn = await ensureDragMode(page, true);
       if (!xlabelBox || !ylabelBox || !fixture.xlabelPosition || !fixture.ylabelPosition) {
-        record('D1b-axis-label-drag', 'BLOCKED', `xlabel=${Boolean(xlabelBox)}, ylabel=${Boolean(ylabelBox)}`);
+        record('D1c-axis-label-drag', 'BLOCKED', `xlabel=${Boolean(xlabelBox)}, ylabel=${Boolean(ylabelBox)}`);
       } else {
         const xlabelDragGeometry = await dragBox(page, xlabelBox, 60, 30);
         const xlabelPending = (await getBodyText(page)).includes('已累计移动 1 个文本对象');
@@ -878,7 +949,7 @@ async function run() {
           && Number(ylabelPatch.value?.x) < Number(fixture.ylabelPosition.x)
           && Number(ylabelPatch.value?.y) > Number(fixture.ylabelPosition.y);
         record(
-          'D1b-axis-label-drag',
+          'D1c-axis-label-drag',
           axisDragModeOn && axisLabelsFollowed && xlabelPending && ylabelPending && axisConfirmed && axisRequests.length === 1
             && axisPatches.length === 2 && directionsCorrect && returnedMatches ? 'PASS' : 'FAIL',
           `dragMode=${axisDragModeOn}, livePreview=${axisLabelsFollowed}, xlabelPending=${xlabelPending}, ylabelPending=${ylabelPending}, confirmed=${axisConfirmed}, patches=${JSON.stringify(axisPatches)}, returnedMatches=${returnedMatches}`,
@@ -888,7 +959,7 @@ async function run() {
       await setSelectedGidsAndReload(page, []);
       const titleBox = await findBoxByText(page, 'Drag Extended Figure');
       if (!titleBox || !fixture.titlePosition) {
-        record('D1c-title-drag', 'BLOCKED', `title=${Boolean(titleBox)}, props=${Boolean(fixture.titlePosition)}`);
+        record('D1d-title-drag', 'BLOCKED', `title=${Boolean(titleBox)}, props=${Boolean(fixture.titlePosition)}`);
       } else {
         await ensureDragMode(page, true);
         const titleGeometry = await dragBox(page, titleBox, 55, -35);
@@ -923,7 +994,7 @@ async function run() {
           && Number(titlePatch.value?.x) > Number(fixture.titlePosition.x)
           && Number(titlePatch.value?.y) > Number(fixture.titlePosition.y);
         record(
-          'D1c-title-drag',
+          'D1d-title-drag',
           didObjectFollowDrag(titleGeometry)
             && titlePending
             && titleConfirmed
@@ -932,6 +1003,58 @@ async function run() {
             && directionsCorrect
             && returnedMatches ? 'PASS' : 'FAIL',
           `livePreview=${didObjectFollowDrag(titleGeometry)}, pending=${titlePending}, confirmed=${titleConfirmed}, patches=${JSON.stringify(titlePatches)}, returnedMatches=${returnedMatches}`,
+        );
+      }
+
+      if (!hiddenAxesLabelBox) {
+        record('D1e-hidden-axes-text-drag', 'BLOCKED', 'missing hidden-axes label text box');
+      } else {
+        await clearSelectionInUi(page);
+        await ensureDragMode(page, true);
+        const hiddenAxesStart = apiRequests.length;
+        await dragBox(page, hiddenAxesLabelBox, 52, -18);
+        const hiddenAxesPending = (await getBodyText(page)).includes('确认位置');
+        const hiddenAxesConfirmed = hiddenAxesPending && await clickVisibleText(page, '确认位置', 3000);
+        if (hiddenAxesConfirmed) {
+          await waitForApiSettle(page, hiddenAxesStart, 30000);
+          await waitForPreviewReady(page);
+        }
+        const hiddenAxesRequests = apiRequests.slice(hiddenAxesStart).filter(request => request.url.includes('/api/figure/patch'));
+        const hiddenAxesBody = hiddenAxesRequests[0]?.postData ? parseJson(hiddenAxesRequests[0].postData) : null;
+        const hiddenAxesPositionPatches = Array.isArray(hiddenAxesBody?.patches)
+          ? hiddenAxesBody.patches.filter(patch => patch?.prop === 'position' && patch?.gid === hiddenAxesLabelBox.id)
+          : [];
+        const hiddenAxesPosition = hiddenAxesPositionPatches[0]?.value;
+        const hiddenSource = fixture.hiddenAxesSource;
+        const hiddenFigure = fixture.renderViewport?.figure;
+        const hiddenSubplot = hiddenSource?.subplot;
+        const hiddenXLimits = hiddenSource?.xLimits;
+        const hiddenYLimits = hiddenSource?.yLimits;
+        const dxSvg = expandedCanvasGeometry
+          ? (52 / expandedCanvasGeometry.width) * expandedCanvasGeometry.viewBox.width
+          : NaN;
+        const dySvg = expandedCanvasGeometry
+          ? (-18 / expandedCanvasGeometry.height) * expandedCanvasGeometry.viewBox.height
+          : NaN;
+        const axesWidth = Number(hiddenSubplot?.width) * Number(hiddenFigure?.width);
+        const axesHeight = Number(hiddenSubplot?.height) * Number(hiddenFigure?.height);
+        const expectedHiddenX = Number(hiddenSource?.x)
+          + (dxSvg / axesWidth) * (Number(hiddenXLimits?.[1]) - Number(hiddenXLimits?.[0]));
+        const expectedHiddenY = Number(hiddenSource?.y)
+          - (dySvg / axesHeight) * (Number(hiddenYLimits?.[1]) - Number(hiddenYLimits?.[0]));
+        const hiddenCoordinatesMatch = Number.isFinite(expectedHiddenX)
+          && Number.isFinite(expectedHiddenY)
+          && Math.abs(Number(hiddenAxesPosition?.x) - expectedHiddenX) < 0.01
+          && Math.abs(Number(hiddenAxesPosition?.y) - expectedHiddenY) < 0.01;
+        record(
+          'D1e-hidden-axes-text-drag',
+          hiddenAxesConfirmed
+            && hiddenAxesRequests.length === 1
+            && hiddenAxesPositionPatches.length === 1
+            && hiddenCoordinatesMatch
+            ? 'PASS'
+            : 'FAIL',
+          `pending=${hiddenAxesPending}, confirmed=${hiddenAxesConfirmed}, requests=${hiddenAxesRequests.length}, expected=(${expectedHiddenX},${expectedHiddenY}), patches=${JSON.stringify(hiddenAxesPositionPatches)}`,
         );
       }
 

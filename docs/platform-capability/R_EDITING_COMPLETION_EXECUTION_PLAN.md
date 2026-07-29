@@ -722,6 +722,22 @@ persist/export conversion
 - 独立 `gpt-5.5 high` 审查结论为 `APPROVE/CLEAR`，无 HIGH/MEDIUM；确认 15 秒仅是测试隔离阈值，临时目录清理具有受限路径和有界重试。
 - 本地候选不等于生产发布：未推送、未部署，尚未完成生产不可变镜像/构建、线上小范围账号和生产容器人工视觉回归。旧 ordinal、无版本 identity 和 legacy adapter 因此继续保留，不能在本轮退役。
 
+**2026-07-29 R/ggplot2 雷达图专项补充证据**
+
+- 当前稳定支持范围是严格单 panel、非 facet、`coord_polar(theta="x")`、恰好一组 polygon 和一组 line/path，且维度标签、闭合坐标、离散 color/fill scale 与系列可以唯一对应的手写 ggplot2 雷达。普通 polar 柱图不会获得雷达语义；`ggradar`、`fmsb`、facet radar、任意 grid grob 和歧义 scale 继续 fail-closed，不能写成已支持。
+- renderer 为维度标签、系列轮廓、填充区域和图例条目输出 `radarId/radarSemanticRole/radarSeriesId/radarDimensionIndex`。维度标签保留文字编辑并使用 display-space `radar_label_offset`；系列线和填充分别由 `r.group.color.*` 与 `r.group.fill.*` 权威对象写回，不改变维度、数值或闭合几何。
+- R scale group 带 `legendId` 时，组件中心必须优先按雷达 `series/fill` 映射为 `data_line/data_patch`，不能误归为 `legend_marker`。真实浏览器已证明 Control 线和 Treatment 填充各自产生一个显式对象 patch，未选线和填充不变，Draft、backend replay、刷新持久化、图例文字、维度文字和拖动均通过。
+- 旧 R 雷达填充允许从旧 `kind=line / r:line:*` 窄迁移到当前 `kind=patch / r:patch:*`。v2 记录只有 radar series、scale、group、aesthetic、semanticKey、seriesKey 和旧 fingerprint 全部一致时放行；`fingerprint/fingerprintVersion` 均不存在的更早记录，只在旧 stableKey、semanticKey、seriesKey 和 `aesthetic/groupKey/scaleKey` 完整一致且不携带 radar 关系字段时放行。只缺一个版本字段、缺关键关系、伪造 radar 字段或 mixed batch 在 renderer 前/后均拒绝，revision、session、history、cache、导出锚点和快照不写入。
+- 同轮修复 Python 雷达图例 replay index 的关系不对称：临时 GID index 现在为 legend container 重建 `legendTitleId/legendTextIds/legendMarkerIds`，使完整 v2 identity 的正常位置编辑不再被误判，同时保留伪造 relation 的严格拒绝。
+- 新鲜门禁：`test:radar-chart-python` 16/16、`test:r-radar-renderer` 7/7、`test:radar-chart-api` PASS、`test:r-radar-api` PASS、`test:radar-chart-ui` 16/16、RightSidebar/ChartPreview 4 files 52 tests、lint、build 和 diff-check PASS。新增 renderer/API 回归证明无版本旧 fill 可原样持久化并在刷新后重放，同时缺关系、错误 aesthetic/scale、伪造 radar 字段、不完整 v2 和 mixed batch 均 fail-closed；隔离项目进一步证明该旧 editLog 可导出 SVG/快照、恢复到导出状态并重新渲染，篡改 scaleKey 的快照恢复返回 409 且项目/session 零变化。浏览器使用随机 localhost 端口与临时数据库/数据目录，未访问 3000、线上或真实 `data/`；未推送、未部署。
+
+**2026-07-29 R 五个编辑中心真实浏览器补充证据**
+
+- `npm run test:r-semantic-smoke`：19/19 PASS。真实页面覆盖字体中心、组件中心和配色中心，且在同一隔离流程中验证 Draft 自动暂存、立即应用、backend patch、保存刷新、撤销/重做、文本拖拽、SVG 导出和导出快照恢复。
+- `npm run test:r-property-layout-centers`：7/7 PASS。真实页面覆盖属性中心的 X 轴刻度间距/宽度/颜色、网格显隐，以及布局中心单图 `aspect`、保存刷新和 facet 共享布局 `aspect`；facet 的物理 `left/bottom/width/height` 控件保持只读。
+- 两份报告均使用随机 `127.0.0.1` 端口和临时数据/数据库，`consoleErrors=0`、`pageErrors=0`、`failedRequests=0`。本轮未访问 3000/3100、线上服务或真实用户数据，未提交、推送或部署。
+- 属性/布局 smoke 首轮点击隐藏 checkbox 曾被 switch 装饰层拦截；已改为对同一真实 checkbox 使用 `force` 操作并重跑通过。该问题属于测试 harness，不是产品网格/Draft 功能失败，记录在 `docs/ERROR_LOG.md`。
+
 旧 ordinal、颜色匹配或不带版本 identity 的兼容读取至少保留一个稳定发布周期。新 adapter 与旧路径退役不能在同一批次完成。
 
 ## 6. 测试与验收门禁

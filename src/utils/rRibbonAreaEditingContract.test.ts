@@ -17,6 +17,7 @@ function bandObject(
   id: string,
   geom: 'GeomRibbon' | 'GeomArea',
   subplotId: string,
+  fillMapped = false,
 ): ManifestObject {
   const adapterFamily = geom === 'GeomRibbon' ? 'ribbon' : 'area';
   const editable = ['facecolor', 'edgecolor', 'linewidth', 'alpha'];
@@ -32,6 +33,7 @@ function bandObject(
       edgecolor: '#1f78b4',
       linewidth: 0.7,
       alpha: 0.35,
+      fillMapped,
       componentRoles: ['body', 'boundary_lines'],
     },
     identity: {
@@ -141,5 +143,14 @@ describe('R Ribbon and Area family editing contract', () => {
 
     expect(inferEditingTargetRole(smooth)).toBe('data_line');
     expect(supportsComponentBatchProp(smooth, 'facecolor', 'r_svg')).toBe(false);
+  });
+
+  it('routes mapped band fill changes to the palette center instead of a layer override', () => {
+    const ribbon = bandObject('r.layer.mapped', 'GeomRibbon', 'subplot.0', true);
+
+    expect(supportsComponentBatchProp(ribbon, 'facecolor', 'r_svg')).toBe(false);
+    expect(supportsComponentBatchProp(ribbon, 'edgecolor', 'r_svg')).toBe(true);
+    expect(supportsComponentBatchProp(ribbon, 'linewidth', 'r_svg')).toBe(true);
+    expect(supportsComponentBatchProp(ribbon, 'alpha', 'r_svg')).toBe(true);
   });
 });

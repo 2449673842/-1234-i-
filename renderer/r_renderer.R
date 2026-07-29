@@ -572,6 +572,29 @@ latest_string <- function(gid, prop, fallback) {
   if (is.null(value) || length(value) == 0) fallback else as.character(value)
 }
 
+normalize_r_linetype_value <- function(value, fallback = "solid") {
+  aliases <- c(
+    "-" = "solid",
+    "--" = "dashed",
+    "-." = "dotdash",
+    ":" = "dotted",
+    "dashdot" = "dotdash",
+    "none" = "blank"
+  )
+  valid_names <- c("blank", "solid", "dashed", "dotted", "dotdash", "longdash", "twodash")
+
+  for (candidate in list(value, fallback, "solid")) {
+    if (is.null(candidate) || length(candidate) == 0 || is.na(candidate[[1]])) next
+    text <- tolower(trimws(as.character(candidate[[1]])))
+    if (!nzchar(text)) next
+    if (text %in% names(aliases)) return(unname(aliases[[text]]))
+    if (text %in% valid_names) return(text)
+    if (grepl("^[0-6]$", text, perl = TRUE)) return(as.integer(text))
+    if (grepl("^(?:[0-9a-f]{2}){1,4}$", text, perl = TRUE)) return(text)
+  }
+  "solid"
+}
+
 latest_bool <- function(gid, prop, fallback) {
   value <- latest_value(gid, prop, fallback)
   if (is.null(value) || length(value) == 0) return(isTRUE(fallback))
@@ -787,18 +810,22 @@ clamp_numeric <- function(value, min_value, max_value) {
   max(min_value, min(max_value, value))
 }
 
-subplot_aspect_value <- function() {
-  value <- if (has_edit("r.facet.layout.0", "aspect")) {
-    latest_value("r.facet.layout.0", "aspect", "auto")
-  } else {
-    latest_matching_value("^subplot\\.\\d+$", "aspect", "auto")
-  }
+normalize_subplot_aspect_value <- function(value) {
   text <- as.character(value %||% "auto")
   if (text %in% c("auto", "", "NA")) return("auto")
   if (text %in% c("equal", "1")) return(1)
   numeric_value <- suppressWarnings(as.numeric(text))
   if (length(numeric_value) == 0 || is.na(numeric_value) || numeric_value <= 0) return("auto")
   numeric_value
+}
+
+subplot_aspect_value <- function() {
+  value <- if (has_edit("r.facet.layout.0", "aspect")) {
+    latest_value("r.facet.layout.0", "aspect", "auto")
+  } else {
+    latest_matching_value("^subplot\\.\\d+$", "aspect", "auto")
+  }
+  normalize_subplot_aspect_value(value)
 }
 
 geom_class <- function(layer) {
@@ -1118,6 +1145,10 @@ is_line_adapter_layer <- function(layer) {
   geom_class(layer) %in% c("GeomLine", "GeomPath", "GeomSmooth", "GeomStep")
 }
 
+is_polygon_adapter_layer <- function(layer) {
+  identical(geom_class(layer), "GeomPolygon")
+}
+
 is_segment_curve_adapter_layer <- function(layer) {
   geom_class(layer) %in% c("GeomSegment", "GeomCurve")
 }
@@ -1183,7 +1214,7 @@ layer_kind <- function(geom) {
   if (geom %in% c("GeomLine", "GeomPath", "GeomSmooth", "GeomStep", "GeomSegment", "GeomCurve", "GeomHline", "GeomVline", "GeomAbline", "GeomDensity", "GeomFreqpoly")) return("line")
   if (geom %in% c("GeomBoxplot")) return("boxplot_container")
   if (geom %in% c("GeomViolin")) return("violinplot_container")
-  if (geom %in% c("GeomCol", "GeomBar", "GeomTile", "GeomRaster", "GeomRect", "GeomRibbon", "GeomArea")) return("patch")
+  if (geom %in% c("GeomCol", "GeomBar", "GeomTile", "GeomRaster", "GeomRect", "GeomRibbon", "GeomArea", "GeomPolygon")) return("patch")
   if (geom %in% c("GeomContour")) return("contour")
   if (geom %in% c("GeomContourFilled")) return("contourf")
   if (geom %in% c("GeomErrorbar", "GeomErrorbarh", "GeomPointrange", "GeomLinerange", "GeomCrossbar")) return("errorbar_container")
@@ -1246,6 +1277,7 @@ layer_label <- function(geom, index) {
     GeomViolin = "ggplot violin layer",
     GeomRibbon = "ggplot ribbon layer",
     GeomArea = "ggplot area layer",
+    GeomPolygon = "ggplot polygon layer",
     GeomSmooth = "ggplot smooth layer",
     GeomTile = "ggplot tile layer",
     GeomRaster = "ggplot raster layer",
@@ -1527,12 +1559,78 @@ apply_line_layer_edits <- function(layer, gid) {
     params$size <- line_width
   }
   if (has_edit(gid, "linestyle")) {
-    params$linetype <- latest_string(gid, "linestyle", params$linetype %||% "solid")
+    params$linetype <- normalize_r_linetype_value(
+      latest_string(gid, "linestyle", params$linetype %||% "solid"),
+      params$linetype %||% "solid"
+    )
   }
   if (has_edit(gid, "alpha")) {
     params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
   }
 
+  layer$aes_params <- params
+  layer
+}
+
+polygon_layer_current_props <- function(layer, gid, built_data = NULL, plot_mapping = NULL, protect_mapped_styles = FALSE) {
+  params <- layer_params(layer)
+  default_aes <- layer$geom$default_aes %||% ggplot2::GeomPolygon$default_aes
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  fill_mapped <- "fill" %in% names(effective_mapping)
+  color_mapped <- any(c("colour", "color") %in% names(effective_mapping))
+  linewidth_mapped <- "linewidth" %in% names(effective_mapping) || "size" %in% names(effective_mapping)
+  alpha_mapped <- "alpha" %in% names(effective_mapping)
+  fill_fallback <- style_string_or(first_present_value(
+    layer_data_values(built_data, "fill"),
+    param_value(params, c("fill"), default_aes$fill %||% "#333333")
+  ), "#333333")
+  edge_fallback <- style_string_or(first_present_value(
+    layer_data_values(built_data, "colour"),
+    param_value(params, c("colour", "color"), default_aes$colour %||% "#000000")
+  ), "#000000")
+  linewidth_fallback <- suppressWarnings(as.numeric(first_present_value(
+    c(layer_data_values(built_data, "linewidth"), layer_data_values(built_data, "size")),
+    param_value(params, c("linewidth", "size"), default_aes$linewidth %||% default_aes$size %||% 0.5)
+  )))
+  if (length(linewidth_fallback) == 0 || !is.finite(linewidth_fallback[[1]])) linewidth_fallback <- 0.5
+  alpha_fallback <- suppressWarnings(as.numeric(first_present_value(
+    layer_data_values(built_data, "alpha"),
+    param_value(params, c("alpha"), default_aes$alpha %||% 1)
+  )))
+  if (length(alpha_fallback) == 0 || !is.finite(alpha_fallback[[1]])) alpha_fallback <- 1
+  list(
+    facecolor = if (protect_mapped_styles && fill_mapped) fill_fallback else latest_string(gid, "facecolor", fill_fallback),
+    edgecolor = if (protect_mapped_styles && color_mapped) edge_fallback else latest_string(gid, "edgecolor", edge_fallback),
+    linewidth = if (protect_mapped_styles && linewidth_mapped) linewidth_fallback[[1]] else latest_numeric(gid, "linewidth", linewidth_fallback[[1]]),
+    alpha = if (protect_mapped_styles && alpha_mapped) alpha_fallback[[1]] else latest_numeric(gid, "alpha", alpha_fallback[[1]]),
+    fillMapped = fill_mapped,
+    colorMapped = color_mapped,
+    linewidthMapped = linewidth_mapped,
+    alphaMapped = alpha_mapped,
+    positionClass = layer_position_class(layer),
+    adapterFamily = "polygon"
+  )
+}
+
+apply_polygon_layer_edits <- function(layer, gid, plot_mapping = NULL) {
+  params <- layer$aes_params %||% list()
+  effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
+  fill_mapped <- "fill" %in% names(effective_mapping)
+  color_mapped <- any(c("colour", "color") %in% names(effective_mapping))
+  if (!fill_mapped && has_edit(gid, "facecolor")) {
+    params$fill <- latest_string(gid, "facecolor", params$fill %||% "#333333")
+  }
+  if (!color_mapped && has_edit(gid, "edgecolor")) {
+    params$colour <- latest_string(gid, "edgecolor", params$colour %||% params$color %||% "#000000")
+  }
+  if (has_edit(gid, "linewidth")) {
+    line_width <- latest_numeric(gid, "linewidth", params$linewidth %||% params$size %||% 0.5)
+    params$linewidth <- line_width
+    params$size <- line_width
+  }
+  if (has_edit(gid, "alpha")) {
+    params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
+  }
   layer$aes_params <- params
   layer
 }
@@ -1637,7 +1735,10 @@ apply_segment_curve_layer_edits <- function(layer, gid, plot_mapping = NULL) {
     params$size <- line_width
   }
   if (!linetype_mapped && has_edit(gid, "linestyle")) {
-    params$linetype <- latest_string(gid, "linestyle", params$linetype %||% "solid")
+    params$linetype <- normalize_r_linetype_value(
+      latest_string(gid, "linestyle", params$linetype %||% "solid"),
+      params$linetype %||% "solid"
+    )
   }
   if (!alpha_mapped && has_edit(gid, "alpha")) {
     params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
@@ -1974,7 +2075,10 @@ apply_errorbar_layer_edits <- function(layer, gid) {
     params$linewidth <- latest_alias_numeric(gid, c("linewidth", "elinewidth"), params$linewidth %||% params$size %||% 0.5)
   }
   if (has_edit(gid, "linestyle")) {
-    params$linetype <- latest_string(gid, "linestyle", params$linetype %||% "solid")
+    params$linetype <- normalize_r_linetype_value(
+      latest_string(gid, "linestyle", params$linetype %||% "solid"),
+      params$linetype %||% "solid"
+    )
   }
   if (has_edit(gid, "alpha")) {
     params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
@@ -2465,7 +2569,10 @@ apply_contour_layer_edits <- function(layer, gid, plot_mapping = NULL) {
     params$size <- line_width
   }
   if (has_edit(gid, "linestyle")) {
-    params$linetype <- latest_string(gid, "linestyle", params$linetype %||% "solid")
+    params$linetype <- normalize_r_linetype_value(
+      latest_string(gid, "linestyle", params$linetype %||% "solid"),
+      params$linetype %||% "solid"
+    )
   }
   if (has_edit(gid, "alpha")) {
     params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
@@ -2501,6 +2608,10 @@ apply_layer_edits <- function(plot_obj, built_data_by_layer = list()) {
     }
     if (is_line_adapter_layer(plot_obj$layers[[i]])) {
       plot_obj$layers[[i]] <- apply_line_layer_edits(plot_obj$layers[[i]], gid)
+      next
+    }
+    if (is_polygon_adapter_layer(plot_obj$layers[[i]])) {
+      plot_obj$layers[[i]] <- apply_polygon_layer_edits(plot_obj$layers[[i]], gid, plot_obj$mapping)
       next
     }
     if (is_segment_curve_adapter_layer(plot_obj$layers[[i]])) {
@@ -2568,7 +2679,10 @@ apply_layer_edits <- function(plot_obj, built_data_by_layer = list()) {
       params$alpha <- latest_numeric(gid, "alpha", params$alpha %||% 1)
     }
     if (has_edit(gid, "linestyle")) {
-      params$linetype <- latest_string(gid, "linestyle", params$linetype %||% "solid")
+      params$linetype <- normalize_r_linetype_value(
+        latest_string(gid, "linestyle", params$linetype %||% "solid"),
+        params$linetype %||% "solid"
+      )
     }
 
     plot_obj$layers[[i]]$aes_params <- params
@@ -3514,6 +3628,311 @@ discrete_scale_catalog <- function(plot_obj) {
   list(entries = entries, builtData = built$data %||% list())
 }
 
+r_radar_style_value <- function(data, group_id, field) {
+  if (is.null(data) || nrow(data) == 0 || !"group" %in% names(data) || !field %in% names(data)) return(NULL)
+  rows <- data[as.character(data$group) == as.character(group_id), , drop = FALSE]
+  if (nrow(rows) == 0) return(NULL)
+  values <- as.character(rows[[field]])
+  values <- values[!is.na(values) & nzchar(values) & !tolower(values) %in% c("none", "transparent", "na")]
+  if (length(values) == 0) return(NULL)
+  unique_values <- unique(values)
+  if (length(unique_values) != 1) return(NULL)
+  unique_values[[1]]
+}
+
+r_radar_group_coordinates <- function(data, group_id, dimension_count) {
+  if (is.null(data) || nrow(data) == 0 || !all(c("group", "x", "y") %in% names(data))) return(NULL)
+  rows <- data[as.character(data$group) == as.character(group_id), , drop = FALSE]
+  if (nrow(rows) != dimension_count + 1L) return(NULL)
+  x <- suppressWarnings(as.numeric(rows$x))
+  y <- suppressWarnings(as.numeric(rows$y))
+  if (any(!is.finite(x)) || any(!is.finite(y))) return(NULL)
+  closing_at_end <- isTRUE(all.equal(x[[1]], x[[length(x)]], tolerance = 1e-8)) &&
+    isTRUE(all.equal(y[[1]], y[[length(y)]], tolerance = 1e-8))
+  closing_at_start <- isTRUE(all.equal(x[[1]], x[[2]], tolerance = 1e-8)) &&
+    isTRUE(all.equal(y[[1]], y[[2]], tolerance = 1e-8))
+  if (identical(closing_at_end, closing_at_start)) return(NULL)
+
+  # GeomLine orders discrete x values, which moves a repeated first vertex to
+  # the beginning. Normalize both valid representations before comparing layers.
+  core_indices <- if (closing_at_end) seq_len(length(x) - 1L) else seq.int(2L, length(x))
+  core_x <- x[core_indices]
+  core_y <- y[core_indices]
+  if (length(unique(core_x)) != dimension_count) return(NULL)
+  list(x = core_x, y = core_y, panel = as.integer(rows$PANEL[[1]] %||% 1L))
+}
+
+r_radar_scale_match <- function(entry, styles, group_ids) {
+  if (length(styles) != length(group_ids) || length(unique(entry$keys %||% character())) != length(entry$keys %||% character())) return(NULL)
+  mapping <- list()
+  for (index in seq_along(group_ids)) {
+    style <- styles[[index]]
+    matches <- which(vapply(entry$colors, function(color) colors_equal(color, style), logical(1)))
+    if (length(matches) != 1) return(NULL)
+    mapping[[as.character(group_ids[[index]])]] <- matches[[1]]
+  }
+  matched_indices <- as.integer(unlist(mapping, use.names = FALSE))
+  if (length(unique(matched_indices)) != length(matched_indices)) return(NULL)
+  mapping
+}
+
+r_radar_context <- function(plot_obj, built = NULL) {
+  if (!inherits(plot_obj, "ggplot") || !inherits(plot_obj$coordinates, "CoordPolar") || is_faceted_plot(plot_obj)) return(NULL)
+  theta <- as.character(plot_obj$coordinates$theta %||% "x")[[1]]
+  if (!identical(theta, "x")) return(NULL)
+  built <- built %||% tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
+  if (is.null(built) || is.null(built$data) || length(built$layout$panel_params %||% list()) != 1) return(NULL)
+  x_axis <- built$layout$panel_params[[1]]$x %||% built$layout$panel_scales_x[[1]] %||% NULL
+  labels <- if (!is.null(x_axis) && !is.null(x_axis$get_labels)) {
+    tryCatch(x_axis$get_labels(), error = function(e) NULL)
+  } else {
+    NULL
+  }
+  if (is.null(labels) || length(labels) == 0) labels <- x_axis$labels %||% NULL
+  if (is.null(labels) || length(labels) == 0) {
+    labels <- tryCatch(x_axis$get_limits(), error = function(e) NULL)
+  }
+  labels <- as.character(labels %||% character())
+  labels <- labels[!is.na(labels) & nzchar(labels)]
+  dimension_count <- length(labels)
+  if (dimension_count < 3 || length(unique(labels)) != dimension_count) return(NULL)
+
+  polygon_indices <- which(vapply(plot_obj$layers, is_polygon_adapter_layer, logical(1)))
+  line_indices <- which(vapply(plot_obj$layers, function(layer) geom_class(layer) %in% c("GeomLine", "GeomPath"), logical(1)))
+  if (length(polygon_indices) != 1 || length(line_indices) != 1) return(NULL)
+  polygon_index <- polygon_indices[[1]]
+  line_index <- line_indices[[1]]
+  polygon_data <- built$data[[polygon_index]] %||% NULL
+  line_data <- built$data[[line_index]] %||% NULL
+  if (is.null(polygon_data) || is.null(line_data) || !all(c("group", "x", "y", "PANEL", "fill", "colour") %in% names(polygon_data)) || !all(c("group", "x", "y", "PANEL", "colour") %in% names(line_data))) return(NULL)
+  polygon_groups <- unique(as.character(polygon_data$group))
+  line_groups <- unique(as.character(line_data$group))
+  if (length(polygon_groups) < 1 || !setequal(polygon_groups, line_groups)) return(NULL)
+
+  polygon_rows <- lapply(polygon_groups, function(group_id) r_radar_group_coordinates(polygon_data, group_id, dimension_count))
+  line_rows <- lapply(polygon_groups, function(group_id) r_radar_group_coordinates(line_data, group_id, dimension_count))
+  if (any(vapply(polygon_rows, is.null, logical(1))) || any(vapply(line_rows, is.null, logical(1)))) return(NULL)
+  if (!all(vapply(seq_along(polygon_groups), function(index) {
+    polygon_row <- polygon_rows[[index]]
+    line_row <- line_rows[[index]]
+    identical(polygon_row$panel, 1L) && identical(line_row$panel, 1L) &&
+      isTRUE(all.equal(polygon_row$x, line_row$x, tolerance = 1e-8)) &&
+      isTRUE(all.equal(polygon_row$y, line_row$y, tolerance = 1e-8))
+  }, logical(1)))) return(NULL)
+
+  line_colors <- vapply(polygon_groups, function(group_id) r_radar_style_value(line_data, group_id, "colour") %||% "", character(1))
+  polygon_fills <- vapply(polygon_groups, function(group_id) r_radar_style_value(polygon_data, group_id, "fill") %||% "", character(1))
+  if (any(!nzchar(line_colors)) || any(!nzchar(polygon_fills)) || length(unique(line_colors)) != length(line_colors) || length(unique(polygon_fills)) != length(polygon_fills)) return(NULL)
+
+  catalog <- discrete_scale_catalog(plot_obj)
+  color_candidates <- Filter(function(entry) {
+    identical(entry$kind, "color") && !is.null(r_radar_scale_match(entry, line_colors, polygon_groups))
+  }, catalog$entries %||% list())
+  fill_candidates <- Filter(function(entry) {
+    identical(entry$kind, "fill") && !is.null(r_radar_scale_match(entry, polygon_fills, polygon_groups))
+  }, catalog$entries %||% list())
+  if (length(color_candidates) != 1 || length(fill_candidates) != 1) return(NULL)
+  color_entry <- color_candidates[[1]]
+  fill_entry <- fill_candidates[[1]]
+  if (
+    !identical(as.character(color_entry$mappingKey %||% ""), as.character(fill_entry$mappingKey %||% "")) ||
+      !identical(as.character(color_entry$guideKey %||% ""), as.character(fill_entry$guideKey %||% ""))
+  ) return(NULL)
+  color_mapping <- r_radar_scale_match(color_entry, line_colors, polygon_groups)
+  fill_mapping <- r_radar_scale_match(fill_entry, polygon_fills, polygon_groups)
+  if (is.null(color_mapping) || is.null(fill_mapping)) return(NULL)
+
+  series <- lapply(seq_along(polygon_groups), function(index) {
+    group_id <- polygon_groups[[index]]
+    color_index <- color_mapping[[group_id]]
+    fill_index <- fill_mapping[[group_id]]
+    group_key <- as.character(color_entry$keys[[color_index]])
+    if (!identical(group_key, as.character(fill_entry$keys[[fill_index]]))) return(NULL)
+    list(
+      groupId = group_id,
+      groupKey = group_key,
+      radarSeriesId = paste0("radar.0.series.", r_diagram_gid_token(group_key)),
+      colorGroupId = paste0("r.group.color.", color_entry$ordinal, ".", color_index - 1L),
+      fillGroupId = paste0("r.group.fill.", fill_entry$ordinal, ".", fill_index - 1L),
+      color = line_colors[[index]],
+      fill = polygon_fills[[index]]
+    )
+  })
+  if (any(vapply(series, is.null, logical(1)))) return(NULL)
+  series_ids <- vapply(series, function(item) item$radarSeriesId, character(1))
+  if (length(unique(series_ids)) != length(series_ids)) return(NULL)
+
+  point_indices <- which(vapply(seq_along(plot_obj$layers), function(index) {
+    if (!is_point_layer(plot_obj$layers[[index]])) return(FALSE)
+    data <- built$data[[index]] %||% NULL
+    if (is.null(data) || nrow(data) == 0 || !"group" %in% names(data) || !"PANEL" %in% names(data)) return(FALSE)
+    identical(unique(as.integer(data$PANEL)), 1L) && setequal(unique(as.character(data$group)), polygon_groups)
+  }, logical(1)))
+
+  list(
+    radarId = "radar.0",
+    dimensionLabels = labels,
+    polygonLayerIndex = polygon_index,
+    lineLayerIndex = line_index,
+    pointLayerIndices = point_indices,
+    series = series
+  )
+}
+
+r_radar_series_for_group <- function(context, group_id) {
+  if (is.null(context) || is.null(group_id)) return(NULL)
+  matches <- Filter(function(series) identical(as.character(series$colorGroupId), as.character(group_id)) || identical(as.character(series$fillGroupId), as.character(group_id)), context$series %||% list())
+  if (length(matches) == 1) matches[[1]] else NULL
+}
+
+r_radar_layer_role <- function(context, layer_index) {
+  if (is.null(context) || is.null(layer_index)) return(NULL)
+  if (identical(as.integer(layer_index), as.integer(context$polygonLayerIndex))) return("fill_layer")
+  if (identical(as.integer(layer_index), as.integer(context$lineLayerIndex))) return("series_layer")
+  if (any(as.integer(layer_index) == as.integer(context$pointLayerIndices %||% integer()))) return("series_markers_layer")
+  NULL
+}
+
+r_radar_label_offset <- function(gid) {
+  value <- latest_value(gid, "radar_label_offset", list(dx = 0, dy = 0))
+  if (is.data.frame(value) && nrow(value) > 0) value <- as.list(value[1, , drop = FALSE])
+  if (!is.list(value)) value <- list()
+  dx <- suppressWarnings(as.numeric(value$dx %||% 0))
+  dy <- suppressWarnings(as.numeric(value$dy %||% 0))
+  list(dx = if (length(dx) > 0 && is.finite(dx[[1]])) dx[[1]] else 0, dy = if (length(dy) > 0 && is.finite(dy[[1]])) dy[[1]] else 0)
+}
+
+r_apply_radar_metadata <- function(object, radar_id, semantic_role, series = NULL, dimension_index = NULL) {
+  props <- object$currentProps %||% list()
+  object$radarId <- radar_id
+  object$radarSemanticRole <- semantic_role
+  props$radarId <- radar_id
+  props$radarSemanticRole <- semantic_role
+  if (!is.null(series)) {
+    object$radarSeriesId <- series$radarSeriesId
+    props$radarSeriesId <- series$radarSeriesId
+    props$radarSeriesLabel <- series$groupKey
+  }
+  if (!is.null(dimension_index)) {
+    object$radarDimensionIndex <- as.integer(dimension_index)
+    props$radarDimensionIndex <- as.integer(dimension_index)
+  }
+  object$currentProps <- props
+  object
+}
+
+r_apply_radar_scale_semantics <- function(scale_semantics, context) {
+  if (is.null(context) || length(context$series %||% list()) == 0) return(scale_semantics)
+
+  apply_group_metadata <- function(object, series, semantic_role) {
+    object <- r_apply_radar_metadata(object, context$radarId, semantic_role, series)
+    object$kind <- if (identical(semantic_role, "fill")) "patch" else "line"
+    object
+  }
+
+  for (index in seq_along(scale_semantics$objects %||% list())) {
+    object <- scale_semantics$objects[[index]]
+    object_id <- as.character(object$id %||% "")
+    series <- r_radar_series_for_group(context, object_id)
+    if (is.null(series)) next
+    semantic_role <- if (identical(object_id, as.character(series$fillGroupId))) "fill" else "series"
+    scale_semantics$objects[[index]] <- apply_group_metadata(object, series, semantic_role)
+  }
+
+  for (index in seq_along(scale_semantics$groups %||% list())) {
+    group <- scale_semantics$groups[[index]]
+    group_id <- as.character(group$groupId %||% "")
+    series <- r_radar_series_for_group(context, group_id)
+    if (is.null(series)) next
+    semantic_role <- if (identical(group_id, as.character(series$fillGroupId))) "fill" else "series"
+    group$kind <- if (identical(semantic_role, "fill")) "patch" else "line"
+    group$radarId <- context$radarId
+    group$radarSemanticRole <- semantic_role
+    group$radarSeriesId <- series$radarSeriesId
+    scale_semantics$groups[[index]] <- group
+  }
+
+  for (index in seq_along(scale_semantics$bindings %||% list())) {
+    binding <- scale_semantics$bindings[[index]]
+    series <- r_radar_series_for_group(context, as.character(binding$groupId %||% ""))
+    if (is.null(series)) next
+    for (target_index in seq_along(binding$targets %||% list())) {
+      binding$targets[[target_index]]$radarId <- context$radarId
+      binding$targets[[target_index]]$radarSeriesId <- series$radarSeriesId
+    }
+    scale_semantics$bindings[[index]] <- binding
+  }
+
+  scale_semantics
+}
+
+r_apply_radar_manifest_semantics <- function(objects, context) {
+  if (is.null(context) || length(objects) == 0) return(objects)
+
+  for (index in seq_along(objects)) {
+    object <- objects[[index]]
+    object_id <- as.character(object$id %||% "")
+
+    layer_match <- regexec("^r\\.layer\\.([0-9]+)$", object_id, perl = TRUE)
+    layer_parts <- regmatches(object_id, layer_match)[[1]]
+    if (length(layer_parts) == 2) {
+      layer_index <- suppressWarnings(as.integer(layer_parts[[2]])) + 1L
+      semantic_role <- r_radar_layer_role(context, layer_index)
+      if (!is.null(semantic_role)) {
+        object <- r_apply_radar_metadata(object, context$radarId, semantic_role)
+        object$editable <- list()
+        props <- object$currentProps %||% list()
+        props$structureReadonly <- as.list(unique(c(
+          unlist(props$structureReadonly %||% list(), use.names = FALSE),
+          "radarId", "radarSemanticRole"
+        )))
+        object$currentProps <- props
+      }
+    }
+
+    tick_match <- regexec("^xtick\\.0\\.([0-9]+)$", object_id, perl = TRUE)
+    tick_parts <- regmatches(object_id, tick_match)[[1]]
+    if (length(tick_parts) == 2) {
+      dimension_index <- suppressWarnings(as.integer(tick_parts[[2]])) + 1L
+      if (!is.na(dimension_index) && dimension_index >= 1L && dimension_index <= length(context$dimensionLabels)) {
+        original_text <- as.character(context$dimensionLabels[[dimension_index]])
+        object <- r_apply_radar_metadata(object, context$radarId, "dimension_label", dimension_index = dimension_index)
+        object$editable <- as.list(unique(c(
+          unlist(object$editable %||% list(), use.names = FALSE),
+          "text", "radar_label_offset"
+        )))
+        props <- object$currentProps %||% list()
+        props$originalText <- original_text
+        props$text <- latest_string(object_id, "text", original_text)
+        props$radar_label_offset <- r_radar_label_offset(object_id)
+        object$currentProps <- props
+      }
+    }
+
+    series <- r_radar_series_for_group(context, object_id)
+    if (!is.null(series)) {
+      semantic_role <- if (identical(object_id, as.character(series$fillGroupId))) "fill" else "series"
+      object <- r_apply_radar_metadata(object, context$radarId, semantic_role, series)
+      object$kind <- if (identical(semantic_role, "fill")) "patch" else "line"
+    }
+
+    if (identical(as.character(object$role %||% ""), "legend_text")) {
+      linked_group_ids <- as.character(unlist(object$groupIds %||% list(), use.names = FALSE))
+      matching_series <- Filter(function(item) {
+        as.character(item$colorGroupId) %in% linked_group_ids ||
+          as.character(item$fillGroupId) %in% linked_group_ids
+      }, context$series %||% list())
+      if (length(matching_series) == 1) {
+        object <- r_apply_radar_metadata(object, context$radarId, "legend_text", matching_series[[1]])
+      }
+    }
+
+    objects[[index]] <- object
+  }
+
+  objects
+}
+
 discrete_group_usage <- function(entry, item_index, built_data, plot_obj) {
   color <- entry$colors[[item_index]]
   value_column <- if (entry$kind == "fill") "fill" else "colour"
@@ -4066,7 +4485,7 @@ apply_ggplot_edits <- function(plot_obj) {
   grid_visible <- latest_bool("grid.0", "visible", TRUE)
   grid_color <- latest_string("grid.0", "color", "#E5E5E5")
   grid_width <- latest_numeric("grid.0", "linewidth", 0.5)
-  grid_style_str <- latest_string("grid.0", "linestyle", "solid")
+  grid_style_str <- normalize_r_linetype_value(latest_string("grid.0", "linestyle", "solid"), "solid")
   grid_alpha <- latest_numeric("grid.0", "alpha", 1.0)
 
   x_spine_visible <- latest_bool("spine.bottom.0", "visible", TRUE)
@@ -4306,7 +4725,6 @@ apply_ggplot_edits <- function(plot_obj) {
     )
     guide_args <- list()
     if (!"color" %in% continuous_kinds) {
-      guide_args$color <- guide
       guide_args$colour <- guide
     }
     if (!"fill" %in% continuous_kinds) {
@@ -4720,6 +5138,7 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
   if (kind == "text") diagram <- NULL
   point_adapter <- is_point_layer(layer)
   line_adapter <- is_line_adapter_layer(layer)
+  polygon_adapter <- is_polygon_adapter_layer(layer)
   segment_curve_adapter <- is_segment_curve_adapter_layer(layer)
   bar_adapter <- is_bar_adapter_layer(layer)
   step_adapter <- is_step_adapter_layer(layer)
@@ -4749,6 +5168,8 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
     point_layer_current_props(layer, gid, built_data, plot_mapping)
   } else if (line_adapter) {
     line_layer_current_props(layer, gid, built_data, plot_mapping)
+  } else if (polygon_adapter) {
+    polygon_layer_current_props(layer, gid, built_data, plot_mapping, protect_mapped_styles = TRUE)
   } else if (segment_curve_adapter) {
     segment_curve_layer_current_props(layer, gid, built_data, plot_mapping)
   } else if (bar_adapter) {
@@ -4814,6 +5235,14 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
       if (isTRUE(props$alphaMapped)) list() else list("alpha")
     )
   }
+  if (polygon_adapter) {
+    editable <- c(
+      if (isTRUE(props$fillMapped)) list() else list("facecolor"),
+      if (isTRUE(props$colorMapped)) list() else list("edgecolor"),
+      if (isTRUE(props$linewidthMapped)) list() else list("linewidth"),
+      if (isTRUE(props$alphaMapped)) list() else list("alpha")
+    )
+  }
   if (!is.null(diagram)) {
     if (kind == "text") {
       editable <- list()
@@ -4828,7 +5257,7 @@ manifest_layer_object <- function(layer, index, plot_mapping = NULL, built_data 
     text = list(color = props$color, fontsize = props$size, alpha = props$alpha),
     collection = if (point_adapter) props else list(color = props$color, facecolor = props$facecolor, size = props$size, alpha = props$alpha),
     line = if (line_adapter || segment_curve_adapter) props else list(color = props$color, linewidth = props$linewidth, linestyle = props$linestyle, alpha = props$alpha),
-    patch = if (bar_adapter || ribbon_area_adapter || tile_raster_rect_adapter) props else list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
+    patch = if (bar_adapter || ribbon_area_adapter || tile_raster_rect_adapter || polygon_adapter) props else list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
     errorbar_container = if (errorbar_adapter) props else list(color = props$color, linewidth = props$linewidth, alpha = props$alpha),
     boxplot_container = if (boxplot_adapter) props else list(color = props$color, linewidth = props$linewidth, alpha = props$alpha, box_color = latest_string(gid, "box_color", props$facecolor)),
     violinplot_container = if (violin_adapter) props else list(facecolor = props$facecolor, edgecolor = props$edgecolor, linewidth = props$linewidth, alpha = props$alpha),
@@ -5688,8 +6117,10 @@ inject_svg_text_ids <- function(svg, manifest, ggplot_obj = NULL) {
         as.character(labels)
       }
       
-      x_labels <- get_axis_labels(params$x)
-      y_labels <- get_axis_labels(params$y)
+      x_axis <- params$x %||% if (length(built$layout$panel_scales_x %||% list()) >= p_idx) built$layout$panel_scales_x[[p_idx]] else NULL
+      y_axis <- params$y %||% if (length(built$layout$panel_scales_y %||% list()) >= p_idx) built$layout$panel_scales_y[[p_idx]] else NULL
+      x_labels <- get_axis_labels(x_axis)
+      y_labels <- get_axis_labels(y_axis)
       x_anchor <- "middle"
       y_position <- as.character(params$y$position %||% "left")
       y_anchor <- if (identical(y_position, "right")) "start" else "end"
@@ -5852,8 +6283,15 @@ svg_set_inline_style <- function(tag, property, value) {
   value <- gsub("[\r\n]", " ", as.character(value), perl = TRUE)
   style_match <- regexec("\\bstyle\\s*=\\s*(['\"])(.*?)\\1", tag, perl = TRUE)
   style_parts <- regmatches(tag, style_match)[[1]]
-  next_style <- paste0(property, ": ", value, ";")
   if (length(style_parts) >= 3) {
+    quote <- style_parts[[2]]
+    escaped_value <- value
+    if (identical(quote, "'")) {
+      escaped_value <- gsub("'", "&apos;", escaped_value, fixed = TRUE)
+    } else {
+      escaped_value <- gsub("\"", "&quot;", escaped_value, fixed = TRUE)
+    }
+    next_style <- paste0(property, ": ", escaped_value, ";")
     style <- style_parts[[3]]
     property_pattern <- paste0("(?i)(^|;)\\s*", regex_escape(property), "\\s*:\\s*[^;]*;?")
     if (grepl(property_pattern, style, perl = TRUE)) {
@@ -5861,8 +6299,15 @@ svg_set_inline_style <- function(tag, property, value) {
     } else {
       style <- paste(trimws(style), next_style)
     }
-    return(sub("\\bstyle\\s*=\\s*(['\"])(.*?)\\1", paste0("style=\"", style, "\""), tag, perl = TRUE))
+    return(sub(
+      "\\bstyle\\s*=\\s*(['\"])(.*?)\\1",
+      paste0("style=", quote, style, quote),
+      tag,
+      perl = TRUE
+    ))
   }
+  escaped_value <- gsub("\"", "&quot;", value, fixed = TRUE)
+  next_style <- paste0(property, ": ", escaped_value, ";")
   sub("^<text\\b", paste0("<text style=\"", next_style, "\""), tag, perl = TRUE)
 }
 
@@ -5913,6 +6358,89 @@ apply_svg_text_style_edits <- function(svg, manifest) {
   svg
 }
 
+svg_radar_offset_number <- function(value) {
+  numeric_value <- suppressWarnings(as.numeric(value))
+  if (length(numeric_value) == 0 || !is.finite(numeric_value[[1]])) return("0")
+  numeric_value <- round(numeric_value[[1]], 6)
+  if (abs(numeric_value - round(numeric_value)) < 1e-9) return(as.character(as.integer(round(numeric_value))))
+  formatted <- formatC(numeric_value, format = "f", digits = 6)
+  formatted <- sub("0+$", "", formatted)
+  sub("\\.$", "", formatted)
+}
+
+svg_append_transform <- function(tag, transform) {
+  transform_match <- regexec("\\btransform\\s*=\\s*(['\"])(.*?)\\1", tag, perl = TRUE)
+  transform_parts <- regmatches(tag, transform_match)[[1]]
+  if (length(transform_parts) >= 3) {
+    quote <- transform_parts[[2]]
+    existing <- trimws(transform_parts[[3]])
+    next_transform <- trimws(paste(existing, transform))
+    return(sub(
+      "\\btransform\\s*=\\s*(['\"])(.*?)\\1",
+      paste0("transform=", quote, next_transform, quote),
+      tag,
+      perl = TRUE
+    ))
+  }
+  sub("^<text\\b", paste0("<text transform=\"", transform, "\""), tag, perl = TRUE)
+}
+
+apply_svg_radar_dimension_label_edits <- function(svg, manifest) {
+  objects <- manifest$objects %||% list()
+  if (length(objects) == 0) return(svg)
+
+  for (obj in objects) {
+    props <- obj$currentProps %||% list()
+    if (!identical(as.character(props$radarSemanticRole %||% ""), "dimension_label")) next
+    gid <- as.character(obj$id %||% "")
+    if (!nzchar(gid)) next
+
+    offset <- props$radar_label_offset %||% list()
+    if (is.data.frame(offset) && nrow(offset) > 0) offset <- as.list(offset[1, , drop = FALSE])
+    if (!is.list(offset)) offset <- list()
+    dx <- suppressWarnings(as.numeric(offset$dx %||% 0))
+    dy <- suppressWarnings(as.numeric(offset$dy %||% 0))
+    dx <- if (length(dx) > 0 && is.finite(dx[[1]])) dx[[1]] else 0
+    dy <- if (length(dy) > 0 && is.finite(dy[[1]])) dy[[1]] else 0
+    original_text <- as.character(props$originalText %||% "")
+    next_text <- as.character(props$text %||% original_text)
+    has_text_edit <- has_edit(gid, "text") && !identical(original_text, next_text)
+    has_offset <- abs(dx) > 1e-9 || abs(dy) > 1e-9
+    if (!has_text_edit && !has_offset) next
+
+    escaped_gid <- regex_escape(gid)
+    pattern <- paste0(
+      "<text\\b(?=[^>]*(?:\\bid|\\bdata-fig-id)\\s*=\\s*['\"]",
+      escaped_gid,
+      "['\"])[^>]*>[\\s\\S]*?</text>"
+    )
+    match <- regexpr(pattern, svg, perl = TRUE)
+    if (length(match) == 0 || match[[1]] < 0) next
+    start <- match[[1]]
+    len <- attr(match, "match.length")[[1]]
+    chunk <- substr(svg, start, start + len - 1)
+    open_tag <- regmatches(chunk, regexpr("^<text\\b[^>]*>", chunk, perl = TRUE))
+    if (length(open_tag) == 0 || !nzchar(open_tag[[1]])) next
+
+    next_tag <- open_tag[[1]]
+    if (has_offset) {
+      next_tag <- svg_append_transform(
+        next_tag,
+        paste0("translate(", svg_radar_offset_number(dx), " ", svg_radar_offset_number(-dy), ")")
+      )
+    }
+    next_body <- if (has_text_edit) {
+      svg_escape_text(next_text)
+    } else {
+      body <- sub("^<text\\b[^>]*>", "", chunk, perl = TRUE)
+      sub("</text>$", "", body, perl = TRUE)
+    }
+    replacement <- paste0(next_tag, next_body, "</text>")
+    svg <- paste0(substr(svg, 1, start - 1), replacement, substr(svg, start + len, nchar(svg)))
+  }
+  svg
+}
+
 r_layer_mapped_scale_kinds <- function(layer, plot_mapping = NULL) {
   effective_mapping <- r_effective_layer_mapping(layer, plot_mapping)
   fixed_params <- layer_params(layer)
@@ -5956,12 +6484,14 @@ layer_svg_plan <- function(plot_obj) {
     function(layer) !is.null(r_layer_diagram_metadata(layer)),
     logical(1)
   ))
+  radar_context <- r_radar_context(plot_obj, built)
   plans <- list()
   for (i in seq_along(plot_obj$layers)) {
     layer <- plot_obj$layers[[i]]
     explicit_diagram <- !is.null(r_layer_diagram_metadata(layer))
     geom <- geom_class(layer)
     kind <- layer_kind(geom)
+    radar_role <- r_radar_layer_role(radar_context, i)
     if (kind == "text") next
     data <- built$data[[i]]
     if (is.null(data) || nrow(data) == 0) next
@@ -6003,6 +6533,7 @@ layer_svg_plan <- function(plot_obj) {
       GeomPointrange = c("line", "polyline", "path", "circle", "polygon"),
       GeomCrossbar = c("rect", "polyline", "line", "path", "polygon"),
       GeomViolin = c("polygon", "path"),
+      GeomPolygon = c("polygon", "path"),
       GeomBoxplot = c("rect", "polygon"),
       GeomRibbon = c("polygon", "path"),
       GeomArea = c("polygon", "path"),
@@ -6020,7 +6551,7 @@ layer_svg_plan <- function(plot_obj) {
 
     if (segment_curve) {
       count <- max(1L, nrow(data) * elements_per_row)
-    } else if (geom %in% c("GeomLine", "GeomPath", "GeomSmooth", "GeomStep", "GeomDensity", "GeomFreqpoly", "GeomContour", "GeomContourFilled")) {
+    } else if (geom %in% c("GeomLine", "GeomPath", "GeomSmooth", "GeomStep", "GeomDensity", "GeomFreqpoly", "GeomContour", "GeomContourFilled", "GeomPolygon")) {
       count <- max(1L, length(grouped_rows))
     } else if (geom %in% c("GeomErrorbar", "GeomErrorbarh")) {
       count <- nrow(data) * 3L
@@ -6041,6 +6572,12 @@ layer_svg_plan <- function(plot_obj) {
       count <- length(panel_rows)
     } else {
       count <- max(1L, nrow(data))
+    }
+    scale_kinds <- r_layer_mapped_scale_kinds(layer, plot_obj$mapping)
+    if (identical(radar_role, "fill_layer")) {
+      scale_kinds <- "fill"
+    } else if (length(radar_role) == 1 && radar_role %in% c("series_layer", "series_markers_layer")) {
+      scale_kinds <- "color"
     }
     plans[[length(plans) + 1]] <- list(
       gid = r_layer_manifest_gid(layer, i),
@@ -6068,7 +6605,7 @@ layer_svg_plan <- function(plot_obj) {
           NULL
         }
       )),
-      scale_kinds = r_layer_mapped_scale_kinds(layer, plot_obj$mapping),
+      scale_kinds = scale_kinds,
       linetypes = style_values(data, "linetype"),
       allow_css_default_stroke = geom %in% c(
         "GeomLine", "GeomPath", "GeomSmooth", "GeomStep", "GeomDensity", "GeomFreqpoly"
@@ -6362,7 +6899,7 @@ svg_record_anchor_inside <- function(record, bounds) {
 }
 
 svg_linetype_class <- function(value) {
-  text <- tolower(as.character(value %||% "solid")[[1]])
+  text <- tolower(as.character(normalize_r_linetype_value(value, "solid"))[[1]])
   if (text %in% c("1", "solid")) return("solid")
   if (text %in% c("2", "dashed")) return("dashed")
   if (text %in% c("3", "dotted")) return("dotted")
@@ -6766,6 +7303,7 @@ r_manifest_subplot_id <- function(obj) {
 }
 
 r_manifest_coordinate_space <- function(obj) {
+  if (identical(as.character(obj$currentProps$radarSemanticRole %||% ""), "dimension_label")) return("display")
   coord_system <- as.character(obj$currentProps$coord_system %||% "")
   if (coord_system %in% c("data", "axes", "figure", "display")) return(coord_system)
   id <- as.character(obj$id %||% "")
@@ -6797,7 +7335,8 @@ r_manifest_identity <- function(obj) {
     "layerId", "layerKey", "scaleId", "scaleKey", "guideId", "guideKey",
     "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey", "guideType",
     "textSource", "statClass", "diagramId", "diagramType", "diagramObjectId",
-    "nodeId", "edgeId", "sourceNodeId", "targetNodeId"
+    "nodeId", "edgeId", "sourceNodeId", "targetNodeId",
+    "radarId", "radarSemanticRole", "radarSeriesId", "radarDimensionIndex"
   )) {
     relation <- r_manifest_relation_scalar(relation, key, obj[[key]])
   }
@@ -6871,7 +7410,8 @@ r_structural_relation <- function(identity) {
   stable_fields <- c(
     "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey",
     "layerKey", "scaleKey", "guideKey", "diagramId", "diagramType",
-    "diagramObjectId", "nodeId", "edgeId", "sourceNodeId", "targetNodeId"
+    "diagramObjectId", "nodeId", "edgeId", "sourceNodeId", "targetNodeId",
+    "radarId", "radarSemanticRole", "radarSeriesId", "radarDimensionIndex"
   )
   relation[intersect(stable_fields, names(relation))]
 }
@@ -6904,6 +7444,7 @@ r_manifest_structural_fingerprint <- function(obj, identity, stable_key) {
 
 r_manifest_derived_effects <- function(prop) {
   if (prop %in% c("text", "fontsize", "fontfamily", "fontweight", "fontstyle", "rotation")) return(list("text_bounds"))
+  if (prop == "radar_label_offset") return(list("object_bounds"))
   if (prop == "position") return(list("object_bounds"))
   if (prop %in% c("left", "bottom", "width", "height", "aspect")) return(list("child_display_position"))
   if (prop %in% c("markerscale", "ncol", "handletextpad", "labelspacing", "columnspacing", "borderpad")) return(list("container_layout"))
@@ -6916,6 +7457,17 @@ r_manifest_property_capabilities <- function(obj) {
   relation <- identity$relation %||% list()
   unsafe_cross_figure <- c("text", "label", "title", "position", "left", "bottom", "width", "height", "limits", "aspect", "cmap", "vmin", "vmax")
   lapply(editable, function(prop) {
+    if (identical(prop, "radar_label_offset")) {
+      return(list(
+        prop = "radar_label_offset",
+        patchMode = "backend_patch",
+        scopes = list("object"),
+        preview = "approximate",
+        replay = "stable",
+        coordinateSpace = "display",
+        derivedEffects = list("object_bounds")
+      ))
+    }
     scopes <- c("object")
     if (!is.null(obj$role) && !prop %in% c("position", "anchor_position")) scopes <- c(scopes, "group")
     scale_scoped <- !is.null(relation[["scaleId"]])
@@ -7027,7 +7579,8 @@ r_stable_relation_value <- function(identity) {
   stable_fields <- c(
     "aesthetic", "groupKey", "dataKey", "facetKey", "axisKey",
     "layerKey", "scaleKey", "guideKey", "diagramId", "diagramType",
-    "diagramObjectId", "nodeId", "edgeId", "sourceNodeId", "targetNodeId"
+    "diagramObjectId", "nodeId", "edgeId", "sourceNodeId", "targetNodeId",
+    "radarId", "radarSemanticRole", "radarSeriesId", "radarDimensionIndex"
   )
   relation[intersect(stable_fields, names(relation))]
 }
@@ -7083,7 +7636,59 @@ r_identity_json_equal <- function(actual, expected) {
   )
 }
 
+r_legacy_radar_fill_identity_evidence_compatible <- function(object, evidence) {
+  props <- object$currentProps %||% list()
+  object_id <- as.character(object$id %||% "")
+  current_stable_key <- as.character(object$stableKey %||% "")
+  legacy_stable_key <- sub("^r:patch:", "r:line:", current_stable_key)
+  if (
+    !identical(as.character(object$kind %||% ""), "patch") ||
+      !identical(as.character(props$radarSemanticRole %||% ""), "fill") ||
+      !grepl("^r\\.group\\.fill\\.[0-9]+\\.[0-9]+$", object_id, perl = TRUE) ||
+      identical(legacy_stable_key, current_stable_key) ||
+      is.null(evidence$stableKey) ||
+      !identical(as.character(evidence$stableKey), legacy_stable_key) ||
+      is.null(evidence$semanticKey) ||
+      !identical(as.character(evidence$semanticKey), as.character(identity_manifest_value(object$identity, "semanticKey") %||% "")) ||
+      is.null(evidence$seriesKey) ||
+      !identical(as.character(evidence$seriesKey), as.character(identity_manifest_value(object$identity, "seriesKey") %||% ""))
+  ) {
+    return(FALSE)
+  }
+
+  supplied_relation <- evidence$relation %||% list()
+  expected_relation <- r_stable_relation_value(object$identity)
+  radar_fields <- c("radarId", "radarSemanticRole", "radarSeriesId", "radarDimensionIndex")
+  if (any(radar_fields %in% names(supplied_relation))) return(FALSE)
+  required_fields <- c("aesthetic", "groupKey", "scaleKey")
+  if (!all(required_fields %in% names(supplied_relation))) return(FALSE)
+  for (field in names(supplied_relation)) {
+    if (!field %in% names(expected_relation) || !r_identity_json_equal(expected_relation[[field]], supplied_relation[[field]])) {
+      return(FALSE)
+    }
+  }
+
+  if (identical(evidence$identityProtocol %||% "", "legacy_unversioned")) {
+    return(TRUE)
+  }
+
+  legacy_fingerprint <- r_parse_structural_fingerprint(evidence$fingerprint)
+  current_fingerprint <- r_parse_structural_fingerprint(object$fingerprint)
+  if (is.null(legacy_fingerprint) || is.null(current_fingerprint)) return(FALSE)
+  if (
+    !identical(as.character(legacy_fingerprint$kind %||% ""), "line") ||
+      !identical(as.character(legacy_fingerprint$stableKey %||% ""), legacy_stable_key)
+  ) return(FALSE)
+  legacy_expected <- current_fingerprint
+  legacy_expected$kind <- "line"
+  legacy_expected$stableKey <- legacy_stable_key
+  if (is.null(legacy_expected$relation) || !is.list(legacy_expected$relation)) legacy_expected$relation <- list()
+  for (field in radar_fields) legacy_expected$relation[[field]] <- NULL
+  r_identity_json_equal(legacy_fingerprint, legacy_expected)
+}
+
 r_entry_identity_evidence <- function(entry) {
+  entry_fields <- names(entry) %||% character()
   fingerprint_version <- suppressWarnings(as.integer(unwrap_manifest_value(entry$fingerprintVersion)))
   evidence <- list()
   if (present_manifest_value(entry$stableKey)) evidence$stableKey <- as.character(unwrap_manifest_value(entry$stableKey))
@@ -7099,15 +7704,23 @@ r_entry_identity_evidence <- function(entry) {
   }
   relation <- r_stable_relation_value(entry$identity)
   if (length(relation) > 0) evidence$relation <- relation
+  if (
+    length(evidence) > 0 &&
+      !"fingerprint" %in% entry_fields &&
+      !"fingerprintVersion" %in% entry_fields
+  ) {
+    evidence$identityProtocol <- "legacy_unversioned"
+  }
   evidence
 }
 
 r_object_matches_identity_evidence <- function(object, evidence) {
-  if (!is.null(evidence$stableKey) && !identical(evidence$stableKey, as.character(object$stableKey %||% ""))) return(FALSE)
+  legacy_radar_fill <- r_legacy_radar_fill_identity_evidence_compatible(object, evidence)
+  if (!is.null(evidence$stableKey) && !identical(evidence$stableKey, as.character(object$stableKey %||% "")) && !legacy_radar_fill) return(FALSE)
   if (!is.null(evidence$fingerprint) && !identical(
     r_normalize_structural_fingerprint(evidence$fingerprint),
     r_normalize_structural_fingerprint(object$fingerprint)
-  ) && !r_legacy_text_role_identity_evidence_compatible(object, evidence)) return(FALSE)
+  ) && !r_legacy_text_role_identity_evidence_compatible(object, evidence) && !legacy_radar_fill) return(FALSE)
   if (!is.null(evidence$semanticKey) && !identical(evidence$semanticKey, as.character(identity_manifest_value(object$identity, "semanticKey") %||% ""))) return(FALSE)
   if (!is.null(evidence$seriesKey) && !identical(evidence$seriesKey, as.character(identity_manifest_value(object$identity, "seriesKey") %||% ""))) return(FALSE)
   if (!is.null(evidence$relation)) {
@@ -7448,6 +8061,10 @@ validate_r_shadow_edit_resolution <- function(manifest, resolution) {
 manifest_values_equal <- function(prop, actual, expected) {
   actual <- unwrap_manifest_value(actual)
   expected <- unwrap_manifest_value(expected)
+  if (identical(prop, "aspect")) {
+    actual <- normalize_subplot_aspect_value(actual)
+    expected <- normalize_subplot_aspect_value(expected)
+  }
   if (grepl("color|colour|facecolor|edgecolor", prop, ignore.case = TRUE)) {
     return(colors_equal(actual, expected))
   }
@@ -7723,7 +8340,10 @@ confirm_r_edit_entries <- function(manifest, entries, resolution = list(rejected
     }
 
     entry_stable_key <- unwrap_manifest_value(entry$stableKey)
-    if (!is_legacy_target_alias && present_manifest_value(entry_stable_key) && !identical(as.character(entry_stable_key), as.character(object$stableKey %||% ""))) {
+    legacy_radar_fill <- if (is_legacy_target_alias) FALSE else {
+      r_legacy_radar_fill_identity_evidence_compatible(object, r_entry_identity_evidence(requested_entry))
+    }
+    if (!is_legacy_target_alias && present_manifest_value(entry_stable_key) && !identical(as.character(entry_stable_key), as.character(object$stableKey %||% "")) && !legacy_radar_fill) {
       reject_entry(requested_entry, patch_index, "identity_mismatch", requested_gid, prop, paste0(gid, " stableKey does not match the R manifest object."), list(field = "stableKey"))
       next
     }
@@ -7736,7 +8356,7 @@ confirm_r_edit_entries <- function(manifest, entries, resolution = list(rejected
       !identical(
         r_normalize_structural_fingerprint(entry$fingerprint),
         r_normalize_structural_fingerprint(object$fingerprint)
-      ) && !r_legacy_text_role_identity_evidence_compatible(object, r_entry_identity_evidence(entry))
+      ) && !r_legacy_text_role_identity_evidence_compatible(object, r_entry_identity_evidence(entry)) && !legacy_radar_fill
     ) {
       reject_entry(requested_entry, patch_index, "identity_mismatch", requested_gid, prop, paste0(gid, " fingerprint does not match the R manifest object."), list(field = "fingerprint"))
       next
@@ -8264,6 +8884,7 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
   
   # Inject individual xtick and ytick objects into objects list
   built <- tryCatch(ggplot2::ggplot_build(plot_obj), error = function(e) NULL)
+  radar_context <- r_radar_context(plot_obj, built)
   if (!is.null(built) && !is.null(built$layout) && !is.null(built$layout$panel_params)) {
     panel_keys <- facet_panel_key_map(plot_obj)
     get_axis_labels <- function(axis_param) {
@@ -8285,8 +8906,10 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
 
     for (p_idx in seq_along(built$layout$panel_params)) {
       params <- built$layout$panel_params[[p_idx]]
-      x_labels <- get_axis_labels(params$x)
-      y_labels <- get_axis_labels(params$y)
+      x_axis <- params$x %||% if (length(built$layout$panel_scales_x %||% list()) >= p_idx) built$layout$panel_scales_x[[p_idx]] else NULL
+      y_axis <- params$y %||% if (length(built$layout$panel_scales_y %||% list()) >= p_idx) built$layout$panel_scales_y[[p_idx]] else NULL
+      x_labels <- get_axis_labels(x_axis)
+      y_labels <- get_axis_labels(y_axis)
 
       # Add xtick objects
       if (length(x_labels) > 0) {
@@ -8384,6 +9007,7 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
     detect_discrete_scale_semantics(built_plot),
     baseline_manifest
   )
+  scale_semantics <- r_apply_radar_scale_semantics(scale_semantics, radar_context)
   if (length(scale_semantics$objects) > 0) {
     objects <- c(objects, scale_semantics$objects)
   }
@@ -8405,6 +9029,7 @@ build_ggplot_manifest <- function(plot_obj, svg = "", baseline_manifest = NULL) 
       }
     }
   }
+  objects <- r_apply_radar_manifest_semantics(objects, radar_context)
   objects <- restore_baseline_manifest_relations(objects, baseline_manifest)
   continuous_colorbar_objects <- manifest_continuous_colorbar_objects(plot_obj, layout_bounds)
   objects <- link_family8_continuous_relations(objects, continuous_colorbar_objects)
@@ -8750,6 +9375,7 @@ result <- tryCatch({
     svg <- inject_svg_text_ids(svg, manifest, ggplot_obj)
     svg <- apply_svg_legend_text_edits(svg, manifest)
     svg <- apply_svg_text_style_edits(svg, manifest)
+    svg <- apply_svg_radar_dimension_label_edits(svg, manifest)
     svg <- inject_svg_layer_data_ids(svg, ggplot_obj)
   }
   timing_breakdown$svgPostprocessMs <- max(0, round(monotonic_ms() - svg_postprocess_started_ms))
