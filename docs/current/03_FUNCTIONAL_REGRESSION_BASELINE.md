@@ -1,10 +1,10 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-30 16:08:23 +08:00
-> 证据截止时间：2026-07-30 16:08:23 +08:00
-> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 与 R-WP0-WP10 源分支能力已合入，当前批次复验待完成
-> 部署状态：未推送、未部署；本文件不代表服务器当前版本
+> 最后修改时间：2026-07-30 23:12:16 +08:00
+> 证据截止时间：2026-07-30 23:12:16 +08:00
+> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 与 R-WP0-WP10 当前收敛提交已合入 release `336f64e-jd30`
+> 部署状态：生产不可变 release `336f64e-jd30` 已部署；后续未提交工作树内容不属于服务器版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
 ## 1. 文档目的
@@ -29,6 +29,7 @@
 
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
+| 当前生产发布 | `336f64e-jd30` | systemd active、重启 0、公网/Node readiness ready、renderer image 与 build ID 一致；部署前 SQLite 快照完整，部署后数据计数不变、0 issue，整版回退目标 `e35f4a4-jd22` |
 | TypeScript | 通过 | `npm run lint` |
 | 完整单元、Python 身份与生产构建 | 通过 | Vitest 214 文件 / 1740 项；Python introspection + 结构漂移 77/77；`npm run build` 与 `git diff --check` 通过 |
 | 前端单元测试 | 通过 | 包含 schema v1-v5、特殊 axes relation、图示 resolver、能力、映射、组件分组、identity 捕获、诊断归一化和 fail-closed 回归；本轮 Draft/matchColor/快照直接相关 19 文件、189/189 |
@@ -70,7 +71,7 @@
 | R-WP4 Errorbar family | 本地候选 | renderer 2/2、R/Point 前端合同 6/6、相关 capability matrix 5/5、旧身份/多 panel 7/7、隔离浏览器 12/12；覆盖四类 geom 的主线/端帽/点/Crossbar 组件角色、数据单位 capsize、Pointrange marker/markersize、旧 linewidth alias、subplot relation、Draft/历史/导出 |
 | R-WP4 Boxplot/Violin | 本地候选 | renderer 6/6、前端合同 7/7、隔离浏览器 12/12、lint 和 diff-check 通过，独立 `gpt-5.5 high` 审查 APPROVE、0 HIGH/MEDIUM；Boxplot 声明 body/median/whiskers/staples/outliers 关系，整体线色、箱体填充和六类 outlier 样式分离，`outlier_fill` 仅对 shape 21-25 开放；旧 `median_color` 仅兼容迁移到整体轮廓并告警；Violin 声明 body/quantile-lines 边界且不开放虚假 quantile setter，旧 `color` 兼容迁移到 `edgecolor`；共享 fill scale 保留 `distribution` 分组关系，Draft、保存刷新、撤销重做、分组配色和导出一致 |
 | R-WP4 Ribbon/Area | 本地候选 | 最新 renderer 定向 9/9、前端合同 10/10、隔离浏览器 12/12、R patch authority 11 场景和 identity v2 compatibility 通过；保留旧 `r.layer.N`、`kind=patch`、GeomRibbon/GeomArea role 和 v2 identity，仅开放 `facecolor/edgecolor/linewidth/alpha`，区间、边界拆分、堆叠和 Smooth 置信带保持只读。整层 fill override 导致 scale 训练键缩短时，从同次原始脚本 baseline 恢复 scale/guide 结构身份而不恢复旧样式；`scaleActive=false` 的休眠 group 在任一 edit 顺序、patch 入口和项目 PUT 保存入口均冲突拒绝且零持久化。配色中心响应必须为业务 `status=success`，组颜色已进入 editLog、刷新、撤销重做和导出 bundle；最终独立审查 `APPROVE/CLEAR`、无 HIGH/MEDIUM |
-| R-WP4 集成复验 | 通过（本地候选） | 同一集成分支的 R renderer `85/85`、R 合同 `16/16`、隔离浏览器 `14 PASS / 0 FAIL / 0 BLOCKED`、patch authority 11 场景、identity v2 compatibility 和脚本语法均通过；浏览器 console/page error 为 `0/0`，真实生产仍未切换 |
+| R-WP4 集成复验 | 通过并已进入生产 release | 同一集成分支的 R renderer `85/85`、R 合同 `16/16`、隔离浏览器 `14 PASS / 0 FAIL / 0 BLOCKED`、patch authority 11 场景、identity v2 compatibility 和脚本语法均通过；浏览器 console/page error 为 `0/0` |
 | R-WP4 Step/Histogram/Freqpoly | 本地候选 | renderer 定向 9/9、前端合同 3/3、隔离家族 API、R patch authority、identity v2 compatibility、浏览器 12/12、lint/build/diff-check 通过，独立复审 `CLEAR`、0 HIGH/MEDIUM。保留旧 `r.layer.N` 和 Step/GeomBar/GeomPath role，以共享类型约束的 `adapterClass` 区分 Histogram/Freqpoly；只开放 color/fill/edge/linewidth/linestyle/alpha，step direction 与 bin/stat 结构保持只读。Step scale group 为 line 语义。离散 scale 身份只按唯一的一对一 `aesthetic + scaleId + groupKey` 恢复；重复键对象不合并且明确 readonly/ambiguous，并在 setter 运行前 fail-closed，冲突响应不得改变 SVG/manifest。项目/standalone 伪 local mode 均规范化并以 `backend_patch` 持久化；mixed batch 零持久化、保存刷新、撤销重做、导出后继续编辑与快照恢复均有隔离证据 |
 | R-WP4 Tile/Raster/Rect/Contour/ContourFilled | 本地候选 | 审查前 R renderer 全量 98/98；审查修复后 family 8 定向 6/6、capability matrix 2/2、前端合同 6/6、隔离家族 API、浏览器 14/14、lint/build/diff-check 通过，独立复审 `CLOSED`、0 HIGH/MEDIUM。保留 Tile/Raster/Rect 的旧 `kind=patch`、GID 和 role，Contour/ContourFilled 使用专用 kind/adapter；mapped fill/edge 由 scale/mappable 管理，Raster 不开放边框 setter，连续 contour 支持 `cmap/vmin/vmax`，`levels/x/y/z/bins/breaks` 只读。函数型 breaks JSON 安全，旧无版本 manifest/GID-only editLog 可重放；非法结构和 mixed batch 零持久化，保存刷新、撤销重做、导出后继续编辑与快照恢复均有隔离证据 |
 | R-WP4 Segment/Curve | 本地候选 | 完整 R renderer 111/111、NA 行与同色前继/后继定向 3/3、隔离家族 API、identity v2 compatibility、浏览器 14/14、lint/build/diff-check 通过。保留旧 `r.layer.N`、line kind、role 和 v2 identity；只开放未被 mapping/scale 控制的线样式，端点、曲率和 arrow 结构只读；有结构化来源时箭头作为父线对象拥有的显式只读 child 输出，不生成猜测的 text relation。SVG 仅对 geom 实际可绘制行按真实 panel 绘制顺序领取完整 body/arrow 序列，统一改色后 `r.layer.18` 的 4 个图元和 `r.layer.19` 的 3 个图元仍保持可选择；候选不足或顺序不完整继续 fail-closed。非法结构、mapped override 和 mixed batch 零持久化，保存刷新、撤销重做、导出后继续编辑与快照恢复均有隔离证据 |
@@ -79,7 +80,7 @@
 | R-WP7 网络图/路径图/SEM | 本地候选 | 显式 `scifigure-sem-v1` marker 输出七类 `diagram_*` role 和完整 node/edge relation；未标记 lookalike 不升级。GID 的四个身份字段均使用 Base64URL，ASCII `a_` 与非 ASCII `b_` 命名空间分离，字段边界无歧义，重复完整 identity 在 manifest 构建期拒绝；同 marker 多行保留为单个有序 path。科学文本、系数、p 值、拟合指标和拓扑只读，非法 mixed batch renderer/API 原子拒绝且 project/session/history/cache/export anchor/snapshot 零持久化。`clip="off"` 时仅在可证明 panel 范围内按图层顺序绑定，范围不可信则精确唯一或 fail-closed。renderer 10/10、R capability matrix、旧动态批次/fingerprint 4/4、隔离 API 和 Chromium live SVG 正确几何选择均通过；未推送、未部署 |
 | R-WP8 扩展包与 base R Shadow 边界 | 本地候选 | 未固定的 ggrepel/ggnewscale/sf/ggraph/igraph/tidygraph/semPlot/DiagrammeR 不虚报可编辑；CoordSf 不可逆位置和 mixed batch setter 前原子拒绝，base R 保持 preview/export only。缺包诊断不泄露路径；R-WP8 7/7、隔离 API、能力矩阵、旧身份、安全和浏览器门禁通过 |
 | R-WP9 用户链路、性能与可观测性 | 本地候选 | `test:r-wp9-workflow` 覆盖双 CSV multipart、精确 `uploaded_file_paths`、一次 revision、刷新、四格式导出、导出后编辑和快照恢复。renderer 输出七个新增真实计时段，cache authority schema v2 纳入 source/image/runtime/package contract；导出返回 render/convert/persist/total。`test:r-wp9-performance-persistence` 证明超大直接渲染、patch、导出均返回 413 且 session/revision/history/preview/cache/asset/snapshot/file 零变化；`test:r-wp9-timeout-cleanup` 证明请求创建的 Rscript job、临时目录和容器无残留 |
-| R-WP10 默认启用与本地发布门禁 | 本地候选 | 默认 V2 resolver 17 文件/248 项、旧 R identity v2 compatibility、安全预检、R-WP9 三条链路、候选 Docker 镜像 sandbox、用户隔离、性能、缓存、lint、build、diff-check 和 data audit 通过；共享路由下 Python cross-Figure 18/18、patch rejection、semantic workflow 和 export matrix 通过；独立审查 APPROVE/CLEAR、0 HIGH/MEDIUM。旧 adapter 与无版本 identity 读取继续保留；未推送、未部署，生产不可变构建、小范围账号和人工视觉回归仍是发布阻断项 |
+| R-WP10 默认启用与发布门禁 | 已进入生产 release | 默认 V2 resolver 17 文件/248 项、旧 R identity v2 compatibility、安全预检、R-WP9 三条链路、候选 Docker 镜像 sandbox、用户隔离、性能、缓存、lint、build、diff-check 和 data audit 通过；共享路由下 Python cross-Figure 18/18、patch rejection、semantic workflow 和 export matrix 通过；独立审查 APPROVE/CLEAR、0 HIGH/MEDIUM。旧 adapter 与无版本 identity 读取继续保留；生产构建和部署后健康/数据门禁通过 |
 | patch/全渲染事务保护 | 通过 | standalone patch、standalone full render 与项目 full render 均由服务端按返回 manifest/renderer 决定；拒绝批次不改变 revision、session、项目脚本、Figure、history、cache 或导出锚点 |
 | 导出快照恢复事务 | 通过 | renderer dry-run、事务内并发状态复核、v1 兼容、不安全多 Figure 拒绝和全项目导出先全量预检后持久化均有专项回归 |
 | 导出文件事务 | 通过 | DB 创建失败清理新文件；删除失败恢复暂存文件；成功后数据库与文件状态一致 |

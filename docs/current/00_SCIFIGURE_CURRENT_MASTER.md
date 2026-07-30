@@ -1,9 +1,9 @@
 # SciFigure Studio 当前主文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-30 16:08:23 +08:00
-> 证据截止时间：2026-07-30 16:08:23 +08:00
-> 复核范围：生产 release `e35f4a4-jd22` 与隔离集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10 与 R-WP0-WP10 本地候选源分支能力；当前批次集成复验待完成，候选尚未部署
+> 更新时间：2026-07-30 23:12:16 +08:00
+> 证据截止时间：2026-07-30 23:12:16 +08:00
+> 复核范围：生产 release `336f64e-jd30` 与集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10、R-WP0-WP10、统一编辑中心和旧项目兼容能力；当前批次已完成不可变部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
 
@@ -19,9 +19,11 @@
 
 Free/Pro 待确认梯度见 `05_FREE_PRO_ENTITLEMENT_REVIEW_2026-07-15.md`。当前代码保持 `observe`，两档既有产品能力相同，未获得产品确认前不得启用额度拦截。
 
-当前公网调试服务器基线为不可变 release `e35f4a4-jd22`。本地 `3000` 与网页统一版的全局导出资产库认证请求均已通过真实浏览器回归；重复发布默认使用受权限保护的国内优先镜像配置。
+当前公网调试服务器基线为不可变 release `336f64e-jd30`。本地 `3000` 未被本轮部署和隔离测试访问；重复发布默认使用受权限保护的国内优先镜像配置。
 
 2026-07-16 网页统一版更新已部署：`7e33044-jd21` 上线编辑中心自动跟随、导出资产编辑快照与一键恢复、项目级导出独占锁，以及图例、散点、布局、框选、暂存和配色修复；`e35f4a4-jd22` 进一步修复后端 bundle/source map 暴露，建立 `dist/public`、应用拒绝和 Nginx 精确拒绝三层静态边界。
+
+2026-07-30 生产升级已部署为 `336f64e-jd30`：Python/R 编辑收敛、复杂图元身份、统一五中心、旧 manifest/editLog 兼容、导出快照恢复和 renderer 运行时合同进入同一不可变 release。部署前创建 SQLite 在线快照并通过完整性检查；部署后公网与 Node 直连 readiness 均为 ready，单一服务重启次数为 0，数据审计保持 6 用户、52 项目、251 项目文件、74 导出资产和 0 issue。整版回退目标记录为 `e35f4a4-jd22`。
 
 `docs/` 下其他文件继续保留，用于专项实现、历史决策、错误记录和恢复参考，但不再与这三份文档争夺“当前总口径”。
 
@@ -91,7 +93,7 @@ P3：管理员后台剩余页面/受控操作、更多编辑能力和 AI 接入
 
 已购买 2 核 4 GB Ubuntu 24.04 调试服务器，统一编辑候选版已完成单机部署和公网 HTTP 健康检查。域名、可信 TLS、备份目标、恢复演练和完整云端渲染/隔离回归仍属于上线前阻断项。
 
-生产当前仍运行不可变 release `e35f4a4-jd22`。Python/R 编辑升级在独立工作树 `prod-integration-v3` 中按功能提交边界移植，不能把工作树状态视为已经上线，也不得用候选整线覆盖生产认证、安全、资源限制或部署基线。部署前必须形成经过审查、测试、数据审计和备份的不可变制品。
+生产当前运行不可变 release `336f64e-jd30`。该 release 来自已提交、审查、定向验收、生产构建、数据审计和备份后的集成分支，不代表后续工作树未提交内容自动上线。后续升级仍必须重新形成独立制品，并保持认证、安全、资源限制和回退基线。
 
 ### 3.3 工作区视觉基线
 
@@ -388,7 +390,7 @@ docs/platform-capability/UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md
 
 `UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md` 专门处理属性编辑、布局中心、组件中心、配色中心和字体中心的交叉属性与精细度不一致。网页统一版已完成 PropertyDescriptor、capability projection、严格 resolver 和共同 Draft 语义的主要迁移；2026-07-16 候选继续补齐数值自动暂存、字体格式刷、选中子图自动跟随、图例间距、散点比例缩放和保持尺寸的垂直行间距。旧项目兼容路径和 legacy 控件尚未删除。
 
-`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。R-WP0-WP10 已形成未部署的本地候选：R-WP5-WP9 的对象、用户链路、性能和资源边界已完成，R-WP10 重新证明默认 resolver、旧 R 项目兼容、安全隔离和候选 Docker 镜像合同。下一步是固定候选提交后的生产发布门禁，不是继续扩大未验证对象能力。
+`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。Python WP3-WP10 与 R-WP0-WP10 的当前收敛结果已进入生产 release `336f64e-jd30`；下一步应以真实用户反馈和能力展厅基准继续做风险驱动验收，不扩大未验证对象能力。
 
 当前专项方案已补充“能力增强列车”：每项能力必须依次证明 renderer 事实、对象身份、属性能力、目标解析、PatchPlan、Figure 事务、项目级持久化以及 Python/R/真实项目回归。禁止从协议设计直接跳到默认启用。
 

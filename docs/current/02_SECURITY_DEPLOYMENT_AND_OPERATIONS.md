@@ -1,8 +1,8 @@
 # SciFigure 安全、部署与运维副文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-16 23:07:15 +08:00
-> 复核范围：当前本地工作区；尚未等同于已提交发布版本  
+> 更新时间：2026-07-30 23:12:16 +08:00
+> 复核范围：生产 release `336f64e-jd30`、服务器运行状态与当前本地集成分支
 > 适用范围：用户账号、数据保护、代码执行、Docker、备份、管理员能力和生产上线
 
 ## 1. 安全目标
@@ -198,6 +198,8 @@ Content-Security-Policy 尚未强制。上线前应先使用 Report-Only 收集�
 生产静态资源边界禁止公开后端 bundle、source map、数据库、环境文件、密钥文件和 TypeScript 源文件。Vite 浏览器资产位于 `dist/public/`，后端 bundle 位于非公共的 `dist/server.cjs`，构建不生成后端 source map；应用层对敏感文件形态和隐藏路径返回 `404`；Nginx 对已知后端产物路径再次精确拒绝。该边界必须由生产 bundle smoke 和部署后公网请求共同证明。
 
 2026-07-16 23:07:15 +08:00，生产 release `e35f4a4-jd22` 已完成上述双层边界部署。Node 直连与公网 Nginx 的后端产物请求均为 `404`，公共目录未发现 `server.cjs*` 或 `.map`；首页、管理员 SPA、ready 和构建标记正常。部署前数据库与 Nginx 配置均已备份，部署后数据审计和 SQLite 一致性检查通过。
+
+2026-07-30 23:04 +08:00，生产已原子切换到 release `336f64e-jd30`，renderer image 同步为 `scifigure-renderer:336f64e-jd30`。部署前使用 SQLite `.backup` 创建 `/srv/scifigure/predeploy-backups/scifigure-336f64e-jd30.db`，`PRAGMA integrity_check` 返回 `ok`，权限为 `0600`。部署后 systemd active、重启次数 0、Node 直连与公网 readiness 均为 ready，构建标记的统一编辑能力全部启用，最近 warning 日志为空。数据审计部署前后均为 6 用户、52 项目、251 项目文件、74 导出资产和 0 issue；last-known-good 整版回退目标为 `e35f4a4-jd22`。
 
 ### 3.5 路径和文件
 
