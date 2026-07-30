@@ -3838,7 +3838,10 @@ export function RightSidebar({
 
     const descriptorProjections = PROPERTY_INSPECTOR_V2_ENABLED
       ? projectPropertyDescriptors({ center: 'properties', objects: [obj], scope: 'object' })
-        .filter(projection => Boolean(projection.propByObjectId[obj.id]))
+        .filter(projection => {
+          const prop = projection.propByObjectId[obj.id];
+          return Boolean(prop) && !isHiddenLegacyRProp(obj, prop!, manifest.generatedBy);
+        })
       : [];
     const descriptorProps = new Set(descriptorProjections
       .map(projection => projection.propByObjectId[obj.id])
@@ -4907,7 +4910,10 @@ export function RightSidebar({
         semanticRole: componentRoleForItems(items),
         scope: 'group',
         allowLegacyFallback: !COMPONENT_STRICT_RESOLVER_ACTIVE,
-      }).filter(projection => Object.values(projection.propByObjectId).some(Boolean));
+      }).filter(projection => (
+        Object.values(projection.propByObjectId).some(Boolean)
+        && !(groupId === 'points' && projection.key === 'color')
+      ));
       if (groupId !== 'axes') return groupScopeControls;
 
       const objectScopeTypography = projectPropertyDescriptors({
@@ -5276,7 +5282,7 @@ export function RightSidebar({
                     })}
                   </div>
                 )}
-                {group.colorProp && colorValue && (!COMPONENT_CONTROLS_V2_ENABLED || group.colorProp !== 'color') && (
+                {group.colorProp && colorValue && (!COMPONENT_CONTROLS_V2_ENABLED || group.colorProp !== 'color' || group.id === 'points') && (
                   renderColorInput(
                     group.id === 'points'
                       ? (pointColorProps.every(prop => prop === 'facecolor') ? '填充色' : '点颜色')
@@ -5441,8 +5447,8 @@ export function RightSidebar({
                 {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'fontweight') || supportsBatchProp(obj, 'tick_fontweight')) && (
                   renderSelectInput('字重', commonComponentProp(targetObjects, group.id === 'axes' ? 'tick_fontweight' : 'fontweight', 'normal') as string, ['normal', 'bold', 'semibold', 'light'], (value) => patchComponentFontVariant(targetObjects, 'fontweight', value))
                 )}
-                {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'fontstyle')) && (
-                  renderSelectInput('字形', commonComponentProp(targetObjects, 'fontstyle', 'normal') as string, ['normal', 'italic', 'oblique'], (value) => patchComponentGroup(targetObjects, 'fontstyle', value))
+                {!COMPONENT_CONTROLS_V2_ENABLED && targetObjects.some(obj => supportsBatchProp(obj, 'fontstyle') || supportsBatchProp(obj, 'tick_fontstyle')) && (
+                  renderSelectInput('字形', commonComponentProp(targetObjects, group.id === 'axes' ? 'tick_fontstyle' : 'fontstyle', 'normal') as string, ['normal', 'italic', 'oblique'], (value) => patchComponentFontVariant(targetObjects, 'fontstyle', value))
                 )}
                 {hasSubplotBoundsControl && (
                   <div className="space-y-2 rounded-md border border-slate-100 bg-white/80 p-2">

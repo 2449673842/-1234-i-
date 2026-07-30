@@ -1,7 +1,34 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-30 15:51:34 +08:00
+> 最后修改时间：2026-07-30 16:08:23 +08:00
+
+---
+
+## 2026-07-30 16:08:23 +08:00 R-WP4 浏览器门禁合并后调用已删除的控件 helper
+
+**状态与级别**
+
+- 状态：已修复并通过隔离浏览器复验；尚未推送、尚未部署。
+- 级别：P1 测试门禁失真。合并后的测试脚本会在进入组件中心后触发 `ReferenceError`，导致新增 R 图元能力无法被真实浏览器验收。
+
+**根因**
+
+- R-WP4 分支把数字控件改为按组件组定位的 `setComponentNumberByGroup`，但 cherry-pick 合并时保留了 8 处旧 `setNumberByParam` 调用。
+- TypeScript 检查和 `node --check` 不能发现未定义的运行时函数；只有执行真实浏览器流程才能暴露该问题。
+- 同一合并还可能让 R violin 的旧假 `color` 属性重新进入 V2 属性投影，并让 point 的 canonical `color` 与轮廓颜色控件重复显示。
+
+**修复与验证**
+
+- 所有数字和 select 控件改为按 `data-component-group-id` 与属性定位。
+- V2 属性投影和组件组投影过滤 R 的隐藏 legacy 属性及重复 point color；字体字重/字形在 legacy 路径统一走 alias-aware patch helper。
+- R renderer：`85/85`；R 合同：`16/16`；隔离浏览器：`14 PASS / 0 FAIL / 0 BLOCKED`；console/page error：`0/0`；R patch authority 11 个场景与 R identity v2 compatibility 均通过。
+
+**防复发规则**
+
+- 浏览器 fixture 的组件控件必须按稳定组件组属性定位，不得恢复合成 `component-*` GID 或已删除 helper。
+- 合并后必须执行真实浏览器路径；静态编译和 HTTP 成功不能替代运行时控件验收。
+- 新增或隐藏属性必须同时检查 legacy inspector、V2 projection 和组件中心三条入口。
 
 ---
 

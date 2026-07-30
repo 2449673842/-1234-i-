@@ -1,7 +1,7 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0、R-WP1、R-WP2、R-WP3 本地候选完成；R-WP4 Point/Jitter、Line/Path/Smooth、Bar/Col、Errorbar family、Boxplot/Violin 与 Ribbon/Area 本地候选已实现，下一图元家族为 Step/Histogram/Freqpoly
-> 最后修改时间：2026-07-23 04:45:54 +08:00
+> 状态：R-WP0、R-WP1、R-WP2、R-WP3 本地候选完成；R-WP4 Point/Jitter、Line/Path/Smooth、Bar/Col、Errorbar family、Boxplot/Violin 与 Ribbon/Area 的集成候选门禁已通过，下一图元家族为 Step/Histogram/Freqpoly
+> 最后修改时间：2026-07-30 16:08:23 +08:00
 > 当前部署状态：R-WP0-R-WP4 已完成子家族仅在本地验证；未推送、未部署
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 现状入口：`docs/R_COMPATIBILITY_PLAN.md`

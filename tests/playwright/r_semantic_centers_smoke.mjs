@@ -229,9 +229,9 @@ async function setComponentNumberByGroup(page, groupId, prop, value) {
   return true;
 }
 
-async function setSelectByParam(page, gid, prop, value) {
+async function setComponentSelectByGroup(page, groupId, prop, value) {
   const select = page.locator(
-    `select[data-param-role="select"][data-param-gid="${gid}"][data-param-prop="${prop}"]`,
+    `[data-component-group-id="${groupId}"] select[data-param-role="select"][data-param-prop="${prop}"]`,
   ).first();
   if (!(await select.isVisible({ timeout: 4000 }).catch(() => false))) return false;
   await select.selectOption(String(value));
@@ -556,7 +556,7 @@ async function run() {
 
     await clickText(page, '组件中心');
     const pointSizeValue = 1.7;
-    const pointSizeChanged = await setNumberByParam(page, 'component-points', 'size_scale', pointSizeValue);
+    const pointSizeChanged = await setComponentNumberByGroup(page, 'points', 'size_scale', pointSizeValue);
     const pointSizeDraft = (await getBodyText(page)).includes('已暂存');
     const pointSizeApply = pointSizeChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const pointSizePatches = patchList(pointSizeApply.patchBody);
@@ -580,7 +580,7 @@ async function run() {
 
     await clickText(page, '组件中心');
     const markerValue = 24;
-    const markerChanged = await setSelectByParam(page, 'component-points', 'marker', markerValue);
+    const markerChanged = await setComponentSelectByGroup(page, 'points', 'marker', markerValue);
     const markerDraft = (await getBodyText(page)).includes('已暂存');
     const markerApply = markerChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const markerPatches = patchList(markerApply.patchBody);
@@ -604,22 +604,22 @@ async function run() {
 
     await clickText(page, '组件中心');
     const componentSvgBefore = await page.locator('[data-scifigure-canvas-svg="true"] > svg').first().evaluate((node) => node.outerHTML).catch(() => '');
-    const barLineChanged = await setNumberByParam(page, 'component-patches', 'linewidth', 1.25);
-    const errorbarLineChanged = await setNumberByParam(page, 'component-errorbars', 'elinewidth', 1.45);
-    const errorbarCapChanged = await setNumberByParam(page, 'component-errorbars', 'capsize', 0.35);
-    const errorbarMarkerChanged = await setSelectByParam(page, 'component-errorbars', 'marker', 25);
-    const errorbarMarkerSizeChanged = await setNumberByParam(page, 'component-errorbars', 'markersize', 4.5);
+    const barLineChanged = await setComponentNumberByGroup(page, 'patches', 'linewidth', 1.25);
+    const errorbarLineChanged = await setComponentNumberByGroup(page, 'errorbars', 'elinewidth', 1.45);
+    const errorbarCapChanged = await setComponentNumberByGroup(page, 'errorbars', 'capsize', 0.35);
+    const errorbarMarkerChanged = await setComponentSelectByGroup(page, 'errorbars', 'marker', 25);
+    const errorbarMarkerSizeChanged = await setComponentNumberByGroup(page, 'errorbars', 'markersize', 4.5);
     const boxplotTargetKey = fixture.boxplotLayers.map((layer) => layer.id).join('|');
     const violinTargetKey = fixture.violinLayers.map((layer) => layer.id).join('|');
     const bandTargetKey = fixture.bandLayers.map((layer) => layer.id).join('|');
     const legacyMedianControlHidden = await page.locator('[data-component-group-id="boxplots"]').getByText('中位线颜色', { exact: true }).count() === 0;
     const boxplotOutlierColorChanged = await setColorByScope(page, `component:boxplots:${boxplotTargetKey}:outlier_color`, '#de2d26');
-    const boxplotOutlierShapeChanged = await setSelectByParam(page, 'component-boxplots', 'outlier_shape', 24);
-    const boxplotOutlierSizeChanged = await setNumberByParam(page, 'component-boxplots', 'outlier_size', 3.2);
+    const boxplotOutlierShapeChanged = await setComponentSelectByGroup(page, 'boxplots', 'outlier_shape', 24);
+    const boxplotOutlierSizeChanged = await setComponentNumberByGroup(page, 'boxplots', 'outlier_size', 3.2);
     const violinEdgeChanged = await setColorByScope(page, `component:violins:${violinTargetKey}:edgecolor`, '#54278f');
-    const violinLineChanged = await setNumberByParam(page, 'component-violins', 'linewidth', 1.35);
+    const violinLineChanged = await setComponentNumberByGroup(page, 'violins', 'linewidth', 1.35);
     const bandFillChanged = await setColorByScope(page, `component:bands:${bandTargetKey}:color`, '#8c510a');
-    const bandLineChanged = await setNumberByParam(page, 'component-bands', 'linewidth', 1.15);
+    const bandLineChanged = await setComponentNumberByGroup(page, 'bands', 'linewidth', 1.15);
     const errorbarDraft = (await getBodyText(page)).includes('已暂存');
     const componentBatchApply = barLineChanged
       && errorbarLineChanged
@@ -693,7 +693,7 @@ async function run() {
       ...componentBatchExpectedEdits,
     ];
     const saveResult = await saveProjectAndReadPut(page);
-    await page.reload({ waitUntil: 'networkidle', timeout: 30000 });
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
     await waitForPreviewReady(page);
     const refreshedState = await waitForEdits(page, expectedCoreEdits);
     const refreshOk = saveResult.successful
