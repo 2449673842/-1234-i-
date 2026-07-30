@@ -16,6 +16,7 @@ import {
   resolvePatchMode,
   resolvePatchModeById,
   supportsObjectProp,
+  supportsObjectPropAtScope,
 } from '../utils/propertyPatchMode';
 import { buildPaletteObjectPatches, buildPaletteUpdatePatches, resolveEffectivePaletteColor, resolvePaletteColorFallbackTargets, resolvePaletteTargets, resolveScopedPaletteTargets } from '../utils/paletteTargetResolver';
 import { projectPaletteColorControl } from '../utils/palettePropertyProjection';
@@ -741,6 +742,7 @@ export function buildSupportedSidebarPatchEntry(
   gid: string,
   prop: string,
   value: unknown,
+  scope: ManifestEditScope = 'object',
 ): LocalPatchEntry | null {
   if (!manifest) return null;
   if (gid === 'global') {
@@ -748,7 +750,7 @@ export function buildSupportedSidebarPatchEntry(
     return { op: 'set', gid, prop, value, mode: 'backend_patch' };
   }
   const object = manifest.objects.find(item => item.id === gid);
-  if (!supportsObjectProp(object, prop)) return null;
+  if (!supportsObjectPropAtScope(object, prop, scope)) return null;
   return {
     op: 'set',
     gid,
@@ -1622,10 +1624,9 @@ export function RightSidebar({
     return rawLabel || semantic || `${getObjectTypeLabel(obj.kind)} · ${obj.id}`;
   };
 
-  const handlePatch = (gid: string, prop: string, value: unknown) => {
-    const currentObject = manifest.objects.find((item) => item.id === gid);
+  const handlePatch = (gid: string, prop: string, value: unknown, scope: ManifestEditScope = 'object') => {
     const figureId = currentFigureId;
-    const patch = buildSupportedSidebarPatchEntry(manifest, gid, prop, value);
+    const patch = buildSupportedSidebarPatchEntry(manifest, gid, prop, value, scope);
     if (!patch) return;
     onUpdateDraft(figureId, {
       gid: patch.gid,
@@ -2901,15 +2902,19 @@ export function RightSidebar({
 
   const renderBoolInput = (label: string, value: boolean, onValue: (nextValue: boolean) => void, gid = '', prop = label) => {
     const dirty = gid && isDirty(gid, prop);
+    const accessibleLabel = getPropLabel(label);
     return (
       <div className="flex items-center justify-between mb-3 text-sm" key={label}>
         <span className="text-slate-600 flex items-center gap-1 select-none">
-          {getPropLabel(label)}
+          {accessibleLabel}
           {dirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="已修改（未保存至引擎）" />}
         </span>
         <label className="relative inline-flex items-center cursor-pointer">
           <input
             type="checkbox"
+            aria-label={accessibleLabel}
+            data-param-gid={gid || undefined}
+            data-param-prop={prop}
             className="sr-only peer"
             checked={value}
             onChange={(event) => onValue(event.target.checked)}
@@ -3277,7 +3282,12 @@ export function RightSidebar({
     const geometryControls = projections.filter(projection => (
       projection.descriptor.family === 'layout_geometry'
       && Boolean(projection.propByObjectId[target.id])
+      && projection.stateByObjectId[target.id] === 'editable'
     ));
+    const unsupportedBounds = ['left', 'bottom', 'width', 'height'].filter(key => {
+      const projection = projections.find(item => item.key === key);
+      return projection && projection.stateByObjectId[target.id] !== 'editable';
+    });
     const positionProjection = projections.find(projection => (
       projection.key === 'position'
       && Boolean(projection.propByObjectId[target.id])
@@ -3300,7 +3310,7 @@ export function RightSidebar({
       >
         <div className="mb-3 flex items-start justify-between gap-3">
           <div>
-            <div className="text-sm font-bold text-slate-900">当前布局对象</div>
+            <div className="text-sm font-bold text-slate-900">真实绘图区 / 坐标轴框</div>
             <div className="mt-1 text-[11px] text-slate-500">
               {getReadableObjectLabel(target)} · {getObjectTypeLabel(target.kind)}
             </div>
@@ -3330,12 +3340,10 @@ export function RightSidebar({
                   projection={projection}
                   objectId={target.id}
                   controlScope={`layout:${target.kind}`}
-                  label={manifest.generatedBy === 'r_svg' && target.kind === 'subplot' && projection.key === 'aspect'
-                    ? '全部 Facet 宽高比'
-                    : projection.descriptor.label}
+                  label={projection.descriptor.label}
                   dirty={Boolean(projection.propByObjectId[target.id]
                     && isDirty(target.id, projection.propByObjectId[target.id]!))}
-                  onChange={(value, prop) => handlePatch(target.id, prop, value)}
+                  onChange={(value, prop) => handlePatch(target.id, prop, value, scope)}
                 />
               </React.Fragment>
             ))}
@@ -3343,6 +3351,15 @@ export function RightSidebar({
         ) : (
           <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-500">
             当前对象没有可直接输入的布局几何属性。
+          </div>
+        )}
+
+        {target.kind === 'subplot' && unsupportedBounds.length > 0 && (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+            当前对象不支持独立调整绘图区边框宽高。
+            {typeof target.currentProps.unsupportedReason === 'string' && target.currentProps.unsupportedReason
+              ? ` ${target.currentProps.unsupportedReason}`
+              : ''}
           </div>
         )}
 
@@ -4278,7 +4295,7 @@ export function RightSidebar({
       <div className="space-y-6">
         {renderPanelTitle('网格线微调 (Grid)')}
         <div className="space-y-4">
-          {supportsObjectProp(obj, 'visible') && renderBoolInput('开启网格', Boolean(props.visible), (v) => handlePatch(obj.id, 'visible', v))}
+          {supportsObjectProp(obj, 'visible') && renderBoolInput('开启网格', Boolean(props.visible), (v) => handlePatch(obj.id, 'visible', v), obj.id, 'visible')}
           {props.visible !== false && (
             <>
               {supportsObjectProp(obj, 'color') && renderColorInput('网格线颜色', props.color || '#cccccc', (v) => handlePatch(obj.id, 'color', v), `${obj.id}:color`)}

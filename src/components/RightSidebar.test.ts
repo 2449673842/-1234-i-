@@ -394,6 +394,38 @@ describe('RightSidebar component center capability gates', () => {
     expect(buildSupportedSidebarPatchEntry(manifest, 'global', 'figure.unknown', 7)).toBeNull();
   });
 
+  it('accepts a layout patch only through the renderer-declared figure scope', () => {
+    const subplot = {
+      id: 'subplot.0',
+      kind: 'subplot',
+      label: 'R plot panel',
+      editable: ['aspect'],
+      currentProps: { aspect: 'auto' },
+      propertyCapabilities: [{
+        prop: 'aspect',
+        patchMode: 'backend_patch',
+        scopes: ['figure'],
+        preview: 'none',
+        replay: 'stable',
+      }],
+    } as ManifestObject;
+    const manifest: Manifest = {
+      generatedBy: 'r_svg',
+      globals: {},
+      objects: [subplot],
+      capabilities: { localPatch: false, backendPatch: true, codePatch: false },
+    };
+
+    expect(buildSupportedSidebarPatchEntry(manifest, subplot.id, 'aspect', 'equal')).toBeNull();
+    expect(buildSupportedSidebarPatchEntry(manifest, subplot.id, 'aspect', 'equal', 'figure')).toEqual({
+      op: 'set',
+      gid: subplot.id,
+      prop: 'aspect',
+      value: 'equal',
+      mode: 'backend_patch',
+    });
+  });
+
   it('blocks direct and immediate object patches omitted from modern capabilities', () => {
     const line = {
       id: 'line.0',

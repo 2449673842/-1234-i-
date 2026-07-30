@@ -1,7 +1,35 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-30 16:08:23 +08:00
+> 最后修改时间：2026-07-30 20:45:09 +08:00
+
+---
+
+## 2026-07-30 20:45:09 +08:00 R 单面板宽高比被直接补丁与快照恢复门禁拒绝
+
+**状态与级别**
+
+- 状态：本地发布候选已修复，定向 API 与真实浏览器验收通过；尚未推送、尚未部署，未触碰 `3000` 或真实 `data/`。
+- 级别：P1 合法编辑阻断。R 单面板在布局中心可暂存 `aspect`，但应用时返回 conflict，保存刷新和导出快照恢复均无法保留该编辑。
+
+**根因**
+
+- R renderer 有意把根面板 `subplot.0.aspect` 声明为 `figure` scope，因为 ggplot2 的 `theme(aspect.ratio=...)` 是整张图语义，不是可独立修改的 Matplotlib axes box。
+- 前端已按 renderer 的 `figure` scope 正确生成 Draft；服务端的普通 patch precheck 和导出快照恢复却都硬编码要求 capability 包含 `object`，造成同一权威 manifest 在两处被错误拒绝。
+- 开发阶段的 renderer 与前端单测没有覆盖最终服务端持久化边界；部署候选的真实浏览器流程因此发现 `5 PASS / 2 FAIL`。这不是旧用户数据迁移问题。
+
+**修复与防复发**
+
+- 两个服务端入口改为复用同一直接补丁权限函数。普通 capability 继续必须包含 `object`；唯一例外是 renderer 明确声明的 R v2 根面板 `ggplot_panel:root`、`subplot.0.aspect`、`backend_patch`、`stable` 且 scope 严格等于 `figure`。
+- 不把 R capability 降级为 `object`，不信任客户端 `mode`，不放宽 facet、其他属性或其他对象的权限，也不修改旧轴兼容逻辑。
+- 新增 `test:r-single-panel-aspect-authority`，在随机端口和临时数据库中一次覆盖保存、导出后再次修改、恢复到导出时状态，避免为该问题重复运行庞大历史快照套件。
+
+**验证**
+
+- `npm run test:r-single-panel-aspect-authority` 通过，覆盖服务端权威 mode、revision 持久化和导出快照恢复。
+- `npm run test:r-property-layout-centers`：`7 PASS / 0 FAIL`，保存刷新、单面板、facet、轴与网格编辑均通过，console/page/request error 为 0。
+- 相关 Vitest `135/135`、TypeScript、生产构建和 `git diff --check` 通过。
+- 只读数据审计保持 25 用户、128 项目、286 文件、112 导出资产、0 issue。
 
 ---
 

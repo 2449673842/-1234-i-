@@ -68,6 +68,12 @@ function record(id, status, note) {
   console.log(`${status} ${id}: ${note}`);
 }
 
+function isIgnorableDevServerNoise(message) {
+  return message.includes('[vite] failed to connect to websocket')
+    || /WebSocket connection to 'ws:\/\/(?:localhost|127\.0\.0\.1):24678\//.test(message)
+    || message.includes('WebSocket closed without opened');
+}
+
 function parseJson(value) {
   if (!value) return null;
   try {
@@ -236,8 +242,13 @@ async function selectComponentObject(page, gid) {
   const object = page.locator(`[data-component-object-id="${gid}"]`).first();
   if (!(await object.isVisible({ timeout: 5000 }).catch(() => false))) return false;
   await object.click();
-  await page.waitForTimeout(400);
-  return true;
+  return page.waitForFunction(expectedGid => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    const state = raw ? JSON.parse(raw) : {};
+    return Array.isArray(state.selectedGids)
+      && state.selectedGids.length === 1
+      && state.selectedGids[0] === expectedGid;
+  }, gid, { timeout: 5000 }).then(() => true).catch(() => false);
 }
 
 async function applyDraft(page) {
@@ -295,9 +306,11 @@ async function run() {
   await installBrowserAuthentication(context, authToken);
   const page = await context.newPage();
   page.on('console', message => {
-    if (message.type() === 'error' && !message.text().includes('[vite]')) consoleErrors.push(message.text());
+    if (message.type() === 'error' && !isIgnorableDevServerNoise(message.text())) consoleErrors.push(message.text());
   });
-  page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('pageerror', error => {
+    if (!isIgnorableDevServerNoise(error.message)) pageErrors.push(error.message);
+  });
   page.on('requestfailed', request => failedRequests.push({ url: request.url(), error: request.failure()?.errorText || '' }));
   page.on('request', request => {
     if (request.url().includes('/api/figure') || request.url().includes('/api/projects')) {
@@ -347,14 +360,16 @@ async function run() {
 
     const gridSelected = await selectComponentObject(page, 'grid.0');
     await clickText(page, '属性编辑');
-    const gridToggle = page.getByRole('checkbox', { name: '开启网格', exact: true }).first();
-    const gridToggleVisible = gridSelected && await gridToggle.isVisible({ timeout: 5000 }).catch(() => false);
+    const gridToggle = page.locator('input[type="checkbox"][aria-label="开启网格"][data-param-gid="grid.0"][data-param-prop="visible"]').first();
+    const gridToggleReady = gridSelected
+      && await gridToggle.count() === 1
+      && await gridToggle.isEnabled().catch(() => false);
     // The checkbox is intentionally visually hidden beneath the switch track;
     // force the interaction on that same control instead of clicking a random
     // sibling and losing the real component-center path.
-    if (gridToggleVisible && await gridToggle.isChecked()) await gridToggle.uncheck({ force: true });
+    if (gridToggleReady && await gridToggle.isChecked()) await gridToggle.uncheck({ force: true });
     const propertyDraftVisible = (await bodyText(page)).includes('已暂存');
-    const propertyApply = (axisControlsVisible && gridToggleVisible && propertyDraftVisible)
+    const propertyApply = (axisControlsVisible && gridToggleReady && propertyDraftVisible)
       ? await applyDraft(page)
       : { clicked: false, requestPatches: [], responseBody: null, successful: false };
     const propertyPatches = propertyApply.requestPatches;
@@ -366,19 +381,21 @@ async function run() {
     ];
     const propertyState = await readFigureState(page);
     const propertyOk = axisControlsVisible
-      && gridToggleVisible
+      && gridToggleReady
       && propertyDraftVisible
       && propertyApply.successful
       && propertyExpected.every(expected => propertyPatches.some(patch => patch.gid === expected.gid && patch.prop === expected.prop && patchValueEquals(patch.value, expected.value)))
       && propertyExpected.every(expected => hasEdit(propertyState.editLog, expected))
       && propertyPatches.every(patch => propertyExpected.some(expected => expected.gid === patch.gid && expected.prop === patch.prop));
-    record('R-PROP-1-axis-grid-apply', propertyOk ? 'PASS' : 'FAIL', `axisSelected=${axisSelected}, axisControls=${axisControlsVisible}, gridSelected=${gridSelected}, gridToggle=${gridToggleVisible}, draft=${propertyDraftVisible}, patches=${JSON.stringify(propertyPatches)}`);
+    record('R-PROP-1-axis-grid-apply', propertyOk ? 'PASS' : 'FAIL', `axisSelected=${axisSelected}, axisControls=${axisControlsVisible}, gridSelected=${gridSelected}, gridToggle=${gridToggleReady}, draft=${propertyDraftVisible}, patches=${JSON.stringify(propertyPatches)}`);
 
     const subplotSelected = await selectComponentObject(page, 'subplot.0');
     await clickText(page, '布局中心');
     const layoutText = await page.locator('.scifig-editor-panel-right').innerText().catch(() => '');
+    const layoutObjectId = await page.locator('[data-layout-controls-version="2"]').getAttribute('data-layout-object-id').catch(() => null);
     const aspect = page.locator('select[data-param-gid="subplot.0"][data-param-prop="aspect"]').first();
     const singleLayoutVisible = subplotSelected
+      && layoutObjectId === 'subplot.0'
       && layoutText.includes('真实绘图区 / 坐标轴框')
       && layoutText.includes('不支持独立调整绘图区边框宽高')
       && await aspect.isVisible({ timeout: 5000 }).catch(() => false)

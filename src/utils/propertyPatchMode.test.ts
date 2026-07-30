@@ -9,6 +9,7 @@ import {
   resolvePatchModeById,
   resolvePropertyPatchMode,
   supportsObjectProp,
+  supportsObjectPropAtScope,
 } from './propertyPatchMode';
 
 function object(patchMode: 'local_patch' | 'backend_patch', prop = 'color', kind: ManifestObject['kind'] = 'text'): ManifestObject {
@@ -399,6 +400,18 @@ describe('supportsObjectProp', () => {
     });
 
     expect(supportsObjectProp(target, 'color')).toBe(false);
+    expect(supportsObjectPropAtScope(target, 'color', 'group')).toBe(true);
+    expect(supportsObjectPropAtScope(target, 'color', 'figure')).toBe(false);
+  });
+
+  it('does not infer non-object scopes for legacy manifests', () => {
+    const target = legacyObject({
+      editable: ['aspect'],
+      currentProps: { aspect: 'auto' },
+    });
+
+    expect(supportsObjectProp(target, 'aspect')).toBe(true);
+    expect(supportsObjectPropAtScope(target, 'aspect', 'figure')).toBe(false);
   });
 
   it('preserves legacy editable fallback when no capability list exists', () => {

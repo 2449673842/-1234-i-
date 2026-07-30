@@ -4053,6 +4053,46 @@ ${inner}
     return isRScaleControlledLayerProp(resolution.object, String(patch?.prop || ''));
   }
 
+  function isVerifiedRRootPanelAspectCapability(
+    manifest: any,
+    object: any,
+    prop: string,
+    capability: any,
+  ): boolean {
+    const scopes = Array.isArray(capability?.scopes) ? capability.scopes.map(String) : [];
+    const axesIndex = object?.source?.axesIndex;
+    return manifest?.generatedBy === 'r_svg'
+      && object?.fingerprintVersion === 2
+      && String(object?.id || '') === 'subplot.0'
+      && String(object?.kind || '') === 'subplot'
+      && String(object?.role || '') === 'ggplot_panel'
+      && String(object?.source?.artistClass || '') === 'ggplot_panel'
+      && (axesIndex === 0 || axesIndex === '0')
+      && String(object?.identity?.scope || '') === 'subplot'
+      && String(object?.identity?.coordinateSpace || '') === 'figure'
+      && String(object?.identity?.semanticKey || '') === 'ggplot_panel:root'
+      && String(object?.identity?.relation?.subplotId || '') === 'subplot.0'
+      && String(object?.identity?.relation?.facetKey || '') === 'root'
+      && prop === 'aspect'
+      && capability?.prop === 'aspect'
+      && capability?.patchMode === 'backend_patch'
+      && capability?.replay === 'stable'
+      && scopes.length === 1
+      && scopes[0] === 'figure';
+  }
+
+  function isAuthoritativeDirectPatchCapability(
+    manifest: any,
+    object: any,
+    prop: string,
+    capability: any,
+  ): boolean {
+    if (!capability || capability.replay === 'unsupported') return false;
+    const scopes = Array.isArray(capability.scopes) ? capability.scopes.map(String) : [];
+    return scopes.includes('object')
+      || isVerifiedRRootPanelAspectCapability(manifest, object, prop, capability);
+  }
+
   function precheckManifestPatches(
     manifestValue: unknown,
     patches: any[],
@@ -4150,7 +4190,7 @@ ${inner}
       const replay = typeof capability?.replay === 'string' ? capability.replay : undefined;
       const scopes = Array.isArray(capability?.scopes) ? capability.scopes.map(String) : [];
       const supported = capability
-        ? replay !== 'unsupported' && scopes.includes('object')
+        ? isAuthoritativeDirectPatchCapability(manifest, object, prop, capability)
         : !hasAuthoritativeCapabilities && !modernRObject && editable.includes(prop);
       if (!supported) {
         reject('unsupported_prop', `${gid}.${prop} is not editable or replayable on the current manifest object.`, {
@@ -5514,7 +5554,6 @@ ${inner}
       const modernRObject = manifest.generatedBy === 'r_svg' && object.fingerprintVersion === 2;
       const legacyRadarFill = manifest.generatedBy === 'r_svg'
         && isCompatibleLegacyRRadarFillIdentityEvidence(object, rPatchIdentityEvidence(entry));
-      const capabilityScopes = Array.isArray(capability?.scopes) ? capability.scopes.map(String) : [];
       const legacyContourChildReplay = isLegacyContourChildSnapshotEdit(object, prop)
         && (
           snapshotSchemaVersion <= PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
@@ -5529,7 +5568,7 @@ ${inner}
         !legacyContourChildReplay
         && !legacyLineVisibilityReplay
         && (
-          (capability && (capability.replay === 'unsupported' || !capabilityScopes.includes('object')))
+          (capability && !isAuthoritativeDirectPatchCapability(manifest, object, prop, capability))
           || (!capability && (hasAuthoritativeCapabilities || modernRObject || !editable.includes(prop)))
         )
       ) {

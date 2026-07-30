@@ -1,6 +1,7 @@
 import type {
   EditMode,
   Manifest,
+  ManifestEditScope,
   ManifestObject,
   ManifestPropertyCapability,
 } from '../schemas/manifest';
@@ -223,9 +224,10 @@ export function hasAuthoritativePropertyCapabilities(
   return Array.isArray(object?.propertyCapabilities);
 }
 
-export function supportsObjectProp(
+export function supportsObjectPropAtScope(
   object: ManifestObject | null | undefined,
   prop: string,
+  scope: ManifestEditScope,
 ): boolean {
   if (!object) return false;
   if (isParentOwnedManifestObject(object)) return false;
@@ -235,15 +237,26 @@ export function supportsObjectProp(
   const capability = propertyCapabilityFor(object, prop);
   if (capability) {
     return capability.replay !== 'unsupported'
-      && capability.scopes.includes('object');
+      && capability.scopes.includes(scope);
   }
 
   // Modern manifests are authoritative: omitted props are intentionally hidden.
   if (hasAuthoritativePropertyCapabilities(object)) return false;
 
+  // Legacy manifests only declared direct-object editability. Do not infer a
+  // broader semantic scope that the old protocol could not represent.
+  if (scope !== 'object') return false;
+
   return Array.isArray(object.editable)
     && object.editable.includes(prop)
     && !unsupportedProps(object).includes(prop);
+}
+
+export function supportsObjectProp(
+  object: ManifestObject | null | undefined,
+  prop: string,
+): boolean {
+  return supportsObjectPropAtScope(object, prop, 'object');
 }
 
 export function resolveCrossFigurePolicy(
