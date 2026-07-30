@@ -1678,7 +1678,21 @@ export function MainWorkspace({
             </div>
           </div>
 
-          <div className="flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto overscroll-x-contain pl-2">
+          <div className="relative flex min-w-0 flex-1 items-center justify-end gap-2 overflow-x-auto overscroll-x-contain pl-2">
+            {figSession?.svg && (
+              <button
+                type="button"
+                onClick={() => setDragEditMode(prev => !prev)}
+                className={`sticky left-0 z-20 shrink-0 rounded-full border px-2 py-1 text-xs font-semibold transition-colors ${
+                  dragEditMode
+                    ? 'border-blue-200 bg-blue-50 text-blue-700'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+                title="开启后，可拖动已选文本/标签；确认后再重渲染写回。"
+              >
+                拖拽微调 {dragEditMode ? '开' : '关'}
+              </button>
+            )}
             {selectedObject !== 'Figure' && (
               <div
                 className="flex max-w-[300px] shrink-0 items-center gap-2 whitespace-nowrap rounded-full border border-slate-200 bg-slate-900 px-2.5 py-1 text-xs font-semibold text-white shadow-sm"
@@ -1698,20 +1712,6 @@ export function MainWorkspace({
               <div className="hidden 2xl:block shrink-0 text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-full whitespace-nowrap">
                 真实 SVG 对象可直接编辑；全局参数改完后再重新渲染
               </div>
-            )}
-            {figSession?.svg && (
-              <button
-                type="button"
-                onClick={() => setDragEditMode(prev => !prev)}
-                className={`text-xs font-semibold rounded-full border px-2 py-1 transition-colors ${
-                  dragEditMode
-                    ? 'border-blue-200 bg-blue-50 text-blue-700'
-                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                }`}
-                title="开启后，可拖动已选文本/标签；确认后再重渲染写回。"
-              >
-                拖拽微调 {dragEditMode ? '开' : '关'}
-              </button>
             )}
             {activeTab === 'preview' && (
               <>

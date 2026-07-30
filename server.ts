@@ -29,6 +29,7 @@ import * as archiver from 'archiver';
 import { applyColorCodePatch } from './src/utils/codeColorPatch';
 import { isDurableVirtualEditGid, mergePreviewGlobalsIntoEditLog } from './src/utils/exportPreviewState';
 import { resolveAuthoritativeProjectPatchMode } from './src/utils/propertyPatchMode';
+import { applyRuntimePatchesToManifest } from './src/utils/svgEditor';
 import { sanitizeLegacyRetireObservationBatch } from './src/utils/legacyRetireObservation';
 import { KeyedMutationGate } from './src/utils/keyedMutationGate';
 import { compressEditLogEntries } from './src/utils/editLogCompression';
@@ -871,12 +872,40 @@ async function startServer() {
 
   async function buildProjectFigureContext(input: { sessionId?: string; projectId?: string; figureId?: string }, userId: string) {
     const identity = parseProjectFigureIdentity(input);
+    const hasExplicitProjectIdentity = typeof input.projectId === 'string' || typeof input.figureId === 'string';
+    if (hasExplicitProjectIdentity && !identity) {
+      const error: any = new Error('projectId, figureId, and sessionId do not identify one valid Figure.');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (typeof input.sessionId === 'string' && identity && input.sessionId !== identity.sessionId) {
+      const error: any = new Error('sessionId does not match projectId/figureId.');
+      error.statusCode = 400;
+      throw error;
+    }
     const bySession = input.sessionId
       ? getDb().prepare('SELECT * FROM project_figures WHERE session_id = ?').get(input.sessionId) as any
       : null;
+    if (
+      bySession
+      && identity
+      && (
+        bySession.project_id !== identity.projectId
+        || Number(bySession.figure_index) !== identity.figureIndex
+      )
+    ) {
+      const error: any = new Error('Requested Figure identity conflicts with the persisted session binding.');
+      error.statusCode = 400;
+      throw error;
+    }
     const figRow = bySession || (identity
       ? getDb().prepare('SELECT * FROM project_figures WHERE project_id = ? AND figure_index = ?').get(identity.projectId, identity.figureIndex) as any
       : null);
+    if (figRow && identity && figRow.session_id !== identity.sessionId) {
+      const error: any = new Error('Persisted Figure session binding does not match projectId/figureId.');
+      error.statusCode = 400;
+      throw error;
+    }
     const resolvedProjectId = figRow?.project_id || identity?.projectId;
     const resolvedFigureIndex = typeof figRow?.figure_index === 'number' ? figRow.figure_index : identity?.figureIndex;
     if (!resolvedProjectId || resolvedFigureIndex === undefined || resolvedFigureIndex < 0) {
@@ -2277,18 +2306,33 @@ ${inner}
     );
   }
 
-  function invalidateProjectFigurePreview(sessionId: string, revision: number): void {
+  function persistLocalProjectFigureState(args: {
+    sessionId: string;
+    revision: number;
+    manifest: unknown;
+    patches: EditEntry[];
+  }): void {
+    const storedManifest = parseManifestValue(args.manifest);
+    const nextManifest = storedManifest
+      ? applyRuntimePatchesToManifest(
+          storedManifest,
+          args.patches.map(patch => ({ gid: patch.gid, prop: patch.prop, value: patch.value })),
+        )
+      : null;
     getDb().prepare(`
       UPDATE project_figures
       SET revision = ?,
           preview_svg = NULL,
-          manifest = NULL,
-          code_slice = NULL,
-          fingerprint = NULL,
+          manifest = COALESCE(?, manifest),
           edit_log = COALESCE((SELECT edit_log FROM sessions WHERE id = ?), edit_log),
           preview_updated_at = NULL
       WHERE session_id = ?
-    `).run(revision, sessionId, sessionId);
+    `).run(
+      args.revision,
+      nextManifest ? JSON.stringify(nextManifest) : null,
+      args.sessionId,
+      args.sessionId,
+    );
   }
 
   function persistProjectScript(projectId: string, userId: string, script: string): void {
@@ -5109,6 +5153,12 @@ ${inner}
       const baseRevision = typeof req.body.baseRevision === 'number'
         ? req.body.baseRevision
         : session.revision;
+      const sessionBeforePatch = {
+        sessionId: session.sessionId,
+        revision: session.revision,
+        editLog: [...session.editLog],
+        script: session.script,
+      };
 
       // Idempotency: return cached response if already processed
       if (!processedRequestIdsMap.has(resolvedSessionId)) {
@@ -5131,19 +5181,25 @@ ${inner}
             receivedRevision: baseRevision,
           }
         : null;
+      if (projectContext && revisionWarning) {
+        const response: any = buildPatchConflictResponse(
+          sessionBeforePatch,
+          requestId,
+          Array.isArray(patches) ? patches : [],
+          [revisionWarning],
+        );
+        response.code = 'REVISION_MISMATCH';
+        response.message = '当前 Figure 已有更新，本次过期修改未写入；请基于最新 revision 重试。';
+        processedIds.add(requestId);
+        cache.set(requestId, response);
+        return res.json(response);
+      }
 
       const codePatches = (patches || []).filter((p: any) => p.type === 'code_patch');
       let regularPatches = (patches || []).filter((p: any) => p.type !== 'code_patch');
       if (session.language !== 'r') {
         regularPatches = normalizeProjectFigurePatchModes(projectContext?.figRow, regularPatches);
       }
-      const sessionBeforePatch = {
-        sessionId: session.sessionId,
-        revision: session.revision,
-        editLog: [...session.editLog],
-        script: session.script,
-      };
-
       if (session.language !== 'r' && projectContext?.figRow && regularPatches.length > 0) {
         const precheck = precheckProjectFigurePatches(projectContext.figRow, regularPatches);
         if (!precheck.ok) {
@@ -5294,33 +5350,34 @@ ${inner}
       const localPatches = newEdits.filter(e => e.mode === 'local_patch');
       const mergedEditLog = [...session.editLog, ...newEdits];
 
-      if (projectContext && codePatches.length === 0) {
-        const storedManifest = parseManifestValue(projectContext.figRow?.manifest);
-        if (storedManifest) {
-          const fullPrecheck = precheckRenderedProjectFigureEditLog(
-            storedManifest,
-            compressEditLog(mergedEditLog),
-            sessionBeforePatch.editLog,
-            projectContext.figureId,
+      const storedProjectManifest = projectContext
+        ? parseManifestValue(projectContext.figRow?.manifest)
+        : null;
+      if (
+        projectContext
+        && codePatches.length === 0
+        && Array.isArray(storedProjectManifest?.objects)
+      ) {
+        const fullPrecheck = precheckRenderedProjectFigureEditLog(
+          storedProjectManifest,
+          compressEditLog(mergedEditLog),
+          sessionBeforePatch.editLog,
+          projectContext.figureId,
+        );
+        if (!fullPrecheck.ok) {
+          const response = buildPatchConflictResponse(
+            sessionBeforePatch,
+            requestId,
+            fullPrecheck.rejected,
+            [
+              ...fullPrecheck.warnings,
+              ...(revisionWarning ? [revisionWarning] : []),
+            ],
           );
-          if (!fullPrecheck.ok) {
-            const response = buildPatchConflictResponse(
-              sessionBeforePatch,
-              requestId,
-              fullPrecheck.rejected,
-              [
-                ...fullPrecheck.warnings,
-                ...(revisionWarning ? [revisionWarning] : []),
-              ],
-            );
-            processedIds.add(requestId);
-            cache.set(requestId, response);
-            return res.json(response);
-          }
+          processedIds.add(requestId);
+          cache.set(requestId, response);
+          return res.json(response);
         }
-        // A pure local patch intentionally invalidates the stored preview.
-        // With no trusted manifest, defer identity/capability confirmation to
-        // the backend renderer and validate its returned manifest before write.
       }
 
       if (backendPatches.length === 0 && codePatches.length === 0) {
@@ -5329,7 +5386,12 @@ ${inner}
         if (projectContext) {
           getDb().transaction(() => {
             persistSession(session);
-            invalidateProjectFigurePreview(session.sessionId, session.revision);
+            persistLocalProjectFigureState({
+              sessionId: session.sessionId,
+              revision: session.revision,
+              manifest: projectContext.figRow?.manifest,
+              patches: localPatches,
+            });
           })();
         } else {
           persistSession(session);

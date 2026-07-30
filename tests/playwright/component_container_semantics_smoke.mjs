@@ -318,6 +318,85 @@ async function inputValueInCard(page, cardText, selector, attribute, expected, e
   return element.evaluate(node => node.value);
 }
 
+async function svgTargetUsesColor(page, gid, prop, expectedColor, fallbackGids = []) {
+  try {
+    await page.waitForFunction(({ targetGid, targetProp, color, childGids }) => {
+      const targetIds = [targetGid, ...childGids].filter(Boolean);
+      const targets = targetIds
+        .map(targetId => document.querySelector(`svg #${CSS.escape(targetId)}`))
+        .filter(Boolean);
+      if (targets.length === 0) return false;
+      const attribute = targetProp === 'edgecolor' ? 'stroke' : 'fill';
+      const colorContext = document.createElement('canvas').getContext('2d');
+      const normalizeColor = (value) => {
+        if (!colorContext || !value) return String(value || '').toLowerCase();
+        colorContext.fillStyle = '#010203';
+        colorContext.fillStyle = String(value);
+        return String(colorContext.fillStyle).toLowerCase();
+      };
+      const expected = normalizeColor(color);
+      const candidates = targets.flatMap(target => [target, ...target.querySelectorAll('*')]);
+      return candidates.some(node => {
+        const values = [
+          node.getAttribute(attribute),
+          node.style?.getPropertyValue?.(attribute),
+        ].filter(Boolean).map(normalizeColor);
+        return values.some(value => value === expected);
+      });
+    }, {
+      targetGid: gid,
+      targetProp: prop,
+      color: expectedColor,
+      childGids: fallbackGids,
+    }, { timeout: 8000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function svgColorDiagnostics(page, gid, prop, expectedColor, fallbackGids = []) {
+  return page.evaluate(({ targetGid, targetProp, color, childGids }) => {
+    const targetIds = [targetGid, ...childGids].filter(Boolean);
+    const expected = String(color).toLowerCase();
+    const attribute = targetProp === 'edgecolor' ? 'stroke' : 'fill';
+    const rawState = window.sessionStorage.getItem('scifigure:app-state:v2');
+    const state = rawState ? JSON.parse(rawState) : {};
+    const storedFigure = state.projectFigures?.fig_1 || {};
+    const storedParent = storedFigure.manifest?.objects?.find(object => object.id === targetGid);
+    const previewContainer = document.querySelector('[data-svg-bytes]');
+    const domSvgs = Array.from(document.querySelectorAll('svg'));
+    return {
+      targetIds,
+      targetNodes: targetIds.map(targetId => {
+        const target = document.querySelector(`svg #${CSS.escape(targetId)}`);
+        if (!target) return { id: targetId, found: false };
+        const candidates = [target, ...target.querySelectorAll('*')];
+        return {
+          id: targetId,
+          found: true,
+          values: candidates.flatMap(node => [
+            node.getAttribute(attribute),
+            node.style?.getPropertyValue?.(attribute),
+          ]).filter(Boolean),
+        };
+      }),
+      domSvgHasColor: domSvgs.some(svg => svg.outerHTML.toLowerCase().includes(expected)),
+      storedSvgHasColor: String(storedFigure.svg || '').toLowerCase().includes(expected),
+      storedRevision: storedFigure.revision,
+      storedParentChildren: storedParent?.children || [],
+      previewBytes: previewContainer?.getAttribute('data-svg-bytes') || null,
+      sanitizeCount: previewContainer?.getAttribute('data-svg-sanitize-count') || null,
+      sanitizeCacheHit: previewContainer?.getAttribute('data-svg-sanitize-cache-hit') || null,
+    };
+  }, {
+    targetGid: gid,
+    targetProp: prop,
+    color: expectedColor,
+    childGids: fallbackGids,
+  });
+}
+
 async function waitForApiSettle(startIndex, timeoutMs = 20000) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -335,13 +414,44 @@ async function applyAndRead(page) {
   await waitForApiSettle(start);
   await page.waitForTimeout(500);
   const request = apiRequests.slice(start).find(item => item.url.includes('/api/figure/patch'));
-  const responseOk = apiResponses.slice(start).some(item => item.url.includes('/api/figure/patch') && item.status >= 200 && item.status < 300);
+  const response = apiResponses.slice(start).find(item => item.url.includes('/api/figure/patch'));
+  if (response?.bodyPromise) await response.bodyPromise;
+  const responseOk = Boolean(
+    response
+    && response.status >= 200
+    && response.status < 300
+    && response.body?.status === 'success',
+  );
   const body = request?.postData ? JSON.parse(request.postData) : null;
+  const draftKeys = await page.evaluate(() => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    const state = raw ? JSON.parse(raw) : {};
+    return Object.keys(state.projectDrafts?.fig_1 || {});
+  });
   return {
     successful: responseOk,
     patches: body?.patches || [],
     requestCount: apiRequests.slice(start).length,
     responseCount: apiResponses.slice(start).length,
+    responseBody: response?.body || null,
+    draftKeys,
+  };
+}
+
+function patchResponseSummary(body) {
+  if (!body || typeof body !== 'object') return body;
+  return {
+    status: body.status,
+    code: body.code,
+    revision: body.revision,
+    rejected: Array.isArray(body.rejected) ? body.rejected.map(item => `${item.gid || item.target_id}:${item.prop || ''}`) : [],
+    warnings: Array.isArray(body.warnings) ? body.warnings.map(item => ({
+      type: item.type,
+      reason: item.reason,
+      gid: item.gid,
+      prop: item.prop,
+      patchIndex: item.patchIndex,
+    })) : [],
   };
 }
 
@@ -547,13 +657,11 @@ async function run() {
         status: response.status(),
         postData: response.request().postData(),
         body: null,
+        bodyPromise: null,
       };
       apiResponses.push(entry);
-      if (entry.status >= 400) {
-        pendingApiResponseCaptures.push(
-          response.text().then(body => { entry.body = parseJson(body) || body; }).catch(() => null),
-        );
-      }
+      entry.bodyPromise = response.text().then(body => { entry.body = parseJson(body) || body; }).catch(() => null);
+      pendingApiResponseCaptures.push(entry.bodyPromise);
     }
   });
 
@@ -919,7 +1027,7 @@ async function run() {
       { id: 'C2c-contour-linewidth', card: '等高线/填充等高线', prop: 'linewidth', value: 2.45, prefix: 'container.contour.', expectedGid: contourLine?.id },
       { id: 'C2d-contour-vmax', card: '等高线/填充等高线', prop: 'vmax', value: 1.75, prefix: 'container.contour', expectedCount: 2 },
       { id: 'C2e-contour-cmap', card: '等高线/填充等高线', prop: 'cmap', value: 'plasma', prefix: 'container.contour', select: true, expectedCount: 2 },
-      { id: 'C2f-histogram-series-color', card: '直方图系列', prop: 'facecolor', colorScope: ':color', value: '#339966', prefix: 'container.bar.', expectedGid: histogramSeries?.id, color: true },
+      { id: 'C2f-histogram-series-color', card: '直方图系列', prop: 'facecolor', colorScope: ':color', value: '#339966', prefix: 'container.bar.', expectedGid: histogramSeries?.id, svgFallbackGids: Array.from(histogramChildIds), color: true },
       { id: 'C2g-stairs-series-color', card: '阶梯填充系列', prop: 'edgecolor', colorScope: ':color', value: '#114488', prefix: 'patch.', expectedGid: stairsSeries?.id, color: true },
       { id: 'C2h-step-series-linewidth', card: '阶梯线系列', prop: 'linewidth', value: 2.75, prefix: 'line.', expectedGid: stepSeries?.id },
       { id: 'C3-boxplot-container', card: '箱线图系列', prop: 'median_color', value: '#cc2255', prefix: 'container.boxplot.', color: true },
@@ -945,14 +1053,36 @@ async function run() {
         && patch?.prop === item.prop
         && (!item.expectedGid || patch?.gid === item.expectedGid)
       ));
+      const shouldCheckSvgColor = item.color && ['color', 'facecolor', 'edgecolor'].includes(item.prop);
+      const svgColorApplied = !shouldCheckSvgColor || await svgTargetUsesColor(
+        page,
+        relevantPatches[0]?.gid || item.expectedGid,
+        item.prop,
+        item.value,
+        item.svgFallbackGids,
+      );
+      const svgColorDebug = shouldCheckSvgColor && !svgColorApplied
+        ? await svgColorDiagnostics(
+            page,
+            relevantPatches[0]?.gid || item.expectedGid,
+            item.prop,
+            item.value,
+            item.svgFallbackGids,
+          )
+        : null;
+      const responseSvgHasColor = shouldCheckSvgColor
+        ? String(applied.responseBody?.svg || '').toLowerCase().includes(String(item.value).toLowerCase())
+        : true;
       const correct = changed
         && draftVisible
         && applied.successful
-        && relevantPatches.length === (item.expectedCount || 1)
-        && relevantPatches.every(patch => !childIds.has(patch?.gid))
-        && relevantPatches.every(patch => !contourChildIds.has(patch?.gid))
-        && relevantPatches.every(patch => !histogramChildIds.has(patch?.gid));
-      record(item.id, correct ? 'PASS' : 'FAIL', `changed=${changed}, draft=${draftVisible}, requests=${applied.requestCount || 0}, responses=${applied.responseCount || 0}, relevant=${JSON.stringify(relevantPatches)}, patches=${JSON.stringify(applied.patches)}`);
+        && svgColorApplied
+        && applied.patches.length === (item.expectedCount || 1)
+        && relevantPatches.length === applied.patches.length
+        && applied.patches.every(patch => !childIds.has(patch?.gid))
+        && applied.patches.every(patch => !contourChildIds.has(patch?.gid))
+        && applied.patches.every(patch => !histogramChildIds.has(patch?.gid));
+      record(item.id, correct ? 'PASS' : 'FAIL', `changed=${changed}, draft=${draftVisible}, svgColor=${svgColorApplied}, responseSvgColor=${responseSvgHasColor}, colorDebug=${JSON.stringify(svgColorDebug)}, requests=${applied.requestCount || 0}, responses=${applied.responseCount || 0}, server=${JSON.stringify(patchResponseSummary(applied.responseBody))}, draftKeys=${JSON.stringify(applied.draftKeys || [])}, relevant=${JSON.stringify(relevantPatches)}, patches=${JSON.stringify(applied.patches)}`);
     }
     await clickText(page, '组件中心');
     const frameChanged = await setNumberInCard(page, '子图边框 / 坐标轴框线', 'linewidth', 1.7);

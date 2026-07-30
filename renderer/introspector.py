@@ -3622,7 +3622,8 @@ def _build_property_capabilities(obj: dict) -> list[dict]:
     capabilities = []
     for prop in obj.get("editable", []):
         requires_backend_patch = (
-            obj.get("kind") in {"stem_container", "contour", "contourf", "quiver", "streamplot"}
+            obj.get("kind") in _PARENT_OBJECT_KINDS
+            or obj.get("kind") in {"quiver"}
             or str(obj.get("role", "")).startswith("diagram_")
             or (obj.get("kind") == "grid" and prop == "visible")
         )

@@ -28,8 +28,9 @@ function hexToRgba(hex) {
 
 function colorMatches(actual, expectedHex) {
   if (Array.isArray(actual)) {
+    const actualRow = Array.isArray(actual[0]) ? actual[0] : actual;
     const expected = hexToRgba(expectedHex);
-    return expected.every((value, index) => Math.abs(Number(actual[index]) - value) < 0.01);
+    return expected.slice(0, 3).every((value, index) => Math.abs(Number(actualRow[index]) - value) < 0.01);
   }
   return String(actual).toLowerCase() === String(expectedHex).toLowerCase();
 }
@@ -145,7 +146,7 @@ const checks = [
   { id: 'legend-position', kind: 'legend', prop: 'position', value: { x: 0.72, y: 0.34, coord_system: 'figure' }, expected: (props) => Math.abs(Number(props.x) - 0.72) < 0.03 && Math.abs(Number(props.y) - 0.34) < 0.03 && props.coord_system === 'figure' },
   { id: 'spine-group', kind: 'spine_group', prop: 'linewidth', value: 1.7, expected: (props) => Number(props.linewidth) === 1.7 },
   { id: 'axis-x', kind: 'axis_x', prop: 'tick_labelsize', value: 13, expected: (props) => Number(props.tick_labelsize) === 13 },
-  { id: 'histogram-series', kind: 'bar_container', role: 'histogram_series', prop: 'alpha', value: 0.35, expected: (props) => Math.abs(Number(props.alpha) - 0.35) < 0.01 },
+  { id: 'histogram-series', kind: 'bar_container', role: 'histogram_series', prop: 'facecolor', value: '#339966', expectedSvgColor: '#339966', expected: (props) => colorMatches(props.facecolor, '#339966') },
   { id: 'stairs-series', kind: 'patch', role: 'stairs_series', prop: 'edgecolor', value: '#114488', expected: (props) => colorMatches(props.edgecolor, '#114488') },
   { id: 'step-series', kind: 'line', role: 'step_series', prop: 'color', value: '#1166aa', expected: (props) => colorMatches(props.color, '#1166aa') },
 ];
@@ -265,7 +266,7 @@ async function patchObject(projectId, gid, prop, value, label, baseRevision) {
       }],
     }),
   });
-  assert(patched.status === 'success', `Patch ${label} failed: ${patched.message || 'unknown'}`);
+  assert(patched.status === 'success', `Patch ${label} failed: ${JSON.stringify(patched)}`);
   assert(Array.isArray(patched.applied) && patched.applied.some((entry) => entry.gid === gid && entry.prop === prop), `Patch ${label} was not reported in applied edits`);
   return patched;
 }
@@ -332,6 +333,14 @@ async function main() {
       revision = patched.revision || revision + 1;
       const updated = findObjectInResponse(patched, target.id);
       const patchedManifest = manifestFromResponse(patched);
+      if (check.expectedSvgColor) {
+        const svg = String(patched.svg || '').toLowerCase();
+        const targetIds = target.children?.length ? target.children : [target.id];
+        assert(targetIds.every((targetId) => {
+          const start = svg.indexOf(String(targetId).toLowerCase());
+          return start >= 0 && svg.slice(start, start + 600).includes(check.expectedSvgColor.toLowerCase());
+        }), `${check.id} response SVG did not apply ${check.expectedSvgColor} to ${JSON.stringify(targetIds)}`);
+      }
       if (Array.isArray(patchedManifest?.objects) && patchedManifest.objects.length > 0) {
         assert(updated, `Patched response does not contain ${target.id}; objects=${JSON.stringify((patchedManifest?.objects || []).map((object) => ({ id: object.id, kind: object.kind, role: object.role })))}`);
         assert(check.expected(updated.currentProps || {}), `${check.id} did not persist ${check.prop}=${check.value}; got ${JSON.stringify(updated.currentProps)}`);

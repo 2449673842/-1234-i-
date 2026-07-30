@@ -3474,3 +3474,41 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `npm run data:audit`：25 用户、121 项目、263 文件、103 导出资产、0 issue；测试未访问 3000 或真实项目。
 - 以后新增 legacy 兼容例外时，必须同时证明“只接受 durable known entry”“客户端不能弱化身份”“拒绝后完整 persistence state 不变”，不能只比较 `gid/prop/value`。
 - 文本和其他可异步重绘控件必须区分原始 manifest、项目 Draft 与 renderer 已提交状态，并覆盖请求期间继续编辑的竞态。
+
+---
+
+## 2026-07-30 11:21:35 +08:00 连续组件编辑丢失可信 manifest，且旧 Figure 绑定校验不完整
+
+**状态与级别**
+
+- 状态：已修复；隔离 API、组件矩阵、TypeScript 和真实浏览器 `45/45` 门禁通过；尚未部署。
+- 级别：P0 编辑状态正确性。可能让第二次正常编辑被拒绝，或让损坏的同用户 Figure 绑定指向错误会话；不会跨用户读取数据。
+
+**现象与根因**
+
+- Python `local_patch` 持久化后调用旧 preview invalidation，同时清空 manifest、codeSlice 和 fingerprint；下一次编辑因缺少可信 manifest 被拒绝。
+- 客户端声明的 patch mode 可能与服务端 manifest 能力不一致，前端又用请求前预测决定是否安装 renderer SVG。
+- 显式 `projectId/figureId` 查到的 `project_figures` 行未再次校验其 `session_id`，损坏或错误绑定可能映射到同用户另一 Figure。
+- 直方图语义父容器没有单一 SVG 节点，且浏览器把 `#339966` 规范化为 `rgb(51, 153, 102)`；旧浏览器断言因此误报视觉更新失败。
+
+**修复**
+
+- local patch 只清空过期 `preview_svg`，保留 codeSlice/fingerprint，并用 patch 更新 manifest `currentProps`；旧 manifest 缺失时强制 backend renderer 重建并核验。
+- 服务端依据可信 manifest 归一化 mode，前端依据响应中的 authoritative `applied[].mode` 安装 local 或 backend 结果。
+- stale project revision、请求 Figure 身份不一致和存储 session binding 不一致均 fail-closed，revision/session/history/cache/导出状态零写入。
+- bar/histogram 等父容器能力统一声明 `backend_patch`；浏览器门禁检查其真实子 SVG 节点，并按 CSS 颜色语义归一化比较。
+- Draft apply 增加同 Figure 防重入和 renderer 期间禁用，settlement 按内容清理成功草稿并保留失败项。
+
+**验证**
+
+- `npm run test:local-patch-manifest-recovery`：通过，覆盖连续 local patch、缺失 manifest 恢复、错误存储绑定、身份不一致和 stale revision 零写入。
+- `npm run test:component-kind-matrix`：通过，20 类组件连续重放；直方图响应 SVG 的全部子柱均命中目标颜色。
+- `npm run test:component-container-smoke`：`45/45 PASS`，覆盖即时 DOM、保存刷新、分组选择、布局、网格、图例和散点比例。
+- `npm run lint`、3 个新增/修改 Node 测试的 `node --check`、focused histogram unittest 和 `git diff --check` 均通过。
+
+**防复发规则**
+
+- local preview 失效不能删除仍可信的结构 manifest、codeSlice 或 fingerprint。
+- mode、Figure identity 和 revision 以服务端持久化状态为权威；无法证明时必须 backend 验证或拒绝。
+- 语义父容器的视觉断言必须检查其 renderer 声明的真实子图元，不能假设父对象一定有 SVG 节点。
+- 浏览器颜色验证必须比较规范化 CSS 色值，不能直接比较十六进制与 `rgb(...)` 字符串。

@@ -53,6 +53,7 @@ interface RightSidebarProps {
   onUpdateDraftsBatch: (figId: string, patches: DraftPatch[]) => void;
   onDiscardDraft: (figId: string) => void;
   onApplyDraft: (figId: string, scope: 'current' | 'all' | 'selected') => void;
+  isApplyingDraft?: boolean;
   editingIntentReports?: EditingIntentApplyReport[];
 }
 
@@ -751,6 +752,7 @@ export function RightSidebar({
   onUpdateDraftsBatch,
   onDiscardDraft,
   onApplyDraft,
+  isApplyingDraft = false,
   editingIntentReports = [],
 }: RightSidebarProps) {
   const [activeTab, setActiveTab] = useState<'properties' | 'layout' | 'groups' | 'palette' | 'fonts'>('properties');
@@ -6951,24 +6953,28 @@ export function RightSidebar({
               <button
                 type="button"
                 onClick={() => onApplyDraft(figureId, 'current')}
-                className="bg-blue-600 hover:bg-blue-700 text-white rounded text-[11px] font-semibold py-1.5 transition-colors shadow-sm"
+                disabled={isApplyingDraft}
+                aria-busy={isApplyingDraft}
+                title={isApplyingDraft ? '正在等待 renderer 完成本轮应用' : undefined}
+                className="bg-blue-600 hover:bg-blue-700 text-white rounded text-[11px] font-semibold py-1.5 transition-colors shadow-sm disabled:cursor-wait disabled:bg-blue-300"
               >
                 应用当前图
               </button>
               <button
                 type="button"
                 onClick={() => onApplyDraft(figureId, 'selected')}
-                disabled={selectedFigureIds.length === 0}
+                disabled={selectedFigureIds.length === 0 || isApplyingDraft}
                 title={selectedFigureIds.length > 0 ? `应用到已勾选的 ${selectedFigureIds.length} 张 Figure` : '请先在 Figure 切换条勾选目标图'}
-                className={`${selectedFigureIds.length > 0 ? 'bg-amber-600 hover:bg-amber-700 text-white' : 'bg-slate-300 text-slate-500 cursor-not-allowed'} rounded text-[11px] font-semibold py-1.5 transition-colors shadow-sm`}
+                className={`${selectedFigureIds.length > 0 && !isApplyingDraft ? 'bg-amber-600 hover:bg-amber-700 text-white' : 'bg-slate-300 text-slate-500 cursor-not-allowed'} rounded text-[11px] font-semibold py-1.5 transition-colors shadow-sm`}
               >
                 应用选中图{selectedFigureIds.length > 0 ? ` (${selectedFigureIds.length})` : ''}
               </button>
               <button
                 type="button"
                 onClick={() => onApplyDraft(figureId, 'all')}
+                disabled={isApplyingDraft}
                 title="按语义映射应用到全部 Figure；无法安全匹配的图元和 code_patch 会跳过"
-                className="bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[11px] font-semibold py-1.5 transition-colors shadow-sm"
+                className="bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[11px] font-semibold py-1.5 transition-colors shadow-sm disabled:cursor-wait disabled:bg-emerald-300"
               >
                 应用全部图
               </button>

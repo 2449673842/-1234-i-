@@ -555,6 +555,7 @@ export default function App() {
 
   const [projectDrafts, setProjectDraftsState] = useState<Record<string, Record<string, DraftPatch>>>(initialState.projectDrafts ?? {});
   const projectDraftsRef = useRef<Record<string, Record<string, DraftPatch>>>(initialState.projectDrafts ?? {});
+  const draftApplyInFlightRef = useRef<Set<string>>(new Set());
   const setProjectDrafts = (nextValue: React.SetStateAction<Record<string, Record<string, DraftPatch>>>) => {
     const previous = projectDraftsRef.current;
     const next = typeof nextValue === 'function'
@@ -1026,9 +1027,11 @@ export default function App() {
         }
 
         if (data.status === 'success') {
-          const appliedNeedsBackendRender = needsBackendRender || (
-            Array.isArray(data.applied)
-            && data.applied.some((patchItem: any) => patchItem?.type === 'code_patch' || patchItem?.mode === 'backend_patch')
+          const authoritativeAppliedPatches = Array.isArray(data.applied)
+            ? data.applied
+            : requestPatches;
+          const appliedNeedsBackendRender = authoritativeAppliedPatches.some(
+            (patchItem: any) => patchItem?.type === 'code_patch' || patchItem?.mode !== 'local_patch',
           );
           const appliedDpi = figureDpiFromPatches(patches);
           if (appliedDpi !== null) {
@@ -1044,7 +1047,17 @@ export default function App() {
               if (data.revision !== undefined && data.revision < active.revision) {
                 return prev;
               }
-              const runtimePatches = localPatchEntries.map(({ gid, prop, value }) => ({ gid, prop, value }));
+              const runtimePatches = authoritativeAppliedPatches
+                .filter((patchItem: any) => (
+                  patchItem?.mode === 'local_patch'
+                  && typeof patchItem?.gid === 'string'
+                  && typeof patchItem?.prop === 'string'
+                ))
+                .map((patchItem: any) => ({
+                  gid: patchItem.gid,
+                  prop: patchItem.prop,
+                  value: patchItem.value,
+                }));
               const nextSvg = !appliedNeedsBackendRender && runtimePatches.length > 0
                 ? applyRuntimePatchesToSvg(active.svg || '', runtimePatches)
                 : data.svg || active.svg;
@@ -1466,31 +1479,21 @@ export default function App() {
     const queue = [...targetPatchJobs];
     const executionResults: FigurePatchExecutionResult[] = [];
 
+    if (draftApplyInFlightRef.current.has(figId)) {
+      setRenderLog(prev => [
+        ...prev,
+        `> [提示] ${figId} 的暂存修改正在应用，请等待本轮渲染完成。`,
+      ]);
+      return;
+    }
+    draftApplyInFlightRef.current.add(figId);
+
     const executeNext = async (): Promise<void> => {
       if (queue.length === 0) return;
       const nextJob = queue.shift()!;
       try {
         const result = await executeSingleFigurePatch(nextJob.targetId, nextJob.patches);
         executionResults.push(result);
-        if (scope === 'current' && result.success) {
-          setProjectDrafts(prev => {
-            const currentBucket = prev[figId] || {};
-            const nextBucket = { ...currentBucket };
-            nextJob.draftKeys.forEach((draftKey) => {
-              const snapshotDraft = draftSourceBucket[draftKey];
-              if (snapshotDraft && isSameDraftPatch(currentBucket[draftKey], snapshotDraft)) {
-                delete nextBucket[draftKey];
-              }
-            });
-            const next = { ...prev };
-            if (Object.keys(nextBucket).length > 0) {
-              next[figId] = nextBucket;
-            } else {
-              delete next[figId];
-            }
-            return next;
-          });
-        }
       } catch (err: any) {
         console.error(`Failed to apply patches to ${nextJob.targetId}:`, err);
         executionResults.push({
@@ -1503,43 +1506,47 @@ export default function App() {
       return executeNext();
     };
 
-    const workers = [];
-    for (let i = 0; i < Math.min(concurrency, targetPatchJobs.length); i++) {
-      workers.push(executeNext());
-    }
-    await Promise.all(workers);
-
-    const settlement = settleDraftTransaction(
-      draftSourceBucket,
-      targetPatchJobs.map(job => ({ targetId: job.targetId, draftKeys: job.draftKeys })),
-      executionResults.map(result => ({ targetId: result.figureId, success: result.success })),
-    );
-    setProjectDrafts(prev => {
-      const currentBucket = prev[figId] || {};
-      const mergedBucket = mergeDraftSettlement(
-        currentBucket,
-        draftSourceBucket,
-        settlement.nextBucket,
-      );
-      const next = { ...prev };
-      if (Object.keys(mergedBucket).length > 0) {
-        next[figId] = mergedBucket;
-      } else {
-        delete next[figId];
+    try {
+      const workers = [];
+      for (let i = 0; i < Math.min(concurrency, targetPatchJobs.length); i++) {
+        workers.push(executeNext());
       }
-      return next;
-    });
+      await Promise.all(workers);
 
-    if (settlement.failedTargetIds.length > 0) {
-      setRenderLog(prev => [
-        ...prev,
-        `> [部分失败] ${settlement.failedTargetIds.join('、')} 应用失败；相关草稿已保留，仅重试失败 Figure。`,
-      ]);
-    } else if (settlement.pendingDraftKeys.length > 0) {
-      setRenderLog(prev => [
-        ...prev,
-        `> [提示] ${settlement.pendingDraftKeys.length} 项草稿没有找到可安全应用的目标，已保留。`,
-      ]);
+      const settlement = settleDraftTransaction(
+        draftSourceBucket,
+        targetPatchJobs.map(job => ({ targetId: job.targetId, draftKeys: job.draftKeys })),
+        executionResults.map(result => ({ targetId: result.figureId, success: result.success })),
+      );
+      setProjectDrafts(prev => {
+        const currentBucket = prev[figId] || {};
+        const mergedBucket = mergeDraftSettlement(
+          currentBucket,
+          draftSourceBucket,
+          settlement.nextBucket,
+        );
+        const next = { ...prev };
+        if (Object.keys(mergedBucket).length > 0) {
+          next[figId] = mergedBucket;
+        } else {
+          delete next[figId];
+        }
+        return next;
+      });
+
+      if (settlement.failedTargetIds.length > 0) {
+        setRenderLog(prev => [
+          ...prev,
+          `> [部分失败] ${settlement.failedTargetIds.join('、')} 应用失败；相关草稿已保留，仅重试失败 Figure。`,
+        ]);
+      } else if (settlement.pendingDraftKeys.length > 0) {
+        setRenderLog(prev => [
+          ...prev,
+          `> [提示] ${settlement.pendingDraftKeys.length} 项草稿没有找到可安全应用的目标，已保留。`,
+        ]);
+      }
+    } finally {
+      draftApplyInFlightRef.current.delete(figId);
     }
   };
 
@@ -2658,6 +2665,7 @@ export default function App() {
                 onUpdateDraftsBatch={handleUpdateDraftsBatch}
                 onDiscardDraft={handleDiscardDraft}
                 onApplyDraft={handleApplyDraft}
+                isApplyingDraft={isRendering || projectIsRendering}
                 editingIntentReports={editingIntentReports}
               />
             </div>

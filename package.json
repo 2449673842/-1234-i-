@@ -29,6 +29,7 @@
     "test:r-semantic-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/r_semantic_centers_smoke.mjs",
     "test:cache-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/render_cache_smoke.mjs",
     "test:component-kind-matrix": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/component_kind_matrix_smoke.mjs",
+    "test:local-patch-manifest-recovery": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/local_patch_manifest_recovery_regression.mjs",
     "test:cross-figure-concurrency": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/cross_figure_concurrency_smoke.mjs",
     "test:composer-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/composer_consistency_smoke.mjs",
     "test:composition-code-project": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/composition_code_project_smoke.mjs",

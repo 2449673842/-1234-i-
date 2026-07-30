@@ -1274,6 +1274,9 @@ ax.legend()
         self.assertTrue(histogram.get("children"), histogram)
         self.assertEqual(histogram.get("label"), "hist", histogram)
         self.assertEqual(histogram.get("stableKey"), "ax0.bar_container.idx.0", histogram)
+        for capability in histogram.get("propertyCapabilities", []):
+            self.assertEqual(capability.get("patchMode"), "backend_patch", capability)
+            self.assertEqual(capability.get("preview"), "none", capability)
         for child_gid in histogram["children"]:
             child = objects[child_gid]
             self.assertEqual(child.get("parentId"), histogram["id"], child)
@@ -1311,6 +1314,9 @@ ax.legend()
             if obj["id"] != histogram["id"] and obj.get("label") == "plain bar"
         )
         self.assertEqual(plain_bar.get("role"), "bar_series", plain_bar)
+        for capability in plain_bar.get("propertyCapabilities", []):
+            self.assertEqual(capability.get("patchMode"), "backend_patch", capability)
+            self.assertEqual(capability.get("preview"), "none", capability)
         self.assertNotEqual(plain_bar.get("role"), "histogram_series", plain_bar)
         self.assertNotEqual(
             plain_bar.get("identity", {}).get("semanticKey"),
