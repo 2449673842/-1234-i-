@@ -1030,9 +1030,11 @@ export default function App() {
           const authoritativeAppliedPatches = Array.isArray(data.applied)
             ? data.applied
             : requestPatches;
-          const appliedNeedsBackendRender = authoritativeAppliedPatches.some(
-            (patchItem: any) => patchItem?.type === 'code_patch' || patchItem?.mode !== 'local_patch',
-          );
+          const responseHasAuthoritativeRender = typeof data.svg === 'string' && Boolean(data.manifest);
+          const appliedNeedsBackendRender = responseHasAuthoritativeRender
+            || authoritativeAppliedPatches.some(
+              (patchItem: any) => patchItem?.type === 'code_patch' || patchItem?.mode !== 'local_patch',
+            );
           const appliedDpi = figureDpiFromPatches(patches);
           if (appliedDpi !== null) {
             setSpec(current => synchronizeFigureDpiSpec(current, appliedDpi));

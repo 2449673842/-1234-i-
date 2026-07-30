@@ -1,7 +1,35 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-30 07:03:06 +08:00
+> 最后修改时间：2026-07-30 15:15:32 +08:00
+
+---
+
+## 2026-07-30 15:15:32 +08:00 代码配色重放成功后前端仍保留旧 palette 元数据
+
+**状态与级别**
+
+- 状态：本地发布候选已修复，真实浏览器语义中心 `19/19 PASS`；尚未部署。
+- 级别：P1 编辑状态一致性。服务端脚本、SVG、manifest、editLog 和 revision 已正确更新，但前端可能继续显示旧 palette 颜色，导致后续配色控件看似未绑定或再次编辑目标错误。
+
+**根因**
+
+- Python `code_patch` 会触发服务端权威重放，但响应的 `applied` 只包含最终对象 edit entries，不重复包含 code patch；其中可精确重放的对象颜色还会由服务端归一为 `local_patch`。
+- 前端此前仅根据 `applied[].mode` 判断是否接收响应 SVG/manifest，因此把已经完成 renderer 重放的响应误当成纯 local patch，丢弃了新 palette 元数据，只把对象颜色补到旧 manifest。
+- 旧语义测试只验证请求中存在 code patch、响应成功和对象 patch 正确，没有等待并核对 `sessionStorage` 中运行时 palette，因而未发现“服务端正确、前端状态陈旧”。
+
+**修复与验证**
+
+- 前端现在以成功响应是否同时携带服务端 SVG 和 manifest 作为权威重放证据；有该证据时安装响应结果，纯 local 响应仍使用即时 SVG/manifest patch。判断不依赖客户端声明的 mode。
+- 浏览器测试等待指定 palette ID 的运行时颜色写回，再核对脚本常量、目标 GID、对象属性、editLog、applied mode 和同色分组隔离；超时会保留响应/运行态 revision 与颜色诊断。
+- 散点验收改用保持相对大小的 `size_scale=1.5`；从子集配色切换到全局配色时显式选择“全部子图”，保留控制面板随当前子图自动跟随的产品行为。
+- `npm run test:semantic-smoke`：`19 PASS / 0 FAIL / 0 BLOCKED`，console error 和 page error 均为 0。
+
+**防复发规则**
+
+- 服务端 renderer 已返回权威 SVG/manifest 时，前端不得因 `applied` 列表省略 code patch 或将对象降为 local mode 而丢弃该结果。
+- code patch 验收必须同时验证请求、服务端响应和前端运行时 manifest；只验证 HTTP、payload 或 SVG 均不足以证明编辑状态一致。
+- 测试全局作用域前必须显式选择全局，不能依赖上一次对象选择前的隐式范围。
 
 ---
 

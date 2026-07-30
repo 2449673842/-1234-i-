@@ -465,6 +465,34 @@ async function readRuntimePaletteColors(page, paletteIds) {
   }, paletteIds);
 }
 
+async function readRuntimeFigureRevision(page) {
+  return page.evaluate(() => {
+    const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+    if (!raw) return null;
+    const state = JSON.parse(raw);
+    return state.projectFigures?.[state.activeFigureId || 'fig_1']?.revision ?? null;
+  });
+}
+
+async function waitForRuntimePaletteColor(page, paletteId, expectedColor, timeoutMs = 15000) {
+  try {
+    await page.waitForFunction(({ id, expected }) => {
+      const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
+      if (!raw) return false;
+      const state = JSON.parse(raw);
+      const figure = state.projectFigures?.[state.activeFigureId || 'fig_1'];
+      const palette = (figure?.manifest?.palettes || []).find((item) => item.id === id);
+      return String(palette?.color || '').toLowerCase() === expected;
+    }, {
+      id: paletteId,
+      expected: expectedColor.toLowerCase(),
+    }, { timeout: timeoutMs });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function readRuntimePaletteBinding(page, paletteId) {
   return page.evaluate((id) => {
     const raw = window.sessionStorage.getItem('scifigure:app-state:v2');
@@ -694,7 +722,7 @@ async function run() {
     );
 
     await clickText(page, '组件中心');
-    const pointSizeChanged = await setNumberByParam(page, 'component-points', 'size', 90);
+    const pointSizeChanged = await setNumberByParam(page, 'component-points', 'size_scale', 1.5);
     const pointDraft = (await getBodyText(page)).includes('已暂存');
     const pointApply = pointSizeChanged ? await applyDraftAndReadPatch(page) : { patchBody: null, successful: false };
     const pointPatches = patchList(pointApply.patchBody);
@@ -805,6 +833,7 @@ async function run() {
     record('H1-subset', subsetOk ? 'PASS' : 'FAIL', `selected=${JSON.stringify(selectedPaletteObject)}, changed=${subsetChanged}, draft=${subsetDraft}, patches=${JSON.stringify(subsetPatches)}`);
 
     await clickText(page, '配色中心');
+    await setPaletteSubplotScope(page, 'all');
     const paletteChanged = await setColorByScope(page, 'palette:LINE_COLOR', '#118833') ||
       await setColorControl(page, 'LINE_COLOR', '统一修改代码全局常量', '#118833') ||
       await setColorControl(page, 'LINE_COLOR', '修改组颜色代码常量', '#118833');
@@ -826,10 +855,14 @@ async function run() {
     const weakPatches = patchList(weakApply.patchBody);
     const weakCodePatch = weakPatches.find((patch) => patch.type === 'code_patch');
     const weakObjectPatches = weakPatches.filter((patch) => patch.type !== 'code_patch');
+    const weakRuntimeSynced = await waitForRuntimePaletteColor(page, weakPaletteId, '#22aa66');
     const runtimePaletteColors = await readRuntimePaletteColors(page, [weakPaletteId, mixedPaletteId]);
+    const weakRuntimeRevision = await readRuntimeFigureRevision(page);
+    const weakResponsePalette = weakApply.responseData?.manifest?.palettes?.find((item) => item.id === weakPaletteId);
     const weakIsolationOk = weakChanged
       && weakDraft
       && weakApply.successful
+      && weakRuntimeSynced
       && weakCodePatch?.target_id === weakPaletteId
       && Array.isArray(weakCodePatch?.gids)
       && weakCodePatch.gids.length === weakGids.length
@@ -841,7 +874,7 @@ async function run() {
     record(
       'H1b-same-color-weak-only',
       weakIsolationOk ? 'PASS' : 'FAIL',
-      `changed=${weakChanged}, draft=${weakDraft}, patch=${JSON.stringify(weakCodePatch)}, colors=${JSON.stringify(runtimePaletteColors)}`,
+      `changed=${weakChanged}, draft=${weakDraft}, synced=${weakRuntimeSynced}, responseRevision=${weakApply.responseData?.revision}, runtimeRevision=${weakRuntimeRevision}, responseColor=${weakResponsePalette?.color}, patch=${JSON.stringify(weakCodePatch)}, colors=${JSON.stringify(runtimePaletteColors)}`,
     );
 
     await clickText(page, '配色中心');
@@ -855,10 +888,12 @@ async function run() {
     const dynamicApplied = Array.isArray(dynamicApply.responseData?.applied)
       ? dynamicApply.responseData.applied.filter((patch) => patch?.gid && patch?.prop)
       : [];
+    const dynamicRuntimeSynced = await waitForRuntimePaletteColor(page, 'DYNAMIC_COLOR', '#654321');
     const dynamicRuntime = await readRuntimePaletteBinding(page, 'DYNAMIC_COLOR');
     const dynamicFallbackOk = dynamicChanged
       && dynamicDraft
       && dynamicApply.successful
+      && dynamicRuntimeSynced
       && dynamicGids.length > 0
       && dynamicCodePatch?.new_value === '#654321'
       && dynamicObjectPatches.length === dynamicGids.length
@@ -879,7 +914,7 @@ async function run() {
     record(
       'H1c-data-driven-color-fallback',
       dynamicFallbackOk ? 'PASS' : 'FAIL',
-      `changed=${dynamicChanged}, draft=${dynamicDraft}, patches=${JSON.stringify(dynamicPatches)}, response=${JSON.stringify(dynamicApply.responseData)}, runtime=${JSON.stringify(dynamicRuntime)}`,
+      `changed=${dynamicChanged}, draft=${dynamicDraft}, synced=${dynamicRuntimeSynced}, patches=${JSON.stringify(dynamicPatches)}, response=${JSON.stringify(dynamicApply.responseData)}, runtime=${JSON.stringify(dynamicRuntime)}`,
     );
 
     await clickText(page, '配色中心');
