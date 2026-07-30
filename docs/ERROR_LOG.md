@@ -3504,6 +3504,7 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `npm run test:local-patch-manifest-recovery`：通过，覆盖连续 local patch、缺失 manifest 恢复、错误存储绑定、身份不一致和 stale revision 零写入。
 - `npm run test:component-kind-matrix`：通过，20 类组件连续重放；直方图响应 SVG 的全部子柱均命中目标颜色。
 - `npm run test:component-container-smoke`：`45/45 PASS`，覆盖即时 DOM、保存刷新、分组选择、布局、网格、图例和散点比例。
+- 生产集成门禁同步更新旧拒绝测试：纯 local patch 应清除过期 `preview_svg/preview_updated_at`，但必须保留并更新 manifest、codeSlice 和 fingerprint；旧断言“同时清空 manifest”已删除。
 - `npm run lint`、3 个新增/修改 Node 测试的 `node --check`、focused histogram unittest 和 `git diff --check` 均通过。
 
 **防复发规则**

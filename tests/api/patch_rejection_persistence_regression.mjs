@@ -844,6 +844,8 @@ async function main() {
     assert(persistedLinewidth?.mode === 'backend_patch', `backend-only linewidth trusted the client local mode: ${JSON.stringify(mixedResult)}`);
     assert(typeof mixedResult.svg === 'string' && mixedResult.svg.includes('<svg'), 'mixed batch did not execute a backend render');
     await assertProjectPreviewCacheFresh(token, projectId, lineIdentitySource, baselineRevision + 1);
+    const trustedBeforeLocal = readProjectFigurePreviewCache(projectId);
+    assert(trustedBeforeLocal?.manifest, 'mixed batch did not persist a trusted manifest before local patch');
 
     const pureLocalResult = await submitPatchBatch(
       token,
@@ -944,8 +946,14 @@ async function main() {
     const invalidatedPreview = readProjectFigurePreviewCache(projectId);
     assert(invalidatedPreview, 'pure local patch removed project figure row');
     assert(
-      invalidatedPreview.preview_svg === null && invalidatedPreview.manifest === null,
-      `pure local patch retained stale preview cache: ${JSON.stringify(invalidatedPreview)}`,
+      invalidatedPreview.preview_svg === null && invalidatedPreview.preview_updated_at === null,
+      `pure local patch retained stale preview SVG metadata: ${JSON.stringify(invalidatedPreview)}`,
+    );
+    assertManifestPatchValue(invalidatedPreview.manifest, created.pureLocalPatch, 'pure local stored manifest');
+    assert(
+      JSON.stringify(invalidatedPreview.codeSlice) === JSON.stringify(trustedBeforeLocal.codeSlice)
+        && invalidatedPreview.fingerprint === trustedBeforeLocal.fingerprint,
+      `pure local patch discarded trusted Figure identity metadata: ${JSON.stringify(invalidatedPreview)}`,
     );
     const backendAfterLocalResult = await submitPatchBatch(
       token,
@@ -956,7 +964,7 @@ async function main() {
     );
     assert(
       backendAfterLocalResult?.status === 'success',
-      `backend patch did not defer missing-manifest validation to renderer: ${JSON.stringify(backendAfterLocalResult)}`,
+      `backend patch after manifest-preserving local invalidation failed: ${JSON.stringify(backendAfterLocalResult)}`,
     );
     assert(
       Number(backendAfterLocalResult?.revision) === baselineRevision + 3,
@@ -1063,8 +1071,8 @@ async function main() {
         'standalone missing gid conflict did not change revision or editLog',
         'session editLog, project figure edit_log/history, and export anchors stayed clean',
         'valid mixed local/backend batch persisted both edits in one revision',
-        'pure local project patch invalidated stale preview and refreshed from latest editLog',
-        'backend patch after local preview invalidation deferred to renderer and preserved both edits',
+        'pure local project patch invalidated stale preview while preserving trusted Figure identity metadata',
+        'backend patch after local preview invalidation preserved and replayed both edits',
         'stale project save was rejected without removing a newer server patch',
         'same-revision editLog mutation without a base hash was rejected without persistence',
         'same-revision stale editLog hash was rejected without persistence',
