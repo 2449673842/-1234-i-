@@ -3733,7 +3733,11 @@ def _generate_stable_key_and_fingerprint(obj: dict, artist: Any, ax_idx: int) ->
     label = obj.get("label") or ""
     
     clean_label = ""
-    if label and not label.startswith("_") and not label.startswith("line.") and not label.startswith("patch.") and not label.startswith("collection."):
+    if kind == "subplot":
+        # The user-facing subplot label contains derived row/column placement.
+        # Layout edits must not change structural identity for the same Axes.
+        clean_label = ""
+    elif label and not label.startswith("_") and not label.startswith("line.") and not label.startswith("patch.") and not label.startswith("collection."):
         clean_label = label
     if (
         _intercepted_complex_artists.get(artist, {}).get("family") == "hist"
@@ -6704,6 +6708,7 @@ def _current_identity_signature(
         "stableKey": stable_key,
         "fingerprint": fingerprint,
         "seriesKey": identity.get("seriesKey"),
+        "identity": identity,
     }
     if kind == "collection":
         signature["legacyWeakFingerprint"] = _legacy_weak_collection_fingerprint(stable_key, artist)
@@ -6861,6 +6866,60 @@ def _is_compatible_legacy_legend_collection_fingerprint(
     )
 
 
+def _is_compatible_legacy_subplot_layout_identity(
+    gid: str,
+    prop: str,
+    gid_info: dict,
+    entry: dict,
+    expected: dict,
+    actual: dict,
+    mismatches: list[str],
+    artist: Any,
+) -> bool:
+    """Accept old position-derived subplot identities only for layout replay."""
+    if gid_info.get("kind") != "subplot" or prop not in {"left", "bottom", "width", "height", "aspect"}:
+        return False
+    if not mismatches or not set(mismatches).issubset({"stableKey", "fingerprint"}):
+        return False
+
+    gid_match = re.fullmatch(r"subplot\.(\d+)", str(gid))
+    legacy_match = re.fullmatch(
+        r"ax(\d+)\.subplot\.label\.子图 \d+ \(第 \d+ 行，第 \d+ 列\)",
+        str(expected.get("stableKey") or ""),
+    )
+    if not gid_match or not legacy_match or gid_match.group(1) != legacy_match.group(1):
+        return False
+
+    axes_index = gid_match.group(1)
+    if actual.get("stableKey") != f"ax{axes_index}.subplot.idx.{axes_index}":
+        return False
+
+    entry_identity = entry.get("identity")
+    actual_identity = actual.get("identity")
+    required_identity_fields = {
+        "semanticKey",
+        "instanceKey",
+        "scope",
+        "coordinateSpace",
+    }
+    if (
+        not isinstance(entry_identity, dict)
+        or not isinstance(actual_identity, dict)
+        or not required_identity_fields.issubset(entry_identity)
+        or entry_identity != actual_identity
+    ):
+        return False
+
+    if entry.get("fingerprintVersion") == 2:
+        expected_fingerprint = entry.get("fingerprint")
+        if not isinstance(expected_fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_fingerprint):
+            return False
+        legacy_source = f"{expected['stableKey']}|{type(artist).__name__}"
+        legacy_fingerprint = hashlib.sha256(legacy_source.encode("utf-8")).hexdigest()
+        return expected_fingerprint == legacy_fingerprint
+    return "fingerprintVersion" not in entry
+
+
 def _apply_global(fig, prop: str, value: Any):
     if prop == "figure.width_in":
         fig.set_size_inches(float(value), fig.get_figheight(), forward=True)
@@ -6986,6 +7045,15 @@ def apply_edit_log(fig, edit_log: list[dict]) -> list[dict]:
                 expected_identity,
                 actual_identity,
                 identity_mismatches,
+            ) and not _is_compatible_legacy_subplot_layout_identity(
+                gid,
+                prop,
+                gid_info,
+                entry,
+                expected_identity,
+                actual_identity,
+                identity_mismatches,
+                artist,
             ):
                 warnings.append(_identity_mismatch_warning(
                     gid,

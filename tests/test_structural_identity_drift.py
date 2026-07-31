@@ -95,6 +95,16 @@ LEGEND_COLLECTION_LAYOUT_VARIANT_SCRIPT = LEGEND_COLLECTION_SCRIPT.replace(
 )
 
 
+SUBPLOT_LAYOUT_SCRIPT = """
+import matplotlib.pyplot as plt
+fig = plt.figure(figsize=(7.0, 3.2))
+left = fig.add_axes([0.08, 0.18, 0.36, 0.70])
+right = fig.add_axes([0.56, 0.18, 0.36, 0.70])
+left.plot([0, 1, 2], [1, 3, 2], label="left")
+right.plot([0, 1, 2], [2, 1, 3], label="right")
+"""
+
+
 class TestStructuralIdentityDrift(unittest.TestCase):
     def _line_objects(self, result):
         self.assertEqual(result.get("status"), "success", result.get("message"))
@@ -254,6 +264,140 @@ class TestStructuralIdentityDrift(unittest.TestCase):
             relaid_fingerprint,
             "legend proxy coordinates are derived layout, not structural data",
         )
+
+    def test_subplot_layout_change_does_not_change_structural_identity(self):
+        baseline = replay_render(SUBPLOT_LAYOUT_SCRIPT)
+        baseline_manifest = baseline["figures"][0]["manifest"]
+        baseline_subplots = {
+            obj["id"]: obj
+            for obj in baseline_manifest["objects"]
+            if obj["kind"] == "subplot"
+        }
+        left = baseline_subplots["subplot.0"]
+        right = baseline_subplots["subplot.1"]
+        edits = []
+        for target, source in ((left, right), (right, left)):
+            for prop in ("left", "bottom"):
+                edits.append({
+                    "gid": target["id"],
+                    "prop": prop,
+                    "value": source["currentProps"][prop],
+                    "mode": "backend_patch",
+                    "identity": target["identity"],
+                    "stableKey": target["stableKey"],
+                    "fingerprint": target["fingerprint"],
+                    "fingerprintVersion": 2,
+                })
+
+        swapped = replay_render(SUBPLOT_LAYOUT_SCRIPT, edit_log=edits)
+        swapped_subplots = {
+            obj["id"]: obj
+            for obj in swapped["figures"][0]["manifest"]["objects"]
+            if obj["kind"] == "subplot"
+        }
+
+        self.assertEqual(swapped.get("warnings", []), [], swapped)
+        for gid, original in baseline_subplots.items():
+            self.assertEqual(swapped_subplots[gid]["stableKey"], original["stableKey"])
+            self.assertEqual(swapped_subplots[gid]["fingerprint"], original["fingerprint"])
+        self.assertAlmostEqual(swapped_subplots["subplot.0"]["currentProps"]["left"], 0.56)
+        self.assertAlmostEqual(swapped_subplots["subplot.1"]["currentProps"]["left"], 0.08)
+
+    def test_legacy_position_derived_subplot_identity_remains_replayable(self):
+        baseline = replay_render(SUBPLOT_LAYOUT_SCRIPT)
+        target = self._object_by_id(baseline, "subplot.0")
+        legacy_stable_key = "ax0.subplot.label.子图 1 (第 1 行，第 1 列)"
+        artist_class = target["source"]["artistClass"]
+        legacy_fingerprint = hashlib.sha256(
+            f"{legacy_stable_key}|{artist_class}".encode("utf-8")
+        ).hexdigest()
+        patched = replay_render(SUBPLOT_LAYOUT_SCRIPT, edit_log=[{
+            "gid": target["id"],
+            "prop": "left",
+            "value": 0.50,
+            "mode": "backend_patch",
+            "identity": target["identity"],
+            "stableKey": legacy_stable_key,
+            "fingerprint": legacy_fingerprint,
+            "fingerprintVersion": 2,
+        }])
+        patched_target = self._object_by_id(patched, "subplot.0")
+
+        self.assertEqual(patched.get("warnings", []), [], patched)
+        self.assertAlmostEqual(patched_target["currentProps"]["left"], 0.50)
+        self.assertEqual(patched_target["stableKey"], target["stableKey"])
+        self.assertEqual(patched_target["fingerprint"], target["fingerprint"])
+
+    def test_unversioned_legacy_subplot_identity_uses_complete_identity_only(self):
+        baseline = replay_render(SUBPLOT_LAYOUT_SCRIPT)
+        target = self._object_by_id(baseline, "subplot.0")
+        patched = replay_render(SUBPLOT_LAYOUT_SCRIPT, edit_log=[{
+            "gid": target["id"],
+            "prop": "left",
+            "value": 0.50,
+            "mode": "backend_patch",
+            "identity": target["identity"],
+            "stableKey": "ax0.subplot.label.子图 1 (第 1 行，第 1 列)",
+            "fingerprint": "legacy-fingerprint-is-not-authoritative",
+        }])
+
+        self.assertEqual(patched.get("warnings", []), [], patched)
+        self.assertAlmostEqual(
+            self._object_by_id(patched, "subplot.0")["currentProps"]["left"],
+            0.50,
+        )
+
+    def test_incomplete_or_mismatched_legacy_subplot_identity_is_rejected(self):
+        baseline = replay_render(SUBPLOT_LAYOUT_SCRIPT)
+        target = self._object_by_id(baseline, "subplot.0")
+        artist_class = target["source"]["artistClass"]
+
+        def legacy_edit(prop="left"):
+            stable_key = "ax0.subplot.label.子图 1 (第 1 行，第 1 列)"
+            return {
+                "gid": target["id"],
+                "prop": prop,
+                "value": 0.50 if prop == "left" else 4,
+                "mode": "backend_patch",
+                "identity": dict(target["identity"]),
+                "stableKey": stable_key,
+                "fingerprint": hashlib.sha256(
+                    f"{stable_key}|{artist_class}".encode("utf-8")
+                ).hexdigest(),
+                "fingerprintVersion": 2,
+            }
+
+        missing_identity = legacy_edit()
+        missing_identity.pop("identity")
+        missing_fingerprint = legacy_edit()
+        missing_fingerprint.pop("fingerprint")
+        wrong_identity = legacy_edit()
+        wrong_identity["identity"] = {
+            **wrong_identity["identity"],
+            "semanticKey": "subplot_panel:subplot.1",
+        }
+        cross_gid = legacy_edit()
+        cross_gid["stableKey"] = "ax1.subplot.label.子图 2 (第 1 行，第 2 列)"
+        cross_gid["fingerprint"] = hashlib.sha256(
+            f"{cross_gid['stableKey']}|{artist_class}".encode("utf-8")
+        ).hexdigest()
+        non_layout = legacy_edit("zorder")
+
+        for label, edit in {
+            "missing identity": missing_identity,
+            "missing v2 fingerprint": missing_fingerprint,
+            "wrong identity": wrong_identity,
+            "cross gid": cross_gid,
+            "non-layout property": non_layout,
+        }.items():
+            with self.subTest(label=label):
+                result = replay_render(SUBPLOT_LAYOUT_SCRIPT, edit_log=[edit])
+                self.assertTrue(result.get("warnings"), result)
+                result_target = self._object_by_id(result, "subplot.0")
+                if edit["prop"] == "left":
+                    self.assertAlmostEqual(result_target["currentProps"]["left"], 0.08)
+                else:
+                    self.assertNotEqual(result_target["currentProps"]["zorder"], edit["value"])
 
     def test_identity_verified_edit_applies_without_drift(self):
         edit = self._baseline_beta_edit()

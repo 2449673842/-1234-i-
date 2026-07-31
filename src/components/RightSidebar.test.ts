@@ -9,6 +9,7 @@ import {
   buildRadarComponentGroups,
   colormapOptionsFor,
   componentColorTargets,
+  hasBlockingOwnedSwapColorbar,
   isDedicatedDiagramComponentObject,
   isRadarSemanticObject,
   radarComponentTargetRole,
@@ -370,6 +371,21 @@ describe('RightSidebar subplot bound capability gates', () => {
     expect(supportsSubplotBoundProp(legacySubplot, 'left')).toBe(true);
     expect(supportsSubplotBoundProp(legacySubplot, 'height')).toBe(true);
     expect(supportsSubplotBoundProp(legacySubplot, 'width')).toBe(false);
+  });
+
+  it('blocks only an immovable colorbar uniquely owned by a swapped subplot', () => {
+    expect(hasBlockingOwnedSwapColorbar([
+      { ownerSubplotIds: ['subplot.0', 'subplot.1'], movable: false },
+      { ownerSubplotIds: ['subplot.2'], movable: false },
+    ], 'subplot.0', 'subplot.1')).toBe(false);
+
+    expect(hasBlockingOwnedSwapColorbar([
+      { ownerSubplotIds: ['subplot.0'], movable: false },
+    ], 'subplot.0', 'subplot.1')).toBe(true);
+
+    expect(hasBlockingOwnedSwapColorbar([
+      { ownerSubplotIds: ['subplot.0'], movable: true },
+    ], 'subplot.0', 'subplot.1')).toBe(false);
   });
 });
 

@@ -558,6 +558,7 @@ export default function App() {
   const [projectDrafts, setProjectDraftsState] = useState<Record<string, Record<string, DraftPatch>>>(initialState.projectDrafts ?? {});
   const projectDraftsRef = useRef<Record<string, Record<string, DraftPatch>>>(initialState.projectDrafts ?? {});
   const draftApplyInFlightRef = useRef<Set<string>>(new Set());
+  const [draftApplyingFigureIds, setDraftApplyingFigureIds] = useState<Set<string>>(new Set());
   const setProjectDrafts = (nextValue: React.SetStateAction<Record<string, Record<string, DraftPatch>>>) => {
     const previous = projectDraftsRef.current;
     const next = typeof nextValue === 'function'
@@ -994,6 +995,8 @@ export default function App() {
           beginProjectRenderRequest(reqId);
           setRenderProgressText(`正在应用 ${patchSummary}：重放并重新渲染...`);
           setRenderLog(prev => [...prev, `> [应用] ${targetFigureId} 正在重渲染 ${patchSummary}...`]);
+        } else {
+          setRenderLog(prev => [...prev, `> [应用] ${targetFigureId} 正在保存并同步 ${patchSummary}...`]);
         }
         
         const res = await fetch('/api/figure/patch', {
@@ -1044,6 +1047,8 @@ export default function App() {
           }
           if (appliedNeedsBackendRender) {
             setRenderLog(prev => [...prev, `> [完成] ${targetFigureId} 参数已应用，预览已更新`]);
+          } else {
+            setRenderLog(prev => [...prev, `> [完成] ${targetFigureId} 本地预览修改已保存`]);
           }
           setProjectFigures(prev => {
             const next = { ...prev };
@@ -1490,6 +1495,11 @@ export default function App() {
       return;
     }
     draftApplyInFlightRef.current.add(figId);
+    setDraftApplyingFigureIds(prev => {
+      const next = new Set(prev);
+      next.add(figId);
+      return next;
+    });
 
     const executeNext = async (): Promise<void> => {
       if (queue.length === 0) return;
@@ -1550,6 +1560,12 @@ export default function App() {
       }
     } finally {
       draftApplyInFlightRef.current.delete(figId);
+      setDraftApplyingFigureIds(prev => {
+        if (!prev.has(figId)) return prev;
+        const next = new Set(prev);
+        next.delete(figId);
+        return next;
+      });
     }
   };
 
@@ -2668,7 +2684,7 @@ export default function App() {
                 onUpdateDraftsBatch={handleUpdateDraftsBatch}
                 onDiscardDraft={handleDiscardDraft}
                 onApplyDraft={handleApplyDraft}
-                isApplyingDraft={isRendering || projectIsRendering}
+                isApplyingDraft={isRendering || projectIsRendering || draftApplyingFigureIds.has(activeFigureId)}
                 editingIntentReports={editingIntentReports}
               />
             </div>

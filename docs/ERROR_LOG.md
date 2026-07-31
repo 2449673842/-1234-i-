@@ -1,7 +1,40 @@
 # SciFigure 错误记录与修复日志
 
 > 用于记录真实诊断文件、根因、修复动作和遗留风险。结论必须区分“平台问题”和“AI 转义脚本问题”。
-> 最后修改时间：2026-07-30 23:12:16 +08:00
+> 最后修改时间：2026-07-31 20:13:54 +08:00
+
+---
+
+## 2026-07-31 19:52:42 +08:00 子图交换被位置派生身份拒绝，配色应用缺少进行中反馈
+
+**状态与级别**
+
+- 状态：本地生产候选已修复并通过隔离 Chromium、真实 Matplotlib renderer、持久化、导出和快照恢复验证；待本轮不可变 release 部署。
+- 级别：P1 用户操作阻断与反馈缺失。布局中心点击“交换这两个子图的位置”可能无结果；配色中心“应用当前图”实际已保存本地补丁，但按钮和日志没有应用中的反馈。
+
+**根因**
+
+- 交换按钮把所有 colorbar 的布局能力作为前置条件，共享或与目标无关的只读 colorbar 也会错误禁用独立 subplot 交换。
+- Python subplot 的旧 `stableKey/fingerprint` 包含由当前物理位置生成的“第几行、第几列”中文标签。renderer 已应用 `left/bottom` 后，同一 Axes 的标签随位置改变，服务端 post-render 身份核验将合法交换误判为身份漂移并整批拒绝。
+- 配色的纯 `local_patch` 不启动 renderer，前端按钮只观察全局渲染状态，因此颜色会更新并持久化，却没有“应用中”或完成日志。
+- 原有布局浏览器 fixture 使用 mock manifest，只证明前端发出四个补丁，没有经过真实 renderer 和身份门禁，因而未发现第二层拒绝。
+
+**修复与兼容**
+
+- 子图交换只要求两个目标 subplot 的 `left/bottom` 可编辑；仅被其中一个目标独占且不可移动的 colorbar 才阻断操作，共享和无关 colorbar 不再误伤。
+- 新 Python manifest 的 subplot 结构身份固定为 axes 创建序号 `axN.subplot.idx.N`，不再把行列位置写入 identity；交换前后 stableKey/fingerprint 保持不变。
+- 旧项目的 `axN.subplot.label.子图 ...` 身份只在同一 `subplot.N` 的布局属性上兼容。记录必须携带与当前 subplot 完全一致的 `semanticKey/instanceKey/scope/coordinateSpace/relation`；v2 记录还必须携带由旧 stableKey 与 renderer `artistClass` 计算的合法 64 位 SHA-256。无版本旧记录可忽略旧 fingerprint，但仍须通过完整 identity；缺 identity、缺 v2 fingerprint、错误 identity、伪造 fingerprint、跨 GID 和非布局属性全部 fail-closed。
+- 普通 patch、项目保存/历史、renderer 重放和导出快照恢复复用同一兼容判据，旧 editLog 不需要清空或手工迁移。
+- Draft 应用增加按 Figure 隔离的 in-flight 状态；纯本地配色持久化显示“应用中...”，并写入开始与完成日志，不把 local patch 强制升级成 backend render。
+
+**防复发验证**
+
+- `tests.test_structural_identity_drift`：18/18，通过新 subplot identity 稳定性、v2/无版本旧位置型身份重放及五类不完整或错误身份拒绝。
+- `npm run test:layout-swap-renderer`：真实 Matplotlib 双子图完成交换、v2/无版本旧身份交换，并逐项拒绝缺 identity、缺 v2 fingerprint、错误 identity、伪造 fingerprint、跨 GID 和非布局属性；所有拒绝均保持 revision、editLog、manifest 与 SQLite 不变；项目导出、导出后修改、快照恢复和重渲染通过。
+- `npm run test:layout-swap-ui`：共享只读 colorbar 不再禁用交换，四个 backend patch 正确发出，按钮显示“交换中...”。
+- `npm run test:palette-apply-feedback`：纯 local palette patch 保持局部作用域，按钮显示“应用中...”，保存后 SVG 颜色保持。
+- `RightSidebar.test.ts`：共享、无关、可移动和独占不可移动 colorbar 的交换门禁均有纯函数覆盖。
+- 独立 `gpt-5.5 high` 初审发现的 1 个 MEDIUM（旧 subplot 兼容接受不完整身份）已修复；复审结论为 0 HIGH / 0 MEDIUM。
 
 ---
 

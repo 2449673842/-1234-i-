@@ -557,6 +557,24 @@ export function supportsIndependentSubplotLayout(
   ));
 }
 
+export type SwapColorbarCapability = {
+  ownerSubplotIds: readonly string[];
+  movable: boolean;
+};
+
+export function hasBlockingOwnedSwapColorbar(
+  colorbars: readonly SwapColorbarCapability[],
+  firstSubplotId: string,
+  secondSubplotId: string,
+): boolean {
+  const swappedIds = new Set([firstSubplotId, secondSubplotId]);
+  return colorbars.some(colorbar => (
+    colorbar.ownerSubplotIds.length === 1
+    && swappedIds.has(colorbar.ownerSubplotIds[0])
+    && !colorbar.movable
+  ));
+}
+
 function componentUnsupportedProps(obj: ManifestObject | undefined): string[] {
   const unsupported = obj?.currentProps?.unsupportedProps;
   return Array.isArray(unsupported) ? unsupported.map(String) : [];
@@ -1129,6 +1147,7 @@ export function RightSidebar({
   const [preservedVerticalGap, setPreservedVerticalGap] = useState<number | null>(null);
   const [selectedLayout, setSelectedLayout] = useState<{ rows: number; cols: number } | null>(null);
   const [swapSubplotIds, setSwapSubplotIds] = useState<{ first: string; second: string }>({ first: '', second: '' });
+  const [isSwappingSubplots, setIsSwappingSubplots] = useState(false);
   const [layoutSnapshotAvailable, setLayoutSnapshotAvailable] = useState(false);
   const originalLayoutSnapshotRef = useRef<PatchEntry[] | null>(null);
   const [showDraftDetails, setShowDraftDetails] = useState(false);
@@ -2199,14 +2218,28 @@ export function RightSidebar({
     return patches;
   };
 
-  const applySwapSubplotPositions = (firstId: string, secondId: string) => {
+  const applySwapSubplotPositions = async (firstId: string, secondId: string) => {
+    if (isSwappingSubplots) return;
     const targets = subplotOptions.filter(item => item.id === firstId || item.id === secondId);
     if (!supportsLayoutProps(targets, ['left', 'bottom'])) return;
-    if (colorbarOptions.length > 0 && !supportsLayoutProps(colorbarOptions, ['left', 'bottom'])) return;
+    const swapColorbars = colorbarOptions.map((colorbar) => {
+      const owners = resolveOwnerSubplotsForColorbar(colorbar).subplots;
+      return {
+        ownerSubplotIds: owners.map(owner => owner.id),
+        movable: Boolean(readNormalizedBounds(colorbar))
+          && supportsLayoutProps([colorbar], ['left', 'bottom']),
+      };
+    });
+    if (hasBlockingOwnedSwapColorbar(swapColorbars, firstId, secondId)) return;
     rememberOriginalLayout();
     const patches = buildSwapSubplotPositionPatches(firstId, secondId);
     if (patches.length === 0) return;
-    void (onImmediatePatch || onPatch)(patches);
+    setIsSwappingSubplots(true);
+    try {
+      await (onImmediatePatch || onPatch)(patches);
+    } finally {
+      setIsSwappingSubplots(false);
+    }
   };
 
   const restoreOriginalLayout = () => {
@@ -3461,10 +3494,30 @@ export function RightSidebar({
       .map(subplot => subplot.currentProps.unsupportedReason)
       .find(reason => typeof reason === 'string') as string | undefined;
     const selectedSubplotId = selectedObject?.startsWith('subplot.') ? selectedObject : '';
-    const swapFirstId = swapSubplotIds.first || selectedSubplotId || subplotOptions[0]?.id || '';
-    const swapSecondId = swapSubplotIds.second || subplotOptions.find(subplot => subplot.id !== swapFirstId)?.id || '';
-    const canSwapSubplots = subplotBoundsEditable
-      && (colorbarOptions.length === 0 || colorbarBoundsEditable)
+    const hasSubplot = (subplotId: string) => subplotOptions.some(subplot => subplot.id === subplotId);
+    const requestedFirstId = hasSubplot(swapSubplotIds.first) ? swapSubplotIds.first : '';
+    const swapFirstId = requestedFirstId || selectedSubplotId || subplotOptions[0]?.id || '';
+    const requestedSecondId = hasSubplot(swapSubplotIds.second) && swapSubplotIds.second !== swapFirstId
+      ? swapSubplotIds.second
+      : '';
+    const swapSecondId = requestedSecondId || subplotOptions.find(subplot => subplot.id !== swapFirstId)?.id || '';
+    const swapSubplotTargets = subplotOptions.filter(item => item.id === swapFirstId || item.id === swapSecondId);
+    const swapSubplotPositionEditable = supportsLayoutProps(swapSubplotTargets, ['left', 'bottom']);
+    const swapColorbarCapabilities = colorbarOptions.map((colorbar) => {
+      const owners = resolveOwnerSubplotsForColorbar(colorbar).subplots;
+      return {
+        ownerSubplotIds: owners.map(owner => owner.id),
+        movable: Boolean(readNormalizedBounds(colorbar))
+          && supportsLayoutProps([colorbar], ['left', 'bottom']),
+      };
+    });
+    const swapOwnedColorbarsEditable = !hasBlockingOwnedSwapColorbar(
+      swapColorbarCapabilities,
+      swapFirstId,
+      swapSecondId,
+    );
+    const canSwapSubplots = swapSubplotPositionEditable
+      && swapOwnedColorbarsEditable
       && count > 1
       && Boolean(swapFirstId && swapSecondId && swapFirstId !== swapSecondId);
     const colorbarAlignmentTargets = getColorbarAlignmentTargets();
@@ -3696,6 +3749,7 @@ export function RightSidebar({
             </div>
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
               <select
+                data-testid="swap-subplot-first"
                 className="min-w-0 rounded-lg border border-indigo-100 bg-indigo-50 px-2 py-1.5 text-xs font-semibold text-indigo-900 outline-none focus:border-indigo-300"
                 value={swapFirstId}
                 onChange={(event) => setSwapSubplotIds(prev => ({ ...prev, first: event.target.value }))}
@@ -3708,6 +3762,7 @@ export function RightSidebar({
               </select>
               <span className="text-xs font-bold text-indigo-400">↔</span>
               <select
+                data-testid="swap-subplot-second"
                 className="min-w-0 rounded-lg border border-indigo-100 bg-indigo-50 px-2 py-1.5 text-xs font-semibold text-indigo-900 outline-none focus:border-indigo-300"
                 value={swapSecondId}
                 onChange={(event) => setSwapSubplotIds(prev => ({ ...prev, second: event.target.value }))}
@@ -3721,15 +3776,19 @@ export function RightSidebar({
             </div>
             <button
               type="button"
-              disabled={!canSwapSubplots}
-              onClick={() => applySwapSubplotPositions(swapFirstId, swapSecondId)}
+              data-testid="swap-subplots-apply"
+              disabled={!canSwapSubplots || isSwappingSubplots}
+              aria-busy={isSwappingSubplots}
+              onClick={() => void applySwapSubplotPositions(swapFirstId, swapSecondId)}
               className={`mt-3 w-full rounded-lg border px-2 py-1.5 text-[11px] font-semibold shadow-sm ${
-                canSwapSubplots
+                canSwapSubplots && !isSwappingSubplots
                   ? 'border-indigo-200 bg-indigo-600 text-white hover:bg-indigo-700'
-                  : 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed'
+                  : isSwappingSubplots
+                    ? 'border-indigo-100 bg-indigo-300 text-white cursor-wait'
+                    : 'border-slate-100 bg-slate-50 text-slate-300 cursor-not-allowed'
               }`}
             >
-              交换这两个子图的位置
+              {isSwappingSubplots ? '交换中...' : '交换这两个子图的位置'}
             </button>
             <div className="mt-2 text-[10px] leading-relaxed text-indigo-700">
               如果要交换 panel label 的字母含义，建议后续单独改标签文本；本按钮默认交换两个图块的位置，不自动重命名 a/b/c/d。
@@ -7823,7 +7882,7 @@ export function RightSidebar({
                 title={isApplyingDraft ? '正在等待 renderer 完成本轮应用' : undefined}
                 className="bg-blue-600 hover:bg-blue-700 text-white rounded text-[11px] font-semibold py-1.5 transition-colors shadow-sm disabled:cursor-wait disabled:bg-blue-300"
               >
-                应用当前图
+                {isApplyingDraft ? '应用中...' : '应用当前图'}
               </button>
               <button
                 type="button"

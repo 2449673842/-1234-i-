@@ -4093,6 +4093,54 @@ ${inner}
       || isVerifiedRRootPanelAspectCapability(manifest, object, prop, capability);
   }
 
+  const PYTHON_SUBPLOT_LAYOUT_PROPS = new Set(['left', 'bottom', 'width', 'height', 'aspect']);
+
+  function isCompatibleLegacyPythonSubplotLayoutIdentity(
+    manifest: any,
+    patch: any,
+    object: any,
+    prop: string,
+  ): boolean {
+    if (
+      manifest?.generatedBy === 'r_svg'
+      || object?.kind !== 'subplot'
+      || !PYTHON_SUBPLOT_LAYOUT_PROPS.has(prop)
+      || patch?.gid !== object?.id
+    ) return false;
+
+    const gidMatch = /^subplot\.(\d+)$/.exec(String(object?.id || ''));
+    const legacyMatch = /^ax(\d+)\.subplot\.label\.子图 \d+ \(第 \d+ 行，第 \d+ 列\)$/.exec(
+      String(patch?.stableKey || ''),
+    );
+    if (!gidMatch || !legacyMatch || gidMatch[1] !== legacyMatch[1]) return false;
+    if (object?.stableKey !== `ax${gidMatch[1]}.subplot.idx.${gidMatch[1]}`) return false;
+
+    const patchIdentity = patch?.identity;
+    const objectIdentity = object?.identity;
+    const requiredIdentityFields = ['semanticKey', 'instanceKey', 'scope', 'coordinateSpace'];
+    if (
+      !patchIdentity
+      || typeof patchIdentity !== 'object'
+      || Array.isArray(patchIdentity)
+      || !objectIdentity
+      || typeof objectIdentity !== 'object'
+      || requiredIdentityFields.some(field => !Object.prototype.hasOwnProperty.call(patchIdentity, field))
+      || stableStringifyForExport(patchIdentity) !== stableStringifyForExport(objectIdentity)
+    ) return false;
+
+    if (patch?.fingerprintVersion === 2) {
+      if (typeof patch?.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(patch.fingerprint)) return false;
+      const artistClass = String(object?.source?.artistClass || '');
+      if (!artistClass) return false;
+      const legacyFingerprint = crypto
+        .createHash('sha256')
+        .update(`${patch.stableKey}|${artistClass}`)
+        .digest('hex');
+      return patch.fingerprint === legacyFingerprint;
+    }
+    return !Object.prototype.hasOwnProperty.call(patch, 'fingerprintVersion');
+  }
+
   function precheckManifestPatches(
     manifestValue: unknown,
     patches: any[],
@@ -4187,6 +4235,12 @@ ${inner}
       const modernRObject = manifest.generatedBy === 'r_svg' && object.fingerprintVersion === 2;
       const legacyRadarFill = manifest.generatedBy === 'r_svg'
         && isCompatibleLegacyRRadarFillIdentityEvidence(object, rPatchIdentityEvidence(patch));
+      const legacyPythonSubplotLayout = isCompatibleLegacyPythonSubplotLayoutIdentity(
+        manifest,
+        patch,
+        object,
+        prop,
+      );
       const replay = typeof capability?.replay === 'string' ? capability.replay : undefined;
       const scopes = Array.isArray(capability?.scopes) ? capability.scopes.map(String) : [];
       const supported = capability
@@ -4200,7 +4254,12 @@ ${inner}
         continue;
       }
 
-      if (patch.stableKey !== undefined && patch.stableKey !== object.stableKey && !legacyRadarFill) {
+      if (
+        patch.stableKey !== undefined
+        && patch.stableKey !== object.stableKey
+        && !legacyRadarFill
+        && !legacyPythonSubplotLayout
+      ) {
         reject('identity_mismatch', `${gid} stableKey does not match the manifest object.`, {
           field: 'stableKey',
           expected: object.stableKey ?? null,
@@ -4218,6 +4277,7 @@ ${inner}
         && !legacyRadarFill
         && !isCompatibleContourChildSnapshotFingerprint(patch, object, prop)
         && !isCompatibleLegacyLegendCollectionFingerprint(patch, object)
+        && !legacyPythonSubplotLayout
       ) {
         reject('identity_mismatch', `${gid} fingerprint does not match.`, { field: 'fingerprint' });
       }
@@ -5554,6 +5614,12 @@ ${inner}
       const modernRObject = manifest.generatedBy === 'r_svg' && object.fingerprintVersion === 2;
       const legacyRadarFill = manifest.generatedBy === 'r_svg'
         && isCompatibleLegacyRRadarFillIdentityEvidence(object, rPatchIdentityEvidence(entry));
+      const legacyPythonSubplotLayout = isCompatibleLegacyPythonSubplotLayoutIdentity(
+        manifest,
+        entry,
+        object,
+        prop,
+      );
       const legacyContourChildReplay = isLegacyContourChildSnapshotEdit(object, prop)
         && (
           snapshotSchemaVersion <= PRE_CAPABILITY_AUTHORITY_EXPORT_EDITING_SNAPSHOT_SCHEMA_VERSION
@@ -5587,6 +5653,7 @@ ${inner}
         && object.stableKey !== undefined
         && entry.stableKey !== object.stableKey
         && !legacyRadarFill
+        && !legacyPythonSubplotLayout
       ) {
         issues.push({
           type: 'identity_mismatch',
@@ -5609,6 +5676,7 @@ ${inner}
         && !legacyRadarFill
         && !isCompatibleContourChildSnapshotFingerprint(entry, object, prop)
         && !isCompatibleLegacyLegendCollectionFingerprint(entry, object)
+        && !legacyPythonSubplotLayout
       ) {
         issues.push({
           type: 'identity_mismatch',
