@@ -1,9 +1,9 @@
 # SciFigure Studio 当前主文档
 
 > 状态：当前有效  
-> 更新时间：2026-07-30 23:12:16 +08:00
-> 证据截止时间：2026-07-30 23:12:16 +08:00
-> 复核范围：生产 release `336f64e-jd30` 与集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10、R-WP0-WP10、统一编辑中心和旧项目兼容能力；当前批次已完成不可变部署
+> 更新时间：2026-08-01 01:00:40 +08:00
+> 证据截止时间：2026-08-01 01:00:40 +08:00
+> 复核范围：生产 release `ffea793-jd31` 与集成分支 `deploy/prod-integration-v3`；含 Python WP3-WP10、R-WP0-WP10、统一编辑中心和旧项目兼容能力；当前批次已完成不可变部署
 > 适用范围：产品定位、当前状态、优先级、验收口径与文档入口  
 > 事实基准：当前工作区代码、最近可重复测试和专项状态文档
 
@@ -19,11 +19,11 @@
 
 Free/Pro 待确认梯度见 `05_FREE_PRO_ENTITLEMENT_REVIEW_2026-07-15.md`。当前代码保持 `observe`，两档既有产品能力相同，未获得产品确认前不得启用额度拦截。
 
-当前公网调试服务器基线为不可变 release `336f64e-jd30`。本地 `3000` 未被本轮部署和隔离测试访问；重复发布默认使用受权限保护的国内优先镜像配置。
+当前新服务器 `117.72.117.195` 基线为不可变 release `ffea793-jd31`。本地 `3000` 未被本轮部署和隔离测试访问；旧服务器 `117.72.208.91` 未停机。重复发布默认使用受权限保护的国内优先镜像配置。
 
 2026-07-16 网页统一版更新已部署：`7e33044-jd21` 上线编辑中心自动跟随、导出资产编辑快照与一键恢复、项目级导出独占锁，以及图例、散点、布局、框选、暂存和配色修复；`e35f4a4-jd22` 进一步修复后端 bundle/source map 暴露，建立 `dist/public`、应用拒绝和 Nginx 精确拒绝三层静态边界。
 
-2026-07-30 生产升级已部署为 `336f64e-jd30`：Python/R 编辑收敛、复杂图元身份、统一五中心、旧 manifest/editLog 兼容、导出快照恢复和 renderer 运行时合同进入同一不可变 release。部署前创建 SQLite 在线快照并通过完整性检查；部署后公网与 Node 直连 readiness 均为 ready，单一服务重启次数为 0，数据审计保持 6 用户、52 项目、251 项目文件、74 导出资产和 0 issue。整版回退目标记录为 `e35f4a4-jd22`。
+2026-08-01 生产升级已部署为 `ffea793-jd31`：Python/R 编辑收敛、复杂图元身份、统一五中心、旧 manifest/editLog 兼容、导出快照恢复和 renderer 运行时合同进入同一不可变 release。部署前创建 SQLite 在线快照并通过完整性检查；部署后公网与 Node 直连 readiness 均为 ready，`scifigure`/`nginx` active、服务重启次数为 0，数据审计保持 6 用户、52 项目、251 项目文件、75 导出资产和 0 issue。新服务器即时回退 release 为 `f4be690-jd31`，旧服务器保持运行。
 
 `docs/` 下其他文件继续保留，用于专项实现、历史决策、错误记录和恢复参考，但不再与这三份文档争夺“当前总口径”。
 
@@ -91,9 +91,9 @@ P2：渲染速度、队列、缓存和大文件性能
 P3：管理员后台剩余页面/受控操作、更多编辑能力和 AI 接入
 ```
 
-已购买 2 核 4 GB Ubuntu 24.04 调试服务器，统一编辑候选版已完成单机部署和公网 HTTP 健康检查。域名、可信 TLS、备份目标、恢复演练和完整云端渲染/隔离回归仍属于上线前阻断项。
+新服务器为 8 核 32 GB Ubuntu 主机，统一编辑 release 已完成单机部署、公网 HTTP 健康检查、Python/R renderer 实际 smoke 和数据审计。当前仍通过 HTTP/IP 访问，尚未配置真实域名 TLS；加密备份目标与恢复演练仍是后续运维事项。
 
-生产当前运行不可变 release `336f64e-jd30`。该 release 来自已提交、审查、定向验收、生产构建、数据审计和备份后的集成分支，不代表后续工作树未提交内容自动上线。后续升级仍必须重新形成独立制品，并保持认证、安全、资源限制和回退基线。
+生产当前运行不可变 release `ffea793-jd31`。该 release 来自已提交、审查、定向验收、生产构建、数据审计和备份后的集成分支，不代表后续工作树未提交内容自动上线。后续升级仍必须重新形成独立制品，并保持认证、安全、资源限制和回退基线。
 
 ### 3.3 工作区视觉基线
 
@@ -150,9 +150,9 @@ WP7 已完成当前固定运行时范围的特殊 axes 收敛。polar、3D、ins
 
 2026-07-20 16:10 阶段补充：纯 local patch 后存储 manifest 暂时缺失时，下一次 backend 修改进入 renderer 权威验证，renderer 拒绝仍保持零持久化。线上 `spines['left']` 崩溃已确认来自旧镜像；当前仓库通用读取实际存在的 spine，并由 polar 回归覆盖。该时点完整 Vitest 为 148 文件、1127/1127，WP3-WP8 阶段独立复审为 APPROVE；这不是当前 WP9/WP10 最终复审结论。
 
-生产部署只运行一套内容固定的 renderer 镜像，并锁定 Python、R、绘图库、字体和系统依赖。WP7 的固定测试启动器明确校验 Python `3.8.19` 与 Matplotlib `3.7.2`；本轮没有迁移到 Python 3.11，也没有把历史临时 Matplotlib 3.8.4 容器改成目标版本。当前仓库 `Dockerfile.renderer` 与依赖声明仍需在部署工作包中另行核对，本轮未修改运行服务或线上版本。
+生产部署只运行一套内容固定的 renderer 镜像，并锁定 Python、R、绘图库、字体和系统依赖。当前生产镜像合同为 Python `3.12.13`、Matplotlib `3.11.1`、NumPy `2.5.1`、R `4.5.0` 和 ggplot2 `3.5.1`；WP7 的 Python `3.8.19`/Matplotlib `3.7.2` 仅是历史固定测试启动器，不代表生产版本，也不代表用户本地 3.11 环境。
 
-WP10 已达到当前计划范围的本地候选条件：普通编辑、字体、组件、配色和跨 Figure 统一从一个 feature-flag 合同读取；V2 默认开启，旧 compiler 和弱 score mapper 作为显式适配器保留。`VITE_*` 是构建时开关，逐域回退必须基于同一提交重建前端并部署新的不可变 release；重大错误优先原子切回上一整版，不能把修改服务器环境变量描述为即时生效。独立审查发现的 same-GID、非同 GID 和 App 跨 Figure Draft 编译旁路均已收敛到统一受控 resolver；稳定凭据冲突 fail-closed，多 Figure 诊断按 Figure 隔离，Shadow 证据按 release candidate 隔离。当前定向证据为 WP10 167/167、跨 Figure 18/18、WP9 11/11、组件 41/41、扩展拖拽 10/10、缓存、历史、导出事务、R 安全、用户隔离、renderer 沙箱、生产构建和数据审计均通过；最终独立 gpt-5.5 high 复审 APPROVE，0 HIGH/MEDIUM。当前候选未提交、推送或部署。
+WP10 已进入生产 release：普通编辑、字体、组件、配色和跨 Figure 统一从一个 feature-flag 合同读取；V2 默认开启，旧 compiler 和弱 score mapper 作为显式适配器保留。`VITE_*` 是构建时开关，逐域回退必须基于同一提交重建前端并部署新的不可变 release；重大错误优先原子切回上一整版，不能把修改服务器环境变量描述为即时生效。独立审查发现的 same-GID、非同 GID 和 App 跨 Figure Draft 编译旁路均已收敛到统一受控 resolver；稳定凭据冲突 fail-closed，多 Figure 诊断按 Figure 隔离，Shadow 证据按 release candidate 隔离。WP10 167/167、跨 Figure 18/18、WP9 11/11、组件 41/41、扩展拖拽 10/10、缓存、历史、导出事务、R 安全、用户隔离、renderer 沙箱、生产构建和数据审计均通过；最终独立 gpt-5.5 high 复审 APPROVE，0 HIGH/MEDIUM。上述证据已随 `ffea793-jd31` 部署。
 
 2026-07-21 兼容收尾：项目完整重渲染现在统一从 Figure、session 和受控单 Figure 旧 spec fallback 解析 durable editLog。已持久化的空文本/隐藏对象和旧轴字体属性可按当前 renderer 能力继续重放，但客户端不能以相同 `gid/prop/value` 弱化或伪造已知 `stableKey/fingerprint/identity`；任何差异均冲突且保持项目、session、history、preview 零写入。Matplotlib 文本统一走 backend renderer，文本键入即时进入当前 Figure Draft，改回已提交值会删除 no-op Draft；旧请求返回时不会清除期间产生的新文本。定向证据包括 `special-axes-api`、Python 完整语义工作流 B0E/B0F/B0G、RightSidebar/property mode 242/242、R semantic 5/5、patch rejection、lint、build 和 diff-check。当前改动仍未推送或部署。
 
@@ -235,8 +235,8 @@ SVG 到 PNG/PDF/TIFF 的受限转换
 |---|---|---|
 | 公开宣传页与注册门禁 | 已实现，邮箱生产通道待配置 | 匿名访问先进入宣传页；启用邮箱验证后，新账号必须完成六位验证码验证才会获得会话；现有账号兼容迁移；安全文案隐藏内部防护细节 |
 | 图形能力展厅 | 本地候选 | 作为帮助中心同级站内页面展示 11 个带能力边界的固定模拟数据样例，其中包含 LnRR 排序图和主项目结构 2 x 2 组合图；没有未经真实验收的样例被标为稳定支持 |
-| Python 渲染与图元编辑 | 生产稳定，升级候选集成中 | 生产主链路保持不变；候选 WP6 六个复杂对象家族已有专用语义，其中网络图/路径图/SEM 依赖显式关系声明，不承诺按外观自动识别任意第三方图示；完成全部门禁和部署前不视为线上能力 |
-| R 渲染与语义编辑 | R-WP0-WP10 本地候选已合入，当前批次待复验 | ggplot2 主链路、服务端 patch 权威、失败零持久化、identity v2、运行时 parity、复杂对象、scale/guide/facet、文本/复杂坐标、显式 diagram、扩展 Shadow 边界和完整用户链路已收敛。默认 V2 resolver、旧 R identity/editLog、候选镜像沙箱、安全、用户隔离、性能、缓存、构建和数据审计通过；当前批次总门禁完成前不标记为生产能力，生产人工视觉回归与旧路径退役未开始 |
+| Python 渲染与图元编辑 | 已进入生产 release | 当前登记和验证范围内的普通图元、复杂对象身份、五个编辑中心、旧项目兼容、历史/导出/快照和 renderer 事务已随 `ffea793-jd31` 部署；网络图/路径图/SEM 仍依赖显式关系声明，不承诺按外观自动识别任意第三方图示 |
+| R 渲染与语义编辑 | 已进入生产 release | ggplot2 主链路、服务端 patch 权威、失败零持久化、identity v2、运行时 parity、复杂对象、scale/guide/facet、文本/复杂坐标、显式 diagram、扩展 Shadow 边界和完整用户链路已随 `ffea793-jd31` 部署；旧 R identity/editLog 与 legacy adapter 保留，未验证扩展包和任意 grob 仍按 readonly/unsupported 处理 |
 | 多文件与多 Figure | 已实现 | Figure 数量按代码结果动态处理，不应写死三张 |
 | 编辑器脚本拖放 | 本地候选 | `.py/.R` 可拖入新建项目脚本卡片、数据区、代码编辑区或完整编辑工作区；页面级接收继续可用，但视觉反馈限定在各分区内；成功后显示导入文件名，不支持的文件不会覆盖当前脚本 |
 | 单图多子图识别 | 已实现 | 可按位置识别 subplot、轴框、文本、图例和色条 |
@@ -390,7 +390,7 @@ docs/platform-capability/UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md
 
 `UNIFIED_EDITING_CENTERS_UPGRADE_PLAN.md` 专门处理属性编辑、布局中心、组件中心、配色中心和字体中心的交叉属性与精细度不一致。网页统一版已完成 PropertyDescriptor、capability projection、严格 resolver 和共同 Draft 语义的主要迁移；2026-07-16 候选继续补齐数值自动暂存、字体格式刷、选中子图自动跟随、图例间距、散点比例缩放和保持尺寸的垂直行间距。旧项目兼容路径和 legacy 控件尚未删除。
 
-`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。Python WP3-WP10 与 R-WP0-WP10 的当前收敛结果已进入生产 release `336f64e-jd30`；下一步应以真实用户反馈和能力展厅基准继续做风险驱动验收，不扩大未验证对象能力。
+`PYTHON_EDITING_COMPLETION_EXECUTION_PLAN.md` 与 `R_EDITING_COMPLETION_EXECUTION_PLAN.md` 分别收敛两套 renderer 的对象身份、patch 事务、复杂图元和用户链路。两份计划共用前端协议和不可回退基线，但不把 Matplotlib artist tree 与 ggplot/grob 强行合并。Python WP3-WP10 与 R-WP0-WP10 的当前收敛结果已进入生产 release `ffea793-jd31`；下一步应以真实用户反馈和能力展厅基准继续做风险驱动验收，不扩大未验证对象能力。
 
 当前专项方案已补充“能力增强列车”：每项能力必须依次证明 renderer 事实、对象身份、属性能力、目标解析、PatchPlan、Figure 事务、项目级持久化以及 Python/R/真实项目回归。禁止从协议设计直接跳到默认启用。
 

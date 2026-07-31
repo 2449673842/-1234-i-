@@ -1,10 +1,10 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-07-30 23:12:16 +08:00
-> 证据截止时间：2026-07-30 23:12:16 +08:00
-> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 与 R-WP0-WP10 当前收敛提交已合入 release `336f64e-jd30`
-> 部署状态：生产不可变 release `336f64e-jd30` 已部署；后续未提交工作树内容不属于服务器版本
+> 最后修改时间：2026-08-01 01:00:40 +08:00
+> 证据截止时间：2026-08-01 01:00:40 +08:00
+> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 与 R-WP0-WP10 当前收敛提交已合入 release `ffea793-jd31`
+> 部署状态：新服务器 `117.72.117.195` 已运行生产不可变 release `ffea793-jd31`；后续未提交工作树内容不属于服务器版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
 ## 1. 文档目的
@@ -25,11 +25,13 @@
 
 ## 2. 当前证据快照
 
-2026-07-28 当前候选已经获得的最新证据：
+2026-08-01 当前生产 release 已获得的最新证据：
+
+表内“本地候选”表示该能力的证据仍主要来自隔离本地/容器门禁，不能扩大解释为任意真实项目已稳定支持；它不表示对应代码没有随 `ffea793-jd31` 部署。线上发布事实以“当前生产发布”和本节生产收尾证据为准。
 
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
-| 当前生产发布 | `336f64e-jd30` | systemd active、重启 0、公网/Node readiness ready、renderer image 与 build ID 一致；部署前 SQLite 快照完整，部署后数据计数不变、0 issue，整版回退目标 `e35f4a4-jd22` |
+| 当前生产发布 | `ffea793-jd31` | 新服务器 `117.72.117.195` 的 `scifigure`/`nginx` active、重启 0、公网/Node readiness ready、renderer image 与 build ID 一致；部署前 SQLite 快照完整，部署后数据审计为 6 用户、52 项目、251 项目文件、75 导出资产、0 issue；即时回退 release `f4be690-jd31` |
 | TypeScript | 通过 | `npm run lint` |
 | 完整单元、Python 身份与生产构建 | 通过 | Vitest 214 文件 / 1740 项；Python introspection + 结构漂移 77/77；`npm run build` 与 `git diff --check` 通过 |
 | 前端单元测试 | 通过 | 包含 schema v1-v5、特殊 axes relation、图示 resolver、能力、映射、组件分组、identity 捕获、诊断归一化和 fail-closed 回归；本轮 Draft/matchColor/快照直接相关 19 文件、189/189 |
@@ -46,7 +48,7 @@
 | 文本自动 Draft 与立即应用 | 通过 | B0E/B0F/B0G 覆盖输入即暂存、backend renderer 写回、改回原值删除 no-op Draft、旧请求完成时保留更新文本、批量应用、刷新、导出和快照恢复 |
 | 旧项目完整重渲染兼容 | 通过 | durable Figure editLog 在 session 缺失时仍可重放；空文本、旧轴字体和旧 `line.visible=false` 受控兼容；无版本旧图例 marker 缺少后来新增的 relation 字段时只按 stableKey/seriesKey 兼容，v2 relation 篡改仍拒绝；隐藏线已覆盖打开、继续编辑、导出、后续编辑、v4/v5 快照恢复和刷新；伪造、弱化或关系漂移身份均冲突且 persistence state 完全不变 |
 | 保存/拖拽/缓存/跨 Figure | 通过 | project save preflight、drag extended、render cache、cross Figure 18/18；均使用隔离随机端口和临时数据目录 |
-| 无 left spine introspection | 50/50 | polar axes 回归通过；线上旧镜像仍需部署当前 renderer 才能消除 `KeyError: 'left'` |
+| 无 left spine introspection | 50/50 | polar axes 回归通过；当前生产 release 已部署通用 spine 读取，线上 Python/R smoke 未再出现 `KeyError: 'left'` 或 renderer 退出 1 |
 | 越界 artist 白底与导出边界 | 通过 | renderer 扩展 SVG canvas 并记录 `renderViewport`；旧 manifest 回退兼容；隐藏 axes/Figure 坐标拖动、PNG/PDF/TIFF 和真实浏览器越界文字均通过 |
 | 独立发布审查 | APPROVE，0 HIGH/MEDIUM | 修复后复审继续发现并关闭非同 GID remap、跨 release Shadow 污染、App 跨 Figure Draft 编译旁路，以及无版本图例 marker 缺新 relation 字段时的误拒绝；最终只读复审无剩余高中风险 |
 | Python renderer/身份/复杂覆盖 | complex artist 26/26、结构身份漂移 7/7 | 本地既有 renderer 基线；本工作包未修改 Python 或 Matplotlib 版本，也未新增兼容版本声明 |
@@ -90,15 +92,22 @@
 | 扩展拖拽 | 10/10 通过 | 真实 Ctrl 三选、累计确认、取消、只读命中、annotation 和 R native 保护 |
 | Python cache | 通过 | 首次 miss、同语义重复 hit、值变化 miss；只信任本进程已确认 key |
 | 生产构建 | 通过 | 保留既有 bundle 体积和 CJS `import.meta` 警告 |
-| 数据完整性 | 0 个错误 | 25 用户、128 项目、286 项目文件、112 导出资产；23 条历史测试账号警告未删除；本轮隔离测试未写真实 data |
+| 隔离测试数据完整性 | 0 个错误 | 25 用户、128 项目、286 项目文件、112 导出资产；23 条历史测试账号警告未删除；本轮隔离测试未写真实 data |
 | 展厅/MCP/脚本拖放候选 | 定向门禁通过 | 展厅单元 5/5、展厅隔离浏览器、MCP origin/产物安全 4/4、MCP 真实 UI、新建项目脚本区/数据区和全工作区 `.py/.R` 拖放、TypeScript 均通过；预览只使用固定模拟数据 |
 | 编辑器顶部工具栏可达性 | 组件浏览器 41/41 | 横向内容超过宽度时不得使用产生左侧负溢出的 `justify-end`；固定标签不得覆盖“拖拽微调”等主操作，窄宽度必须向右滚动且保持真实鼠标可点击 |
 
-本轮共享编辑、R、跨 Figure、历史、导出、组合、安全和隔离 smoke 均使用随机 `127.0.0.1` 端口和临时数据库；另对隔离 `3100` 执行 Python 真实 Chromium 用户链路。renderer sandbox 使用独立 `scifigure-renderer:rwp10-candidate` 镜像，只创建并清理本轮临时容器；未停止已有容器、未覆盖 `latest`、未修改 WSL，也未访问 `3000` 或线上服务。
+本轮共享编辑、R、跨 Figure、历史、导出、组合、安全和隔离 smoke 均使用随机 `127.0.0.1` 端口和临时数据库；另对隔离 `3100` 执行 Python 真实 Chromium 用户链路。renderer sandbox 使用独立 `scifigure-renderer:rwp10-candidate` 镜像，只创建并清理本轮临时容器；未停止已有容器、未覆盖 `latest`、未修改 WSL，也未访问 `3000`。生产发布另行完成了新服务器的线上 HTTP、Node readiness、Python/R renderer、认证 refresh、导出资产认证和真实 Chromium 历史导出页面 smoke。
 
-当前结论仅为本地候选验证通过，不等同于生产发布验证。Cartopy 和 brokenaxes 因固定运行时未安装仍为 skipped/不承诺支持；生产不可变构建、线上小账号和生产容器视觉验收尚未执行，部署前必须另行完成。
+当前 release 已完成生产发布验证，但结论仍只覆盖登记矩阵和实际 smoke，不扩大为任意第三方 Matplotlib artist、全部真实科研脚本或性能 SLO 的支持承诺。Cartopy 和 brokenaxes 因固定运行时未安装仍为 skipped/不承诺支持；生产通过 HTTP/IP 访问，真实域名 TLS 尚未配置。
 
-先前独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包、旧项目 GET/PUT 恢复源不一致，以及 standalone/project full render 在 renderer 拒绝 editLog 后仍可能写入的问题均已修复。当前保存与全渲染入口同时执行可信 manifest 预检、renderer warning 检查和必要的 revision/hash CAS；项目脚本与 Figure/session 在同一事务提交。新增 full render mixed batch、旧 contour、项目 history、R 共享路由、组件容器、扩展拖拽、缓存、导出文件事务、用户隔离和 renderer 沙箱回归均通过。WP5、WP9 和 WP10 已达到当前计划范围的本地候选条件，最终独立复审为 APPROVE、0 HIGH/MEDIUM；但这不构成任意第三方 Matplotlib artist、全部真实科研脚本或性能 SLO 的支持承诺。旧 compiler、palette legacy resolution 和 cross-Figure score mapper 在一个稳定发布周期内继续作为显式适配器保留；必须先形成固定候选提交，才能作为不可变部署输入。
+先前独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包、旧项目 GET/PUT 恢复源不一致，以及 standalone/project full render 在 renderer 拒绝 editLog 后仍可能写入的问题均已修复。当前保存与全渲染入口同时执行可信 manifest 预检、renderer warning 检查和必要的 revision/hash CAS；项目脚本与 Figure/session 在同一事务提交。新增 full render mixed batch、旧 contour、项目 history、R 共享路由、组件容器、扩展拖拽、缓存、导出文件事务、用户隔离和 renderer 沙箱回归均通过。WP5、WP9 和 WP10 已进入 `ffea793-jd31`，最终独立复审为 APPROVE、0 HIGH/MEDIUM。旧 compiler、palette legacy resolution 和 cross-Figure score mapper 在一个稳定发布周期内继续作为显式适配器保留；后续提交必须重新形成固定候选并独立部署。
+
+### 2.1 生产发布收尾证据（2026-08-01）
+
+- 新服务器 `117.72.117.195` 当前 release 为 `/opt/scifigure/releases/ffea793-jd31`，上一可回退 release 为 `/opt/scifigure/releases/f4be690-jd31`；`scifigure` 与 `nginx` 均 active，服务 `NRestarts=0`，readiness 为 `ready/acceptingNewJobs=true`。
+- 线上 HTTP cookie/refresh、未登录导出资产 `401`、Python renderer（33 个 manifest 对象）和 R renderer（30 个 manifest 对象、0 runtime warning）均通过；真实 Chromium 登录后历史导出资产页面可打开，未产生新的 `500`。
+- 部署后数据审计为 6 用户、52 项目、251 项目文件、75 导出资产、`issueCount=0`。保留新服务器迁移前回退数据和旧服务器迁移备份；旧服务器未停机。
+- 本轮未访问或修改本地 `3000`，未停止既有 Docker/WSL/sub2api 服务。真实域名 TLS 尚未配置，属于剩余运维风险而非本次代码发布阻断。
 
 2026-07-21 的兼容性审查进一步确认：任何“已知旧 editLog”例外都必须同时满足数据库中已持久化的值和身份，不能让客户端用相同值替换更弱或伪造的身份。空文本/隐藏对象和旧轴字体兼容均执行完整 `stableKey/fingerprintVersion/fingerprint/identity` 同一性核验；拒绝请求由数据库快照断言证明不会写 project、session、Figure、history 或 preview。文本输入以原始 manifest 作为已提交事实，以项目 Draft 作为待应用事实，不能用 Draft proxy 判断“已经应用”。
 
