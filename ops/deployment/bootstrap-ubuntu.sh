@@ -33,7 +33,7 @@ for ubuntu_sources in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sourc
 done
 apt-get update
 apt-get install -y --no-install-recommends \
-  ca-certificates curl gnupg nginx certbot python3-certbot-nginx \
+  build-essential ca-certificates curl gnupg nginx certbot python3-certbot-nginx \
   git sqlite3 rsync restic jq acl uidmap dbus-user-session \
   slirp4netns fuse-overlayfs tar xz-utils ufw
 
@@ -74,6 +74,7 @@ if ! id scifigure >/dev/null 2>&1; then
 fi
 
 install -d -o scifigure -g scifigure -m 0700 /var/lib/scifigure
+install -d -o scifigure -g scifigure -m 0700 /var/lib/scifigure/.config
 install -d -o scifigure -g scifigure -m 0700 /var/lib/scifigure/observability
 install -d -o scifigure -g scifigure -m 0750 /srv/scifigure/data
 install -d -o root -g scifigure -m 0750 /opt/scifigure/releases /opt/scifigure/slots
@@ -165,6 +166,7 @@ fi
 systemctl daemon-reload
 nginx -t
 systemctl enable --now nginx
+systemctl reload nginx
 
 echo "SciFigure host bootstrap completed"
 echo "service user uid: ${scifigure_uid}"

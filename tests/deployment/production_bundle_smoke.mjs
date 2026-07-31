@@ -32,8 +32,10 @@ const child = spawn(process.execPath, [bundle], {
     NODE_ENV: 'production',
     PORT: String(port),
     SCIFIGURE_BIND_HOST: '127.0.0.1',
+    SCIFIGURE_TRUST_PROXY: 'loopback',
     SCIFIGURE_DATA_DIR: dataRoot,
     SCIFIGURE_DB_PATH: path.join(dataRoot, 'scifigure.db'),
+    SCIFIGURE_EMAIL_VERIFICATION_REQUIRED: '0',
     SCIFIGURE_RENDER_MODE: 'docker',
     SCIFIGURE_GRACEFUL_SHUTDOWN_MS: '5000',
   },
@@ -60,6 +62,33 @@ try {
   const health = await waitForHealth();
   assert.equal(health.status, 'live');
   assert.match(output.join(''), new RegExp(`Server running on http://127\\.0\\.0\\.1:${port}`));
+
+  const register = async (label, forwardedProto) => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/auth/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(forwardedProto ? { 'X-Forwarded-Proto': forwardedProto } : {}),
+      },
+      body: JSON.stringify({
+        email: `${label}-${Date.now()}@example.test`,
+        password: 'Production-Cookie-Smoke-2026',
+      }),
+    });
+    const data = await response.json().catch(() => null);
+    assert.equal(response.status, 200, `Registration failed: ${JSON.stringify(data)}`);
+    const cookie = response.headers.get('set-cookie') || '';
+    assert.match(cookie, /^scifigure_refresh=/, 'Registration did not issue a refresh cookie');
+    return cookie;
+  };
+
+  const httpCookie = await register('http-cookie');
+  assert.doesNotMatch(httpCookie, /;\s*Secure/i, 'HTTP deployment issued a browser-rejected Secure cookie');
+  const httpsCookie = await register('https-cookie', 'https');
+  assert.match(httpsCookie, /;\s*Secure/i, 'Trusted HTTPS proxy must issue a Secure refresh cookie');
+
+  const unauthenticatedAssets = await fetch(`http://127.0.0.1:${port}/api/export-assets`);
+  assert.equal(unauthenticatedAssets.status, 401, 'Protected export assets route must preserve auth status');
 
   const sensitivePaths = [
     '/server.cjs',
@@ -92,6 +121,8 @@ try {
     checks: [
       'production CJS bundle starts without eager Vite dependency',
       'loopback bind setting is honored',
+      'refresh cookie security follows the trusted request protocol',
+      'protected export assets preserve authentication status',
       'public liveness endpoint responds',
       'backend artifacts and sensitive file-shaped paths return 404',
       'frontend application shell remains available',

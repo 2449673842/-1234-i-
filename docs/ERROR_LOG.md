@@ -4823,3 +4823,25 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `npm run test:replay-warning-persistence` 通过；真实 `missing_gid` 仍阻断代码补丁和导出，且 session、Figure、history、asset 和 snapshot 零持久化。
 - 隔离项目 `R QA 04 Core Geoms` 的真实导出请求由修复前 `409` 变为 `200`，生成带编辑快照的 SVG 资产；恢复请求和随后的 renderer 重建均返回 `200`。
 - 导出 SVG 保留 `#006D5B/#6FCF97/#D55E00/#E69F00`、Times New Roman 和标题 bold；同组散点半径保持 `4.80–9.41` 的相对比例，未被归一为同一大小。
+
+---
+
+## 2026-07-31 23:40:00 +08:00 HTTP 生产部署的登录会话在访问令牌过期后无法续期
+
+**状态与级别**
+
+- 状态：新服务器真实浏览器验收时发现并修复；测试项目和导出资产已清理，迁移数据审计恢复为 6 用户、52 项目、251 文件、75 导出资产、0 issue。
+- 级别：P1 会话中断。HTTP 部署登录约 15 分钟后，历史导出资产请求失败，用户必须重新登录才能继续操作。
+
+**根因**
+
+- refresh cookie 过去仅依据 `NODE_ENV=production` 无条件附加 `Secure`。浏览器会拒绝从 HTTP 响应写入该 cookie，因此短期 access token 过期后没有可轮换的 refresh token。
+- `/api/export-assets` 捕获认证异常后固定返回 `500`，掩盖了真实 `401`，也阻止前端认证 fetch 包装器启动续期流程。
+- 新主机引导缺少 native Node 模块所需的 `build-essential`；已有 `.config` 目录所有权和已运行 Nginx 的配置重载也没有被脚本显式保证。
+
+**修复与防复发**
+
+- refresh cookie 的 `Secure` 属性改为依据 Express 在可信 loopback 代理后解析出的 `req.secure`：HTTP 可正常续期，HTTPS 仍强制 Secure；Nginx 模板继续传递 `X-Forwarded-Proto`。
+- 全局和项目导出资产列表保留认证异常的 `statusCode`，未登录或过期请求返回 `401` 而不是 `500`。
+- Ubuntu 引导安装 `build-essential`，显式创建并修正 `/var/lib/scifigure/.config` 所有权，写入配置并通过 `nginx -t` 后执行 reload。
+- 生产 bundle 回归同时覆盖 HTTP cookie、可信代理 HTTPS cookie 和导出资产未认证状态；部署包回归锁定主机依赖、目录权限与 Nginx 重载。

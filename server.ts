@@ -1281,13 +1281,13 @@ async function startServer() {
     }).filter(([key]) => Boolean(key)));
   }
 
-  function setRefreshCookie(res: express.Response, refreshToken: string): void {
-    const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  function setRefreshCookie(req: express.Request, res: express.Response, refreshToken: string): void {
+    const secure = req.secure ? '; Secure' : '';
     res.setHeader('Set-Cookie', `${REFRESH_COOKIE}=${encodeURIComponent(refreshToken)}; Path=/api/auth; HttpOnly; SameSite=Strict; Max-Age=${refreshTokenDays() * 24 * 60 * 60}${secure}`);
   }
 
-  function clearRefreshCookie(res: express.Response): void {
-    const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  function clearRefreshCookie(req: express.Request, res: express.Response): void {
+    const secure = req.secure ? '; Secure' : '';
     res.setHeader('Set-Cookie', `${REFRESH_COOKIE}=; Path=/api/auth; HttpOnly; SameSite=Strict; Max-Age=0${secure}`);
   }
 
@@ -1317,7 +1317,7 @@ async function startServer() {
       ? upsertDevice(user.id, fingerprint, String(req.headers['x-device-name'] || '').slice(0, 80) || null)
       : null;
     createAuthSession(user.id, token, refreshToken, deviceId, accessTokenMinutes(), refreshTokenDays());
-    setRefreshCookie(res, refreshToken);
+    setRefreshCookie(req, res, refreshToken);
     touchUserLogin(user.id);
     return {
       token,
@@ -2187,20 +2187,20 @@ ${inner}
     try {
       const refreshToken = parseCookies(req)[REFRESH_COOKIE];
       if (!refreshToken) {
-        clearRefreshCookie(res);
+        clearRefreshCookie(req, res);
         return res.status(401).json({ status: 'error', message: '刷新会话不存在' });
       }
       const token = issueToken();
       const nextRefreshToken = issueToken();
       const user = rotateRefreshSession(refreshToken, token, nextRefreshToken, accessTokenMinutes());
       if (!user) {
-        clearRefreshCookie(res);
+        clearRefreshCookie(req, res);
         return res.status(401).json({ status: 'error', message: '刷新会话已过期，请重新登录' });
       }
-      setRefreshCookie(res, nextRefreshToken);
+      setRefreshCookie(req, res, nextRefreshToken);
       res.json({ status: 'success', token, user: publicUserPayload(user), license: getLicenseState(user.id) });
     } catch (err: any) {
-      clearRefreshCookie(res);
+      clearRefreshCookie(req, res);
       res.status(500).json({ status: 'error', message: err.message });
     }
   });
@@ -2210,7 +2210,7 @@ ${inner}
       const token = readBearerToken(req);
       const refreshToken = parseCookies(req)[REFRESH_COOKIE];
       const revoked = (token ? revokeAuthToken(token) : 0) + (refreshToken ? revokeRefreshToken(refreshToken) : 0);
-      clearRefreshCookie(res);
+      clearRefreshCookie(req, res);
       res.json({ status: 'success', revoked });
     } catch (err: any) {
       res.status(500).json({ status: 'error', message: err.message });
@@ -8850,7 +8850,7 @@ ${inner}
       });
       res.json({ status: 'success', assets });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 
@@ -8873,7 +8873,7 @@ ${inner}
       }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
       res.json({ status: 'success', assets });
     } catch (err: any) {
-      res.status(500).json({ status: 'error', message: err.message });
+      res.status(Number(err?.statusCode || 500)).json({ status: 'error', message: err.message });
     }
   });
 

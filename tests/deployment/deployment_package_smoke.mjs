@@ -58,6 +58,7 @@ for (const nginxFile of [
   const expectedDenyCount = nginxFile.includes('-tls.') ? 2 : 1;
   assert.match(nginx, /server 127\.0\.0\.1:3101;/);
   assert.match(nginx, /proxy_set_header X-Forwarded-For \$remote_addr;/);
+  assert.match(nginx, /proxy_set_header X-Forwarded-Proto \$scheme;/);
   assert.match(nginx, /client_max_body_size 64m;/);
   assert.match(nginx, /client_body_timeout 30s;/);
   assert.match(nginx, /limit_req_zone \$binary_remote_addr zone=scifigure_per_ip:10m rate=15r\/s;/);
@@ -142,6 +143,9 @@ assert.match(bootstrap, /scifigure-build\.env\.example/);
 assert.match(bootstrap, /refusing to disable it/);
 assert.doesNotMatch(bootstrap, /ufw allow 310[12]/);
 assert.match(bootstrap, /dockerd-rootless-setuptool\.sh install/);
+assert.match(bootstrap, /build-essential/);
+assert.match(bootstrap, /install -d -o scifigure -g scifigure -m 0700 \/var\/lib\/scifigure\/\.config/);
+assert.match(bootstrap, /nginx -t\s+systemctl enable --now nginx\s+systemctl reload nginx/);
 
 const rollback = read('ops/deployment/rollback.sh');
 assert.match(rollback, /previous-release/);
@@ -169,6 +173,9 @@ assert.match(tlsScript, /renewal-hooks\/deploy\/20-scifigure-reload-nginx/);
 const server = read('server.ts');
 assert.match(server, /SCIFIGURE_BIND_HOST/);
 assert.match(server, /\['DOCKER_HOST', 'XDG_RUNTIME_DIR'\]/);
+assert.match(server, /app\.set\('trust proxy', process\.env\.SCIFIGURE_TRUST_PROXY === 'loopback' \? 'loopback' : false\);/);
+assert.match(server, /const secure = req\.secure \? '; Secure' : '';/);
+assert.doesNotMatch(server, /process\.env\.NODE_ENV === 'production' \? '; Secure' : ''/);
 
 const rendererDockerfile = read('Dockerfile.renderer');
 assert.match(rendererDockerfile, /ARG DEBIAN_MIRROR=https:\/\/mirrors\.aliyun\.com\/debian/);
