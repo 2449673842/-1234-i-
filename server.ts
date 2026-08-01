@@ -514,6 +514,7 @@ async function startServer() {
   const renderWorkQueue = new AbortableWorkQueue(() => renderConcurrencyLimit());
   const figureMutationGate = new KeyedMutationGate();
   const projectMutationGate = new KeyedMutationGate();
+  const projectRenderSingleFlights = new Map<string, Promise<{ statusCode: number; body: any }>>();
   app.disable('x-powered-by');
   app.set('trust proxy', process.env.SCIFIGURE_TRUST_PROXY === 'loopback' ? 'loopback' : false);
 
@@ -750,6 +751,106 @@ async function startServer() {
         lease.finish();
       }
     };
+  }
+
+  function projectRenderSingleFlight(
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) {
+    let key: string;
+    try {
+      const userId = authenticatedUserId(req);
+      const projectId = req.params.id;
+      assertSafeProjectId(projectId);
+      key = crypto.createHash('sha256').update(stableStringifyForExport({
+        userId,
+        projectId,
+        script: req.body?.script || '',
+        editLogs: req.body?.editLogs || {},
+        language: req.body?.language || req.body?.scriptLanguage || '',
+      })).digest('hex');
+    } catch (err: any) {
+      return res.status(Number(err?.statusCode || 401)).json({ status: 'error', message: err.message });
+    }
+
+    const existing = projectRenderSingleFlights.get(key);
+    if (existing) {
+      const waitStartedAt = performance.now();
+      existing.then(({ statusCode, body }) => {
+        if (res.writableEnded || res.destroyed) return;
+        const sharedBody = body && typeof body === 'object'
+          ? {
+              ...body,
+              ...(req.body?.requestId ? { requestId: req.body.requestId } : {}),
+              singleFlight: {
+                shared: true,
+                waitMs: roundedDuration(waitStartedAt),
+              },
+            }
+          : body;
+        res.status(statusCode).json(sharedBody);
+      }).catch((err: any) => {
+        if (res.writableEnded || res.destroyed) return;
+        res.status(503).json({
+          status: 'error',
+          code: 'PROJECT_RENDER_SINGLEFLIGHT_ABORTED',
+          message: err?.message || '共享渲染任务未能完成，请重试。',
+        });
+      });
+      return;
+    }
+
+    let resolveFlight!: (value: { statusCode: number; body: any }) => void;
+    let rejectFlight!: (reason?: unknown) => void;
+    const flight = new Promise<{ statusCode: number; body: any }>((resolve, reject) => {
+      resolveFlight = resolve;
+      rejectFlight = reject;
+    });
+    void flight.catch(() => undefined);
+    projectRenderSingleFlights.set(key, flight);
+
+    let resultReady = false;
+    const clearFlight = () => {
+      if (projectRenderSingleFlights.get(key) === flight) {
+        projectRenderSingleFlights.delete(key);
+      }
+    };
+    const removeResponseListeners = () => {
+      res.removeListener('finish', onFinish);
+      res.removeListener('close', onClose);
+    };
+    const rejectUnresolvedFlight = (message: string) => {
+      if (resultReady) return;
+      resultReady = true;
+      rejectFlight(new Error(message));
+    };
+    const onFinish = () => {
+      rejectUnresolvedFlight('原始渲染请求未返回可共享的 JSON 结果。');
+      clearFlight();
+      removeResponseListeners();
+    };
+    const onClose = () => {
+      if (!res.writableFinished) {
+        rejectUnresolvedFlight('原始渲染请求已中断，共享任务未产生结果。');
+      }
+      clearFlight();
+      removeResponseListeners();
+    };
+    const originalJson = res.json.bind(res);
+    res.json = ((body: any) => {
+      if (!resultReady) {
+        resultReady = true;
+        resolveFlight({ statusCode: res.statusCode, body });
+      }
+      const responseBody = body && typeof body === 'object' && req.body?.requestId
+        ? { ...body, requestId: req.body.requestId }
+        : body;
+      return originalJson(responseBody);
+    }) as typeof res.json;
+    res.once('finish', onFinish);
+    res.once('close', onClose);
+    next();
   }
 
   function trackRendererAborter(abort: () => void): () => void {
@@ -8292,7 +8393,7 @@ ${inner}
   });
 
   // --- Project Figures Render API ---
-  app.post('/api/projects/:id/figures/render', renderRateLimit, deploymentJobHandler('render', async (req, res) => {
+  app.post('/api/projects/:id/figures/render', projectRenderSingleFlight, renderRateLimit, deploymentJobHandler('render', async (req, res) => {
     let releaseProjectMutation: (() => void) | null = null;
     try {
       const userId = authenticatedUserId(req);
@@ -8677,6 +8778,7 @@ ${inner}
 
       if (String(req.query.includePreview || '') === '1' && resultFigures.length > 0) {
         const forcePreview = String(req.query.forcePreview || '') === '1';
+        const cacheOnly = String(req.query.cacheOnly || '') === '1';
         const cachedById = new Map(figures.map((fig: any) => [`fig_${fig.figure_index + 1}`, fig]));
         if (!forcePreview) {
           let allCached = true;
@@ -8696,6 +8798,16 @@ ${inner}
           });
           if (allCached) {
             return res.json({ status: 'success', figures: resultFigures, previewSource: 'cache' });
+          }
+          if (cacheOnly) {
+            return res.json({
+              status: 'success',
+              figures: resultFigures,
+              previewSource: 'miss',
+              previewMissingFigureIds: resultFigures
+                .filter(figure => !figure.svg)
+                .map(figure => figure.figureId),
+            });
           }
         }
 

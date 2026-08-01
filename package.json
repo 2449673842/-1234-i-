@@ -93,6 +93,8 @@
     "test:capability-report-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/capability_report_smoke.mjs",
     "test:wp10-default-enable": "vitest run src/utils/wp10DefaultEnable.test.ts src/utils/targetResolverDiagnostics.test.ts src/utils/targetResolver.test.ts src/utils/semanticPatchMapping.test.ts",
     "test:render-diagnostics-cache": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/render_diagnostics_cache_smoke.mjs",
+    "test:project-open-preview-singleflight": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/project_open_preview_singleflight_smoke.mjs",
+    "test:project-render-singleflight": "node scripts/testing/run_with_isolated_server.mjs -- node tests/api/project_render_singleflight_smoke.mjs",
     "test:code-history-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/code_history_smoke.mjs",
     "test:public-auth-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/public_landing_auth_smoke.mjs",
     "test:public-mobile-header-smoke": "node scripts/testing/run_with_isolated_server.mjs -- node tests/playwright/public_landing_mobile_header_smoke.mjs",

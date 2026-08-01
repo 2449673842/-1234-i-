@@ -4845,3 +4845,33 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - 全局和项目导出资产列表保留认证异常的 `statusCode`，未登录或过期请求返回 `401` 而不是 `500`。
 - Ubuntu 引导安装 `build-essential`，显式创建并修正 `/var/lib/scifigure/.config` 所有权，写入配置并通过 `nginx -t` 后执行 reload。
 - 生产 bundle 回归同时覆盖 HTTP cookie、可信代理 HTTPS cookie 和导出资产未认证状态；部署包回归锁定主机依赖、目录权限与 Nginx 重载。
+
+---
+
+## 2026-08-01 22:26:17 +08:00 项目打开重复冷启动 renderer，缓存预览未被前端复用
+
+**状态与级别**
+
+- 状态：已在隔离随机端口完成候选修复和定向验收；尚未部署，未修改真实 `data/`。
+- 级别：P1 性能与竞态。普通项目打开曾等待 30 秒以上，重复请求还可能让旧预览覆盖刚完成的新编辑。
+
+**根因**
+
+- 项目已有与当前 revision 对应的 `preview_svg`，但前端打开项目和刷新恢复两条路径都直接调用 `/figures/render`，没有先读取持久化预览。
+- 两条启动路径可能同时提交相同 Python/R 渲染；生产并发限制为 1 时，两个 Docker 冷启动被串行执行，等待时间近似翻倍。
+- 旧项目缓存缺失时，`GET /figures?includePreview=1` 会在 GET 内直接启动 renderer，绕过项目渲染限流、部署排空和相同请求合并。
+- 预览恢复响应只核验自身 AbortController，没有核验 Figure 的最新 requestId；恢复期间的新 patch/code-patch 可能先完成，随后被旧恢复结果覆盖。
+
+**修复与防复发**
+
+- 项目打开和浏览器刷新统一为一条缓存优先恢复流程；已有完整预览只执行一次 cache-only GET，渲染 POST 数为 0。
+- `cacheOnly=1` 明确保证 GET 缓存缺失时只返回 `previewSource=miss` 和缺失 Figure 列表，不启动 renderer；前端随后通过受限 `/figures/render` POST 重建一次，旧 GET 行为保持兼容。
+- 相同用户、项目、脚本、语言和 editLog 的并发 POST 使用服务端 single-flight；等待者复用同一结果但保留各自 requestId，只有 owner 消耗渲染限额和部署任务租约。
+- single-flight 在成功、renderer 错误、非 JSON 完成和客户端断连时均清理 Map；预览恢复在合并前核验项目、AbortController 和每个 Figure 的最新 requestId，所有编辑、代码补丁、历史重放和手动渲染入口都会取消旧恢复请求。
+- 新增浏览器回归覆盖缓存打开、刷新、新项目、Python/R 旧项目缓存缺失；新增 API 回归覆盖成功/失败合并、requestId 隔离、cache-only 不渲染以及成功/失败后的状态清理。
+
+**验证**
+
+- `npm run lint`、`npm run test:project-open-preview-singleflight`、`npm run test:project-render-singleflight`、`npm run test:export-snapshot-restore`、`npm run build` 和 `git diff --check` 通过。
+- 真实本地数据只读审计保持 25 用户、128 项目、286 文件、112 导出资产、0 issue；23 个既有测试账户仅记为 warning。
+- `test:render-diagnostics-cache`、`test:composition-code-project` 和 `test:project-save-preflight` 的现有失败均已在未包含本修复的 `50773ac` 临时基线工作树以相同信息复现，不属于本次性能回归。
