@@ -1,10 +1,10 @@
 # Python 图元编辑与分组识别收敛执行计划
 
-> 状态：WP3-WP10 已完成当前计划范围并进入生产 release `ffea793-jd31`；旧 compiler、palette legacy resolution 和 cross-Figure score mapper 仍作为显式兼容适配器保留一个稳定发布周期
-> 最后修改时间：2026-08-01 01:00:40 +08:00
+> 状态：WP3-WP10 已完成当前计划范围，最初进入 `ffea793-jd31` 并在生产 release `d507f49-jd32` 完整保留；旧 compiler、palette legacy resolution 和 cross-Figure score mapper 仍作为显式兼容适配器保留一个稳定发布周期
+> 最后修改时间：2026-08-01 22:45:00 +08:00
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 适用范围：Python/Matplotlib 图元识别、语义分组、编辑写回、Draft、历史、导出和复杂图形扩展
-> 当前部署状态：已推送并部署至新服务器 `117.72.117.195`；即时回退 release 为 `f4be690-jd31`，旧服务器未停机
+> 当前部署状态：已推送并部署至新服务器 `117.72.117.195`，当前 release `d507f49-jd32`；即时回退 release 为 `ffea793-jd31`，旧服务器未停机
 > 执行模型：协调者负责基线和集成，具体核查、实现与门禁由 5.5 high / 5.6 Terra 边界化子代理承担
 
 ## 1. 目标
@@ -105,7 +105,7 @@
 
 RightSidebar 不得直接读取 `sessionStorage` 决定当前 Figure、选择或 Draft；这些状态必须经 `figSession`、`activeFigureId`、选择和 Draft props 进入组件，再由规范化模型消费。2026-07-20 静态检查确认该组件没有 `sessionStorage` 调用，保留的 `localStorage` 仅保存用户预设。隔离浏览器 fixture 写入 `sessionStorage` 只用于启动测试状态，不能作为组件边界的例外。
 
-当前 Python 计划已达到生产发布条件，但不代表任意第三方 Matplotlib artist 或任意真实科研脚本均可编辑。后续新增 collection/复杂对象家族仍必须重复结构身份、能力、生命周期和导出门禁。Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。当前生产 release 固定为 `ffea793-jd31`；后续工作区变更不会自动上线，仍须使用新的不可变候选并保留逐域 feature flag 与整版回退能力。
+当前 Python 计划已达到生产发布条件，但不代表任意第三方 Matplotlib artist 或任意真实科研脚本均可编辑。后续新增 collection/复杂对象家族仍必须重复结构身份、能力、生命周期和导出门禁。Cartopy/brokenaxes 因固定运行时未安装，仅保留只读分类协议和未验证声明，不计为真实第三方包支持。当前生产 release 固定为 `d507f49-jd32`；后续工作区变更不会自动上线，仍须使用新的不可变候选并保留逐域 feature flag 与整版回退能力。
 
 ### 2.5 2026-07-18 WP8 执行结果
 
@@ -437,11 +437,11 @@ broken axes / parasite axes
 
 ### WP10：默认启用与旧路径退役
 
-**状态：已完成当前计划范围并进入生产 release `ffea793-jd31`。V2 默认开启，旧路径保留为独立回滚 flag/adapter。**
+**状态：已完成当前计划范围并在生产 release `d507f49-jd32` 保留。V2 默认开启，旧路径保留为独立回滚 flag/adapter。**
 
 **2026-08-01 生产发布收尾证据**
 
-- 新服务器当前 release 为 `/opt/scifigure/releases/ffea793-jd31`，上一可回退 release 为 `/opt/scifigure/releases/f4be690-jd31`；`scifigure`/`nginx` active、`NRestarts=0`、readiness 为 `ready/acceptingNewJobs=true`。
+- 新服务器当前 release 为 `/opt/scifigure/releases/d507f49-jd32`，上一可回退 release 为 `/opt/scifigure/releases/ffea793-jd31`；`scifigure`/`nginx` active、`NRestarts=0`、readiness 为 `ready/acceptingNewJobs=true`，缓存项目打开/刷新约 `323 ms` 且不启动 renderer。
 - 生产 renderer 合同为 Python `3.12.13`、Matplotlib `3.11.1` 和 NumPy `2.5.1`。历史 Python `3.8.19`/Matplotlib `3.7.2` 仅是固定测试启动器，不是当前生产运行时。
 - 线上 Python smoke 返回 `200` 并生成 33 个 manifest 对象；仅有预期的布局自动扩展诊断，无 renderer 失败。认证 refresh、导出资产 `401` 保留和真实 Chromium 历史导出页面均通过。
 - 部署后数据审计为 6 用户、52 项目、251 项目文件、75 导出资产、0 issue；本地 `3000` 未访问或修改，旧服务器保持运行。真实域名 TLS 尚未配置。

@@ -4852,7 +4852,7 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 
 **状态与级别**
 
-- 状态：已在隔离随机端口完成候选修复和定向验收；尚未部署，未修改真实 `data/`。
+- 状态：已随不可变 release `d507f49-jd32` 部署至 `117.72.117.195`，即时回退 release 为 `ffea793-jd31`；旧服务器未停机。
 - 级别：P1 性能与竞态。普通项目打开曾等待 30 秒以上，重复请求还可能让旧预览覆盖刚完成的新编辑。
 
 **根因**
@@ -4875,3 +4875,6 @@ yield f"spine.{side}.{ax_idx}", "spine", ax.spines[side]
 - `npm run lint`、`npm run test:project-open-preview-singleflight`、`npm run test:project-render-singleflight`、`npm run test:export-snapshot-restore`、`npm run build` 和 `git diff --check` 通过。
 - 真实本地数据只读审计保持 25 用户、128 项目、286 文件、112 导出资产、0 issue；23 个既有测试账户仅记为 warning。
 - `test:render-diagnostics-cache`、`test:composition-code-project` 和 `test:project-save-preflight` 的现有失败均已在未包含本修复的 `50773ac` 临时基线工作树以相同信息复现，不属于本次性能回归。
+- 生产真实 Chromium：普通项目冷渲染约 `3.00 s`；缓存项目打开和刷新均约 `323 ms`，每次 1 次 cache-only GET、0 次 render POST，页面错误为 0。
+- 32G 主机 6 个独立普通图并发从并发 1 的 `16.68 s` 降至并发 6 的 `3.62 s`，约提升 `4.6x`；服务重启 0、活跃 renderer 容器 0、关键错误日志为空。
+- 发布前 SQLite 在线备份完整性为 `ok` 且权限为 `0640`；发布和临时性能项目清理后数据审计保持 6 用户、52 项目、251 文件、75 导出资产、0 issue。

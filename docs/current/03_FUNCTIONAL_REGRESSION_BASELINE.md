@@ -1,10 +1,10 @@
 # SciFigure 当前功能不可回退基线
 
 > 状态：当前有效，所有平台功能升级的合并阻断基线
-> 最后修改时间：2026-08-01 01:00:40 +08:00
-> 证据截止时间：2026-08-01 01:00:40 +08:00
-> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10 与 R-WP0-WP10 当前收敛提交已合入 release `ffea793-jd31`
-> 部署状态：新服务器 `117.72.117.195` 已运行生产不可变 release `ffea793-jd31`；后续未提交工作树内容不属于服务器版本
+> 最后修改时间：2026-08-01 22:45:00 +08:00
+> 证据截止时间：2026-08-01 22:45:00 +08:00
+> 代码范围：`deploy/prod-integration-v3`，Python WP3-WP10、R-WP0-WP10 与预览性能收敛已合入 release `d507f49-jd32`
+> 部署状态：新服务器 `117.72.117.195` 已运行生产不可变 release `d507f49-jd32`；后续未提交工作树内容不属于服务器版本
 > 数据边界：不得删除、迁移、覆盖或用测试数据替换真实 `data/`
 
 ## 1. 文档目的
@@ -27,11 +27,12 @@
 
 2026-08-01 当前生产 release 已获得的最新证据：
 
-表内“本地候选”表示该能力的证据仍主要来自隔离本地/容器门禁，不能扩大解释为任意真实项目已稳定支持；它不表示对应代码没有随 `ffea793-jd31` 部署。线上发布事实以“当前生产发布”和本节生产收尾证据为准。
+表内“本地候选”表示该能力的证据仍主要来自隔离本地/容器门禁，不能扩大解释为任意真实项目已稳定支持；它不表示对应代码没有随当前 release 部署。线上发布事实以“当前生产发布”和本节生产收尾证据为准。
 
 | 检查项 | 最新结果 | 说明 |
 |---|---:|---|
-| 当前生产发布 | `ffea793-jd31` | 新服务器 `117.72.117.195` 的 `scifigure`/`nginx` active、重启 0、公网/Node readiness ready、renderer image 与 build ID 一致；部署前 SQLite 快照完整，部署后数据审计为 6 用户、52 项目、251 项目文件、75 导出资产、0 issue；即时回退 release `f4be690-jd31` |
+| 当前生产发布 | `d507f49-jd32` | 新服务器 `117.72.117.195` 的 `scifigure`/`nginx` active、重启 0、公网/Node readiness ready、renderer image 与 build ID 一致；部署前 SQLite 快照完整，部署后数据审计为 6 用户、52 项目、251 项目文件、75 导出资产、0 issue；即时回退 release `ffea793-jd31` |
+| 项目打开与并发性能 | 通过 | 真实 Chromium 缓存项目打开/刷新均约 `323 ms`，每次 1 个 cache-only GET、0 个 render POST；6 个独立普通图在 32G 主机从并发 1 的 `16.68 s` 降至并发 6 的 `3.62 s`，约 `4.6x` |
 | TypeScript | 通过 | `npm run lint` |
 | 完整单元、Python 身份与生产构建 | 通过 | Vitest 214 文件 / 1740 项；Python introspection + 结构漂移 77/77；`npm run build` 与 `git diff --check` 通过 |
 | 前端单元测试 | 通过 | 包含 schema v1-v5、特殊 axes relation、图示 resolver、能力、映射、组件分组、identity 捕获、诊断归一化和 fail-closed 回归；本轮 Draft/matchColor/快照直接相关 19 文件、189/189 |
@@ -100,13 +101,14 @@
 
 当前 release 已完成生产发布验证，但结论仍只覆盖登记矩阵和实际 smoke，不扩大为任意第三方 Matplotlib artist、全部真实科研脚本或性能 SLO 的支持承诺。Cartopy 和 brokenaxes 因固定运行时未安装仍为 skipped/不承诺支持；生产通过 HTTP/IP 访问，真实域名 TLS 尚未配置。
 
-先前独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包、旧项目 GET/PUT 恢复源不一致，以及 standalone/project full render 在 renderer 拒绝 editLog 后仍可能写入的问题均已修复。当前保存与全渲染入口同时执行可信 manifest 预检、renderer warning 检查和必要的 revision/hash CAS；项目脚本与 Figure/session 在同一事务提交。新增 full render mixed batch、旧 contour、项目 history、R 共享路由、组件容器、扩展拖拽、缓存、导出文件事务、用户隔离和 renderer 沙箱回归均通过。WP5、WP9 和 WP10 已进入 `ffea793-jd31`，最终独立复审为 APPROVE、0 HIGH/MEDIUM。旧 compiler、palette legacy resolution 和 cross-Figure score mapper 在一个稳定发布周期内继续作为显式适配器保留；后续提交必须重新形成固定候选并独立部署。
+先前独立代码审查发现的 standalone mode 权威、保存 CAS 绕过、排队保存旧闭包、旧项目 GET/PUT 恢复源不一致，以及 standalone/project full render 在 renderer 拒绝 editLog 后仍可能写入的问题均已修复。当前保存与全渲染入口同时执行可信 manifest 预检、renderer warning 检查和必要的 revision/hash CAS；项目脚本与 Figure/session 在同一事务提交。新增 full render mixed batch、旧 contour、项目 history、R 共享路由、组件容器、扩展拖拽、缓存、导出文件事务、用户隔离和 renderer 沙箱回归均通过。WP5、WP9 和 WP10 最初进入 `ffea793-jd31` 并在 `d507f49-jd32` 完整保留；本轮性能修复复审为 0 HIGH/MEDIUM。旧 compiler、palette legacy resolution 和 cross-Figure score mapper 在一个稳定发布周期内继续作为显式适配器保留；后续提交必须重新形成固定候选并独立部署。
 
 ### 2.1 生产发布收尾证据（2026-08-01）
 
-- 新服务器 `117.72.117.195` 当前 release 为 `/opt/scifigure/releases/ffea793-jd31`，上一可回退 release 为 `/opt/scifigure/releases/f4be690-jd31`；`scifigure` 与 `nginx` 均 active，服务 `NRestarts=0`，readiness 为 `ready/acceptingNewJobs=true`。
+- 新服务器 `117.72.117.195` 当前 release 为 `/opt/scifigure/releases/d507f49-jd32`，上一可回退 release 为 `/opt/scifigure/releases/ffea793-jd31`；`scifigure` 与 `nginx` 均 active，服务 `NRestarts=0`，readiness 为 `ready/acceptingNewJobs=true`，32G 专属 renderer 并发为 6。
 - 线上 HTTP cookie/refresh、未登录导出资产 `401`、Python renderer（33 个 manifest 对象）和 R renderer（30 个 manifest 对象、0 runtime warning）均通过；真实 Chromium 登录后历史导出资产页面可打开，未产生新的 `500`。
 - 部署后数据审计为 6 用户、52 项目、251 项目文件、75 导出资产、`issueCount=0`。保留新服务器迁移前回退数据和旧服务器迁移备份；旧服务器未停机。
+- `d507f49-jd32` 发布前在线 SQLite 备份为 `/srv/scifigure/backups/pre-deploy-d507f49-jd32.db`，完整性为 `ok`、权限为 `0640`；真实性能探针项目已全部删除，活跃 renderer 容器为 0。
 - 本轮未访问或修改本地 `3000`，未停止既有 Docker/WSL/sub2api 服务。真实域名 TLS 尚未配置，属于剩余运维风险而非本次代码发布阻断。
 
 2026-07-21 的兼容性审查进一步确认：任何“已知旧 editLog”例外都必须同时满足数据库中已持久化的值和身份，不能让客户端用相同值替换更弱或伪造的身份。空文本/隐藏对象和旧轴字体兼容均执行完整 `stableKey/fingerprintVersion/fingerprint/identity` 同一性核验；拒绝请求由数据库快照断言证明不会写 project、session、Figure、history 或 preview。文本输入以原始 manifest 作为已提交事实，以项目 Draft 作为待应用事实，不能用 Draft proxy 判断“已经应用”。

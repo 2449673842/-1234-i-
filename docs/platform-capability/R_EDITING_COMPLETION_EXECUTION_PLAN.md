@@ -1,8 +1,8 @@
 # R/ggplot2 图元编辑与渲染一致性收敛开发计划
 
-> 状态：R-WP0-R-WP10 已合入当前集成分支并进入生产 release `ffea793-jd31`；旧路径和无版本 identity 兼容读取继续保留一个稳定发布周期
-> 最后修改时间：2026-08-01 01:00:40 +08:00
-> 当前部署状态：已推送并部署至新服务器 `117.72.117.195`；即时回退 release 为 `f4be690-jd31`，旧服务器未停机
+> 状态：R-WP0-R-WP10 已合入当前集成分支，最初进入 `ffea793-jd31` 并在生产 release `d507f49-jd32` 完整保留；旧路径和无版本 identity 兼容读取继续保留一个稳定发布周期
+> 最后修改时间：2026-08-01 22:45:00 +08:00
+> 当前部署状态：已推送并部署至新服务器 `117.72.117.195`，当前 release `d507f49-jd32`；即时回退 release 为 `ffea793-jd31`，旧服务器未停机
 > 基线入口：`docs/current/03_FUNCTIONAL_REGRESSION_BASELINE.md`
 > 现状入口：`docs/R_COMPATIBILITY_PLAN.md`
 > 适用范围：R/ggplot2 渲染、语义图元、对象身份、patch 写回、Draft、历史、导出、复杂坐标、网络图/路径图/SEM 与生产一致性
@@ -740,8 +740,8 @@ persist/export conversion
 
 **2026-08-01 生产发布收尾证据**
 
-- R-WP0-R-WP10 已随 `ffea793-jd31` 进入生产 release；默认 V2 resolver、旧 R identity/editLog 兼容、legacy adapter、安全预检、renderer sandbox、用户隔离、性能和缓存门禁均以同一候选提交部署。
-- 新服务器当前 release 为 `/opt/scifigure/releases/ffea793-jd31`，上一可回退 release 为 `/opt/scifigure/releases/f4be690-jd31`；`scifigure`/`nginx` active、`NRestarts=0`、readiness 为 `ready/acceptingNewJobs=true`。
+- R-WP0-R-WP10 已随 `ffea793-jd31` 进入生产 release，并在 `d507f49-jd32` 完整保留；默认 V2 resolver、旧 R identity/editLog 兼容、legacy adapter、安全预检、renderer sandbox、用户隔离、性能和缓存门禁均保持启用。
+- 新服务器当前 release 为 `/opt/scifigure/releases/d507f49-jd32`，上一可回退 release 为 `/opt/scifigure/releases/ffea793-jd31`；`scifigure`/`nginx` active、`NRestarts=0`、readiness 为 `ready/acceptingNewJobs=true`，R 旧项目缓存缺失也统一经受限 render POST 重建。
 - 线上 R smoke 返回 `200`，生成 30 个 manifest 对象且 runtime warning 为 0；Python 共享路由、认证 refresh、导出资产认证和真实 Chromium 历史导出页面也通过，证明共享发布链路未回退。
 - 部署后数据审计为 6 用户、52 项目、251 项目文件、75 导出资产、0 issue；本地 `3000` 未访问或修改，旧服务器保持运行。生产通过 HTTP/IP 访问，真实域名 TLS 尚未配置。
 
